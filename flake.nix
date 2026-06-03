@@ -1,9 +1,13 @@
 {
-  description = "Shōmei is a Haskell authentication toolkit designed to support two deployment modes:";
+  description = "Shōmei is a Haskell authentication toolkit for building embedded Servant auth and standalone auth services from the same core primitives.";
 
-  inputs.haskell-nix-dev.url = "github:shinzui/haskell-nix-dev";
-  inputs.nixpkgs.follows = "haskell-nix-dev/nixpkgs";
-  inputs.flake-utils.follows = "haskell-nix-dev/flake-utils";
+  inputs = {
+    haskell-nix-dev.url = "github:shinzui/haskell-nix-dev";
+    nixpkgs.follows = "haskell-nix-dev/nixpkgs";
+
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
+  };
 
   # TODO(haskell-nix-dev EP-2): fill in the Cachix substituter URL and public key once the
   # base flake's binary cache is published, so the first `nix develop` downloads prebuilt
@@ -13,54 +17,19 @@
     extra-trusted-public-keys = [ ];
   };
 
-  outputs = { self, nixpkgs, haskell-nix-dev, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-        hsdev = haskell-nix-dev.lib.${system};
-        haskellPackages = pkgs.haskell.packages."ghc9124";
+  # This flake is a thin, seihou-managed shell. All project wiring lives in the
+  # imported modules under ./nix, and your own customizations belong in an
+  # (optional, unmanaged) ./flake.module.nix — see flake.module.nix.example.
+  outputs = inputs@{ flake-parts, nixpkgs, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = nixpkgs.lib.systems.flakeExposed;
 
-        commonNativeBuildInputs = [
-          pkgs.zlib
-          pkgs.just
-          pkgs.pkg-config
-          pkgs.postgresql
-        ] ++ pkgs.lib.optional true pkgs.process-compose;
-
-        commonShellHook = ''
-
-          export PGHOST="$PWD/db"
-          export PGDATA="$PGHOST/db"
-          export PGLOG=$PGHOST/postgres.log
-          export PGDATABASE=shomei
-          export PG_CONNECTION_STRING=postgresql://$(jq -rn --arg x $PGHOST '$x|@uri')/$PGDATABASE
-
-          mkdir -p $PGHOST
-          mkdir -p .dev
-
-          if [ ! -d $PGDATA ]; then
-            initdb --auth=trust --no-locale --encoding=UTF8
-          fi
-        '';
-
-        mkProjectShell = ghc: hsdev.mkDevShell {
-          inherit ghc;
-          extraNativeBuildInputs = commonNativeBuildInputs;
-          withHls = true;
-          shellHook = commonShellHook;
-        };
-      in
-      {
-        packages = {
-          default = haskellPackages.callCabal2nix "shomei" ./. { };
-        };
-
-        checks = {
-        };
-
-        devShells = {
-          default = mkProjectShell "ghc9124";
-          "ghc9124" = mkProjectShell "ghc9124";
-        };
-      });
+      imports =
+        [
+          ./nix/haskell.nix
+        ]
+        # Your project-specific customizations. seihou never generates, touches,
+        # or migrates this file, so it is the conflict-free place to extend.
+        ++ nixpkgs.lib.optional (builtins.pathExists ./flake.module.nix) ./flake.module.nix;
+    };
 }
