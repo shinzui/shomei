@@ -72,14 +72,16 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — Contract compiles: `packages/shomei-servant/shomei-servant.cabal`,
+- [x] Milestone 1 — Contract compiles: `packages/shomei-servant/shomei-servant.cabal`,
       `Shomei.Servant.Auth` (`AuthUser`, `Authenticated`, `authHandler`, `extractToken`,
       `authUserFromClaims`), `Shomei.Servant.Authz` (`RequireRole`/`RequireScope` design),
       `Shomei.Servant.DTO` (all request/response DTOs + JSON instances), and
-      `Shomei.Servant.API` (`ShomeiAPI`) all compile via `cabal build shomei-servant`.
-- [ ] Milestone 2 — Handlers compile: `Shomei.Servant.Error` (AuthError → ServerError),
-      `Shomei.Servant.Seam` (`effToHandler`, `Env`), and `Shomei.Servant.Handlers`
+      `Shomei.Servant.API` (`ShomeiAPI`) all compile via `cabal build shomei-servant`. (2026-06-03)
+- [x] Milestone 2 — Handlers compile: `Shomei.Servant.Error` (AuthError → ServerError),
+      `Shomei.Servant.Seam` (`AppEffects`, `Env`, `runAuth`/`runPort` — the seam, renamed from
+      the plan's `effToHandler` sketch; see Decision Log), and `Shomei.Servant.Handlers`
       (`shomeiServer`) compile against EP-2 workflows; the embedded `AppAPI` example compiles.
+      `cabal build shomei-servant` green, fourmolu-clean. (2026-06-03)
 - [ ] Milestone 3 — In-process warp test green: `test-suite shomei-servant-test` boots the app
       on an ephemeral port with EP-2 in-memory interpreters + a real in-test ES256 key and
       exercises signup / login / me(+401, +garbage) / refresh / jwks / `RequireRole`(403/200);
@@ -91,7 +93,29 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **GHC2024 makes `role` a context-sensitive keyword (affects any later plan that declares a
+  phantom combinator or type variable named `role`).** GHC2024 enables `RoleAnnotations`, under
+  which `role` is reserved for the `type role T nominal …` syntax, so `data RequireRole role`
+  (or `data RequireRole (role :: Symbol)`) fails with `GHC-58481 parse error on input 'role'`.
+  Evidence: `ghc -fno-code -XGHC2024` on `data RequireRole role` fails; renaming the binder to
+  `r` (with the same `-XGHC2024`) compiles. Fix: `Shomei.Servant.Authz` declares
+  `type RequireRole :: Symbol -> Type; data RequireRole r` (standalone kind signature + a
+  non-keyword binder). Independently, the parenthesized kinded-binder form
+  `data T (a :: Symbol)` also refused to parse on this toolchain even with `KindSignatures`;
+  the standalone-kind-signature form is what works.
+- **The library does not need `jose` (reinforces IP-4).** EP-4's `verifyToken` has the shape
+  `Text -> IO (Either TokenError AuthClaims)` over *core* types only, and the JWKS document can
+  be carried as a precomputed `aeson` `Value`. So `shomei-servant`'s **library** depends only on
+  `shomei-core` (+ servant/wai/cookie/aeson/…), never `shomei-jwt`/`jose`; only the **test**
+  (and EP-6 at assembly) touch `shomei-jwt` to generate keys, build the verifier closure, and
+  compute the document. Consequence for EP-6: build the `Env` by partially applying
+  `verifyToken jwks config` into `Env.verifier` and `Aeson.decode (jwksDocument keys)` into
+  `Env.jwksJson`; the handlers stay jose-free.
+- **`jwksDocument :: [JWK] -> ByteString` (not `JWKSet -> Value`).** The EP-5 plan's sketch
+  assumed `jwksDocument :: JWKSet -> Aeson.Value`; the real EP-4 signature is
+  `jwksDocument :: [JWK] -> Data.ByteString.Lazy.ByteString` (and `keySetPublicJwks :: KeySet ->
+  JWKSet` builds the public set for the verifier). The `jwks` route therefore serves a `Value`
+  obtained by decoding the document once at assembly time.
 
 
 ## Decision Log
@@ -160,6 +184,33 @@ Record every decision made while working on the plan.
   Rationale: `jwksDocument` already emits the canonical public JWKS JSON; re-wrapping it adds no
   value and risks drift. Consumers parse standard JWKS, so `Value` (rendered as
   `application/json`) is sufficient and honest about the shape.
+  Date: 2026-06-03
+
+- Decision: The seam is `runAuth :: Env -> Eff AppEffects (Either AuthError a) -> Handler a`
+  plus `runPort :: Env -> Eff AppEffects a -> Handler a`, with `Env.runPorts :: forall a. Eff
+  AppEffects a -> IO a` — **not** the plan's sketched `effToHandler :: Env -> Eff AppEffects a ->
+  Handler a` with `runEff :: ... -> IO (Either AuthError a)`.
+  Rationale: EP-2's workflows *already* return `Eff es (Either AuthError result)` (they run a
+  local `Effectful.Error.Static` internally), so the runner must not add a second `Either` layer.
+  `runAuth` runs the workflow and maps a `Left AuthError` through `authErrorToServerError`;
+  `runPort` runs a plain port read (e.g. `findUserById` for `me`) whose `Maybe` the handler
+  branches on itself (a missing row → `404`). `AppEffects` is the fixed, ordered port-effect list
+  (matching EP-2's `runInMemory` order) that every assembly — the test's in-memory+jose hybrid and
+  EP-6's postgres+jose stack — provides a `runPorts` for.
+  Date: 2026-06-03
+
+- Decision: The library is `jose`-free; the `Env` carries the verifier closure and a precomputed
+  JWKS `Value`, so `shomei-servant`'s library `build-depends` lists `shomei-core` but **not**
+  `shomei-jwt`.
+  Rationale: keeps IP-4 intact (only `shomei-jwt` imports `jose`) and lets the contract +
+  handlers compile against core alone. The test and EP-6 supply the jose-derived `Env` fields.
+  Date: 2026-06-03
+
+- Decision: DTO mappers target the real EP-2 shapes: `User.displayName :: Maybe Text`
+  (rendered as `""` when absent), `User.status :: UserStatus` (rendered lowercase
+  `active`/`suspended`/`deleted`), `TokenPair.expiresIn :: NominalDiffTime` (rendered as whole
+  seconds), and commands take `Email`/`PlainPassword`/`RefreshToken` (so `signup`/`login` parse
+  the request email through `mkEmail`, mapping `InvalidEmail` to `400` before the workflow runs).
   Date: 2026-06-03
 
 

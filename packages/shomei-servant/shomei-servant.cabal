@@ -18,8 +18,10 @@ common shared
   default-language:   GHC2024
   default-extensions:
     BlockArguments
+    DataKinds
     DeriveAnyClass
     DuplicateRecordFields
+    LambdaCase
     MultilineStrings
     OverloadedLabels
     OverloadedRecordDot
@@ -27,12 +29,57 @@ common shared
     PackageImports
     QualifiedDo
     TemplateHaskell
+    TypeFamilies
+    TypeOperators
 
 library
   import:          warnings, shared
   hs-source-dirs:  src
-  exposed-modules: Shomei.Servant.Placeholder
+  exposed-modules:
+    Shomei.Servant.API
+    Shomei.Servant.Auth
+    Shomei.Servant.Authz
+    Shomei.Servant.DTO
+    Shomei.Servant.Error
+    Shomei.Servant.Handlers
+    Shomei.Servant.Seam
+
   build-depends:
-    , base         >=4.18 && <5
+    , aeson
+    , base            >=4.18 && <5
+    , bytestring
+    , containers
+    , cookie
+    , effectful
+    , effectful-core
+    , servant         >=0.20.2
+    , servant-server  >=0.20
+    , shomei-core
+    , text
+    , time
+    , wai
+
+test-suite shomei-servant-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , containers
+    , effectful
+    , http-client
+    , http-types
+    , jose
+    , servant-server
     , shomei-core
     , shomei-jwt
+    , shomei-servant
+    , tasty
+    , tasty-hunit
+    , text
+    , time
+    , wai
+    , warp
