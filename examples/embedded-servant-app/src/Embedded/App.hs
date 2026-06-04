@@ -1,0 +1,65 @@
+{- | The embedded deployment model: a host Servant application that mounts the whole
+Shōmei auth API under @\/auth@ and adds its own business route @\/projects@ guarded by the
+same 'Authenticated' combinator.
+
+The host reuses the /real/ adapter assembly from @shomei-server@ — the same `Env`, the
+same `seamEnv`/`authContext`, and the same `shomeiServer` handlers — so the mounted auth
+routes and the app's own guard share one signing key, one verifier, and one effect stack.
+A token minted by @\/auth\/login@ is therefore accepted by @\/projects@.
+-}
+module Embedded.App (
+    AppAPI,
+    Project (..),
+    embeddedApplication,
+) where
+
+import Shomei.Prelude
+
+import "aeson" Data.Aeson (FromJSON, ToJSON)
+import "wai" Network.Wai (Application)
+
+import "servant-server" Servant (
+    Get,
+    JSON,
+    NamedRoutes,
+    Proxy (Proxy),
+    serveWithContext,
+    type (:<|>) ((:<|>)),
+    type (:>),
+ )
+import "servant-server" Servant.Server (Handler)
+
+import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.Auth (AuthUser, Authenticated)
+import Shomei.Servant.Handlers (shomeiServer)
+
+import Shomei.Server.App (Env)
+import Shomei.Server.Boot (authContext, seamEnv)
+
+-- | A trivial demo business type the host app owns.
+data Project = Project
+    { projectId :: !Text
+    , projectName :: !Text
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | The host application's API: every Shōmei auth route (they already live under
+@\/auth@ in 'ShomeiAPI', so they are mounted directly, not under an extra prefix), plus
+an app-owned @\/projects@ route guarded by the same 'Authenticated' combinator.
+-}
+type AppAPI =
+    NamedRoutes ShomeiAPI
+        :<|> Authenticated :> "projects" :> Get '[JSON] [Project]
+
+-- | Serve 'AppAPI' reusing @shomei-server@'s assembly and auth 'Context'.
+embeddedApplication :: Env -> Application
+embeddedApplication env =
+    serveWithContext (Proxy @AppAPI) (authContext senv) (shomeiServer senv :<|> projectsHandler)
+  where
+    senv = seamEnv env
+
+-- | The @\/projects@ handler. It receives the 'AuthUser' the 'Authenticated' guard produced.
+projectsHandler :: AuthUser -> Handler [Project]
+projectsHandler _user =
+    pure [Project{projectId = "proj_demo_1", projectName = "Shōmei Demo Project"}]

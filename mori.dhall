@@ -78,6 +78,7 @@ in  Schema.Project::{
           [ Schema.Dependency.ByName "shomei-core"
           , Schema.Dependency.ByName "shomei-jwt"
           , Schema.Dependency.ByName "shomei-postgres"
+          , Schema.Dependency.ByName "shomei-migrations"
           , Schema.Dependency.ByName "shomei-servant"
           ]
         }
@@ -88,7 +89,36 @@ in  Schema.Project::{
         , path = Some "packages/shomei-client"
         , description = Some
             "Haskell client for the standalone Shōmei auth service"
-        , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
+        , dependencies =
+          [ Schema.Dependency.ByName "shomei-core"
+          , Schema.Dependency.ByName "shomei-servant"
+          ]
+        }
+      , Schema.Package::{
+        , name = "embedded-servant-app"
+        , type = Schema.PackageType.Application
+        , language = Schema.Language.Haskell
+        , path = Some "examples/embedded-servant-app"
+        , description = Some
+            "Demo: Shōmei auth routes embedded inside a host Servant app, guarding /projects"
+        , runtime = Schema.Runtime::{ deployable = True, exposesApi = True }
+        , dependencies =
+          [ Schema.Dependency.ByName "shomei-servant"
+          , Schema.Dependency.ByName "shomei-server"
+          ]
+        }
+      , Schema.Package::{
+        , name = "microservice-auth-stack"
+        , type = Schema.PackageType.Application
+        , language = Schema.Language.Haskell
+        , path = Some "examples/microservice-auth-stack"
+        , description = Some
+            "Demo: downstream service verifying Shōmei JWTs locally via a fetched, TTL-cached JWKS"
+        , runtime = Schema.Runtime::{ deployable = True, exposesApi = True }
+        , dependencies =
+          [ Schema.Dependency.ByName "shomei-core"
+          , Schema.Dependency.ByName "shomei-jwt"
+          ]
         }
       ]
     , dependencies =

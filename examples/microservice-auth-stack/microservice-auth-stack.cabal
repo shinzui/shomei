@@ -1,0 +1,83 @@
+cabal-version: 3.0
+name:          microservice-auth-stack
+version:       0.1.0.0
+synopsis:      Demo: downstream service verifying Shōmei JWTs locally via fetched JWKS
+license:       MIT
+author:        Nadeem Bitar
+maintainer:    nadeem@gmail.com
+category:      Web, Security
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+common shared
+  default-language:   GHC2024
+  default-extensions:
+    BlockArguments
+    DataKinds
+    DeriveAnyClass
+    DuplicateRecordFields
+    MultilineStrings
+    OverloadedRecordDot
+    OverloadedStrings
+    PackageImports
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+
+library
+  import:          warnings, shared
+  hs-source-dirs:  src
+  exposed-modules: Downstream.Service
+
+  -- NOTE: deliberately NO dependency on shomei-postgres. This service has no database;
+  -- it verifies tokens offline using a JWKS it fetches from the auth service.
+  build-depends:
+    , aeson
+    , base            >=4.18 && <5
+    , http-client
+    , jose
+    , servant
+    , servant-server
+    , shomei-core
+    , shomei-jwt
+    , text
+    , time
+    , wai
+
+executable example-project-service
+  import:         warnings, shared
+  hs-source-dirs: app
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , http-client
+    , microservice-auth-stack
+    , shomei-core
+    , text
+    , warp
+
+test-suite microservice-auth-stack-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , http-client
+    , http-types
+    , microservice-auth-stack
+    , shomei-client
+    , shomei-core
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , shomei-servant
+    , shomei-server
+    , tasty
+    , tasty-hunit
+    , text
+    , warp

@@ -1,0 +1,39 @@
+# Two-service runbook for the microservice deployment model.
+#
+#   process-compose -f examples/microservice-auth-stack/process-compose.yaml up
+#
+# Starts the standalone auth service, waits until it is healthy, then starts the
+# downstream service pointed at the auth service's JWKS document. The downstream
+# verifies Bearer tokens locally (offline) against that JWKS — it never calls the
+# auth service per request.
+#
+# Then, from another shell:
+#   curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+#     -d '{"email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
+#   TOKEN=$(curl -s -X POST localhost:8080/auth/login -H 'content-type: application/json' \
+#     -d '{"email":"ms@example.com","password":"correct horse battery staple"}' \
+#     | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"]["accessToken"])')
+#   curl -i localhost:8090/projects -H "Authorization: Bearer $TOKEN"     # 200 (verified locally)
+#   curl -i localhost:8090/projects -H "Authorization: Bearer ${TOKEN%?}X" # 401 (tampered)
+version: "0.5"
+processes:
+  shomei-server:
+    command: "cabal run shomei-server"
+    environment:
+      - "PG_CONNECTION_STRING=host=localhost port=5432 dbname=shomei user=shomei"
+      - "SHOMEI_PORT=8080"
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8080
+        path: /health
+      initial_delay_seconds: 2
+      period_seconds: 1
+  example-project-service:
+    command: "cabal run example-project-service"
+    depends_on:
+      shomei-server:
+        condition: process_healthy
+    environment:
+      - "SHOMEI_JWKS_URL=http://localhost:8080/.well-known/jwks.json"
+      - "DOWNSTREAM_PORT=8090"

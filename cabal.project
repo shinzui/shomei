@@ -8,6 +8,8 @@ packages:
     packages/shomei-servant
     packages/shomei-server
     packages/shomei-client
+    examples/embedded-servant-app
+    examples/microservice-auth-stack
 
 -- ============================================================
 -- DEPENDENCY OVERRIDES — each plan appends its own block; none rewrites another's.
