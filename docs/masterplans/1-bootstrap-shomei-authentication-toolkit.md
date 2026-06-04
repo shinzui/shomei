@@ -117,7 +117,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 | 1 | Project scaffolding and multi-package build foundation | docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md | None | None | Complete |
 | 2 | Core domain model, ports, and auth workflows | docs/plans/2-core-domain-model-ports-and-auth-workflows.md | EP-1 | None | Complete |
 | 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | Complete |
-| 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Not Started |
+| 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Complete |
 | 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Not Started |
 | 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Not Started |
 | 7 | Haskell client and demo applications | docs/plans/7-haskell-client-and-demo-applications.md | EP-6 | EP-5 | Not Started |
@@ -250,8 +250,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-2: Signup/login/refresh-rotation/logout workflows pass pure in-memory tests (2026-06-03; 7/7 cases)
 - [x] EP-3: codd `shomei-migrations` package + schema migrations apply to ephemeral PostgreSQL (2026-06-03)
 - [x] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests (2026-06-03; 9/9)
-- [ ] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working
-- [ ] EP-4: JWT sign → verify round-trip and JWKS public document validated
+- [x] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working (2026-06-03)
+- [x] EP-4: JWT sign → verify round-trip and JWKS public document validated (2026-06-03; `cabal test shomei-jwt`, 9/9)
 - [ ] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined
 - [ ] EP-5: handlers drive workflows; in-process warp test exercises signup/login/me
 - [ ] EP-6: `shomei-server` boots, loads config + keys, runs migrations, serves the API
@@ -301,6 +301,29 @@ implementation. Provide concise evidence.
   *updates*, use `generic-lens` `#field` lenses (`x & #f .~ v`), which need `Generic` on the
   record and a per-module `import Data.Generics.Labels ()`. The in-memory interpreter
   (`Shomei.Port.InMemory`) is the executable reference for the expected port behavior.
+- **EP-4: jose PR-#137 builds cleanly on GHC 9.12.4 with no `allow-newer` (IP-8).** The pinned
+  `jose` resolved as 0.13 with crypton-1.1.3 / ram-0.21.1 / monad-time-0.4 / concise-0.1 and
+  built without relaxing any version bound — Risk 2 (GHC 9.12.4 bounds) from EP-4's plan did
+  not materialize. The PR-#137 head commit only exists on the canonical repo as
+  `refs/pull/137/head` (which cabal's plain-clone fetch can't retrieve), so the working pin is
+  the **`sumo/hs-jose`** fork, which carries that commit as its `master` HEAD. EP-4 added the
+  `source-repository-package` to the IP-8 placeholder; EP-3's codd/ephemeral-pg entries and the
+  pre-existing `allow-newer: haxl:time` are untouched.
+- **EP-4: jose API shape facts that affect EP-5/EP-6.** (1) jose signing/verification runs in
+  jose's `JOSE e m` monad via `runJOSE`, *not* `ExceptT e IO` — crypton's `MonadRandom` has no
+  `ExceptT` instance, but jose provides `MonadRandom (JOSE e m)`. (2) `StringOrURI` claim values
+  (issuer, audience) must be built with `fromString`, not the `string` prism, because jose
+  re-parses scheme-bearing strings into its URI form on decode; build-and-compare must use the
+  same canonical form or issuer/audience checks reject valid tokens. (3) jose decodes the JWT
+  payload *before* verifying the signature, so a corrupted payload reads as `TokenMalformed`,
+  not `TokenSignatureInvalid`. EP-5/EP-6 reuse `verifyToken`/the interpreters and inherit these
+  behaviors; they do not need to touch jose directly.
+- **EP-4: `currentJwks` publishes only active keys for now (affects future rotation work).**
+  The `SigningKeyStore.ListActiveSigningKeys` contract returns only `KeyActive` keys, so the
+  published JWKS does not yet include retired-but-valid keys. Zero-downtime overlapping-key
+  rotation will need a non-revoked store query — an EP-2 port addition cascading to EP-3's
+  postgres interpreter (IP-3) — deferred until a plan first needs it. No bootstrap acceptance
+  scenario depends on it.
 
 
 ## Decision Log
