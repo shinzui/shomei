@@ -116,7 +116,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Project scaffolding and multi-package build foundation | docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md | None | None | Complete |
 | 2 | Core domain model, ports, and auth workflows | docs/plans/2-core-domain-model-ports-and-auth-workflows.md | EP-1 | None | Complete |
-| 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | In Progress |
+| 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | Complete |
 | 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Not Started |
 | 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Not Started |
 | 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Not Started |
@@ -248,8 +248,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-2: Domain types, `Shomei.Id`, errors, and `ShomeiConfig` defined (2026-06-03)
 - [x] EP-2: Port effects + in-memory interpreters defined (2026-06-03)
 - [x] EP-2: Signup/login/refresh-rotation/logout workflows pass pure in-memory tests (2026-06-03; 7/7 cases)
-- [ ] EP-3: codd `shomei-migrations` package + schema migrations apply to ephemeral PostgreSQL
-- [ ] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests
+- [x] EP-3: codd `shomei-migrations` package + schema migrations apply to ephemeral PostgreSQL (2026-06-03)
+- [x] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests (2026-06-03; 9/9)
 - [ ] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working
 - [ ] EP-4: JWT sign → verify round-trip and JWKS public document validated
 - [ ] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined

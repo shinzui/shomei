@@ -107,11 +107,12 @@ This section must always reflect the actual current state of the work.
   - [x] Write `Shomei.Crypto` (Argon2id hasher + token generation + the `PasswordHasher`
         and `TokenGen` interpreters). (2026-06-03; Argon2 `hash` returns `CryptoFailable`,
         not `Either` — see Surprises)
-- [ ] Milestone 3 — Integration tests green: `cabal test shomei-postgres` passes,
-      including the workflow-over-PostgreSQL scenario.
-  - [ ] Write `test-suite shomei-postgres-test`.
-  - [ ] Round-trip tests for every port.
-  - [ ] Workflow-over-PostgreSQL tests (signup / rotation / reuse-revokes-family).
+- [x] Milestone 3 — Integration tests green: `cabal test shomei-postgres` passes,
+      including the workflow-over-PostgreSQL scenario. (2026-06-03; all 9 tests pass)
+  - [x] Write `test-suite shomei-postgres-test`. (2026-06-03)
+  - [x] Round-trip tests for every port. (2026-06-03; user, credential, session+revoke,
+        refresh-token+mark-used, signing keys, publish-event)
+  - [x] Workflow-over-PostgreSQL tests (signup / rotation / reuse-revokes-family). (2026-06-03)
 
 
 ## Surprises & Discoveries
@@ -288,7 +289,37 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Achieved (2026-06-03).** Shōmei is now durable. `packages/shomei-migrations` owns the
+schema: `just migrate` applies the seven codd migrations (the `shomei` schema + six tables)
+to the dev DB, and `\dt shomei.*` lists them; the public `test-support` sublibrary
+provisions fresh ephemeral PostgreSQL databases with the schema applied.
+`packages/shomei-postgres` provides the `Database` effect over a hasql pool, PostgreSQL
+interpreters for every EP-2 store/publisher/signing-key port plus `Clock`, and
+`Shomei.Crypto` (Argon2id hashing + `PasswordHasher`/`TokenGen` interpreters).
+`cabal test shomei-postgres` is green — all nine cases: the six port round-trips and the
+three workflow-over-PostgreSQL scenarios (signup persists user+session+token; refresh
+rotation marks the old token `used` and inserts a child with `parent_token_id` set; reuse
+of a used token revokes the whole token family **and** its session). `cabal build all` and
+`nix fmt` are clean.
+
+**Faithfulness / deviations.** EP-3 owns IP-7 (the schema) and contributed IP-8 (the codd /
+ephemeral-pg `source-repository-package` pins). Two deliberate deviations from the plan as
+written, both forced by reality and recorded in the Decision Log / Surprises: (1) the
+interpreters target the **as-built EP-2 surface** (UTCTime-carrying revoke ops, PlainPassword,
+four-constructor `RefreshTokenStatus`, opaque-`Text` JWK fields, interpreter-allocated ids,
+typed event `*Data` records), and EP-2 turned out to expose a `TokenGen` port so EP-3 adds a
+real `runTokenGenCrypto`; (2) the `public_key_jwk`/`private_key_jwk` columns are `text` (opaque
+material per IP-4), not `jsonb`. Library-API corrections vs the plan's sketches: Argon2 `hash`
+returns `CryptoFailable`, hasql 1.10 `preparable` takes `Text`, and the pool is built via
+`Hasql.Connection.Settings.connectionString`.
+
+**For the next contributor.** EP-6 (the server) runs these same migrations at startup and
+assembles these interpreters behind the real Servant API. The reuse-detection family
+revocation is a recursive CTE in `Shomei.Postgres.RefreshTokenStore` that mirrors EP-2's
+in-memory `rootOf` walk. `TokenSigner`/`TokenVerifier` remain EP-4's responsibility; the
+integration tests stub `TokenSigner`. `mori.dhall` now registers `shomei-migrations` and the
+`shomei-postgres → shomei-migrations` dependency (the file also already carried the EP-4
+`hs-jose`/`ram` registry entries, committed here alongside).
 
 
 ## Context and Orientation
