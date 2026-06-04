@@ -70,10 +70,11 @@ This section must always reflect the actual current state of the work.
       (2026-06-03; `spike: ok`, jose-0.13 + crypton-1.1.3 + ram-0.21.1, no `allow-newer` needed.)
 - [x] Milestone 1 — Record the build outcome and any `allow-newer` bump in the Decision Log
       and Surprises & Discoveries. (2026-06-03)
-- [ ] Milestone 2 — `Shomei.Jwt.Key`: `generateSigningKey`, `toStoredSigningKey`,
-      `fromStoredSigningKey`, kid computation; round-trip test green.
-- [ ] Milestone 2 — `Shomei.Jwt.Jwks`: `jwksDocument` and the `KeySet` abstraction; JWKS
-      JSON contains the right kid(s) and no private `d` field.
+- [x] Milestone 2 — `Shomei.Jwt.Key`: `generateSigningKey`, `toStoredSigningKey`,
+      `fromStoredSigningKey`, kid computation; round-trip test green. (2026-06-03; scenario (a))
+- [x] Milestone 2 — `Shomei.Jwt.Jwks`: `jwksDocument` and the `KeySet` abstraction; JWKS
+      JSON contains the right kid(s) and no private `d` field. (2026-06-03; scenario (g) shape
+      half; the kid-selection half moves to M3's SignVerifySpec since it needs the signer)
 - [ ] Milestone 3 — `Shomei.Jwt.Sign`: ClaimsSet builder + `runTokenSignerJwt` interpreter.
 - [ ] Milestone 3 — `Shomei.Jwt.Verify`: `verifyToken` (the EP-5 contract) +
       `runTokenVerifierJwt` interpreter; jose `JWTError` mapped to `TokenError`.
@@ -245,6 +246,13 @@ Record every decision made while working on the plan.
   `master` HEAD, so cabal resolves and checks it out cleanly (verified by `git ls-remote` on
   both repos and by the successful build). This matches the URL the original jose Decision Log
   entry already named.
+  Date: 2026-06-03
+
+- Decision: Split test scenario (g) across milestones. The JWKS-shape assertions (two keys,
+  right `kid`s, no private `"d"`) ship in M2's `Shomei.Jwt.JwksSpec`; the kid-selection
+  assertion (sign with key A, verify against a `JWKSet` containing both A and B) ships in M3's
+  `Shomei.Jwt.SignVerifySpec`, because it needs `Shomei.Jwt.Sign`/`Shomei.Jwt.Verify`, which do
+  not exist until M3. The behavioral coverage of (g) is unchanged; only its home module differs.
   Date: 2026-06-03
 
 - Decision: `shomei-jwt` depends only on `shomei-core` plus `jose`/`crypton` and supporting

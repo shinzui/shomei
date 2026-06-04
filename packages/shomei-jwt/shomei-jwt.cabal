@@ -29,7 +29,48 @@ common shared
 library
   import:          warnings, shared
   hs-source-dirs:  src
-  exposed-modules: Shomei.JWT.Placeholder
+  exposed-modules:
+    Shomei.Jwt.Jwks
+    Shomei.Jwt.Key
+
   build-depends:
-    , base         >=4.18 && <5
+    , aeson
+    , base               >=4.18  && <5
+    , base64-bytestring
+    , bytestring
+    , containers
+    , crypton            >=1.1.0
+    , effectful
+    , effectful-core
+    , jose
+    , lens
+    , monad-time
+    , mtl
+    , ram
     , shomei-core
+    , text
+    , time
+
+test-suite shomei-jwt-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  other-modules:
+    Shomei.Jwt.JwksSpec
+    Shomei.Jwt.KeySpec
+
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , containers
+    , effectful
+    , jose
+    , lens
+    , shomei-core
+    , shomei-jwt
+    , tasty
+    , tasty-hunit
+    , text
+    , time
