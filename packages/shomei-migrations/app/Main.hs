@@ -1,7 +1,11 @@
-{-# LANGUAGE PackageImports #-}
+module Main where
 
--- | Stub migration executable. EP-3 replaces this with real codd-based migration logic.
-module Main (main) where
+import Codd.Environment (getCoddSettings)
+import Data.Time (secondsToDiffTime)
+import Shomei.Migrations (runShomeiMigrationsNoCheck)
 
 main :: IO ()
-main = putStrLn "shomei-migrate: stub — EP-3 provides the real implementation"
+main = do
+    settings <- getCoddSettings
+    _ <- runShomeiMigrationsNoCheck settings (secondsToDiffTime 5)
+    pure ()

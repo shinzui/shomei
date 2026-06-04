@@ -34,13 +34,25 @@ in  Schema.Project::{
         , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
         }
       , Schema.Package::{
+        , name = "shomei-migrations"
+        , type = Schema.PackageType.Library
+        , language = Schema.Language.Haskell
+        , path = Some "packages/shomei-migrations"
+        , description = Some
+            "codd-managed PostgreSQL schema migrations (embedded SQL) plus a public test-support sublibrary (ephemeral-pg)"
+        , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
+        }
+      , Schema.Package::{
         , name = "shomei-postgres"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
         , path = Some "packages/shomei-postgres"
         , description = Some
             "PostgreSQL implementations of the core store ports plus the audit-event publisher"
-        , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
+        , dependencies =
+          [ Schema.Dependency.ByName "shomei-core"
+          , Schema.Dependency.ByName "shomei-migrations"
+          ]
         }
       , Schema.Package::{
         , name = "shomei-servant"
@@ -88,5 +100,7 @@ in  Schema.Project::{
       , "kazu-yamamoto/crypton"
       , "system-f/validation"
       , "MMZK1526/mmzk-typeid"
+      , "frasertweedale/hs-jose"
+      , "jappeace/ram"
       ]
     }

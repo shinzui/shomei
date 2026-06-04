@@ -78,22 +78,23 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — `shomei-migrations` package builds and `just migrate` applies the
+- [x] Milestone 1 — `shomei-migrations` package builds and `just migrate` applies the
       schema to a fresh ephemeral DB and to the local dev DB; `\dt shomei.*` lists all
-      six tables.
-  - [ ] Add the `source-repository-package` / `allow-newer` entries (IP-8) to the root
-        `cabal.project`.
-  - [ ] Create `packages/shomei-migrations/shomei-migrations.cabal` (library, executable
-        `shomei-migrate`, public `test-support` sublibrary).
-  - [ ] Write `packages/shomei-migrations/src/Shomei/Migrations.hs` (embed + run via codd).
-  - [ ] Write `packages/shomei-migrations/app/Main.hs` (the `shomei-migrate` executable).
-  - [ ] Write the six SQL migration files under
-        `packages/shomei-migrations/sql-migrations/`.
-  - [ ] Write
-        `packages/shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`.
-  - [ ] Add `create-database`, `migrate`, and `new-migration` recipes to the root
-        `Justfile`.
-  - [ ] Register `shomei-migrations` (and `shomei-postgres`) in `mori.dhall`.
+      six tables. (2026-06-03)
+  - [x] Add the `source-repository-package` / `allow-newer` entries (IP-8) to the root
+        `cabal.project`. (2026-06-03)
+  - [x] Create `packages/shomei-migrations/shomei-migrations.cabal` (library, executable
+        `shomei-migrate`, public `test-support` sublibrary). (2026-06-03)
+  - [x] Write `packages/shomei-migrations/src/Shomei/Migrations.hs` (embed + run via codd). (2026-06-03)
+  - [x] Write `packages/shomei-migrations/app/Main.hs` (the `shomei-migrate` executable). (2026-06-03)
+  - [x] Write the six SQL migration files under
+        `packages/shomei-migrations/sql-migrations/`. (2026-06-03; 7 files incl. schema-create;
+        signing-key JWK columns are `text` not `jsonb` — see Decision Log)
+  - [x] Write
+        `packages/shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`. (2026-06-03)
+  - [x] Add `create-database`, `migrate`, and `new-migration` recipes to the root
+        `Justfile`. (2026-06-03)
+  - [x] Register `shomei-migrations` (and `shomei-postgres`) in `mori.dhall`. (2026-06-03)
 - [ ] Milestone 2 — `shomei-postgres` `Database` effect + port interpreters + Argon2
       hasher compile.
   - [ ] Create `packages/shomei-postgres/shomei-postgres.cabal`.
@@ -202,6 +203,50 @@ Record every decision made while working on the plan.
   (JSON Web Key documents), which EP-4 consumes to build a JWKS endpoint. Persisting the
   JWK form matches the domain type exactly and avoids a lossy PEM↔JWK conversion. This is
   a deliberate, documented divergence from the initial spec's schema sketch.
+  Date: 2026-06-03
+
+- Decision (revised during implementation): the `public_key_jwk` / `private_key_jwk`
+  columns are **`text`**, not `jsonb`.
+  Rationale: The plan's `jsonb` choice assumed EP-2's `StoredSigningKey` JWK fields were
+  `Data.Aeson.Value`. The **actual** EP-2 surface (see the reconciliation decision below)
+  makes them **opaque `Text`** (MasterPlan IP-4: the core/postgres packages never import
+  `jose`; key material crosses the `SigningKeyStore` port as opaque `Text`). Storing opaque
+  `Text` in a `text` column is lossless and avoids forcing the material to be re-parseable
+  JSON; only EP-4's `shomei-jwt` interprets it as a JWK. Event payloads remain `jsonb`.
+  Date: 2026-06-03
+
+- Decision (reconciliation with the as-built EP-2): EP-3's "What EP-2 provides" section was
+  written before EP-2 landed and its assumed surface differs from the implemented one. The
+  interpreters here are adapted to **the real EP-2 API** (in `packages/shomei-core`). The
+  differences and how EP-3 adapts:
+  - Identifier prefixes are `KindID "refresh_token"` and `KindID "credential"` (not
+    `"refresh"`/`"cred"`); the `*IdToUUID`/`*IdFromUUID` helpers are unchanged in spirit.
+  - `RefreshTokenStatus` has **four** constructors (`…Active/Used/Revoked/Expired`), so the
+    text⇄status helper handles `expired` too.
+  - `StoredSigningKey.publicKeyJwk/privateKeyJwk :: Text` (opaque), not `Value` → `text`
+    columns and `E.text`/`D.text` (see the column decision above).
+  - `CreatePasswordCredential :: UserId -> Email -> PasswordHash -> …` (no `CredentialId`
+    arg) → the interpreter allocates the `CredentialId` and timestamps, like `CreateUser`.
+  - `UpdatePasswordHash :: UserId -> PasswordHash -> …` (keyed by `UserId`, not
+    `CredentialId`).
+  - `NewSession {userId, createdAt, expiresAt}` and `NewRefreshToken {…, createdAt,
+    expiresAt}` carry `createdAt` from the workflow's `Clock`; the interpreters use it
+    rather than `now()`.
+  - The revocation/used/mark/update ops carry an explicit `UTCTime`
+    (`RevokeSession :: SessionId -> UTCTime -> …`, `MarkRefreshTokenUsed`,
+    `RevokeRefreshTokenFamily`, `RevokeSessionRefreshTokens`, `RevokeAllUserSessions`,
+    `UpdateSigningKeyStatus`), so the SQL sets `revoked_at`/`used_at`/timestamps from that
+    parameter rather than `now()`.
+  - `PasswordHasher` ops take `PlainPassword` (a newtype over `Text`), not raw `Text`; the
+    interpreter unwraps it.
+  - EP-2 **does** expose a `TokenGen` port (`GenerateOpaqueToken`, `HashRefreshToken`); EP-3
+    therefore adds a real `runTokenGenCrypto` interpreter in `Shomei.Crypto` (crypton random
+    + SHA-256), beyond the bare `generateOpaqueToken`/`hashRefreshToken` IO helpers.
+  - `AuthEvent`'s per-constructor `*Data` records carry typed fields (not a uniform
+    `event_type`+`payload`), so `Shomei.Postgres.AuthEventPublisher` projects each
+    constructor to `(user_id?, session_id?, event_type, toJSON payload, occurredAt)`.
+  - `TokenSigner`/`TokenVerifier` are EP-4's; the M3 workflow-over-PostgreSQL tests use a
+    trivial in-test `TokenSigner` fake to exercise `signup`/`refresh`.
   Date: 2026-06-03
 
 
