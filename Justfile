@@ -21,7 +21,7 @@ create-database:
 # are read unconditionally by getCoddSettings even though we override migrations and
 # skip verification, so we pass harmless placeholders.
 migrate:
-    touch packages/shomei-migrations/shomei-migrations.cabal
+    touch shomei-migrations/shomei-migrations.cabal
     CODD_CONNECTION="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
     CODD_MIGRATION_DIRS=unused-for-embedded-migrations \
     CODD_EXPECTED_SCHEMA_DIR=unused-for-unverified-embedded-migrations \
@@ -32,7 +32,7 @@ migrate:
 new-migration name:
     @echo "{{name}}" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "Invalid slug: {{name}}"; exit 1; }
     @ts=$(date -u '+%Y-%m-%d-%H-%M-%S'); \
-    f="packages/shomei-migrations/sql-migrations/$ts-{{name}}.sql"; \
+    f="shomei-migrations/sql-migrations/$ts-{{name}}.sql"; \
     if [ -e "$f" ]; then echo "Refusing to overwrite $f"; exit 1; fi; \
     printf -- '-- codd: in-txn\n\nSET search_path TO shomei, pg_catalog;\n\n' > "$f"; \
     echo "Wrote $f"

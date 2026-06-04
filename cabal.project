@@ -1,13 +1,13 @@
 with-compiler: ghc-9.12.4
 
 packages:
-    packages/shomei-core
-    packages/shomei-jwt
-    packages/shomei-postgres
-    packages/shomei-migrations
-    packages/shomei-servant
-    packages/shomei-server
-    packages/shomei-client
+    shomei-core
+    shomei-jwt
+    shomei-postgres
+    shomei-migrations
+    shomei-servant
+    shomei-server
+    shomei-client
     examples/embedded-servant-app
     examples/microservice-auth-stack
 

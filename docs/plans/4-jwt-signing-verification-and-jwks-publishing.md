@@ -17,7 +17,7 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 ## Purpose / Big Picture
 
 This plan builds the cryptographic heart of the Shōmei authentication toolkit: the package
-`packages/shomei-jwt`. After this plan is done, Shōmei can take a set of authentication
+`shomei-jwt`. After this plan is done, Shōmei can take a set of authentication
 claims (who the user is, which session they are in, what they are allowed to do) and turn
 them into a signed, tamper-evident **access token** that any other service can verify on its
 own — without ever calling back to Shōmei. It can also generate fresh signing keys, rotate
@@ -65,7 +65,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] Milestone 1 — Build spike: `packages/shomei-jwt` with `jose` compiles on GHC 9.12.4
+- [x] Milestone 1 — Build spike: `shomei-jwt` with `jose` compiles on GHC 9.12.4
       and a throwaway `genJWK (ECGenParam P_256)` + sign + verify proves `jose` works.
       (2026-06-03; `spike: ok`, jose-0.13 + crypton-1.1.3 + ram-0.21.1, no `allow-newer` needed.)
 - [x] Milestone 1 — Record the build outcome and any `allow-newer` bump in the Decision Log
@@ -293,7 +293,7 @@ Record every decision made while working on the plan.
   non-revoked), rather than adding a new `ListNonRevokedSigningKeys` query to the
   `SigningKeyStore` port now.
   Rationale: The EP-2 `SigningKeyStore` contract's `listActiveSigningKeys` returns only
-  `KeyActive` keys (confirmed in `Shomei.Port.InMemory`: `activeKeys w = [k | …, k.status ==
+  `KeyActive` keys (confirmed in `Shomei.Effect.InMemory`: `activeKeys w = [k | …, k.status ==
   KeyActive]`). Including retired-but-valid keys in the JWKS (the zero-downtime-rotation goal)
   would require extending the port — an EP-2 signature change with a cascade to EP-3's postgres
   interpreter (MasterPlan IP-3). None of the bootstrap acceptance scenarios (a–h) exercise
@@ -316,7 +316,7 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-**Outcome (2026-06-03): complete and green.** `packages/shomei-jwt` now builds against the
+**Outcome (2026-06-03): complete and green.** `shomei-jwt` now builds against the
 PR-#137 `jose` (0.13, crypton 1.1.3, `ram`) on GHC 9.12.4 and `cabal test shomei-jwt` prints
 `All 9 tests passed`. The package delivers everything in the purpose statement:
 
@@ -362,7 +362,7 @@ This plan operates inside the Shōmei repository, a Haskell **monorepo** (a sing
 repository containing several related but separately-built packages). The repository root is
 `/Users/shinzui/Keikaku/bokuno/shomei`. A prior plan, EP-1
 (`docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md`), creates the cabal
-workspace, the shared build conventions, and a package skeleton at `packages/shomei-jwt`. A
+workspace, the shared build conventions, and a package skeleton at `shomei-jwt`. A
 prior plan, EP-2 (`docs/plans/2-core-domain-model-ports-and-auth-workflows.md`), fills the
 `shomei-core` package with the domain types and the **port effects** this plan consumes and
 interprets. If you are starting and those packages do not yet exist on disk, that is expected
@@ -381,7 +381,7 @@ API*; the *build* resolves `jose` from the PR #137 `source-repository-package`
 corpus `crypton` 1.1.2. Use the on-disk 0.12 source to learn the API, but the `ram`/crypton-1.1
 build dependencies and the source-repository pin are mandatory.
 
-A **package** here is a directory under `packages/` with its own `.cabal` file. The build tool
+A **package** here is a directory under `/` with its own `.cabal` file. The build tool
 is **cabal** (invoked as `cabal build`, `cabal test`), and the compiler is **GHC 9.12.4**. The
 project is built inside a **Nix development shell**: run `nix develop` from the repository root
 once to enter a shell that has the correct GHC, cabal, and system libraries on `PATH`; all
@@ -472,7 +472,7 @@ data ShomeiConfig = ShomeiConfig
   }
 ```
 
-The port effects (`Shomei.Port.*`), each a dynamic `effectful` effect. This plan **interprets**
+The port effects (`Shomei.Effect.*`), each a dynamic `effectful` effect. This plan **interprets**
 `TokenSigner` and `TokenVerifier`, and **consumes** `SigningKeyStore` and `Clock`:
 
 ```haskell
@@ -554,7 +554,7 @@ exists and must be completed before writing real code.**
 
 ### Milestone 1 — Build spike (de-risk jose + crypton-1.1 on GHC 9.12.4)
 
-Scope: get `packages/shomei-jwt` to compile against the PR-#137 `jose` (on the corpus
+Scope: get `shomei-jwt` to compile against the PR-#137 `jose` (on the corpus
 crypton 1.1.2 / `ram`) on GHC 9.12.4 and prove the library works at runtime with a minimal
 generate-sign-verify cycle. At the end of this milestone, the package builds and either a
 temporary `main` or a single temporary test prints success.
@@ -562,7 +562,7 @@ temporary `main` or a single temporary test prints success.
 First add the jose `source-repository-package` block (Decision Log) to `cabal.project`. Then
 write the `.cabal` file (full text in Concrete Steps) declaring the dependencies (`crypton >=
 1.1.0`, `ram` — NOT `memory`, and `jose` with no Hackage version constraint since it resolves
-from the source-repository). Add a throwaway module `packages/shomei-jwt/spike/Spike.hs` (or a
+from the source-repository). Add a throwaway module `shomei-jwt/spike/Spike.hs` (or a
 temporary test) that calls `genJWK (ECGenParam P_256)`, signs an empty claims set, and verifies
 it, printing `spike: ok`. Run `cabal build shomei-jwt`. If it fails on a version bound, apply
 `allow-newer` as above and retry. Run the spike and confirm it prints `spike: ok`. Record the
@@ -618,7 +618,7 @@ root `/Users/shinzui/Keikaku/bokuno/shomei` unless a different directory is stat
 
 ### Step 1 — Write the package cabal file
 
-Create `packages/shomei-jwt/shomei-jwt.cabal` with the following contents. The two `common`
+Create `shomei-jwt/shomei-jwt.cabal` with the following contents. The two `common`
 stanzas mirror the house conventions; if EP-1 placed the shared stanzas in an importable form,
 prefer importing them, but the self-contained version below is safe to use as written.
 
@@ -703,7 +703,7 @@ test-suite shomei-jwt-test
 
 ### Step 2 — Build spike
 
-Create the throwaway spike at `packages/shomei-jwt/spike/Spike.hs` and (temporarily) add a
+Create the throwaway spike at `shomei-jwt/spike/Spike.hs` and (temporarily) add a
 matching `executable shomei-jwt-spike` stanza, or place the spike body directly in a temporary
 test `main`. The spike body:
 
@@ -757,12 +757,12 @@ spike: ok
 
 If `cabal build` fails citing a version bound, edit `cabal.project` at the repository root and
 add `allow-newer: jose:base` (or whichever package the error names), then re-run. After
-`spike: ok`, delete `packages/shomei-jwt/spike/Spike.hs` and remove the temporary executable
+`spike: ok`, delete `shomei-jwt/spike/Spike.hs` and remove the temporary executable
 stanza; record the result in the living-document sections.
 
 ### Step 3 — Implement `Shomei.Jwt.Key`
 
-Create `packages/shomei-jwt/src/Shomei/Jwt/Key.hs`. This module generates keys, computes the
+Create `shomei-jwt/src/Shomei/Jwt/Key.hs`. This module generates keys, computes the
 `kid` from the RFC 7638 thumbprint, and converts to/from `StoredSigningKey`.
 
 ```haskell
@@ -832,7 +832,7 @@ the `Control.Lens` `_Just` prism as needed; the exact getter is jose's `thumbpri
 
 ### Step 4 — Implement `Shomei.Jwt.Jwks`
 
-Create `packages/shomei-jwt/src/Shomei/Jwt/Jwks.hs`.
+Create `shomei-jwt/src/Shomei/Jwt/Jwks.hs`.
 
 ```haskell
 module Shomei.Jwt.Jwks
@@ -872,7 +872,7 @@ jwksDocument keys = Aeson.encode (JWKSet (mapMaybe publicOf keys))
 
 ### Step 5 — Implement `Shomei.Jwt.Sign`
 
-Create `packages/shomei-jwt/src/Shomei/Jwt/Sign.hs`. It builds the `ClaimsSet`, signs, and
+Create `shomei-jwt/src/Shomei/Jwt/Sign.hs`. It builds the `ClaimsSet`, signs, and
 provides the `TokenSigner` interpreter.
 
 ```haskell
@@ -887,7 +887,7 @@ import Shomei.Domain.AuthClaims (AuthClaims (..))
 import Shomei.Domain.AccessToken (AccessToken (AccessToken))
 import Shomei.Config (ShomeiConfig)
 import Shomei.Id (idText)
-import Shomei.Port.TokenSigner (TokenSigner (SignAccessToken))
+import Shomei.Effect.TokenSigner (TokenSigner (SignAccessToken))
 
 import "lens" Control.Lens ((?~), (&), (^.), set)
 import "mtl" Control.Monad.Except (runExceptT)
@@ -951,7 +951,7 @@ from `effectful`. The `(:)` in `Eff (TokenSigner : es) a` is the effect-list con
 
 ### Step 6 — Implement `Shomei.Jwt.Verify`
 
-Create `packages/shomei-jwt/src/Shomei/Jwt/Verify.hs`. It exposes the plain `verifyToken` IO
+Create `shomei-jwt/src/Shomei/Jwt/Verify.hs`. It exposes the plain `verifyToken` IO
 function (the EP-5 contract), the `effectful` interpreter, and the error mapping.
 
 ```haskell
@@ -967,7 +967,7 @@ import Shomei.Domain.AccessToken (AccessToken (AccessToken))
 import Shomei.Config (ShomeiConfig)
 import Shomei.Error (TokenError (..))
 import Shomei.Id (parseId)
-import Shomei.Port.TokenVerifier (TokenVerifier (VerifyAccessToken))
+import Shomei.Effect.TokenVerifier (TokenVerifier (VerifyAccessToken))
 
 import "lens" Control.Lens ((^.), (.~), (&), view)
 import "mtl" Control.Monad.Except (runExceptT)
@@ -1065,7 +1065,7 @@ as unknown, keeping the same mapping intent recorded in the Decision Log. `Data.
 
 ### Step 7 — Implement `Shomei.Jwt.Rotation`
 
-Create `packages/shomei-jwt/src/Shomei/Jwt/Rotation.hs`. It is written against the
+Create `shomei-jwt/src/Shomei/Jwt/Rotation.hs`. It is written against the
 `SigningKeyStore` and `Clock` effects only — no IO key storage of its own.
 
 ```haskell
@@ -1077,9 +1077,9 @@ module Shomei.Jwt.Rotation
 import Shomei.Prelude
 import Shomei.Domain.SigningKey
   (StoredSigningKey (..), SigningKeyStatus (KeyActive, KeyRetired, KeyRevoked))
-import Shomei.Port.SigningKeyStore
+import Shomei.Effect.SigningKeyStore
   (SigningKeyStore, listActiveSigningKeys, insertSigningKey, updateSigningKeyStatus)
-import Shomei.Port.Clock (Clock, now)
+import Shomei.Effect.Clock (Clock, now)
 import Shomei.Jwt.Key (generateSigningKey, toStoredSigningKey, fromStoredSigningKey)
 import Shomei.Jwt.Jwks (jwksDocument)
 
@@ -1120,7 +1120,7 @@ bootstrap, the simplest correct behavior is: the JWKS includes every non-revoked
 
 ### Step 8 — Write the tests
 
-Create `packages/shomei-jwt/test/Main.hs` plus the spec modules. `Main.hs` wires the tasty
+Create `shomei-jwt/test/Main.hs` plus the spec modules. `Main.hs` wires the tasty
 tree:
 
 ```haskell

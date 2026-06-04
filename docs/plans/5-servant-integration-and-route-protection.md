@@ -16,7 +16,7 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-After this change, Shōmei has an **HTTP surface**: the `packages/shomei-servant` library that
+After this change, Shōmei has an **HTTP surface**: the `shomei-servant` library that
 turns the pure authentication workflows from EP-2 (`shomei-core`) into a real, runnable
 Servant web API. A developer who finishes this plan can boot an in-process web server (using
 EP-2's in-memory port interpreters plus a freshly generated ES256 signing key from EP-4) and
@@ -72,7 +72,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] Milestone 1 — Contract compiles: `packages/shomei-servant/shomei-servant.cabal`,
+- [x] Milestone 1 — Contract compiles: `shomei-servant/shomei-servant.cabal`,
       `Shomei.Servant.Auth` (`AuthUser`, `Authenticated`, `authHandler`, `extractToken`,
       `authUserFromClaims`), `Shomei.Servant.Authz` (`RequireRole`/`RequireScope` design),
       `Shomei.Servant.DTO` (all request/response DTOs + JSON instances), and
@@ -126,7 +126,7 @@ implementation. Provide concise evidence.
   `shomei-core` (it would import `shomei-jwt` → cycle), so it is composed in this plan's test —
   which required EP-2 to **export its individual in-memory interpreters** (`runUserStore`,
   `runCredentialStore`, …, `runTokenGen`), an additive, non-breaking change to
-  `Shomei.Port.InMemory`'s export list. The `Env.runPorts` runner is built from them in the same
+  `Shomei.Effect.InMemory`'s export list. The `Env.runPorts` runner is built from them in the same
   effect order as `runInMemory`, which is exactly the order `AppEffects` fixes. The in-memory
   `Clock` returns a fixed time, so the test seeds `emptyWorld` with the real current time so the
   signed tokens are not already expired under real-wall-clock verification.
@@ -236,7 +236,7 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-Delivered exactly the purpose: `packages/shomei-servant` is the HTTP surface of Shōmei.
+Delivered exactly the purpose: `shomei-servant` is the HTTP surface of Shōmei.
 `Shomei.Servant.API` owns IP-6 — the `ShomeiAPI` NamedRoutes record, every request/response DTO,
 and the `AuthUser` principal. `Shomei.Servant.Auth` provides the `Authenticated` combinator
 (custom `AuthProtect "shomei-jwt"` + `AuthHandler`) with Bearer-then-cookie extraction;
@@ -263,7 +263,7 @@ Downstream (EP-6 serves `ShomeiAPI`; EP-7 derives the client from it) consumes I
 
 ## Context and Orientation
 
-This plan builds `packages/shomei-servant`, the **HTTP surface** of Shōmei. The reader is
+This plan builds `shomei-servant`, the **HTTP surface** of Shōmei. The reader is
 assumed to know nothing about the prior plans beyond what is checked into this repository under
 `docs/masterplans/1-bootstrap-shomei-authentication-toolkit.md` and the sibling ExecPlans. The
 relevant pieces this plan **consumes** are reproduced below so the plan is self-contained.
@@ -331,18 +331,18 @@ The kizashi reference idioms confirmed on disk and mirrored here:
   (`data XxxRoutes mode = … deriving stock Generic`), DTOs with `FromJSON`/`ToJSON`, nested
   `NamedRoutes`, and a `Proxy (NamedRoutes …)` for `serve`.
 
-New files created by this plan (all under `packages/shomei-servant/`):
+New files created by this plan (all under `shomei-servant/`):
 
 ```text
-packages/shomei-servant/shomei-servant.cabal
-packages/shomei-servant/src/Shomei/Servant/Auth.hs      -- AuthUser, Authenticated, authHandler, extractToken
-packages/shomei-servant/src/Shomei/Servant/Authz.hs     -- RequireRole/RequireScope (guards + phantom combinators)
-packages/shomei-servant/src/Shomei/Servant/DTO.hs       -- all request/response DTOs + JSON instances
-packages/shomei-servant/src/Shomei/Servant/API.hs       -- ShomeiAPI NamedRoutes + the embedded AppAPI example
-packages/shomei-servant/src/Shomei/Servant/Error.hs     -- AuthError -> ServerError
-packages/shomei-servant/src/Shomei/Servant/Seam.hs      -- Env + effToHandler
-packages/shomei-servant/src/Shomei/Servant/Handlers.hs  -- shomeiServer + per-route handlers
-packages/shomei-servant/test/Main.hs                    -- tasty + warp + http-client end-to-end test
+shomei-servant/shomei-servant.cabal
+shomei-servant/src/Shomei/Servant/Auth.hs      -- AuthUser, Authenticated, authHandler, extractToken
+shomei-servant/src/Shomei/Servant/Authz.hs     -- RequireRole/RequireScope (guards + phantom combinators)
+shomei-servant/src/Shomei/Servant/DTO.hs       -- all request/response DTOs + JSON instances
+shomei-servant/src/Shomei/Servant/API.hs       -- ShomeiAPI NamedRoutes + the embedded AppAPI example
+shomei-servant/src/Shomei/Servant/Error.hs     -- AuthError -> ServerError
+shomei-servant/src/Shomei/Servant/Seam.hs      -- Env + effToHandler
+shomei-servant/src/Shomei/Servant/Handlers.hs  -- shomeiServer + per-route handlers
+shomei-servant/test/Main.hs                    -- tasty + warp + http-client end-to-end test
 ```
 
 
@@ -359,7 +359,7 @@ Milestone 2, so Milestone 1's `.cabal` lists only the contract modules, or the h
 are present but trivially stubbed; we list them all and stub `Handlers`/`Seam` so `cabal build`
 is green throughout — see Concrete Steps).
 
-1. Create `packages/shomei-servant/shomei-servant.cabal` (full text in Concrete Steps) with the
+1. Create `shomei-servant/shomei-servant.cabal` (full text in Concrete Steps) with the
    two shared `common` stanzas, the dependency list, the `library` exposing the modules above,
    and the `test-suite` stanza (added now, used in Milestone 3).
 2. Create `src/Shomei/Servant/Auth.hs`:
@@ -422,10 +422,10 @@ All commands run from the repository root `/Users/shinzui/Keikaku/bokuno/shomei`
 
 ```bash
 cd /Users/shinzui/Keikaku/bokuno/shomei
-mkdir -p packages/shomei-servant/src/Shomei/Servant packages/shomei-servant/test
+mkdir -p shomei-servant/src/Shomei/Servant shomei-servant/test
 ```
 
-### Step 1 — `packages/shomei-servant/shomei-servant.cabal`
+### Step 1 — `shomei-servant/shomei-servant.cabal`
 
 ```cabal
 cabal-version:      3.0
@@ -503,8 +503,8 @@ Register the package in `cabal.project` if EP-1 did not already list it (it is o
 declared packages, so it is expected to be present):
 
 ```bash
-grep -q 'packages/shomei-servant' cabal.project || \
-  printf '\npackages: packages/shomei-servant\n' >> cabal.project
+grep -q 'shomei-servant' cabal.project || \
+  printf '\npackages: shomei-servant\n' >> cabal.project
 ```
 
 ### Step 2 — `src/Shomei/Servant/Auth.hs` (the `Authenticated` combinator + `AuthHandler`)
@@ -1203,7 +1203,7 @@ Milestone-level acceptance:
 
 ## Idempotence and Recovery
 
-All steps are file creations and edits under `packages/shomei-servant/`; rerunning them is safe
+All steps are file creations and edits under `shomei-servant/`; rerunning them is safe
 (re-`Write`/re-`Edit` to the desired final content). Creating directories with `mkdir -p` is
 idempotent. The `cabal.project` registration uses a `grep -q … ||` guard so it appends the
 package line at most once. `cabal build`/`cabal test` are read-only with respect to source and
@@ -1211,7 +1211,7 @@ fully repeatable; on failure, fix the named module and re-run the same command. 
 binds an **ephemeral** port via `testWithApplication`, so repeated runs never collide on a fixed
 port and never leave a server listening (the application is torn down when the test action
 returns). No database, no external services, and no global state are touched, so there is
-nothing to roll back; deleting `packages/shomei-servant/` returns the workspace to its
+nothing to roll back; deleting `shomei-servant/` returns the workspace to its
 pre-plan state.
 
 

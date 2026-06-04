@@ -33,17 +33,17 @@ common stanzas) in the MasterPlan.
 ## Progress
 
 - [x] M1 — Create `cabal.project` at repo root (2026-06-03)
-- [x] M1 — Create `packages/shomei-core/shomei-core.cabal` (full common stanzas, Shomei.Prelude + placeholder) (2026-06-03)
-- [x] M1 — Create `packages/shomei-jwt/shomei-jwt.cabal` (2026-06-03)
-- [x] M1 — Create `packages/shomei-postgres/shomei-postgres.cabal` (2026-06-03)
-- [x] M1 — Create `packages/shomei-migrations/shomei-migrations.cabal` (2026-06-03)
-- [x] M1 — Create `packages/shomei-servant/shomei-servant.cabal` (2026-06-03)
-- [x] M1 — Create `packages/shomei-server/shomei-server.cabal` (2026-06-03)
-- [x] M1 — Create `packages/shomei-client/shomei-client.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-core/shomei-core.cabal` (full common stanzas, Shomei.Prelude + placeholder) (2026-06-03)
+- [x] M1 — Create `shomei-jwt/shomei-jwt.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-postgres/shomei-postgres.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-migrations/shomei-migrations.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-servant/shomei-servant.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-server/shomei-server.cabal` (2026-06-03)
+- [x] M1 — Create `shomei-client/shomei-client.cabal` (2026-06-03)
 - [x] M1 — Create trivial placeholder source files for all packages (2026-06-03)
 - [x] M1 — Verify `nix develop -c cabal build all` is green (2026-06-03)
-- [x] M2 — Create `packages/shomei-core/src/Shomei/Prelude.hs` with full content (2026-06-03)
-- [x] M2 — Create `packages/shomei-jwt/src/Shomei/JWT/Placeholder.hs` importing `Shomei.Prelude` (2026-06-03)
+- [x] M2 — Create `shomei-core/src/Shomei/Prelude.hs` with full content (2026-06-03)
+- [x] M2 — Create `shomei-jwt/src/Shomei/JWT/Placeholder.hs` importing `Shomei.Prelude` (2026-06-03)
 - [x] M2 — Verify cross-package prelude import compiles (2026-06-03; `cabal repl shomei-jwt` shows `exampleText :: Text`)
 - [x] M3 — Create `flake.module.nix` from example, adding `cabal-install`, `fourmolu`, `cabal-fmt` (2026-06-03; also wires treefmt — see Surprises/Decision Log)
 - [x] M3 — Create minimal `Justfile` with `build` and stub `create-database` (2026-06-03)
@@ -257,22 +257,22 @@ Files this plan creates (none exist yet):
 | Path | What it is |
 |---|---|
 | `cabal.project` | workspace root listing all 7 packages |
-| `packages/shomei-core/shomei-core.cabal` | core library cabal |
-| `packages/shomei-core/src/Shomei/Prelude.hs` | shared custom prelude (IP-1) |
-| `packages/shomei-core/src/Shomei/Core/Placeholder.hs` | trivial placeholder |
-| `packages/shomei-jwt/shomei-jwt.cabal` | jwt library cabal |
-| `packages/shomei-jwt/src/Shomei/JWT/Placeholder.hs` | imports Shomei.Prelude |
-| `packages/shomei-postgres/shomei-postgres.cabal` | postgres library cabal |
-| `packages/shomei-postgres/src/Shomei/Postgres/Placeholder.hs` | trivial placeholder |
-| `packages/shomei-migrations/shomei-migrations.cabal` | migrations executable cabal |
-| `packages/shomei-migrations/app/Main.hs` | stub migrate main |
-| `packages/shomei-servant/shomei-servant.cabal` | servant library cabal |
-| `packages/shomei-servant/src/Shomei/Servant/Placeholder.hs` | trivial placeholder |
-| `packages/shomei-server/shomei-server.cabal` | server executable cabal |
-| `packages/shomei-server/app/Main.hs` | banner-printing main |
-| `packages/shomei-server/src/Shomei/Server/Placeholder.hs` | trivial placeholder |
-| `packages/shomei-client/shomei-client.cabal` | client library cabal |
-| `packages/shomei-client/src/Shomei/Client/Placeholder.hs` | trivial placeholder |
+| `shomei-core/shomei-core.cabal` | core library cabal |
+| `shomei-core/src/Shomei/Prelude.hs` | shared custom prelude (IP-1) |
+| `shomei-core/src/Shomei/Core/Placeholder.hs` | trivial placeholder |
+| `shomei-jwt/shomei-jwt.cabal` | jwt library cabal |
+| `shomei-jwt/src/Shomei/JWT/Placeholder.hs` | imports Shomei.Prelude |
+| `shomei-postgres/shomei-postgres.cabal` | postgres library cabal |
+| `shomei-postgres/src/Shomei/Postgres/Placeholder.hs` | trivial placeholder |
+| `shomei-migrations/shomei-migrations.cabal` | migrations executable cabal |
+| `shomei-migrations/app/Main.hs` | stub migrate main |
+| `shomei-servant/shomei-servant.cabal` | servant library cabal |
+| `shomei-servant/src/Shomei/Servant/Placeholder.hs` | trivial placeholder |
+| `shomei-server/shomei-server.cabal` | server executable cabal |
+| `shomei-server/app/Main.hs` | banner-printing main |
+| `shomei-server/src/Shomei/Server/Placeholder.hs` | trivial placeholder |
+| `shomei-client/shomei-client.cabal` | client library cabal |
+| `shomei-client/src/Shomei/Client/Placeholder.hs` | trivial placeholder |
 | `flake.module.nix` | project-specific Nix additions (from example) |
 | `Justfile` | `build` + stub `create-database` targets |
 
@@ -365,13 +365,13 @@ All commands run from `/Users/shinzui/Keikaku/bokuno/shomei` unless otherwise no
 **1.1 — Create `cabal.project`**
 
 ```bash
-mkdir -p packages/shomei-core \
-         packages/shomei-jwt \
-         packages/shomei-postgres \
-         packages/shomei-migrations \
-         packages/shomei-servant \
-         packages/shomei-server \
-         packages/shomei-client
+mkdir -p shomei-core \
+         shomei-jwt \
+         shomei-postgres \
+         shomei-migrations \
+         shomei-servant \
+         shomei-server \
+         shomei-client
 ```
 
 Create the file `cabal.project` with the following content:
@@ -380,13 +380,13 @@ Create the file `cabal.project` with the following content:
 with-compiler: ghc-9.12.4
 
 packages:
-    packages/shomei-core
-    packages/shomei-jwt
-    packages/shomei-postgres
-    packages/shomei-migrations
-    packages/shomei-servant
-    packages/shomei-server
-    packages/shomei-client
+    shomei-core
+    shomei-jwt
+    shomei-postgres
+    shomei-migrations
+    shomei-servant
+    shomei-server
+    shomei-client
 
 -- ============================================================
 -- DEPENDENCY-OVERRIDE PLACEHOLDER — later plans add their own
@@ -423,7 +423,7 @@ packages:
 -- ============================================================
 ```
 
-**1.2 — Create `packages/shomei-core/shomei-core.cabal`**
+**1.2 — Create `shomei-core/shomei-core.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -483,7 +483,7 @@ Note: `GHC2024` already enables `DataKinds`, `DerivingStrategies`, `LambdaCase`,
 `ImportQualifiedPost`, `MonoLocalBinds`, `ExplicitNamespaces`, `TypeAbstractions`, and
 `ListTuplePuns` among others, so those need not appear in `default-extensions`.
 
-**1.3 — Create `packages/shomei-core/src/Shomei/Core/Placeholder.hs`**
+**1.3 — Create `shomei-core/src/Shomei/Core/Placeholder.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -496,7 +496,7 @@ packageName :: String
 packageName = "shomei-core"
 ```
 
-**1.4 — Create a stub `packages/shomei-core/src/Shomei/Prelude.hs`** (M1 stub; M2
+**1.4 — Create a stub `shomei-core/src/Shomei/Prelude.hs`** (M1 stub; M2
 replaces with the full content)
 
 ```haskell
@@ -511,7 +511,7 @@ module Shomei.Prelude
 import "base" GHC.Generics as X (Generic)
 ```
 
-**1.5 — Create `packages/shomei-jwt/shomei-jwt.cabal`**
+**1.5 — Create `shomei-jwt/shomei-jwt.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -557,7 +557,7 @@ library
         shomei-core,
 ```
 
-**1.6 — Create `packages/shomei-jwt/src/Shomei/JWT/Placeholder.hs`** (M1 stub; M2
+**1.6 — Create `shomei-jwt/src/Shomei/JWT/Placeholder.hs`** (M1 stub; M2
 replaces with the prelude-importing version)
 
 ```haskell
@@ -571,7 +571,7 @@ packageName :: String
 packageName = "shomei-jwt"
 ```
 
-**1.7 — Create `packages/shomei-postgres/shomei-postgres.cabal`**
+**1.7 — Create `shomei-postgres/shomei-postgres.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -619,7 +619,7 @@ library
         shomei-core,
 ```
 
-**1.8 — Create `packages/shomei-postgres/src/Shomei/Postgres/Placeholder.hs`**
+**1.8 — Create `shomei-postgres/src/Shomei/Postgres/Placeholder.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -632,7 +632,7 @@ packageName :: String
 packageName = "shomei-postgres"
 ```
 
-**1.9 — Create `packages/shomei-migrations/shomei-migrations.cabal`**
+**1.9 — Create `shomei-migrations/shomei-migrations.cabal`**
 
 This package is not in `mori.dhall` (EP-3 adds it there); we create its skeleton now so
 `cabal.project` is complete from day one. EP-3 will add the real migration logic and the
@@ -681,7 +681,7 @@ executable shomei-migrate
         shomei-core,
 ```
 
-**1.10 — Create `packages/shomei-migrations/app/Main.hs`**
+**1.10 — Create `shomei-migrations/app/Main.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -693,7 +693,7 @@ main :: IO ()
 main = putStrLn "shomei-migrate: stub — EP-3 provides the real implementation"
 ```
 
-**1.11 — Create `packages/shomei-servant/shomei-servant.cabal`**
+**1.11 — Create `shomei-servant/shomei-servant.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -742,7 +742,7 @@ library
         shomei-jwt,
 ```
 
-**1.12 — Create `packages/shomei-servant/src/Shomei/Servant/Placeholder.hs`**
+**1.12 — Create `shomei-servant/src/Shomei/Servant/Placeholder.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -755,7 +755,7 @@ packageName :: String
 packageName = "shomei-servant"
 ```
 
-**1.13 — Create `packages/shomei-server/shomei-server.cabal`**
+**1.13 — Create `shomei-server/shomei-server.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -813,7 +813,7 @@ executable shomei-server
         shomei-server,
 ```
 
-**1.14 — Create `packages/shomei-server/src/Shomei/Server/Placeholder.hs`**
+**1.14 — Create `shomei-server/src/Shomei/Server/Placeholder.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -826,7 +826,7 @@ packageName :: String
 packageName = "shomei-server"
 ```
 
-**1.15 — Create `packages/shomei-server/app/Main.hs`**
+**1.15 — Create `shomei-server/app/Main.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -840,7 +840,7 @@ main = do
   putStrLn "Server stub: EP-4 wires the real Servant application."
 ```
 
-**1.16 — Create `packages/shomei-client/shomei-client.cabal`**
+**1.16 — Create `shomei-client/shomei-client.cabal`**
 
 ```cabal
 cabal-version: 3.0
@@ -886,7 +886,7 @@ library
         shomei-core,
 ```
 
-**1.17 — Create `packages/shomei-client/src/Shomei/Client/Placeholder.hs`**
+**1.17 — Create `shomei-client/src/Shomei/Client/Placeholder.hs`**
 
 ```haskell
 {-# LANGUAGE PackageImports #-}
@@ -926,7 +926,7 @@ Then cabal exits 0 with no error output.
 
 ### Milestone 2 steps
 
-**2.1 — Replace `packages/shomei-core/src/Shomei/Prelude.hs` with the full prelude**
+**2.1 — Replace `shomei-core/src/Shomei/Prelude.hs` with the full prelude**
 
 Replace the M1 stub entirely with:
 
@@ -992,7 +992,7 @@ eventAesonOptions =
     }
 ```
 
-**2.2 — Replace `packages/shomei-jwt/src/Shomei/JWT/Placeholder.hs` to import the prelude**
+**2.2 — Replace `shomei-jwt/src/Shomei/JWT/Placeholder.hs` to import the prelude**
 
 This proves cross-package prelude use:
 
@@ -1306,7 +1306,7 @@ addresses Nix packaging.
 ### Integration points owned by EP-1
 
 - **IP-1 — `Shomei.Prelude`:** module lives at
-  `packages/shomei-core/src/Shomei/Prelude.hs`. All packages import it. Signature is
+  `shomei-core/src/Shomei/Prelude.hs`. All packages import it. Signature is
   fixed by this plan; later plans add nothing to it (they add domain modules, not prelude
   entries) unless the MasterPlan explicitly designates an IP update.
 - **IP-8 — `cabal.project` + common stanzas:** the `cabal.project` file and the

@@ -20,7 +20,7 @@ Shōmei ("証明", proof / authentication) is a Haskell authentication toolkit. 
 domain layer — types like `User`, `Session`, `PersistedRefreshToken`, plus a set of
 "ports" (abstract interfaces) such as `UserStore` and `SessionStore` — is built by a
 sibling plan, EP-2 (`docs/plans/2-core-domain-model-ports-and-auth-workflows.md`), in
-the package `packages/shomei-core`. A *port* in this codebase is an `effectful` dynamic
+the package `shomei-core`. A *port* in this codebase is an `effectful` dynamic
 effect: a small typed interface (a GADT of operations) with no implementation attached,
 so the domain can be written once and run against different backends (an in-memory test
 double, or a real database). EP-2 ships those ports and an in-memory interpreter for
@@ -53,12 +53,12 @@ database — not merely "the code compiles".
 
 This plan delivers two new packages:
 
-- `packages/shomei-migrations` — owns the database schema. It carries the SQL files
+- `shomei-migrations` — owns the database schema. It carries the SQL files
   that build the schema, embeds them into the compiled binary, and applies them through
   `codd` (a Haskell schema-migration tool; see Context). It exposes a public
   `test-support` sublibrary that provisions a fresh throwaway PostgreSQL with the schema
   already applied, using `ephemeral-pg`.
-- `packages/shomei-postgres` — owns the runtime adapters. It defines a `Database`
+- `shomei-postgres` — owns the runtime adapters. It defines a `Database`
   effect (a thin `effectful` wrapper over a `hasql` connection pool) and provides
   PostgreSQL interpreters for every EP-2 store/publisher/signing-key port, plus the
   infrastructure ports `Clock` and `PasswordHasher` (Argon2id) and a token-generation
@@ -83,22 +83,22 @@ This section must always reflect the actual current state of the work.
       six tables. (2026-06-03)
   - [x] Add the `source-repository-package` / `allow-newer` entries (IP-8) to the root
         `cabal.project`. (2026-06-03)
-  - [x] Create `packages/shomei-migrations/shomei-migrations.cabal` (library, executable
+  - [x] Create `shomei-migrations/shomei-migrations.cabal` (library, executable
         `shomei-migrate`, public `test-support` sublibrary). (2026-06-03)
-  - [x] Write `packages/shomei-migrations/src/Shomei/Migrations.hs` (embed + run via codd). (2026-06-03)
-  - [x] Write `packages/shomei-migrations/app/Main.hs` (the `shomei-migrate` executable). (2026-06-03)
+  - [x] Write `shomei-migrations/src/Shomei/Migrations.hs` (embed + run via codd). (2026-06-03)
+  - [x] Write `shomei-migrations/app/Main.hs` (the `shomei-migrate` executable). (2026-06-03)
   - [x] Write the six SQL migration files under
-        `packages/shomei-migrations/sql-migrations/`. (2026-06-03; 7 files incl. schema-create;
+        `shomei-migrations/sql-migrations/`. (2026-06-03; 7 files incl. schema-create;
         signing-key JWK columns are `text` not `jsonb` — see Decision Log)
   - [x] Write
-        `packages/shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`. (2026-06-03)
+        `shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`. (2026-06-03)
   - [x] Add `create-database`, `migrate`, and `new-migration` recipes to the root
         `Justfile`. (2026-06-03)
   - [x] Register `shomei-migrations` (and `shomei-postgres`) in `mori.dhall`. (2026-06-03)
 - [x] Milestone 2 — `shomei-postgres` `Database` effect + port interpreters + Argon2
       hasher compile. (2026-06-03; `cabal build shomei-postgres` exit 0, zero warnings)
-  - [x] Create `packages/shomei-postgres/shomei-postgres.cabal`. (2026-06-03)
-  - [x] Write `packages/shomei-postgres/src/Shomei/Postgres/Database.hs`. (2026-06-03)
+  - [x] Create `shomei-postgres/shomei-postgres.cabal`. (2026-06-03)
+  - [x] Write `shomei-postgres/src/Shomei/Postgres/Database.hs`. (2026-06-03)
   - [x] Write the connection-pool helper and the example `hasql` statements. (2026-06-03;
         `acquirePool` uses `Hasql.Connection.Settings.connectionString` per the verified
         hasql 1.10 / hasql-pool API — see Surprises)
@@ -191,7 +191,7 @@ Record every decision made while working on the plan.
   Date: 2026-06-03
 
 - Decision: The `migrate` Justfile recipe `touch`es
-  `packages/shomei-migrations/shomei-migrations.cabal` before `cabal run shomei-migrate`,
+  `shomei-migrations/shomei-migrations.cabal` before `cabal run shomei-migrate`,
   and passes dummy values for the `CODD_MIGRATION_DIRS` / `CODD_EXPECTED_SCHEMA_DIR`
   environment variables.
   Rationale: `embedDir` is a Template Haskell splice evaluated at *compile* time; a
@@ -214,7 +214,7 @@ Record every decision made while working on the plan.
   Date: 2026-06-03
 
 - Decision: The `PasswordHasher` and token-generation interpreters live in
-  `packages/shomei-postgres` (module `Shomei.Crypto`), not in `shomei-core`.
+  `shomei-postgres` (module `Shomei.Crypto`), not in `shomei-core`.
   Rationale: They need `crypton` (Argon2, SHA-256, secure random bytes), an
   infrastructure dependency we deliberately keep out of the transport-agnostic core.
   `shomei-postgres` already depends on `crypton` for nothing else yet, so this is the
@@ -251,7 +251,7 @@ Record every decision made while working on the plan.
 
 - Decision (reconciliation with the as-built EP-2): EP-3's "What EP-2 provides" section was
   written before EP-2 landed and its assumed surface differs from the implemented one. The
-  interpreters here are adapted to **the real EP-2 API** (in `packages/shomei-core`). The
+  interpreters here are adapted to **the real EP-2 API** (in `shomei-core`). The
   differences and how EP-3 adapts:
   - Identifier prefixes are `KindID "refresh_token"` and `KindID "credential"` (not
     `"refresh"`/`"cred"`); the `*IdToUUID`/`*IdFromUUID` helpers are unchanged in spirit.
@@ -289,11 +289,11 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-**Achieved (2026-06-03).** Shōmei is now durable. `packages/shomei-migrations` owns the
+**Achieved (2026-06-03).** Shōmei is now durable. `shomei-migrations` owns the
 schema: `just migrate` applies the seven codd migrations (the `shomei` schema + six tables)
 to the dev DB, and `\dt shomei.*` lists them; the public `test-support` sublibrary
 provisions fresh ephemeral PostgreSQL databases with the schema applied.
-`packages/shomei-postgres` provides the `Database` effect over a hasql pool, PostgreSQL
+`shomei-postgres` provides the `Database` effect over a hasql pool, PostgreSQL
 interpreters for every EP-2 store/publisher/signing-key port plus `Clock`, and
 `Shomei.Crypto` (Argon2id hashing + `PasswordHasher`/`TokenGen` interpreters).
 `cabal test shomei-postgres` is green — all nine cases: the six port round-trips and the
@@ -332,10 +332,10 @@ The repository root is the Shōmei project. Today it contains Nix flake files
 (`flake.nix`, `nix/haskell.nix`, …), a `process-compose.yaml` that runs a local
 PostgreSQL plus a `create_schema` process, a `db/` directory holding a local PostgreSQL
 data cluster, `mori.dhall` (project + package registry metadata), and `docs/`. The
-authentication packages live (or will live) under `packages/`. EP-1 creates
-`packages/shomei-core` and friends plus the root `cabal.project` and `Justfile`; EP-2
-fills `packages/shomei-core`. This plan adds `packages/shomei-migrations` and
-`packages/shomei-postgres`.
+authentication packages live (or will live) under `/`. EP-1 creates
+`shomei-core` and friends plus the root `cabal.project` and `Justfile`; EP-2
+fills `shomei-core`. This plan adds `shomei-migrations` and
+`shomei-postgres`.
 
 The detailed product specification, including the intended SQL schema, is in
 `docs/initial-spec.md` (the "PostgreSQL Schema" section starts around line 739). The
@@ -424,7 +424,7 @@ repo is a reference only; do not import from it.
 
 ### What EP-2 provides (consumed by this plan)
 
-EP-2 (`packages/shomei-core`) is not yet implemented at the time this plan is authored,
+EP-2 (`shomei-core`) is not yet implemented at the time this plan is authored,
 but its surface is fixed by the MasterPlan and reproduced here so this plan is
 self-contained. EP-3 must compile against exactly these names. (If EP-2's final names
 differ, update this section and the interpreters accordingly and record it in the
@@ -522,30 +522,30 @@ data ShomeiConfig = …
 ```
 
 The port effects EP-3 must interpret (each is an `effectful` dynamic effect in
-`Shomei.Port.*`). The operation set per port:
+`Shomei.Effect.*`). The operation set per port:
 
 ```haskell
--- Shomei.Port.UserStore
+-- Shomei.Effect.UserStore
 data UserStore :: Effect where
   CreateUser       :: NewUser -> UserStore m User
   FindUserById     :: UserId  -> UserStore m (Maybe User)
   FindUserByEmail  :: Email   -> UserStore m (Maybe User)
   UpdateUserStatus :: UserId -> UserStatus -> UserStore m ()
 
--- Shomei.Port.CredentialStore
+-- Shomei.Effect.CredentialStore
 data CredentialStore :: Effect where
   CreatePasswordCredential       :: CredentialId -> UserId -> Email -> PasswordHash -> CredentialStore m Credential
   FindPasswordCredentialByEmail  :: Email -> CredentialStore m (Maybe Credential)
   UpdatePasswordHash             :: CredentialId -> PasswordHash -> CredentialStore m ()
 
--- Shomei.Port.SessionStore
+-- Shomei.Effect.SessionStore
 data SessionStore :: Effect where
   CreateSession         :: NewSession -> SessionStore m Session
   FindSessionById       :: SessionId -> SessionStore m (Maybe Session)
   RevokeSession         :: SessionId -> SessionStore m ()
   RevokeAllUserSessions :: UserId -> SessionStore m ()
 
--- Shomei.Port.RefreshTokenStore
+-- Shomei.Effect.RefreshTokenStore
 data RefreshTokenStore :: Effect where
   CreateRefreshToken          :: NewRefreshToken -> RefreshTokenStore m PersistedRefreshToken
   FindRefreshTokenByHash      :: RefreshTokenHash -> RefreshTokenStore m (Maybe PersistedRefreshToken)
@@ -553,22 +553,22 @@ data RefreshTokenStore :: Effect where
   RevokeRefreshTokenFamily    :: RefreshTokenId -> RefreshTokenStore m ()
   RevokeSessionRefreshTokens  :: SessionId -> RefreshTokenStore m ()
 
--- Shomei.Port.AuthEventPublisher
+-- Shomei.Effect.AuthEventPublisher
 data AuthEventPublisher :: Effect where
   PublishAuthEvent :: AuthEvent -> AuthEventPublisher m ()
 
--- Shomei.Port.SigningKeyStore
+-- Shomei.Effect.SigningKeyStore
 data SigningKeyStore :: Effect where
   ListActiveSigningKeys :: SigningKeyStore m [StoredSigningKey]
   FindSigningKeyByKid   :: Text -> SigningKeyStore m (Maybe StoredSigningKey)
   InsertSigningKey      :: StoredSigningKey -> SigningKeyStore m ()
   UpdateSigningKeyStatus:: Text -> SigningKeyStatus -> SigningKeyStore m ()
 
--- Shomei.Port.Clock
+-- Shomei.Effect.Clock
 data Clock :: Effect where
   Now :: Clock m UTCTime
 
--- Shomei.Port.PasswordHasher
+-- Shomei.Effect.PasswordHasher
 data PasswordHasher :: Effect where
   HashPassword   :: Text -> PasswordHasher m PasswordHash
   VerifyPassword :: Text -> PasswordHash -> PasswordHasher m Bool
@@ -604,7 +604,7 @@ The work is three milestones, each independently verifiable.
 
 ### Milestone 1 — schema package and `just migrate`
 
-Scope: stand up `packages/shomei-migrations` and make `just migrate` build the schema in
+Scope: stand up `shomei-migrations` and make `just migrate` build the schema in
 PostgreSQL. At the end of this milestone the schema exists; `\dt shomei.*` lists six
 tables in both a throwaway test DB and the local dev DB.
 
@@ -613,26 +613,26 @@ comment where these go (a line containing `EP-3` / "persistence" near the top-le
 stanzas). Replace that placeholder with the two `source-repository-package` stanzas
 (`ephemeral-pg`, `codd`), the `package codd { tests: False; benchmarks: False }` block,
 and the `allow-newer: haxl:time` line. Also add
-`packages/shomei-migrations/shomei-migrations.cabal` and
-`packages/shomei-postgres/shomei-postgres.cabal` to the `packages:` field. (If the
+`shomei-migrations/shomei-migrations.cabal` and
+`shomei-postgres/shomei-postgres.cabal` to the `packages:` field. (If the
 placeholder comment is absent because EP-1 has not landed yet, add the stanzas anyway and
 note it in Surprises & Discoveries.)
 
-Second, create `packages/shomei-migrations/shomei-migrations.cabal` with four stanzas: a
+Second, create `shomei-migrations/shomei-migrations.cabal` with four stanzas: a
 `library` exposing `Shomei.Migrations`; an `executable shomei-migrate` over `app/Main.hs`;
 and a public sublibrary `library test-support` exposing `Shomei.Migrations.TestSupport`.
 The package must set `extra-source-files: sql-migrations/*.sql` so the SQL files ship in
 the source distribution and are visible to `embedDir`.
 
-Third, write `packages/shomei-migrations/src/Shomei/Migrations.hs`: embed the
+Third, write `shomei-migrations/src/Shomei/Migrations.hs`: embed the
 `sql-migrations` directory, parse each file into a codd `AddedSqlMigration`, and expose
 `runShomeiMigrationsNoCheck` which applies them through codd.
 
-Fourth, write `packages/shomei-migrations/app/Main.hs`: read codd settings from the
+Fourth, write `shomei-migrations/app/Main.hs`: read codd settings from the
 environment and call `runShomeiMigrationsNoCheck`.
 
 Fifth, write the six SQL migrations under
-`packages/shomei-migrations/sql-migrations/`. Each file's first line must be
+`shomei-migrations/sql-migrations/`. Each file's first line must be
 `-- codd: in-txn` (codd directive: run this migration inside a transaction), then
 `SET search_path TO shomei, pg_catalog;`, then idempotent DDL (`CREATE … IF NOT EXISTS`).
 Use the spec's "PostgreSQL Schema" SQL, but (a) put everything in the `shomei` schema,
@@ -643,7 +643,7 @@ creates the schema; the rest create the tables (and indexes / foreign keys) list
 Concrete Steps.
 
 Sixth, write
-`packages/shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`, mirroring
+`shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`, mirroring
 kizashi's `withKizashiMigratedDatabase`: build a `CoddSettings` directly from an ephemeral
 connection string (parsed with `Codd.Parsing.connStringParser`), with
 `namespacesToCheck = IncludeSchemas [SqlSchema "shomei", SqlSchema "public"]`, and call
@@ -659,10 +659,10 @@ lists the six tables; `cabal build shomei-migrations:test-support` succeeds.
 
 ### Milestone 2 — the `Database` effect, port interpreters, and Argon2 hasher
 
-Scope: stand up `packages/shomei-postgres`. At the end, the `Database` effect, all port
+Scope: stand up `shomei-postgres`. At the end, the `Database` effect, all port
 interpreters, and the Argon2id hasher compile.
 
-Create `packages/shomei-postgres/shomei-postgres.cabal`. Write
+Create `shomei-postgres/shomei-postgres.cabal`. Write
 `src/Shomei/Postgres/Database.hs` (the `Database` effect + `runDatabasePool`), a small
 pool-construction helper, the example `hasql` statements, the port interpreters (one
 module per port group, all under `Shomei.Postgres.*`), and `Shomei.Crypto` (Argon2id +
@@ -720,13 +720,13 @@ Ensure the `packages:` field includes the two new packages:
 
 ```cabal
 packages:
-  packages/shomei-core
-  packages/shomei-migrations
-  packages/shomei-postgres
+  shomei-core
+  shomei-migrations
+  shomei-postgres
   -- (plus the other EP-1 packages)
 ```
 
-### Step 2 — `packages/shomei-migrations/shomei-migrations.cabal`
+### Step 2 — `shomei-migrations/shomei-migrations.cabal`
 
 ```cabal
 cabal-version:      3.0
@@ -804,7 +804,7 @@ library test-support
     , time
 ```
 
-### Step 3 — `packages/shomei-migrations/src/Shomei/Migrations.hs`
+### Step 3 — `shomei-migrations/src/Shomei/Migrations.hs`
 
 ```haskell
 {-# LANGUAGE TemplateHaskell #-}
@@ -846,7 +846,7 @@ runShomeiMigrationsNoCheck settings t = runCoddLogger $ do
   applyMigrationsNoCheck settings (Just migs) t (const (pure SchemasNotVerified))
 ```
 
-### Step 4 — `packages/shomei-migrations/app/Main.hs`
+### Step 4 — `shomei-migrations/app/Main.hs`
 
 ```haskell
 module Main where
@@ -864,7 +864,7 @@ main = do
 
 ### Step 5 — the six SQL migrations
 
-Create these under `packages/shomei-migrations/sql-migrations/`. Filenames encode the
+Create these under `shomei-migrations/sql-migrations/`. Filenames encode the
 ordering timestamp; keep the listed order (schema first, then users, credentials,
 sessions, refresh tokens, signing keys, auth events — combined into six files as below;
 the schema-create is folded into the users file's predecessor). Note: identifier columns
@@ -1007,7 +1007,7 @@ tables themselves. If you prefer literally six files, fold the `CREATE SCHEMA` i
 top of the users file — but keeping it separate makes the namespace creation explicit and
 re-runnable.)
 
-### Step 6 — `packages/shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`
+### Step 6 — `shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`
 
 ```haskell
 {- | Provision a fresh, isolated ephemeral PostgreSQL with the complete Shōmei schema
@@ -1084,7 +1084,7 @@ create-database:
 # Apply all embedded migrations to $PGDATABASE via the shomei-migrate executable.
 # Touch the .cabal first so a newly added .sql file is re-embedded (embedDir is a TH splice).
 migrate:
-    touch packages/shomei-migrations/shomei-migrations.cabal
+    touch shomei-migrations/shomei-migrations.cabal
     CODD_CONNECTION="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
     CODD_MIGRATION_DIRS=unused-for-embedded-migrations \
     CODD_EXPECTED_SCHEMA_DIR=unused-for-unverified-embedded-migrations \
@@ -1095,7 +1095,7 @@ migrate:
 new-migration name:
     @echo "{{name}}" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "Invalid slug: {{name}}"; exit 1; }
     @ts=$(date -u '+%Y-%m-%d-%H-%M-%S'); \
-    f="packages/shomei-migrations/sql-migrations/$ts-{{name}}.sql"; \
+    f="shomei-migrations/sql-migrations/$ts-{{name}}.sql"; \
     if [ -e "$f" ]; then echo "Refusing to overwrite $f"; exit 1; fi; \
     printf -- '-- codd: in-txn\n\nSET search_path TO shomei, pg_catalog;\n\n' > "$f"; \
     echo "Wrote $f"
@@ -1104,11 +1104,11 @@ new-migration name:
 ### Step 8 — register packages in `mori.dhall`
 
 Add a `Schema.Package::{…}` entry for `shomei-migrations` (path
-`packages/shomei-migrations`, type `Library`, depending on nothing in-tree), and add
+`shomei-migrations`, type `Library`, depending on nothing in-tree), and add
 `Schema.Dependency.ByName "shomei-migrations"` to the `shomei-postgres` package's
 `dependencies` (`shomei-postgres` depends on the migrations sublibrary for its tests).
 
-### Step 9 — `packages/shomei-postgres/shomei-postgres.cabal`
+### Step 9 — `shomei-postgres/shomei-postgres.cabal`
 
 ```cabal
 cabal-version:      3.0
@@ -1200,7 +1200,7 @@ test-suite shomei-postgres-test
     , uuid
 ```
 
-### Step 10 — `packages/shomei-postgres/src/Shomei/Postgres/Database.hs`
+### Step 10 — `shomei-postgres/src/Shomei/Postgres/Database.hs`
 
 ```haskell
 {-# LANGUAGE DataKinds #-}
@@ -1244,7 +1244,7 @@ runDatabasePool pool = interpret_ $ \case
   RunTransaction t -> liftIO (Pool.use pool (Tx.transaction Tx.ReadCommitted Tx.Write t))
 ```
 
-### Step 11 — `packages/shomei-postgres/src/Shomei/Postgres/Pool.hs`
+### Step 11 — `shomei-postgres/src/Shomei/Postgres/Pool.hs`
 
 ```haskell
 module Shomei.Postgres.Pool (acquirePool) where
@@ -1390,7 +1390,7 @@ import "effectful" Effectful.Dispatch.Dynamic (interpret_)
 import "effectful" Effectful.Error.Static (Error, throwError)
 import Shomei.Id (userIdToUUID, userIdFromUUID)
 import Shomei.Domain (User (..), UserStatus (..), Email (..), NewUser (..), AuthError (..))
-import Shomei.Port.UserStore (UserStore (..))
+import Shomei.Effect.UserStore (UserStore (..))
 import Shomei.Postgres.Database (Database, runSession)
 -- plus the Statement definitions from Step 12 and status/uuid helpers.
 
@@ -1454,7 +1454,7 @@ import "effectful-core" Effectful (Eff, IOE, (:>), liftIO)
 import "effectful" Effectful.Dispatch.Dynamic (interpret_)
 import "effectful" Effectful.Error.Static (Error, throwError)
 import Shomei.Domain (AuthEvent, AuthError (..))
-import Shomei.Port.AuthEventPublisher (AuthEventPublisher (..))
+import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Postgres.Database (Database, runSession)
 -- plus insertAuthEventStmt and the AuthEvent -> (user_id?, session_id?, type, payload, ts) projection.
 
@@ -1498,7 +1498,7 @@ module Shomei.Postgres.Clock (runClockIO) where
 import Data.Time (getCurrentTime)
 import "effectful-core" Effectful (Eff, IOE, (:>), liftIO)
 import "effectful" Effectful.Dispatch.Dynamic (interpret_)
-import Shomei.Port.Clock (Clock (..))
+import Shomei.Effect.Clock (Clock (..))
 
 runClockIO :: (IOE :> es) => Eff (Clock : es) a -> Eff es a
 runClockIO = interpret_ \case
@@ -1530,7 +1530,7 @@ import Data.Text.Encoding qualified as TE
 import Shomei.Domain (PasswordHash (..))
 import "effectful-core" Effectful (Eff, IOE, (:>), liftIO)
 import "effectful" Effectful.Dispatch.Dynamic (interpret_)
-import Shomei.Port.PasswordHasher (PasswordHasher (..))
+import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 
 -- CRITICAL: crypton's defaultOptions = Argon2i, iterations=1 (too weak). Set Argon2id
 -- and raise the cost explicitly.
@@ -1595,7 +1595,7 @@ The token generator and `hashRefreshToken` live here (not in core) because they 
 generation; if EP-2 has no such port, the workflow can call these directly in the
 assembly layer (EP-6). Record the integration point in the Decision Log when EP-2 lands.
 
-### Step 15 — the test suite (`packages/shomei-postgres/test/Main.hs`)
+### Step 15 — the test suite (`shomei-postgres/test/Main.hs`)
 
 ```haskell
 {-# LANGUAGE LambdaCase #-}
@@ -1719,7 +1719,7 @@ and need no cleanup.
 If a migration is added but `just migrate` does not seem to see it, the cause is almost
 always the `embedDir` TH-splice gotcha: the `migrate` recipe `touch`es the `.cabal` to
 force a recompile, but if you ran `cabal run shomei-migrate` by hand without touching, do
-`touch packages/shomei-migrations/shomei-migrations.cabal` and re-run. If
+`touch shomei-migrations/shomei-migrations.cabal` and re-run. If
 `getCoddSettings` fails, confirm the `CODD_MIGRATION_DIRS` / `CODD_EXPECTED_SCHEMA_DIR`
 placeholders and `CODD_CONNECTION` are exported (they are read unconditionally even though
 we override migrations and skip verification).
@@ -1797,7 +1797,7 @@ Integration points owned/contributed here.
 
 **IP-7 (owned by EP-3) — Database schema and the `shomei` namespace.** The six tables in
 the `shomei` schema, created by the migrations in
-`packages/shomei-migrations/sql-migrations/`. Consumers: EP-3's own hasql statements;
+`shomei-migrations/sql-migrations/`. Consumers: EP-3's own hasql statements;
 EP-6 (the standalone server) runs the same migrations at deploy time and the same
 adapters at runtime. The stable surface is the table/column names and the `shomei` schema
 name; changing them is a schema migration.

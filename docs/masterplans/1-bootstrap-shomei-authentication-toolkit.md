@@ -181,11 +181,11 @@ EP-5 (DTOs and `AuthUser`), EP-6, EP-7. Rule: identifiers are TypeIDs at the typ
 are stored as native `uuid` columns in Postgres via `getUUID`/`decorateKindID`; no plan may
 redefine these types.
 
-**IP-3 — Port effects (the `effectful` effect interfaces).** `Shomei.Port.UserStore`,
-`Shomei.Port.CredentialStore`, `Shomei.Port.SessionStore`, `Shomei.Port.RefreshTokenStore`,
-`Shomei.Port.PasswordHasher`, `Shomei.Port.TokenSigner`, `Shomei.Port.TokenVerifier`,
-`Shomei.Port.AuthEventPublisher`, `Shomei.Port.SigningKeyStore`, and the support effects
-`Shomei.Port.Clock` (current time) and `Shomei.Port.TokenGen` (random opaque tokens). Owner:
+**IP-3 — Port effects (the `effectful` effect interfaces).** `Shomei.Effect.UserStore`,
+`Shomei.Effect.CredentialStore`, `Shomei.Effect.SessionStore`, `Shomei.Effect.RefreshTokenStore`,
+`Shomei.Effect.PasswordHasher`, `Shomei.Effect.TokenSigner`, `Shomei.Effect.TokenVerifier`,
+`Shomei.Effect.AuthEventPublisher`, `Shomei.Effect.SigningKeyStore`, and the support effects
+`Shomei.Effect.Clock` (current time) and `Shomei.Effect.TokenGen` (random opaque tokens). Owner:
 **EP-2** (defines each as a dynamic `effectful` `Effect` GADT with `send` smart constructors,
 plus an in-memory interpreter for testing). Consumers: EP-3 interprets the store/publisher/
 signing-key/clock ports against PostgreSQL and Argon2; EP-4 interprets `TokenSigner`/
@@ -300,7 +300,7 @@ implementation. Provide concise evidence.
   `Prelude` instead (the custom prelude does not set `NoImplicitPrelude`). (4) For record
   *updates*, use `generic-lens` `#field` lenses (`x & #f .~ v`), which need `Generic` on the
   record and a per-module `import Data.Generics.Labels ()`. The in-memory interpreter
-  (`Shomei.Port.InMemory`) is the executable reference for the expected port behavior.
+  (`Shomei.Effect.InMemory`) is the executable reference for the expected port behavior.
 - **EP-4: jose PR-#137 builds cleanly on GHC 9.12.4 with no `allow-newer` (IP-8).** The pinned
   `jose` resolved as 0.13 with crypton-1.1.3 / ram-0.21.1 / monad-time-0.4 / concise-0.1 and
   built without relaxing any version bound — Risk 2 (GHC 9.12.4 bounds) from EP-4's plan did
@@ -333,10 +333,10 @@ implementation. Provide concise evidence.
   :: forall a. Eff AppEffects a -> IO a`; EP-6's postgres+jwt assembly must provide a runner for
   exactly this stack/order. The seam is `runAuth`/`runPort` (workflows already return `Eff (Either
   AuthError a)`, so the runner does not add a second `Either`).
-- **EP-5 cascaded a tiny, additive change into EP-2 (`Shomei.Port.InMemory`).** To test the real
+- **EP-5 cascaded a tiny, additive change into EP-2 (`Shomei.Effect.InMemory`).** To test the real
   ES256 sign/verify path with in-memory stores, EP-5's test composes a hybrid stack (EP-2 stores
   + EP-4 `runTokenSignerJwt`/`runTokenVerifierJwt`), which can't live in `shomei-core` (cycle).
-  EP-2's `Shomei.Port.InMemory` now **exports its individual interpreters** (`runUserStore`, …,
+  EP-2's `Shomei.Effect.InMemory` now **exports its individual interpreters** (`runUserStore`, …,
   `runTokenGen`) in addition to `runInMemory` — non-breaking, no signature changes (IP-3 intact).
   EP-6 may reuse this pattern for any in-memory-backed tests.
 - **EP-5: GHC2024 makes `role`/`scope` context-sensitive keywords (affects any later plan with

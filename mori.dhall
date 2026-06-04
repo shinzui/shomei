@@ -20,15 +20,15 @@ in  Schema.Project::{
         , name = "shomei-core"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-core"
+        , path = Some "shomei-core"
         , description = Some
-            "Transport-agnostic domain: types, commands, events, errors, and ports (no Servant/WAI/PostgreSQL/JWT/HTTP deps)"
+            "Transport-agnostic domain: types, commands, events, errors, and effect interfaces (no Servant/WAI/PostgreSQL/JWT/HTTP deps)"
         }
       , Schema.Package::{
         , name = "shomei-jwt"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-jwt"
+        , path = Some "shomei-jwt"
         , description = Some
             "JWT access-token signing/verification and JWKS publishing"
         , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
@@ -37,7 +37,7 @@ in  Schema.Project::{
         , name = "shomei-migrations"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-migrations"
+        , path = Some "shomei-migrations"
         , description = Some
             "codd-managed PostgreSQL schema migrations (embedded SQL) plus a public test-support sublibrary (ephemeral-pg)"
         , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
@@ -46,9 +46,9 @@ in  Schema.Project::{
         , name = "shomei-postgres"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-postgres"
+        , path = Some "shomei-postgres"
         , description = Some
-            "PostgreSQL implementations of the core store ports plus the audit-event publisher"
+            "PostgreSQL implementations of the core store effects plus the audit-event publisher"
         , dependencies =
           [ Schema.Dependency.ByName "shomei-core"
           , Schema.Dependency.ByName "shomei-migrations"
@@ -58,7 +58,7 @@ in  Schema.Project::{
         , name = "shomei-servant"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-servant"
+        , path = Some "shomei-servant"
         , description = Some
             "Servant combinators and handlers: Authenticated, RequireRole/RequireScope, ShomeiAPI"
         , dependencies =
@@ -70,7 +70,7 @@ in  Schema.Project::{
         , name = "shomei-server"
         , type = Schema.PackageType.Application
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-server"
+        , path = Some "shomei-server"
         , description = Some
             "Standalone authentication service — thin application layer over the libraries"
         , runtime = Schema.Runtime::{ deployable = True, exposesApi = True }
@@ -86,7 +86,7 @@ in  Schema.Project::{
         , name = "shomei-client"
         , type = Schema.PackageType.Client
         , language = Schema.Language.Haskell
-        , path = Some "packages/shomei-client"
+        , path = Some "shomei-client"
         , description = Some
             "Haskell client for the standalone Shōmei auth service"
         , dependencies =

@@ -23,7 +23,7 @@ PostgreSQL adapter (`shomei-postgres`), Servant API types and route-protection c
 the initiative — delivers three things that together *prove the toolkit actually works the two
 ways the spec promises*:
 
-1. **`packages/shomei-client`** — a Haskell client library. It does **not** hand-write HTTP
+1. **`shomei-client`** — a Haskell client library. It does **not** hand-write HTTP
    requests; it *derives* its request functions from the exact same `ShomeiAPI` Servant type
    the server serves, using the `servant-client` library. ("Derive a client" here means:
    given the API description as a Haskell type, `servant-client` generates Haskell functions
@@ -74,7 +74,7 @@ This section must always reflect the actual current state of the work.
 - [x] M0: `shomei-server` was already `library + thin executable` (EP-6 shipped it that way).
       Added embedding entry points to its library: `buildEnv`, `seamEnv`, `authContext`
       (`Shomei.Server.Boot`). (2026-06-03)
-- [x] M1a: `packages/shomei-client/shomei-client.cabal` + `Shomei.Client` deriving the client
+- [x] M1a: `shomei-client/shomei-client.cabal` + `Shomei.Client` deriving the client
       record from `ShomeiAPI` via `servant-client`'s `genericClient`. (2026-06-03)
 - [x] M1b: `AuthClientData (AuthProtect "shomei-jwt") = Token` + `mkAuthenticatedRequest`/
       `addHeader` attach `Authorization: Bearer` on the `Authenticated` routes. (2026-06-03)
@@ -247,14 +247,14 @@ shared GHC options and base dependencies; every package's components write
 **What earlier plans already provide (you consume these; key items are reproduced here so this
 plan is self-contained).**
 
-From EP-5, package `packages/shomei-servant` (a Haskell library):
+From EP-5, package `shomei-servant` (a Haskell library):
 
 - `ShomeiAPI` — the API described as a Haskell *record of routes* using Servant's
   **NamedRoutes** feature. "NamedRoutes" means the API is a Haskell record type whose fields
   are individual endpoints, parameterised over a "mode"; in *server* mode the fields are
   handlers, and in *client* mode (what we use here) the fields are client functions. Sketch of
   the shape EP-5 defines (reproduced for orientation; use the real definition from
-  `packages/shomei-servant/src/Shomei/Servant/API.hs`):
+  `shomei-servant/src/Shomei/Servant/API.hs`):
 
     ```haskell
     -- In shomei-servant (EP-5). Reproduced here for orientation only.
@@ -289,7 +289,7 @@ From EP-5, package `packages/shomei-servant` (a Haskell library):
 - An example `AppAPI` shape (EP-5) showing how a host app combines its own routes with the
   mounted Shōmei routes; the embedded demo elaborates this into a runnable program.
 
-From EP-6, package `packages/shomei-server`:
+From EP-6, package `shomei-server`:
 
 - The running standalone service exposing `POST /auth/signup`, `/auth/login`, `/auth/refresh`,
   `/auth/logout`, `GET /auth/me`, `/auth/session`, `GET /.well-known/jwks.json`, and
@@ -304,7 +304,7 @@ From EP-6, package `packages/shomei-server`:
   from an executable's `Main`, M0 of this plan refactors `shomei-server` into a library
   component (exposing the assembly modules) plus a thin executable. See the Decision Log.
 
-From EP-4, package `packages/shomei-jwt`:
+From EP-4, package `shomei-jwt`:
 
 - `verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)` — given
   the public **JWKS** as a `JWKSet` (the in-memory parse of the JWKS document), the runtime
@@ -315,7 +315,7 @@ From EP-4, package `packages/shomei-jwt`:
   a parsed set of JWKs; the downstream service fetches the document with `http-client`, decodes
   it with `aeson` into a `JWKSet`, and passes it to `verifyToken`.
 
-From EP-3, package `packages/shomei-migrations` (test-support sublibrary):
+From EP-3, package `shomei-migrations` (test-support sublibrary):
 
 - `withShomeiMigratedDatabase` — a bracket-style helper that spins up an *ephemeral*
   PostgreSQL instance ("ephemeral" = a throwaway database created for the duration of a test
@@ -324,7 +324,7 @@ From EP-3, package `packages/shomei-migrations` (test-support sublibrary):
 
 **Where new code goes.** Three new directories under the repository root:
 
-- `/Users/shinzui/Keikaku/bokuno/shomei/packages/shomei-client/` — the client library.
+- `/Users/shinzui/Keikaku/bokuno/shomei/shomei-client/` — the client library.
 - `/Users/shinzui/Keikaku/bokuno/shomei/examples/embedded-servant-app/` — the embedded demo.
 - `/Users/shinzui/Keikaku/bokuno/shomei/examples/microservice-auth-stack/` — the two-service
   demo.
@@ -358,7 +358,7 @@ three deliverables; M4 finalizes project metadata. Each milestone is independent
 **Milestone 0 — Ensure `shomei-server` exposes its assembly as a library.** Before the
 embedded demo can reuse the real assembly, `shomei-server` must expose `Env`, `runAppIO`, the
 auth `Context`, and the WAI `Application` builder from a *library* component, not buried in an
-executable's `Main`. Inspect `packages/shomei-server/shomei-server.cabal`. If it already has a
+executable's `Main`. Inspect `shomei-server/shomei-server.cabal`. If it already has a
 `library` stanza exposing modules such as `Shomei.Server.Env`, `Shomei.Server.App`
 (`mkApp`/`application`), and `Shomei.Server.Run` (`runAppIO`), nothing to do — note it in
 Progress and proceed. If `shomei-server` is executable-only, refactor: move the assembly
@@ -370,13 +370,13 @@ Shomei.Server.App`. Acceptance: `cabal build shomei-server` succeeds and the lib
 `exposed-modules` includes the assembly modules the demo needs.
 
 **Milestone 1 — `shomei-client` builds and round-trips against a live server.** Create
-`packages/shomei-client` with a `.cabal` depending on `shomei-core`, `shomei-servant`,
+`shomei-client` with a `.cabal` depending on `shomei-core`, `shomei-servant`,
 `servant-client (>=0.20)`, `servant-client-core`, `http-client`, `http-client-tls`, `text`,
 and `time`. Write `Shomei.Client` (file
-`packages/shomei-client/src/Shomei/Client.hs`). It derives the record of client functions from
+`shomei-client/src/Shomei/Client.hs`). It derives the record of client functions from
 `ShomeiAPI` via `servant-client`, defines the generalized-auth client data instance so the
 `Authenticated` routes accept a Bearer token, and exposes ergonomic IO wrappers. Add a test
-(`packages/shomei-client/test/Main.hs` plus a `test-suite` stanza) that, against a live
+(`shomei-client/test/Main.hs` plus a `test-suite` stanza) that, against a live
 `shomei-server` (started over an ephemeral DB with `withShomeiMigratedDatabase` + warp, or
 pointed at the dev server via an env var), runs `signup` → `login` → `me` → `refresh` and
 asserts on the decoded responses. At the end of M1, `cabal test shomei-client` passes (or the
@@ -426,13 +426,13 @@ nix develop
 Check whether the assembly is already a library:
 
 ```bash
-grep -nE "^(library|executable)" packages/shomei-server/shomei-server.cabal
+grep -nE "^(library|executable)" shomei-server/shomei-server.cabal
 ```
 
 If you see a `library` stanza whose `exposed-modules:` lists the assembly modules (for
 example `Shomei.Server.Env`, `Shomei.Server.App`, `Shomei.Server.Run`), record "M0: already
 library+exe" in Progress and skip to Step 1. If you see only an `executable` stanza, refactor
-it. The target shape of `packages/shomei-server/shomei-server.cabal`:
+it. The target shape of `shomei-server/shomei-server.cabal`:
 
 ```cabal
 library
@@ -454,7 +454,7 @@ executable shomei-server
   default-language: GHC2024
 ```
 
-The thin `packages/shomei-server/app/Main.hs` becomes:
+The thin `shomei-server/app/Main.hs` becomes:
 
 ```haskell
 module Main (main) where
@@ -478,9 +478,9 @@ Building executable 'shomei-server' for shomei-server-0.1.0.0..
 Linking ... shomei-server ...
 ```
 
-### Step 1 — Create `packages/shomei-client` (Milestone 1)
+### Step 1 — Create `shomei-client` (Milestone 1)
 
-Create `packages/shomei-client/shomei-client.cabal`:
+Create `shomei-client/shomei-client.cabal`:
 
 ```cabal
 cabal-version:      3.0
@@ -528,7 +528,7 @@ test-suite shomei-client-test
                   , async
 ```
 
-Create `packages/shomei-client/src/Shomei/Client.hs`. The essential pieces, in order:
+Create `shomei-client/src/Shomei/Client.hs`. The essential pieces, in order:
 
 First, derive the record of client functions from the single source-of-truth API. For a
 NamedRoutes API, applying `client` to `Proxy @(NamedRoutes ShomeiAPI)` yields a value of type
@@ -575,7 +575,7 @@ import Shomei.Servant.DTO
 ```
 
 (Use the actual module paths EP-5 chose for `ShomeiAPI` and the DTOs; the imports above name
-the symbols, adjust the module names to match `packages/shomei-servant/src/...`.)
+the symbols, adjust the module names to match `shomei-servant/src/...`.)
 
 The generalized-auth client data instance — this is *the* mechanism that lets the client put a
 Bearer token on the `Authenticated` (`AuthProtect "shomei-jwt"`) routes. We model the
@@ -658,7 +658,7 @@ the `ClientEnv` via `ClientEnv`'s `makeClientRequest`, or run the action under a
 injects `Authorization`. The `mkAuthenticatedRequest` route is preferred and listed first
 because it keeps the credential typed at the call site.
 
-Create the test `packages/shomei-client/test/Main.hs`. It starts a real `shomei-server` over
+Create the test `shomei-client/test/Main.hs`. It starts a real `shomei-server` over
 an ephemeral migrated database (or targets `SHOMEI_TEST_URL` if set), then round-trips:
 
 ```haskell
@@ -855,13 +855,13 @@ Add to `cabal.project`:
 
 ```cabal
 packages:
-  packages/shomei-core
-  packages/shomei-jwt
-  packages/shomei-postgres
-  packages/shomei-servant
-  packages/shomei-server
-  packages/shomei-client
-  packages/shomei-migrations
+  shomei-core
+  shomei-jwt
+  shomei-postgres
+  shomei-servant
+  shomei-server
+  shomei-client
+  shomei-migrations
   examples/embedded-servant-app
   examples/microservice-auth-stack
 ```
@@ -1208,7 +1208,7 @@ Widen `mori.dhall`. Change the `shomei-client` package's `dependencies` to add
   , name = "shomei-client"
   , type = Schema.PackageType.Client
   , language = Schema.Language.Haskell
-  , path = Some "packages/shomei-client"
+  , path = Some "shomei-client"
   , description = Some "Haskell client for the standalone Shōmei auth service"
   , dependencies =
     [ Schema.Dependency.ByName "shomei-core"
@@ -1253,8 +1253,8 @@ built, no errors.
 Commit with the required trailers:
 
 ```bash
-git add packages/shomei-client examples cabal.project mori.dhall \
-        packages/shomei-server docs/plans/7-haskell-client-and-demo-applications.md
+git add shomei-client examples cabal.project mori.dhall \
+        shomei-server docs/plans/7-haskell-client-and-demo-applications.md
 git commit -m "feat: shomei-client and embedded + microservice demo apps
 
 Derive a typed servant-client from ShomeiAPI; embedded demo mounts the
@@ -1348,14 +1348,14 @@ terminals — the runbook works identically.
 
 If a build fails because a symbol/module name in the snippets above does not match what EP-5 or
 EP-6 actually exported (the snippets name the *roles* of those symbols; the real names live in
-`packages/shomei-servant/src/...` and `packages/shomei-server/src/...`), open those source
+`shomei-servant/src/...` and `shomei-server/src/...`), open those source
 files, find the exposed name, and adjust the import — no design change is implied. Record any
 such rename in the Decision Log.
 
 
 ## Interfaces and Dependencies
 
-**`Shomei.Client` (module `packages/shomei-client/src/Shomei/Client.hs`).** Exposes, at the end
+**`Shomei.Client` (module `shomei-client/src/Shomei/Client.hs`).** Exposes, at the end
 of Milestone 1:
 
 ```haskell

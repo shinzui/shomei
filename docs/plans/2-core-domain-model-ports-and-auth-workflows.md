@@ -17,7 +17,7 @@ This is **EP-2**, the second child plan of the MasterPlan
 `docs/masterplans/1-bootstrap-shomei-authentication-toolkit.md`. It hard-depends on **EP-1**
 (`docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md`), which produces the
 compiling multi-package cabal workspace, the shared cabal `common` stanzas, and the
-`Shomei.Prelude` custom prelude. EP-2 fills the `packages/shomei-core` package and owns
+`Shomei.Prelude` custom prelude. EP-2 fills the `shomei-core` package and owns
 Integration Points **IP-2** (domain types + `Shomei.Id`), **IP-3** (port effect interfaces),
 **IP-4** (`StoredSigningKey` + `SigningKeyStore`), and **IP-5** (`ShomeiConfig`). Every later
 plan (EP-3 PostgreSQL, EP-4 JWT, EP-5 Servant, EP-6 server, EP-7 demos) consumes these.
@@ -80,10 +80,10 @@ This section must always reflect the actual current state of the work.
   RefreshToken, Token, Claims, Event, SigningKey, plus the `New*` and `*Command` records). (2026-06-03)
 - [x] M1: `Shomei.Config` compiles (`ShomeiConfig`, `defaultShomeiConfig`, transport/check
   enums, default TTLs). Acceptance: `cabal build shomei-core`. (2026-06-03; 15 modules, exit 0)
-- [x] M2: `Shomei.Port.*` modules compile (UserStore, CredentialStore, SessionStore,
+- [x] M2: `Shomei.Effect.*` modules compile (UserStore, CredentialStore, SessionStore,
   RefreshTokenStore, PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher,
   SigningKeyStore, Clock, TokenGen) with `send` smart constructors. (2026-06-03)
-- [x] M2: `Shomei.Port.InMemory` compiles (in-memory `World` + interpreter for every port).
+- [x] M2: `Shomei.Effect.InMemory` compiles (in-memory `World` + interpreter for every port).
   (2026-06-03; `cabal build shomei-core` exit 0, zero warnings)
 - [x] M3: `Shomei.Workflow` compiles (signup, login, refresh, logout, verifyToken). (2026-06-03)
 - [x] M3: `test-suite shomei-core-test` written and passing. Acceptance:
@@ -100,7 +100,7 @@ implementation. Provide concise evidence.
   `DuplicateRecordFields`, accessing `nu.email` for `nu :: NewUser` fails unless the
   record is imported with its fields (`NewUser (..)`), not just the type (`NewUser`). The
   error is `GHC-39999: Could not deduce HasField "email" NewUser Email`. Fix: import every
-  record whose fields are read via `.field` with `(..)`. This bit `Shomei.Port.InMemory`
+  record whose fields are read via `.field` with `(..)`. This bit `Shomei.Effect.InMemory`
   for `NewUser`/`NewSession`/`NewRefreshToken`/`StoredSigningKey`.
 
 - **Generic-lens `#field` needs `Generic` on the focused record.** The in-memory `World`
@@ -169,7 +169,7 @@ Record every decision made while working on the plan.
   `public_key_pem`/`private_key_pem_encrypted` — EP-3 maps between them.
   Date: 2026-06-03
 
-- Decision: Provide an in-memory interpreter (`Shomei.Port.InMemory`) for every port, backing
+- Decision: Provide an in-memory interpreter (`Shomei.Effect.InMemory`) for every port, backing
   the pure test suite; no DB/JWT in EP-2 tests.
   Rationale: Lets the workflows be validated as behavior (not just compilation) with zero
   infrastructure, which is the demonstrable outcome of this plan. `TokenSigner`/`TokenVerifier`
@@ -177,7 +177,7 @@ Record every decision made while working on the plan.
   Date: 2026-06-03
 
 - Decision (during implementation): Use `generic-lens` `#field` lenses for record *updates*
-  in `Shomei.Port.InMemory` (e.g. `tok & #status .~ RefreshTokenRevoked`), and derive
+  in `Shomei.Effect.InMemory` (e.g. `tok & #status .~ RefreshTokenRevoked`), and derive
   `Generic` on the `World` record.
   Rationale: With `DuplicateRecordFields`, ordinary record-update syntax (`tok { status = … }`)
   is ambiguous across the many records that share a `status` field. The `#field` lens is
@@ -215,8 +215,8 @@ Compare the result against the original purpose.
 **Achieved (2026-06-03).** `shomei-core` now holds the complete transport-agnostic heart of
 Shōmei: TypeID identifiers (`Shomei.Id`), the error vocabulary (`Shomei.Error`), all domain
 types with smart constructors (`Shomei.Domain.*`), the runtime config (`Shomei.Config`), the
-eleven port effects (`Shomei.Port.*`, IP-3) with `send` smart constructors, the storage-agnostic
-`StoredSigningKey` (IP-4), an in-memory interpreter for every port (`Shomei.Port.InMemory`), and
+eleven port effects (`Shomei.Effect.*`, IP-3) with `send` smart constructors, the storage-agnostic
+`StoredSigningKey` (IP-4), an in-memory interpreter for every port (`Shomei.Effect.InMemory`), and
 the five auth workflows (`Shomei.Workflow`). `cabal build shomei-core` and `cabal build all` are
 green with zero warnings, and `cabal test shomei-core` passes all seven behavioral cases that
 prove the security-critical properties: signup→login round-trip, refresh rotation with the old
@@ -243,9 +243,9 @@ qualified.
 
 The repository is the Shōmei monorepo at `/Users/shinzui/Keikaku/bokuno/shomei`. The package
 identity is declared in `mori.dhall` (run `mori show --full` to see it): six packages under
-`packages/`, with `shomei-core` as the transport-agnostic root that every other package
+`/`, with `shomei-core` as the transport-agnostic root that every other package
 depends on. EP-1 creates the cabal workspace (`cabal.project`, `with-compiler: ghc-9.12.4`),
-the shared cabal `common` stanzas, and `packages/shomei-core/` with its `shomei-core.cabal`
+the shared cabal `common` stanzas, and `shomei-core/` with its `shomei-core.cabal`
 and the `Shomei.Prelude` module. **This plan assumes EP-1 has landed**: `cabal build all`
 already succeeds and `Shomei.Prelude` already exists and re-exports base/text/aeson/time/lens
 plus `eventAesonOptions`.
@@ -271,36 +271,36 @@ House build conventions (mandatory, established by EP-1 and reused verbatim here
 Key files this plan creates or edits, all under `/Users/shinzui/Keikaku/bokuno/shomei`:
 
 ```text
-packages/shomei-core/shomei-core.cabal                    (edit: deps + exposed-modules + test-suite)
-packages/shomei-core/src/Shomei/Id.hs                     (new)
-packages/shomei-core/src/Shomei/Error.hs                  (new)
-packages/shomei-core/src/Shomei/Domain/User.hs            (new)
-packages/shomei-core/src/Shomei/Domain/Email.hs           (new)
-packages/shomei-core/src/Shomei/Domain/Password.hs        (new)
-packages/shomei-core/src/Shomei/Domain/Credential.hs      (new)
-packages/shomei-core/src/Shomei/Domain/Session.hs         (new)
-packages/shomei-core/src/Shomei/Domain/RefreshToken.hs    (new)
-packages/shomei-core/src/Shomei/Domain/Token.hs           (new)
-packages/shomei-core/src/Shomei/Domain/Claims.hs          (new)
-packages/shomei-core/src/Shomei/Domain/Event.hs           (new)
-packages/shomei-core/src/Shomei/Domain/SigningKey.hs      (new)
-packages/shomei-core/src/Shomei/Domain/Command.hs         (new)
-packages/shomei-core/src/Shomei/Config.hs                 (new)
-packages/shomei-core/src/Shomei/Port/UserStore.hs         (new)
-packages/shomei-core/src/Shomei/Port/CredentialStore.hs   (new)
-packages/shomei-core/src/Shomei/Port/SessionStore.hs      (new)
-packages/shomei-core/src/Shomei/Port/RefreshTokenStore.hs (new)
-packages/shomei-core/src/Shomei/Port/PasswordHasher.hs    (new)
-packages/shomei-core/src/Shomei/Port/TokenSigner.hs       (new)
-packages/shomei-core/src/Shomei/Port/TokenVerifier.hs     (new)
-packages/shomei-core/src/Shomei/Port/AuthEventPublisher.hs(new)
-packages/shomei-core/src/Shomei/Port/SigningKeyStore.hs   (new)
-packages/shomei-core/src/Shomei/Port/Clock.hs             (new)
-packages/shomei-core/src/Shomei/Port/TokenGen.hs          (new)
-packages/shomei-core/src/Shomei/Port/InMemory.hs          (new)
-packages/shomei-core/src/Shomei/Workflow.hs               (new)
-packages/shomei-core/test/Main.hs                         (new)
-packages/shomei-core/test/Shomei/WorkflowSpec.hs          (new)
+shomei-core/shomei-core.cabal                    (edit: deps + exposed-modules + test-suite)
+shomei-core/src/Shomei/Id.hs                     (new)
+shomei-core/src/Shomei/Error.hs                  (new)
+shomei-core/src/Shomei/Domain/User.hs            (new)
+shomei-core/src/Shomei/Domain/Email.hs           (new)
+shomei-core/src/Shomei/Domain/Password.hs        (new)
+shomei-core/src/Shomei/Domain/Credential.hs      (new)
+shomei-core/src/Shomei/Domain/Session.hs         (new)
+shomei-core/src/Shomei/Domain/RefreshToken.hs    (new)
+shomei-core/src/Shomei/Domain/Token.hs           (new)
+shomei-core/src/Shomei/Domain/Claims.hs          (new)
+shomei-core/src/Shomei/Domain/Event.hs           (new)
+shomei-core/src/Shomei/Domain/SigningKey.hs      (new)
+shomei-core/src/Shomei/Domain/Command.hs         (new)
+shomei-core/src/Shomei/Config.hs                 (new)
+shomei-core/src/Shomei/Port/UserStore.hs         (new)
+shomei-core/src/Shomei/Port/CredentialStore.hs   (new)
+shomei-core/src/Shomei/Port/SessionStore.hs      (new)
+shomei-core/src/Shomei/Port/RefreshTokenStore.hs (new)
+shomei-core/src/Shomei/Port/PasswordHasher.hs    (new)
+shomei-core/src/Shomei/Port/TokenSigner.hs       (new)
+shomei-core/src/Shomei/Port/TokenVerifier.hs     (new)
+shomei-core/src/Shomei/Port/AuthEventPublisher.hs(new)
+shomei-core/src/Shomei/Port/SigningKeyStore.hs   (new)
+shomei-core/src/Shomei/Port/Clock.hs             (new)
+shomei-core/src/Shomei/Port/TokenGen.hs          (new)
+shomei-core/src/Shomei/Port/InMemory.hs          (new)
+shomei-core/src/Shomei/Workflow.hs               (new)
+shomei-core/test/Main.hs                         (new)
+shomei-core/test/Shomei/WorkflowSpec.hs          (new)
 ```
 
 The authoritative field lists come from `docs/initial-spec.md` (sections "Core Domain Model",
@@ -326,19 +326,19 @@ build/test command.
 ### Milestone M1 — Identifiers, domain types, errors, config compile
 
 Scope: everything data-shaped. Add the EP-2 build-depends and exposed-modules to
-`packages/shomei-core/shomei-core.cabal`. Create `Shomei.Id` (TypeID identifiers + orphan
+`shomei-core/shomei-core.cabal`. Create `Shomei.Id` (TypeID identifiers + orphan
 http-api-data instances). Create `Shomei.Error` (`AuthError`, `TokenError`,
 `PasswordPolicyViolation`). Create the `Shomei.Domain.*` modules (one concern per module) with
 their smart constructors. Create `Shomei.Config` (`ShomeiConfig`, the transport/check enums,
-`defaultShomeiConfig`, and the default TTLs). At the end of M1, `packages/shomei-core`
+`defaultShomeiConfig`, and the default TTLs). At the end of M1, `shomei-core`
 type-checks with no ports and no workflows yet. Acceptance: `cabal build shomei-core`
 succeeds.
 
 ### Milestone M2 — Port effects + in-memory interpreters compile
 
-Scope: the abstract boundary. Create the eleven `Shomei.Port.*` effect modules, each a GADT
+Scope: the abstract boundary. Create the eleven `Shomei.Effect.*` effect modules, each a GADT
 `Effect` with `type instance DispatchOf E = Dynamic` and one `send`-based smart constructor per
-operation, matching the exact method sets below. Then create `Shomei.Port.InMemory`: a mutable
+operation, matching the exact method sets below. Then create `Shomei.Effect.InMemory`: a mutable
 `World` record holding maps for users, credentials, sessions, and refresh tokens (plus signing
 keys and a published-event log), and an `interpret`/`interpret_`-based handler for every port
 backed by an `IORef World` (or the `effectful` `State` effect). At the end of M2, the ports and
@@ -351,7 +351,7 @@ Scope: the behavior. Create `Shomei.Workflow` with `signup`, `login`, `refresh`,
 `verifyToken`, each a function over the port effects returning `Eff es (Either AuthError ...)`,
 implemented per the spec's "Workflows" section. Then create the tasty test suite
 (`test/Main.hs` + `test/Shomei/WorkflowSpec.hs`) that runs the workflows through
-`Shomei.Port.InMemory.runInMemory` and asserts the round-trip, rotation, reuse-detection,
+`Shomei.Effect.InMemory.runInMemory` and asserts the round-trip, rotation, reuse-detection,
 logout, fail-closed, and generic-error behaviors. At the end of M3, the security-critical
 behaviors are demonstrated. Acceptance: `cabal test shomei-core` is green.
 
@@ -365,7 +365,7 @@ All commands run from the repository root `/Users/shinzui/Keikaku/bokuno/shomei`
 ### Step 1 — Edit the cabal file (M1)
 
 Add the EP-2 dependencies, the new library modules, and the test-suite to
-`packages/shomei-core/shomei-core.cabal`. The `library` stanza gains:
+`shomei-core/shomei-core.cabal`. The `library` stanza gains:
 
 ```cabal
 library
@@ -403,18 +403,18 @@ library
     Shomei.Domain.Event
     Shomei.Domain.SigningKey
     Shomei.Domain.Command
-    Shomei.Port.UserStore
-    Shomei.Port.CredentialStore
-    Shomei.Port.SessionStore
-    Shomei.Port.RefreshTokenStore
-    Shomei.Port.PasswordHasher
-    Shomei.Port.TokenSigner
-    Shomei.Port.TokenVerifier
-    Shomei.Port.AuthEventPublisher
-    Shomei.Port.SigningKeyStore
-    Shomei.Port.Clock
-    Shomei.Port.TokenGen
-    Shomei.Port.InMemory
+    Shomei.Effect.UserStore
+    Shomei.Effect.CredentialStore
+    Shomei.Effect.SessionStore
+    Shomei.Effect.RefreshTokenStore
+    Shomei.Effect.PasswordHasher
+    Shomei.Effect.TokenSigner
+    Shomei.Effect.TokenVerifier
+    Shomei.Effect.AuthEventPublisher
+    Shomei.Effect.SigningKeyStore
+    Shomei.Effect.Clock
+    Shomei.Effect.TokenGen
+    Shomei.Effect.InMemory
     Shomei.Workflow
 ```
 
@@ -472,7 +472,7 @@ Building library for shomei-core-0.1.0.0...
 
 M1 acceptance: this command exits 0.
 
-### Step 3 — Create the `Shomei.Port.*` modules and `Shomei.Port.InMemory` (M2)
+### Step 3 — Create the `Shomei.Effect.*` modules and `Shomei.Effect.InMemory` (M2)
 
 Create the eleven port modules and the interpreter module, then build:
 
@@ -480,7 +480,7 @@ Create the eleven port modules and the interpreter module, then build:
 cabal build shomei-core
 ```
 
-Expected: compiles the eleven `Shomei.Port.*` modules and `Shomei.Port.InMemory`, exits 0.
+Expected: compiles the eleven `Shomei.Effect.*` modules and `Shomei.Effect.InMemory`, exits 0.
 M2 acceptance.
 
 ### Step 4 — Create `Shomei.Workflow` and the test suite (M3)
@@ -562,7 +562,7 @@ idempotent and only recompile what changed; a stale-cache failure recovers with
 exposed-modules, and a test-suite); if the solver fails on a missing package, recover by
 confirming the package set in `nix develop` (EP-1's `flake.nix`) provides it — none of the EP-2
 deps are exotic (all are on the GHC 9.12 snapshot). No external state is mutated: there is no
-database, no migration, and no files outside `packages/shomei-core/`. If a workflow test fails,
+database, no migration, and no files outside `shomei-core/`. If a workflow test fails,
 the in-memory `World` is reconstructed fresh per test case (each test calls `runInMemory` with a
 new empty world), so there is no cross-test contamination to clean up.
 
@@ -1026,7 +1026,7 @@ form. **`UserStore`:**
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Shomei.Port.UserStore
+module Shomei.Effect.UserStore
   ( UserStore (..)
   , createUser, findUserById, findUserByEmail, updateUserStatus
   ) where
@@ -1101,27 +1101,27 @@ hashRefreshToken = send . HashRefreshToken
 The remaining eight ports follow the identical pattern. Their constructors and `send` smart
 constructors:
 
-- `Shomei.Port.CredentialStore` — `CreatePasswordCredential :: UserId -> Email -> PasswordHash
+- `Shomei.Effect.CredentialStore` — `CreatePasswordCredential :: UserId -> Email -> PasswordHash
   -> CredentialStore m Credential`; `FindPasswordCredentialByEmail :: Email -> CredentialStore m
   (Maybe Credential)`; `UpdatePasswordHash :: UserId -> PasswordHash -> CredentialStore m ()`.
-- `Shomei.Port.SessionStore` — `CreateSession :: NewSession -> SessionStore m Session`;
+- `Shomei.Effect.SessionStore` — `CreateSession :: NewSession -> SessionStore m Session`;
   `FindSessionById :: SessionId -> SessionStore m (Maybe Session)`; `RevokeSession :: SessionId
   -> UTCTime -> SessionStore m ()`; `RevokeAllUserSessions :: UserId -> UTCTime -> SessionStore m
   ()`.
-- `Shomei.Port.PasswordHasher` — `HashPassword :: PlainPassword -> PasswordHasher m
+- `Shomei.Effect.PasswordHasher` — `HashPassword :: PlainPassword -> PasswordHasher m
   PasswordHash`; `VerifyPassword :: PlainPassword -> PasswordHash -> PasswordHasher m Bool`.
-- `Shomei.Port.TokenSigner` — `SignAccessToken :: AuthClaims -> TokenSigner m AccessToken`.
-- `Shomei.Port.TokenVerifier` — `VerifyAccessToken :: AccessToken -> TokenVerifier m (Either
+- `Shomei.Effect.TokenSigner` — `SignAccessToken :: AuthClaims -> TokenSigner m AccessToken`.
+- `Shomei.Effect.TokenVerifier` — `VerifyAccessToken :: AccessToken -> TokenVerifier m (Either
   TokenError AuthClaims)`.
-- `Shomei.Port.AuthEventPublisher` — `PublishAuthEvent :: AuthEvent -> AuthEventPublisher m ()`.
-- `Shomei.Port.SigningKeyStore` — `ListActiveSigningKeys :: SigningKeyStore m [StoredSigningKey]`;
+- `Shomei.Effect.AuthEventPublisher` — `PublishAuthEvent :: AuthEvent -> AuthEventPublisher m ()`.
+- `Shomei.Effect.SigningKeyStore` — `ListActiveSigningKeys :: SigningKeyStore m [StoredSigningKey]`;
   `FindSigningKeyByKid :: Text -> SigningKeyStore m (Maybe StoredSigningKey)`; `InsertSigningKey
   :: StoredSigningKey -> SigningKeyStore m ()`; `UpdateSigningKeyStatus :: Text ->
   SigningKeyStatus -> UTCTime -> SigningKeyStore m ()`.
-- `Shomei.Port.Clock` — `Now :: Clock m UTCTime`; smart constructor `now :: (Clock :> es) => Eff
+- `Shomei.Effect.Clock` — `Now :: Clock m UTCTime`; smart constructor `now :: (Clock :> es) => Eff
   es UTCTime`.
 
-### In-memory interpreters — `Shomei.Port.InMemory`
+### In-memory interpreters — `Shomei.Effect.InMemory`
 
 A single mutable `World` holds every store's state plus the published-event log. The module
 exposes `emptyWorld`, the per-port handlers, and a `runInMemory` convenience that stacks all the

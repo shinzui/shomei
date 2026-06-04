@@ -22,7 +22,7 @@ core (`shomei-core`, from EP-2), the PostgreSQL persistence adapter and migratio
 (`shomei-postgres` / `shomei-migrations`, from EP-3), the JWT/JWKS adapter (`shomei-jwt`,
 from EP-4), and the Servant HTTP surface (`shomei-servant`, from EP-5). None of those, on
 its own, is something an operator can start and talk to. This plan creates
-`packages/shomei-server`: a Haskell **executable** (a cabal `Application` component — a
+`shomei-server`: a Haskell **executable** (a cabal `Application` component — a
 component that produces a runnable binary, as opposed to a `library` that only produces
 linkable code) that loads configuration, acquires a PostgreSQL connection pool, runs the
 schema migrations, bootstraps or loads the JWT signing keys, assembles every adapter
@@ -54,7 +54,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [x] M1: `packages/shomei-server/shomei-server.cabal` created (library + executable +
+- [x] M1: `shomei-server/shomei-server.cabal` created (library + executable +
   test-suite); `cabal build shomei-server` succeeds with the `Env` record, the `AppEffects`
   stack, and `runAppIO` compiling. (2026-06-03)
 - [x] M1: `Shomei.Server.App` (`Env`, `AppEffects`, `runAppIO`) written with the exact
@@ -193,7 +193,7 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-Delivered the purpose: `packages/shomei-server` is the first point where the whole of Shōmei
+Delivered the purpose: `shomei-server` is the first point where the whole of Shōmei
 runs as one process. `Shomei.Server.App` fixes the concrete `AppEffects` stack and `runAppIO`
 (the real PostgreSQL store interpreters + `Shomei.Crypto` Argon2id/token interpreters + EP-4's
 ES256 signer/verifier, with `Database`/`Error AuthError`/`IOE` at the base); `Shomei.Server.Config`
@@ -223,10 +223,10 @@ This section assumes no prior knowledge of the Shōmei internals beyond Haskell 
 
 **Where this plan sits.** Shōmei is a Haskell authentication toolkit (see the MasterPlan at
 `docs/masterplans/1-bootstrap-shomei-authentication-toolkit.md`). It is built as a stack of
-cabal packages under `packages/`. The packages relevant here, all delivered by earlier
+cabal packages under `/`. The packages relevant here, all delivered by earlier
 ExecPlans that are hard dependencies of this one, are:
 
-- `packages/shomei-core` (EP-2): the transport-agnostic domain. It defines the domain types
+- `shomei-core` (EP-2): the transport-agnostic domain. It defines the domain types
   and identifiers (`Shomei.Id`), the error types (`Shomei.Error.AuthError`,
   `Shomei.Error.TokenError`), the runtime configuration record `ShomeiConfig`, the **ports**
   — interfaces expressed as `effectful` effects — and the **workflows** (signup, login,
@@ -237,7 +237,7 @@ ExecPlans that are hard dependencies of this one, are:
   `SessionStore`, `RefreshTokenStore`, `PasswordHasher`, `TokenSigner`, `TokenVerifier`,
   `AuthEventPublisher`, `SigningKeyStore`, and the support effects `Clock` (current time) and
   `TokenGen` (random opaque tokens).
-- `packages/shomei-postgres` (EP-3): PostgreSQL interpreters for the store/publisher/
+- `shomei-postgres` (EP-3): PostgreSQL interpreters for the store/publisher/
   signing-key/clock ports, the Argon2id `PasswordHasher` interpreter, the `TokenGen`
   interpreter, and a hasql-based `Database` effect. ("hasql" is a fast PostgreSQL client
   library; a **pool** is a reusable set of connections.) Key surface this plan uses:
@@ -246,7 +246,7 @@ ExecPlans that are hard dependencies of this one, are:
   `runRefreshTokenStorePostgres`, `runSigningKeyStorePostgres`, `runAuthEventPublisherPostgres`,
   `runClockIO`, `runPasswordHasherArgon2`, `runTokenGenCrypto`. Pool creation is via
   `Hasql.Pool.acquire`.
-- `packages/shomei-migrations` (EP-3): codd-managed schema migrations. ("codd" is a
+- `shomei-migrations` (EP-3): codd-managed schema migrations. ("codd" is a
   migration tool for PostgreSQL.) Surface this plan uses:
   `runShomeiMigrationsNoCheck :: CoddSettings -> DiffTime -> IO ApplyResult` (apply pending
   migrations without the dev-time checksum verification), the `shomei-migrate` executable
@@ -254,14 +254,14 @@ ExecPlans that are hard dependencies of this one, are:
   `Shomei.Migrations.TestSupport.withShomeiMigratedDatabase :: (Text -> IO a) -> IO a`, which
   creates an ephemeral PostgreSQL database, applies all migrations, and hands the test a
   connection string.
-- `packages/shomei-jwt` (EP-4): the JWT/JWKS adapter. Surface this plan uses:
+- `shomei-jwt` (EP-4): the JWT/JWKS adapter. Surface this plan uses:
   `runTokenSignerJwt` / `runTokenVerifierJwt` (interpreters for the signer/verifier ports),
   `verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)` (the
   standalone verifier the auth handler calls), `jwksDocument` (build the public JWKS),
   the key generation/rotation operations over `SigningKeyStore` in `Shomei.Jwt.Rotation`,
   and JWK ↔ `StoredSigningKey` conversion. ("JWK" = JSON Web Key; "JWKSet" = a set of them;
   "kid" = key id.)
-- `packages/shomei-servant` (EP-5): the HTTP surface. Surface this plan uses: the
+- `shomei-servant` (EP-5): the HTTP surface. Surface this plan uses: the
   `ShomeiAPI` NamedRoutes record (a Servant API described as a Haskell record of routes),
   the request/response DTOs, the `AuthUser` principal, the `Authenticated` combinator
   (`AuthProtect "shomei-jwt"`) together with its `AuthHandler` and the `Context` it needs
@@ -269,7 +269,7 @@ ExecPlans that are hard dependencies of this one, are:
   the handlers, the `effToHandler` / `Env` seam pattern, and the error mapping from
   `AuthError`/`TokenError` to `ServerError`.
 
-**What does not yet exist.** There is no `packages/shomei-server` directory. There is no
+**What does not yet exist.** There is no `shomei-server` directory. There is no
 executable that brings these together; nobody has yet decided the concrete effect stack, the
 interpreter ordering, the configuration surface, or the startup sequence. This plan creates
 all of it.
@@ -297,10 +297,10 @@ per-action `effToHandler` seam that maps `runAppIO`'s `Either` result into a Ser
 port), and (2) it uses `serveWithContext` rather than `serve` because the API is
 authentication-protected.
 
-**Module layout this plan creates** (all under `packages/shomei-server/`):
+**Module layout this plan creates** (all under `shomei-server/`):
 
 ```text
-packages/shomei-server/
+shomei-server/
   shomei-server.cabal
   app/Main.hs                         -- thin entry point, calls Shomei.Server.Boot.main
   src/Shomei/Server/Config.hs         -- env-var reader -> ShomeiConfig + ServerSettings
@@ -328,7 +328,7 @@ adapter interpreters, proving the interpreter ordering is correct before any pro
 
 Edits:
 
-1. Create `packages/shomei-server/shomei-server.cabal`. Declare three components: a
+1. Create `shomei-server/shomei-server.cabal`. Declare three components: a
    `library` (the assembly modules, so the test-suite can import them without depending on
    the executable), an `executable shomei-server` (`type: Application`) that is a thin
    `Main` over the library, and a `test-suite shomei-server-test`. Both code components
@@ -414,7 +414,7 @@ plan hard-depends on them.
 
 ### Step 1 — Create the cabal file
 
-Create `packages/shomei-server/shomei-server.cabal`:
+Create `shomei-server/shomei-server.cabal`:
 
 ```cabal
 cabal-version: 3.4
@@ -487,7 +487,7 @@ the `packages:` list in the root `cabal.project`.
 
 ### Step 2 — The config reader
 
-Create `packages/shomei-server/src/Shomei/Server/Config.hs`. It reads these environment
+Create `shomei-server/src/Shomei/Server/Config.hs`. It reads these environment
 variables (each documented inline):
 
 ```text
@@ -556,7 +556,7 @@ default. They are written out in full during implementation; only the shape matt
 
 ### Step 3 — The effect stack and runner
 
-Create `packages/shomei-server/src/Shomei/Server/App.hs`. This is the heart of the
+Create `shomei-server/src/Shomei/Server/App.hs`. This is the heart of the
 assembly. The stack lists every port plus the support effects and the base:
 
 ```haskell
@@ -577,17 +577,17 @@ module Shomei.Server.App
 import Shomei.Prelude
 import Shomei.Config (ShomeiConfig)
 import Shomei.Error (AuthError)
-import Shomei.Port.UserStore (UserStore)
-import Shomei.Port.CredentialStore (CredentialStore)
-import Shomei.Port.SessionStore (SessionStore)
-import Shomei.Port.RefreshTokenStore (RefreshTokenStore)
-import Shomei.Port.PasswordHasher (PasswordHasher)
-import Shomei.Port.TokenSigner (TokenSigner)
-import Shomei.Port.TokenVerifier (TokenVerifier)
-import Shomei.Port.AuthEventPublisher (AuthEventPublisher)
-import Shomei.Port.SigningKeyStore (SigningKeyStore)
-import Shomei.Port.Clock (Clock)
-import Shomei.Port.TokenGen (TokenGen)
+import Shomei.Effect.UserStore (UserStore)
+import Shomei.Effect.CredentialStore (CredentialStore)
+import Shomei.Effect.SessionStore (SessionStore)
+import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
+import Shomei.Effect.PasswordHasher (PasswordHasher)
+import Shomei.Effect.TokenSigner (TokenSigner)
+import Shomei.Effect.TokenVerifier (TokenVerifier)
+import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
+import Shomei.Effect.SigningKeyStore (SigningKeyStore)
+import Shomei.Effect.Clock (Clock)
+import Shomei.Effect.TokenGen (TokenGen)
 
 import "shomei-postgres" Shomei.Postgres.Database (Database, runDatabasePool)
 import "shomei-postgres" Shomei.Postgres.UserStore (runUserStorePostgres)
@@ -686,7 +686,7 @@ deliverables during implementation; if a name differs, fix the import — the *o
 
 ### Step 4 — The servant seam
 
-Create `packages/shomei-server/src/Shomei/Server/Seam.hs`:
+Create `shomei-server/src/Shomei/Server/Seam.hs`:
 
 ```haskell
 {-# LANGUAGE DataKinds #-}
@@ -732,7 +732,7 @@ Linking ...
 
 ### Step 5 — Signing-key bootstrap
 
-Create `packages/shomei-server/src/Shomei/Server/Keys.hs`. The bootstrap runs *before* the
+Create `shomei-server/src/Shomei/Server/Keys.hs`. The bootstrap runs *before* the
 full `runAppIO` stack exists (there is no key yet to build `Env`), so it runs over a smaller
 stack: just `SigningKeyStore` + `Clock` + `TokenGen` + `Database` + `Error AuthError` + `IOE`
 interpreted against the pool. It (1) lists active keys, (2) if empty, generates an ES256 key
@@ -792,7 +792,7 @@ bootstrapKeys pool cfg = do
 
 ### Step 6 — The startup sequence (main) and warp boot
 
-Create `packages/shomei-server/src/Shomei/Server/Boot.hs`. The `main` performs the seven
+Create `shomei-server/src/Shomei/Server/Boot.hs`. The `main` performs the seven
 documented startup steps; `application` builds the WAI app with the auth `Context`.
 
 ```haskell
@@ -871,7 +871,7 @@ application env =
 against EP-3/EP-5; the load-bearing parts are the seven-step order, `serveWithContext` with
 the single-entry `Context`, and the verifier closing over `envJwks`/`envConfig`.)
 
-Create `packages/shomei-server/app/Main.hs`:
+Create `shomei-server/app/Main.hs`:
 
 ```haskell
 module Main (main) where
@@ -913,8 +913,8 @@ Expected:
 
 ### Step 7 — Automated end-to-end test
 
-Create `packages/shomei-server/test/Main.hs` (hspec driver) and
-`packages/shomei-server/test/Shomei/Server/E2ESpec.hs`. The spec:
+Create `shomei-server/test/Main.hs` (hspec driver) and
+`shomei-server/test/Shomei/Server/E2ESpec.hs`. The spec:
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
