@@ -32,6 +32,9 @@ library
   exposed-modules:
     Shomei.Jwt.Jwks
     Shomei.Jwt.Key
+    Shomei.Jwt.Rotation
+    Shomei.Jwt.Sign
+    Shomei.Jwt.Verify
 
   build-depends:
     , aeson
@@ -57,8 +60,11 @@ test-suite shomei-jwt-test
   hs-source-dirs: test
   main-is:        Main.hs
   other-modules:
+    Shomei.Jwt.InterpreterSpec
     Shomei.Jwt.JwksSpec
     Shomei.Jwt.KeySpec
+    Shomei.Jwt.SignVerifySpec
+    Shomei.Jwt.TestSupport
 
   build-depends:
     , aeson

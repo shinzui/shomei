@@ -75,12 +75,14 @@ This section must always reflect the actual current state of the work.
 - [x] Milestone 2 — `Shomei.Jwt.Jwks`: `jwksDocument` and the `KeySet` abstraction; JWKS
       JSON contains the right kid(s) and no private `d` field. (2026-06-03; scenario (g) shape
       half; the kid-selection half moves to M3's SignVerifySpec since it needs the signer)
-- [ ] Milestone 3 — `Shomei.Jwt.Sign`: ClaimsSet builder + `runTokenSignerJwt` interpreter.
-- [ ] Milestone 3 — `Shomei.Jwt.Verify`: `verifyToken` (the EP-5 contract) +
-      `runTokenVerifierJwt` interpreter; jose `JWTError` mapped to `TokenError`.
-- [ ] Milestone 3 — `Shomei.Jwt.Rotation`: rotation service over `SigningKeyStore` + `Clock`.
-- [ ] Milestone 3 — `test-suite shomei-jwt-test`: all eight test scenarios (a–h) green via
-      `cabal test shomei-jwt`.
+- [x] Milestone 3 — `Shomei.Jwt.Sign`: ClaimsSet builder + `runTokenSignerJwt` interpreter.
+      (2026-06-03)
+- [x] Milestone 3 — `Shomei.Jwt.Verify`: `verifyToken` (the EP-5 contract) +
+      `runTokenVerifierJwt` interpreter; jose `JWTError` mapped to `TokenError`. (2026-06-03)
+- [x] Milestone 3 — `Shomei.Jwt.Rotation`: rotation service over `SigningKeyStore` + `Clock`.
+      (2026-06-03)
+- [x] Milestone 3 — `test-suite shomei-jwt-test`: all eight test scenarios (a–h) green via
+      `cabal test shomei-jwt`. (2026-06-03; `All 9 tests passed`)
 
 
 ## Surprises & Discoveries
@@ -129,6 +131,38 @@ implementation. Provide concise evidence.
   `_NumericDate`. The `JWKSet` `VerificationKeyStore` instance returns **all** keys (no kid
   filtering), so verification simply tries each key — including the signing key in a multi-key
   set is what makes scenario (g) pass.
+- **`StringOrURI` round-trips in canonical form, so claim values must be built with
+  `fromString`, not the `string` prism.** Building `iss`/`aud` with `review string txt`
+  yields the `Arbitrary Text` constructor, but jose re-parses a scheme-bearing string (the
+  issuer `https://shomei.test`) into the `OrURI` constructor when decoding the token from
+  JSON. `Arbitrary "https://shomei.test" /= OrURI <uri>`, so the issuer/audience predicates
+  rejected every otherwise-valid token with `TokenIssuerInvalid`. Fix: construct *and* compare
+  via `fromString . Text.unpack` (the `IsString StringOrURI` instance = `fromJust . preview
+  stringOrUri`), which produces the same canonical form jose decodes to. To read a
+  `StringOrURI` back to `Text` regardless of form, use `Aeson.toJSON` (jose serialises both
+  forms to a JSON string) rather than `preview string` (which only matches `Arbitrary`).
+  Evidence: five of nine tests failed with `TokenIssuerInvalid` until the predicates and the
+  claim builder used `fromString`.
+- **jose decodes the JWT payload *before* checking the signature.** Tampering with the payload
+  segment (as the Plan-of-Work draft suggested) surfaces as `JWTClaimsSetDecodeError` →
+  `TokenMalformed`, not `TokenSignatureInvalid` — the corrupted payload fails JSON/claims
+  decoding before the signature is ever checked. To exercise scenario (c) (bad signature) the
+  test tampers the **signature** (third) segment instead, leaving the header and payload to
+  decode cleanly so the failure is a genuine signature mismatch (`JWSError JWSInvalidSignature`
+  / `JWSNoValidSignatures` → `TokenSignatureInvalid`). Evidence: the payload-tamper test
+  returned `Left TokenMalformed`; the signature-tamper test returns `Left
+  TokenSignatureInvalid`.
+- **jose 0.13 deprecates `addClaim`/`unregisteredClaims`** (in favour of payload subtypes).
+  Shōmei deliberately carries `sid`/`scopes`/`roles` as custom claims via these functions, so
+  `Shomei.Jwt.Sign` and `Shomei.Jwt.Verify` each carry a module-local
+  `{-# OPTIONS_GHC -Wno-deprecations #-}` to keep the build warning-clean. Migrating to a
+  `HasClaimsSet` payload subtype is possible later but out of scope for the bootstrap.
+- **`makeJWSHeader` is the right header builder, not `newJWSHeader (Protected, …)`.**
+  `signClaims` needs a `JWSHeader RequiredProtection`; `newJWSHeader (Protected, ES256)` builds
+  a `JWSHeader OptionalProtection`. `makeJWSHeader jwk` returns the correctly-protected header,
+  selects the algorithm with `bestJWSAlg` (ES256 for a P-256 key), and copies the key's `kid`
+  into the protected header automatically — so the signer never names ES256 or the kid
+  explicitly.
 
 
 ## Decision Log
@@ -255,6 +289,19 @@ Record every decision made while working on the plan.
   not exist until M3. The behavioral coverage of (g) is unchanged; only its home module differs.
   Date: 2026-06-03
 
+- Decision: `currentJwks` publishes whatever `listActiveSigningKeys` returns (filtered to
+  non-revoked), rather than adding a new `ListNonRevokedSigningKeys` query to the
+  `SigningKeyStore` port now.
+  Rationale: The EP-2 `SigningKeyStore` contract's `listActiveSigningKeys` returns only
+  `KeyActive` keys (confirmed in `Shomei.Port.InMemory`: `activeKeys w = [k | …, k.status ==
+  KeyActive]`). Including retired-but-valid keys in the JWKS (the zero-downtime-rotation goal)
+  would require extending the port — an EP-2 signature change with a cascade to EP-3's postgres
+  interpreter (MasterPlan IP-3). None of the bootstrap acceptance scenarios (a–h) exercise
+  rotation, so the minimal correct behavior for now is to publish the active key(s) and filter
+  out revoked ones defensively. Adding the non-revoked query is deferred to whichever later
+  plan first needs overlapping-key rotation; recorded here and noted in `Shomei.Jwt.Rotation`.
+  Date: 2026-06-03
+
 - Decision: `shomei-jwt` depends only on `shomei-core` plus `jose`/`crypton` and supporting
   libraries; it does **not** depend on `shomei-postgres`.
   Rationale: Signing keys cross into this package through the `SigningKeyStore` port effect as
@@ -269,7 +316,44 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-03): complete and green.** `packages/shomei-jwt` now builds against the
+PR-#137 `jose` (0.13, crypton 1.1.3, `ram`) on GHC 9.12.4 and `cabal test shomei-jwt` prints
+`All 9 tests passed`. The package delivers everything in the purpose statement:
+
+- `Shomei.Jwt.Key` — `generateSigningKey` (ES256/P-256, `kid` = RFC 7638 thumbprint),
+  `toStoredSigningKey`/`fromStoredSigningKey` (the only place that converts the opaque JWK JSON
+  in `StoredSigningKey` ↔ a live `jose` `JWK`), `keyKid`.
+- `Shomei.Jwt.Jwks` — `jwksDocument` (public-only JWKS), `KeySet`, `keySetPublicJwks`.
+- `Shomei.Jwt.Sign` — `claimsFromAuth`, `signAccessToken`, and the `runTokenSignerJwt`
+  `effectful` interpreter.
+- `Shomei.Jwt.Verify` — `verifyToken` (the EP-4 ↔ EP-5 `IO` contract), `runTokenVerifierJwt`,
+  and `jwtErrorToTokenError`.
+- `Shomei.Jwt.Rotation` — `rotateSigningKey` (over `SigningKeyStore` + `Clock`) and
+  `currentJwks`.
+
+The three observable demonstrations from the purpose all pass as tests (a, the JWKS-shape and
+kid-selection halves of g, b through f, and h). The package depends only on `shomei-core` plus
+the crypto stack — no `shomei-postgres` dependency — so it stays testable in isolation and
+reusable in the embedded deployment mode.
+
+**Gaps / deferrals.** (1) `currentJwks` publishes only the active key(s) until the
+`SigningKeyStore` port gains a non-revoked query (Decision Log); overlapping-key rotation is
+not yet demonstrable end-to-end. (2) Custom claims still use the jose-deprecated
+`addClaim`/`unregisteredClaims`; a `HasClaimsSet` payload subtype is the eventual clean path.
+
+**Lessons.** The dominant risks named in the plan (jose ↔ crypton-1.1, GHC 9.12.4 bounds) were
+real but resolved cleanly: the PR-#137 fork built with no `allow-newer`. The *unexpected* costs
+were API-shape mismatches the plan's draft code could not have known without reading jose:
+the `JOSE`/`runJOSE` monad (not `ExceptT`), `makeJWSHeader` (not `newJWSHeader (Protected, …)`),
+the `StringOrURI` canonical-form round-trip, and jose's decode-before-verify ordering. The
+Milestone-1 spike plus reading the on-disk jose source up front (rather than guessing) is what
+kept the build iterations low.
+
+**Cross-plan note for EP-5/EP-6.** The single hard contract is
+`verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)` in
+`Shomei.Jwt.Verify`; EP-5's `Authenticated` `AuthHandler` calls exactly this. The signer and
+verifier interpreters (`runTokenSignerJwt`/`runTokenVerifierJwt`) are the pieces EP-6 wires
+into the real interpreter stack.
 
 
 ## Context and Orientation
