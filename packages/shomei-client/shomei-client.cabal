@@ -16,6 +16,7 @@ common shared
   default-language:   GHC2024
   default-extensions:
     BlockArguments
+    DataKinds
     DeriveAnyClass
     DuplicateRecordFields
     MultilineStrings
@@ -25,11 +26,38 @@ common shared
     PackageImports
     QualifiedDo
     TemplateHaskell
+    TypeFamilies
 
 library
   import:          warnings, shared
   hs-source-dirs:  src
-  exposed-modules: Shomei.Client.Placeholder
+  exposed-modules: Shomei.Client
   build-depends:
-    , base         >=4.18 && <5
+    , base                >=4.18 && <5
+    , http-client
+    , http-client-tls
+    , servant
+    , servant-client
+    , servant-client-core
     , shomei-core
+    , shomei-servant
+    , text
+
+test-suite shomei-client-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , shomei-client
+    , shomei-core
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , shomei-servant
+    , shomei-server
+    , tasty
+    , tasty-hunit
+    , text
+    , warp
