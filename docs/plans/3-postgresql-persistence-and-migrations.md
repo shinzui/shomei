@@ -95,13 +95,18 @@ This section must always reflect the actual current state of the work.
   - [x] Add `create-database`, `migrate`, and `new-migration` recipes to the root
         `Justfile`. (2026-06-03)
   - [x] Register `shomei-migrations` (and `shomei-postgres`) in `mori.dhall`. (2026-06-03)
-- [ ] Milestone 2 — `shomei-postgres` `Database` effect + port interpreters + Argon2
-      hasher compile.
-  - [ ] Create `packages/shomei-postgres/shomei-postgres.cabal`.
-  - [ ] Write `packages/shomei-postgres/src/Shomei/Postgres/Database.hs`.
-  - [ ] Write the connection-pool helper and the example `hasql` statements.
-  - [ ] Write each port interpreter under `Shomei.Postgres.*`.
-  - [ ] Write `Shomei.Crypto` (Argon2id hasher + token generation).
+- [x] Milestone 2 — `shomei-postgres` `Database` effect + port interpreters + Argon2
+      hasher compile. (2026-06-03; `cabal build shomei-postgres` exit 0, zero warnings)
+  - [x] Create `packages/shomei-postgres/shomei-postgres.cabal`. (2026-06-03)
+  - [x] Write `packages/shomei-postgres/src/Shomei/Postgres/Database.hs`. (2026-06-03)
+  - [x] Write the connection-pool helper and the example `hasql` statements. (2026-06-03;
+        `acquirePool` uses `Hasql.Connection.Settings.connectionString` per the verified
+        hasql 1.10 / hasql-pool API — see Surprises)
+  - [x] Write each port interpreter under `Shomei.Postgres.*` (+ shared `Shomei.Postgres.Codec`).
+        (2026-06-03; adapted to the as-built EP-2 surface — see Decision Log)
+  - [x] Write `Shomei.Crypto` (Argon2id hasher + token generation + the `PasswordHasher`
+        and `TokenGen` interpreters). (2026-06-03; Argon2 `hash` returns `CryptoFailable`,
+        not `Either` — see Surprises)
 - [ ] Milestone 3 — Integration tests green: `cabal test shomei-postgres` passes,
       including the workflow-over-PostgreSQL scenario.
   - [ ] Write `test-suite shomei-postgres-test`.
@@ -114,7 +119,35 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **crypton's Argon2 `hash` returns `CryptoFailable`, not `Either`.** The plan's
+  `Shomei.Crypto` sketch pattern-matched `Left`/`Right`; the real signature (crypton 1.1.2,
+  `Crypto/KDF/Argon2.hs`) is
+  `hash :: (…) => Options -> password -> salt -> Int -> CryptoFailable out`. `deriveArgon2`
+  therefore matches `CryptoPassed digest` / `CryptoFailed e` (from `Crypto.Error`).
+
+- **hasql 1.10 `preparable` takes `Text` SQL (not `ByteString`), and the connection-string
+  API moved.** `Hasql.Statement.preparable :: Text -> Encoders.Params a -> Decoders.Result b
+  -> Statement a b` (the `"""…"""` literals are `Text` via `OverloadedStrings`). The pool is
+  built with `Hasql.Pool.Config.settings [Hasql.Pool.Config.staticConnectionSettings
+  (Hasql.Connection.Settings.connectionString connStr), Hasql.Pool.Config.size n]` —
+  `Hasql.Connection.Settings.connectionString :: Text -> Settings` — not the
+  `Hasql.Connection.Setting.Connection.*` path the plan guessed. (Installed: hasql 1.10.3.2,
+  hasql-pool 1.4.2, hasql-transaction 1.2.2.)
+
+- **`Shomei.Prelude` re-exports `liftIO` and `toJSON` (and the rest of the aeson class
+  surface).** Importing them again from `Effectful` / `Data.Aeson` triggers
+  `-Wunused-imports`; in modules that import `Shomei.Prelude`, take only the *additional*
+  names (`Value` from aeson; `Eff`/`IOE`/`(:>)` from Effectful) and let the prelude supply
+  `liftIO`/`toJSON`. (Same family of finding as EP-2's prelude note.)
+
+- **`contravariant-extras` provides `contrazip` up to at least 10**, so the 9-column
+  refresh-token insert uses `contrazip9` (verified in the unpacked
+  `contravariant-extras-0.3.5.4` source).
+
+- **codd/ephemeral-pg build cleanly from the IP-8 git pins.** The first `cabal build`
+  fetched `shinzui/codd-project` and `shinzui/ephemeral-pg` and compiled codd 0.1.8,
+  ephemeral-pg 0.2.1.0, hasql 1.10.3.2, haxl, postgresql-simple, etc. with no solver
+  conflicts under `allow-newer: haxl:time`.
 
 
 ## Decision Log

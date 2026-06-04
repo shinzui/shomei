@@ -2,12 +2,14 @@ cabal-version: 3.0
 name:          shomei-postgres
 version:       0.1.0.0
 synopsis:
-  PostgreSQL implementations of the core store ports and audit-event publisher
+  PostgreSQL adapters for Shōmei's store/publisher/signing-key ports
 
-license:       MIT
+license:       BSD-3-Clause
 author:        Nadeem Bitar
 maintainer:    nadeem@gmail.com
-category:      Web, Security, Database
+copyright:     2026 Nadeem Bitar
+category:      Database, Security
+build-type:    Simple
 
 common warnings
   ghc-options:
@@ -18,8 +20,11 @@ common shared
   default-language:   GHC2024
   default-extensions:
     BlockArguments
+    DataKinds
     DeriveAnyClass
     DuplicateRecordFields
+    GADTs
+    LambdaCase
     MultilineStrings
     OverloadedLabels
     OverloadedRecordDot
@@ -27,11 +32,59 @@ common shared
     PackageImports
     QualifiedDo
     TemplateHaskell
+    TypeFamilies
 
 library
   import:          warnings, shared
   hs-source-dirs:  src
-  exposed-modules: Shomei.Postgres.Placeholder
+  exposed-modules:
+    Shomei.Crypto
+    Shomei.Postgres.AuthEventPublisher
+    Shomei.Postgres.Clock
+    Shomei.Postgres.Codec
+    Shomei.Postgres.CredentialStore
+    Shomei.Postgres.Database
+    Shomei.Postgres.Pool
+    Shomei.Postgres.RefreshTokenStore
+    Shomei.Postgres.SessionStore
+    Shomei.Postgres.SigningKeyStore
+    Shomei.Postgres.UserStore
+
   build-depends:
-    , base         >=4.18 && <5
+    , aeson
+    , base                  >=4.18  && <5
+    , bytestring
+    , contravariant-extras
+    , crypton               >=1.1.0
+    , effectful
+    , effectful-core
+    , hasql                 >=1.10
+    , hasql-pool            >=1.2
+    , hasql-transaction     >=1.0
+    , ram
     , shomei-core
+    , text
+    , time
+    , uuid
+
+test-suite shomei-postgres-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  main-is:        Main.hs
+  hs-source-dirs: test
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , containers
+    , effectful
+    , effectful-core
+    , hasql
+    , hasql-pool
+    , shomei-core
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , tasty
+    , tasty-hunit
+    , text
+    , time
+    , uuid
