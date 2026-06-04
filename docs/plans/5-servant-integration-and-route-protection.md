@@ -82,10 +82,12 @@ This section must always reflect the actual current state of the work.
       the plan's `effToHandler` sketch; see Decision Log), and `Shomei.Servant.Handlers`
       (`shomeiServer`) compile against EP-2 workflows; the embedded `AppAPI` example compiles.
       `cabal build shomei-servant` green, fourmolu-clean. (2026-06-03)
-- [ ] Milestone 3 — In-process warp test green: `test-suite shomei-servant-test` boots the app
-      on an ephemeral port with EP-2 in-memory interpreters + a real in-test ES256 key and
-      exercises signup / login / me(+401, +garbage) / refresh / jwks / `RequireRole`(403/200);
-      `cabal test shomei-servant` passes.
+- [x] Milestone 3 — In-process warp test green: `test-suite shomei-servant-test` boots the app
+      on an ephemeral port with a **hybrid** stack (EP-2 in-memory stores + EP-4's real ES256
+      `runTokenSignerJwt`/`runTokenVerifierJwt`) and exercises signup / login / me(+401, +garbage)
+      / refresh / jwks / `RequireRole`(403/200); `cabal test shomei-servant` passes (1 sequential
+      case, 8 sub-assertions). Needed `-threaded` (warp's timer manager) and exporting EP-2's
+      individual in-memory interpreters (cascade — see Surprises). (2026-06-03)
 
 
 ## Surprises & Discoveries
@@ -116,6 +118,21 @@ implementation. Provide concise evidence.
   `jwksDocument :: [JWK] -> Data.ByteString.Lazy.ByteString` (and `keySetPublicJwks :: KeySet ->
   JWKSet` builds the public set for the verifier). The `jwks` route therefore serves a `Value`
   obtained by decoding the document once at assembly time.
+- **An honest end-to-end test needs a hybrid interpreter, which required a small EP-2 cascade.**
+  EP-2's `runInMemory` bundles a *fake* token signer (claims round-tripped through JSON), so a
+  real `jose` `verifyToken` could never verify its output — yet the jwks case and the
+  "real ES256" decision require real keys. The fix is a hybrid stack: EP-2's in-memory store
+  interpreters + EP-4's `runTokenSignerJwt`/`runTokenVerifierJwt`. That hybrid can't live in
+  `shomei-core` (it would import `shomei-jwt` → cycle), so it is composed in this plan's test —
+  which required EP-2 to **export its individual in-memory interpreters** (`runUserStore`,
+  `runCredentialStore`, …, `runTokenGen`), an additive, non-breaking change to
+  `Shomei.Port.InMemory`'s export list. The `Env.runPorts` runner is built from them in the same
+  effect order as `runInMemory`, which is exactly the order `AppEffects` fixes. The in-memory
+  `Clock` returns a fixed time, so the test seeds `emptyWorld` with the real current time so the
+  signed tokens are not already expired under real-wall-clock verification.
+- **warp's `testWithApplication` needs the threaded runtime.** Without `-threaded` the timer
+  manager throws (`getSystemTimerManager: the TimerManager requires linking against the threaded
+  runtime`). The test-suite stanza sets `ghc-options: -threaded -rtsopts -with-rtsopts=-N`.
 
 
 ## Decision Log
@@ -219,7 +236,29 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered exactly the purpose: `packages/shomei-servant` is the HTTP surface of Shōmei.
+`Shomei.Servant.API` owns IP-6 — the `ShomeiAPI` NamedRoutes record, every request/response DTO,
+and the `AuthUser` principal. `Shomei.Servant.Auth` provides the `Authenticated` combinator
+(custom `AuthProtect "shomei-jwt"` + `AuthHandler`) with Bearer-then-cookie extraction;
+`Shomei.Servant.Authz` provides the `requireRole`/`requireScope` guards (MVP) and the documented
+phantom combinators; `Shomei.Servant.Error` maps `AuthError` to a structured JSON `ServerError`
+(login collapses to a generic 401); `Shomei.Servant.Seam` is the per-action seam (`AppEffects`,
+`Env`, `runAuth`/`runPort`); `Shomei.Servant.Handlers` is `shomeiServer`. The end-to-end test
+boots the API over real HTTP with a hybrid (in-memory stores + real ES256) stack and proves every
+behavior: signup, login, me(+401 on missing/garbage), refresh rotation, the public JWKS document
+(kid present, no private `d`), and `RequireRole "admin"` (403 non-admin / 200 admin).
+
+Deviations from the plan's sketch (all in the Decision Log / Surprises): the library is jose-free
+(JWKS as a precomputed `Value`, verifier as a closure in `Env`); the seam runs workflows that
+already yield `Eff (Either AuthError a)` rather than wrapping a second `Either`; DTO mappers target
+the real EP-2 shapes; the phantom combinators avoid the `role`/`scope` names (GHC2024
+`RoleAnnotations`); and an honest test required exporting EP-2's individual in-memory interpreters
+(additive cascade) plus `-threaded`.
+
+Gaps / deferred (unchanged from scope): the `RequireRole`/`RequireScope` `HasServer` instances are
+left as documented future work; PostgreSQL wiring and the real signing-key bootstrap are EP-6;
+`me`/`session` read the live store row but do no extra authorization beyond the verified principal.
+Downstream (EP-6 serves `ShomeiAPI`; EP-7 derives the client from it) consumes IP-6 unchanged.
 
 
 ## Context and Orientation

@@ -118,7 +118,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 | 2 | Core domain model, ports, and auth workflows | docs/plans/2-core-domain-model-ports-and-auth-workflows.md | EP-1 | None | Complete |
 | 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | Complete |
 | 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Complete |
-| 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | In Progress |
+| 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Complete |
 | 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Not Started |
 | 7 | Haskell client and demo applications | docs/plans/7-haskell-client-and-demo-applications.md | EP-6 | EP-5 | Not Started |
 
@@ -252,8 +252,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests (2026-06-03; 9/9)
 - [x] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working (2026-06-03)
 - [x] EP-4: JWT sign → verify round-trip and JWKS public document validated (2026-06-03; `cabal test shomei-jwt`, 9/9)
-- [ ] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined
-- [ ] EP-5: handlers drive workflows; in-process warp test exercises signup/login/me
+- [x] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined (2026-06-03)
+- [x] EP-5: handlers drive workflows; in-process warp test exercises signup/login/me (2026-06-03; real-ES256 hybrid, 8/8 sub-assertions)
 - [ ] EP-6: `shomei-server` boots, loads config + keys, runs migrations, serves the API
 - [ ] EP-6: full `curl` walkthrough (signup→login→refresh→reuse-detect→logout→jwks) passes
 - [ ] EP-7: `shomei-client` round-trips against a live server
@@ -318,6 +318,31 @@ implementation. Provide concise evidence.
   payload *before* verifying the signature, so a corrupted payload reads as `TokenMalformed`,
   not `TokenSignatureInvalid`. EP-5/EP-6 reuse `verifyToken`/the interpreters and inherit these
   behaviors; they do not need to touch jose directly.
+- **EP-5: `shomei-servant`'s library stays jose-free; the JWKS/verifier cross the `Env` seam
+  (reinforces IP-4, affects EP-6 assembly).** EP-4's `verifyToken :: JWKSet -> ShomeiConfig ->
+  Text -> IO (Either TokenError AuthClaims)` is over *core* types, and the JWKS document can be a
+  precomputed `aeson` `Value`. So the servant **library** depends only on `shomei-core` (+
+  servant/wai/cookie/aeson), never `jose`. EP-6 must build the `Env` by partially applying EP-4:
+  `verifier = verifyToken jwks config` and `jwksJson = Aeson.decode (jwksDocument keys)`, then
+  serve with `serveWithContext shomeiAPI (authHandler env.verifier :. EmptyContext) (shomeiServer
+  env)`. Note `jwksDocument :: [JWK] -> ByteString` (the EP-5 plan's sketch had `JWKSet -> Value`).
+- **EP-5: the canonical port stack `AppEffects` is fixed and ordered (affects EP-6, IP-3).**
+  `Shomei.Servant.Seam.AppEffects` is `[UserStore, CredentialStore, SessionStore,
+  RefreshTokenStore, PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher,
+  SigningKeyStore, Clock, TokenGen, IOE]` — the same order as EP-2's `runInMemory`. `Env.runPorts
+  :: forall a. Eff AppEffects a -> IO a`; EP-6's postgres+jwt assembly must provide a runner for
+  exactly this stack/order. The seam is `runAuth`/`runPort` (workflows already return `Eff (Either
+  AuthError a)`, so the runner does not add a second `Either`).
+- **EP-5 cascaded a tiny, additive change into EP-2 (`Shomei.Port.InMemory`).** To test the real
+  ES256 sign/verify path with in-memory stores, EP-5's test composes a hybrid stack (EP-2 stores
+  + EP-4 `runTokenSignerJwt`/`runTokenVerifierJwt`), which can't live in `shomei-core` (cycle).
+  EP-2's `Shomei.Port.InMemory` now **exports its individual interpreters** (`runUserStore`, …,
+  `runTokenGen`) in addition to `runInMemory` — non-breaking, no signature changes (IP-3 intact).
+  EP-6 may reuse this pattern for any in-memory-backed tests.
+- **EP-5: GHC2024 makes `role`/`scope` context-sensitive keywords (affects any later plan with
+  phantom type params).** Under GHC2024 (`RoleAnnotations` on), a type-variable binder named
+  `role` fails to parse; `Shomei.Servant.Authz` uses `data RequireRole r` / `data RequireScope s`
+  with standalone kind signatures. Also: warp's `testWithApplication` needs `-threaded`.
 - **EP-4: `currentJwks` publishes only active keys for now (affects future rotation work).**
   The `SigningKeyStore.ListActiveSigningKeys` contract returns only `KeyActive` keys, so the
   published JWKS does not yet include retired-but-valid keys. Zero-downtime overlapping-key

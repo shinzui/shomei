@@ -16,6 +16,24 @@ module Shomei.Port.InMemory (
     World (..),
     emptyWorld,
     runInMemory,
+
+    -- * Individual interpreters
+
+    {- | Exported so an assembly can compose a /hybrid/ stack — e.g. these
+    in-memory store/support interpreters together with EP-4's real @jose@
+    'Shomei.Port.TokenSigner'/'Shomei.Port.TokenVerifier' interpreters — keeping
+    the same effect order as 'runInMemory'. ('Shomei.Servant''s end-to-end test
+    uses exactly that hybrid so signing/verification exercise real ES256.)
+    -}
+    runUserStore,
+    runCredentialStore,
+    runSessionStore,
+    runRefreshTokenStore,
+    runPasswordHasher,
+    runAuthEventPublisher,
+    runSigningKeyStore,
+    runClock,
+    runTokenGen,
 ) where
 
 import Shomei.Prelude
