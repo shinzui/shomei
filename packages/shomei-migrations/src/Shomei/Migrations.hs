@@ -4,13 +4,20 @@
 module Shomei.Migrations (
     shomeiMigrations,
     runShomeiMigrationsNoCheck,
+    coddSettingsFromConnString,
 ) where
 
-import Codd (ApplyResult (SchemasNotVerified), CoddSettings, applyMigrationsNoCheck)
+import Codd (ApplyResult (SchemasNotVerified), CoddSettings (..), applyMigrationsNoCheck)
 import Codd.Logging (runCoddLogger)
-import Codd.Parsing (AddedSqlMigration, EnvVars, PureStream (..), parseAddedSqlMigration)
+import Codd.Parsing (AddedSqlMigration, EnvVars, PureStream (..), connStringParser, parseAddedSqlMigration)
+import Codd.Representations.Types (DbRep (..))
+import Codd.Types (ConnectionString, SchemaAlgo (..), SchemaSelection (..), SqlSchema (..), TxnIsolationLvl (..), singleTryPolicy)
+import Data.Aeson (Value (Null))
+import Data.Attoparsec.Text (endOfInput, parseOnly)
 import Data.ByteString (ByteString)
 import Data.FileEmbed (embedDir)
+import Data.Map qualified as Map
+import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.Time (DiffTime)
 import Streaming.Prelude qualified as Streaming
@@ -42,3 +49,27 @@ runShomeiMigrationsNoCheck settings connectTimeout =
     runCoddLogger do
         migrations <- shomeiMigrations
         applyMigrationsNoCheck settings (Just migrations) connectTimeout (const (pure SchemasNotVerified))
+
+{- | Build codd settings directly from a libpq connection string (NOT from the
+@CODD_*@ environment). We always apply WITHOUT expected-schema verification, so
+@onDiskReps@ / @namespacesToCheck@ carry harmless placeholders. Used by the standalone
+server's startup migration and by the @test-support@ ephemeral-database helper.
+-}
+coddSettingsFromConnString :: Text -> CoddSettings
+coddSettingsFromConnString connStr =
+    CoddSettings
+        { migsConnString = parseConnString connStr
+        , sqlMigrations = []
+        , onDiskReps = Right (DbRep Null Map.empty Map.empty)
+        , namespacesToCheck = IncludeSchemas [SqlSchema "shomei", SqlSchema "public"]
+        , extraRolesToCheck = []
+        , retryPolicy = singleTryPolicy
+        , txnIsolationLvl = DbDefault
+        , schemaAlgoOpts = SchemaAlgo False False False
+        }
+
+parseConnString :: Text -> ConnectionString
+parseConnString connStr =
+    case parseOnly (connStringParser <* endOfInput) connStr of
+        Left err -> error ("Could not parse PostgreSQL connection string for codd: " <> err)
+        Right parsed -> parsed

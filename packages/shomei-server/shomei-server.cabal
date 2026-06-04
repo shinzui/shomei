@@ -16,8 +16,10 @@ common shared
   default-language:   GHC2024
   default-extensions:
     BlockArguments
+    DataKinds
     DeriveAnyClass
     DuplicateRecordFields
+    LambdaCase
     MultilineStrings
     OverloadedLabels
     OverloadedRecordDot
@@ -25,23 +27,68 @@ common shared
     PackageImports
     QualifiedDo
     TemplateHaskell
+    TypeApplications
+    TypeFamilies
+    TypeOperators
 
 library
   import:          warnings, shared
   hs-source-dirs:  src
-  exposed-modules: Shomei.Server.Placeholder
+  exposed-modules:
+    Shomei.Server.App
+    Shomei.Server.Boot
+    Shomei.Server.Config
+    Shomei.Server.Keys
+
   build-depends:
-    , base             >=4.18 && <5
+    , aeson
+    , base               >=4.18 && <5
+    , bytestring
+    , effectful
+    , effectful-core
+    , hasql-pool
+    , jose
+    , servant-server
     , shomei-core
     , shomei-jwt
+    , shomei-migrations
     , shomei-postgres
     , shomei-servant
+    , text
+    , time
+    , wai
+    , warp
 
 executable shomei-server
   import:         warnings, shared
   hs-source-dirs: app
   main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-    , base           >=4.18 && <5
-    , shomei-core
+    , base
     , shomei-server
+
+test-suite shomei-server-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  other-modules:  Shomei.Server.E2ESpec
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , hasql
+    , hasql-pool
+    , http-client
+    , http-types
+    , jose
+    , shomei-core
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , shomei-server
+    , tasty
+    , tasty-hunit
+    , text
+    , warp

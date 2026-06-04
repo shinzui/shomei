@@ -39,9 +39,12 @@ library
   hs-source-dirs:  src
   exposed-modules: Shomei.Migrations
   build-depends:
+    , aeson       >=2.1    && <2.3
+    , attoparsec
     , base        >=4.18   && <5
     , bytestring
     , codd        >=0.1.8  && <0.2
+    , containers
     , file-embed  >=0.0.15 && <0.0.17
     , streaming
     , text

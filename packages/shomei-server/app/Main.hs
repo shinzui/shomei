@@ -1,9 +1,9 @@
-{-# LANGUAGE PackageImports #-}
-
--- | Shōmei server entry point. EP-4 and EP-5 replace this with real server startup.
+{- | The single @shomei-server@ executable entry point; all logic lives in the
+@shomei-server@ library (the boot sequence).
+-}
 module Main (main) where
 
+import Shomei.Server.Boot qualified as Boot
+
 main :: IO ()
-main = do
-    putStrLn "Shōmei (証明) — authentication toolkit"
-    putStrLn "Server stub: EP-4 wires the real Servant application."
+main = Boot.main
