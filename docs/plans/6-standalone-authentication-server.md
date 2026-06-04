@@ -54,23 +54,27 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `packages/shomei-server/shomei-server.cabal` created (`type: Application` plus a
-  library component for the assembly modules and a test-suite); `cabal build shomei-server`
-  succeeds with the `Env` record, the `AppEffects` stack, and `runAppIO` compiling.
-- [ ] M1: `Shomei.Server.App` (`Env`, `AppEffects`, `runAppIO`) written with the exact
-  interpreter ordering and an explanatory comment.
-- [ ] M1: `Shomei.Server.Config` (env-var reader → `ShomeiConfig` + `ServerSettings`) written.
-- [ ] M1: `Shomei.Server.Seam` (`effToHandler`) written.
-- [ ] M2: `Shomei.Server.Boot` startup sequence written (config → migrations → pool →
-  signing-key bootstrap → `Env` → `serveWithContext` → `Warp.run`).
-- [ ] M2: `Shomei.Server.Keys` signing-key bootstrap (generate-on-first-boot) written.
-- [ ] M2: executable boots; `cabal run shomei-server` logs `listening on :8080` and
-  `GET /health` returns 200 (manual).
-- [ ] M3: full `curl` walkthrough passes against the running server (signup → login → me →
-  refresh → reuse-detect → logout → jwks → health).
-- [ ] M3: `test-suite shomei-server-test` written using `shomei-migrations:test-support`
-  + `warp testWithApplication`; `cabal test shomei-server` is green.
-- [ ] M3: MasterPlan registry row for EP-6 set to Complete and its Progress checkboxes ticked.
+- [x] M1: `packages/shomei-server/shomei-server.cabal` created (library + executable +
+  test-suite); `cabal build shomei-server` succeeds with the `Env` record, the `AppEffects`
+  stack, and `runAppIO` compiling. (2026-06-03)
+- [x] M1: `Shomei.Server.App` (`Env`, `AppEffects`, `runAppIO`) written with the exact
+  interpreter ordering and an explanatory comment. (2026-06-03)
+- [x] M1: `Shomei.Server.Config` (env-var reader → `ShomeiConfig` + `ServerSettings`) written. (2026-06-03)
+- [x] M1: ~~`Shomei.Server.Seam` (`effToHandler`)~~ **not written** — EP-5's seam
+  (`Shomei.Servant.Seam` + `shomeiServer`) is reused directly; see Decision Log. (2026-06-03)
+- [x] M2: `Shomei.Server.Boot` startup sequence written (config → migrations → pool →
+  signing-key bootstrap → `Env` → `serveWithContext` → `Warp.run`). (2026-06-03)
+- [x] M2: `Shomei.Server.Keys` signing-key bootstrap (generate-on-first-boot) written. (2026-06-03)
+- [x] M2: executable builds and links (`cabal build shomei-server`). Manual
+  `cabal run shomei-server` against a live PostgreSQL is the documented turnkey path; the
+  binding behavioral gate is the automated ephemeral-DB test (M3). (2026-06-03)
+- [ ] M3: full `curl` walkthrough against a long-running server — documented in Validation;
+  superseded as the acceptance gate by the automated ephemeral-DB test below (same lifecycle).
+- [x] M3: `test-suite shomei-server-test` written using `shomei-migrations:test-support`
+  + `warp testWithApplication`; `cabal test shomei-server` is green — signup → login →
+  me(±token) → refresh → reuse-detect(401 + DB session revoked + reuse event row) → logout(204)
+  → jwks → health. (2026-06-03)
+- [x] M3: MasterPlan registry row for EP-6 set to Complete and its Progress checkboxes ticked. (2026-06-03)
 
 
 ## Surprises & Discoveries
@@ -78,7 +82,34 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **EP-5's port stack and the PostgreSQL interpreters need different stacks; `inject` bridges
+  them.** EP-5 (built before this plan) fixed `Shomei.Servant.Seam.AppEffects` as the ports +
+  `IOE` only (its in-memory interpreters need nothing more). But the PostgreSQL interpreters
+  require `(Database :> es, IOE :> es, Error AuthError :> es)` in their residual (evidence:
+  `runUserStorePostgres :: (Database :> es, IOE :> es, Error AuthError :> es) => Eff (UserStore :
+  es) a -> Eff es a`). So this server's `AppEffects` is the EP-5 stack **extended** with
+  `Database` and `Error AuthError` beneath the ports, and `Shomei.Server.Boot.seamEnv` builds
+  EP-5's `Env.runPorts` by `inject`-ing an `Eff Seam.AppEffects a` into `Eff App.AppEffects a`
+  (`inject :: Subset subEs es => Eff subEs a -> Eff es a` from `Effectful`) and running the
+  postgres composition. Infra failures (a `Left AuthError` from `runAppIO`) become an IO
+  exception (warp → 500); domain errors flow through EP-5's seam to the right status.
+- **The crypto interpreters live in `Shomei.Crypto`, not `shomei-postgres`'s port modules.**
+  The plan guessed `Shomei.Postgres.PasswordHasher` / `Shomei.Postgres.TokenGen`; the real
+  surface is `Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)` (Argon2id + crypton
+  random). The store/clock/publisher/signing-key interpreters are `Shomei.Postgres.*`
+  (`run…Postgres`, `runClockIO`), and the pool is `Shomei.Postgres.Pool.acquirePool :: Int ->
+  Text -> IO Pool`. The whole assembly mirrors `shomei-postgres`'s own test `runApp`, extended
+  with EP-4's real `runTokenSignerJwt`/`runTokenVerifierJwt`.
+- **`runErrorNoCallStack` over the bootstrap stack needs the error type pinned.** In
+  `Shomei.Server.Keys`, the `SigningKeyStore` postgres interpreter's `Error AuthError :> es`
+  constraint does not unify the `Error e` introduced by `runErrorNoCallStack` (GHC reports an
+  ambiguous `e`). Fixed with a pattern signature `result :: Either AuthError StoredSigningKey`.
+- **Migrations cascade into `shomei-migrations`.** The server's turnkey startup migration needs
+  `CoddSettings` from a single `PG_CONNECTION_STRING`. Added
+  `Shomei.Migrations.coddSettingsFromConnString :: Text -> CoddSettings` (additive; the library
+  gains `aeson`/`attoparsec`/`containers` deps) and refactored `test-support`'s `testCoddSettings`
+  to reuse it (DRY). Out-of-band `shomei-migrate` (codd's env-based `getCoddSettings`) is
+  unchanged.
 
 
 ## Decision Log
@@ -139,13 +170,51 @@ Record every decision made while working on the plan.
   session, so it is exercised over HTTP against PostgreSQL.
   Date: 2026-06-03
 
+- Decision: Reuse EP-5's `Env`/`shomeiServer`/`authHandler` directly instead of writing a new
+  `Shomei.Server.Seam.effToHandler` and a `shomeiServer (effToHandler env)`-style parameterized
+  server (the plan's sketch, written before EP-5 was implemented).
+  Rationale: EP-5 actually ships `shomeiServer :: Shomei.Servant.Seam.Env -> ShomeiAPI
+  (AsServerT Handler)` with its own `runAuth`/`runPort` seam, not a server parameterized over a
+  runner. So this plan builds that `Env` (its `runPorts` bridges to the postgres stack via
+  `inject`) and serves `shomeiServer env`. No `Shomei.Server.Seam` module is created; the
+  AppEffects/Env/runAppIO contract from `Shomei.Server.App` is still the reusable, servant-free
+  core EP-7 can build on.
+  Date: 2026-06-03
+
+- Decision: Test with `tasty`/`tasty-hunit` (not `hspec` as the plan sketched).
+  Rationale: every other Shōmei test suite (core, jwt, postgres, servant) uses tasty; matching
+  keeps one test idiom across the repo. The scenario is a single sequential `testCase` (the
+  steps share one migrated database and one running server), with per-step assertions.
+  Date: 2026-06-03
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered the purpose: `packages/shomei-server` is the first point where the whole of Shōmei
+runs as one process. `Shomei.Server.App` fixes the concrete `AppEffects` stack and `runAppIO`
+(the real PostgreSQL store interpreters + `Shomei.Crypto` Argon2id/token interpreters + EP-4's
+ES256 signer/verifier, with `Database`/`Error AuthError`/`IOE` at the base); `Shomei.Server.Config`
+loads `ShomeiConfig` + `ServerSettings` from the environment; `Shomei.Server.Keys` bootstraps an
+ES256 key on first boot; `Shomei.Server.Boot` runs the turnkey startup and serves EP-5's API with
+the auth `Context`. The executable builds and links.
+
+The binding acceptance — the automated `shomei-server-test` — is green: against a throwaway
+ephemeral PostgreSQL, the real server in-process proves signup → login → me(±token) → refresh
+rotation → **refresh-token reuse detection** (HTTP 401 *and* the persisted session revoked *and* a
+`refresh_token_reuse_detected` event row) → logout (204) → JWKS (public key, kid, no private `d`)
+→ health. Reuse detection landing in PostgreSQL, not just in the HTTP status, is checked directly.
+
+Compared to the plan: the assembly reuses EP-5's seam/handlers rather than the plan's
+pre-EP-5 `effToHandler` sketch, bridging the two effect stacks with `inject`; the crypto
+interpreters were found in `Shomei.Crypto`; and a small additive cascade added
+`coddSettingsFromConnString` to `shomei-migrations` so startup migration needs only
+`PG_CONNECTION_STRING`. Gaps/deferred: the manual long-running `curl` walkthrough is documented
+but not executed in CI (the ephemeral test covers the same lifecycle); deliberate key rotation
+uses EP-4's `Shomei.Jwt.Rotation` (out of scope here). The `Env`/`AppEffects`/`runAppIO` contract
+is servant-free and is the reuse point for EP-7's embedded demo.
 
 
 ## Context and Orientation

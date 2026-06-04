@@ -83,7 +83,6 @@ test-suite shomei-server-test
     , hasql-pool
     , http-client
     , http-types
-    , jose
     , shomei-core
     , shomei-migrations:test-support
     , shomei-postgres

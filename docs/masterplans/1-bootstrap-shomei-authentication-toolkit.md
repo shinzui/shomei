@@ -119,7 +119,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 | 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | Complete |
 | 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Complete |
 | 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Complete |
-| 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Not Started |
+| 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Complete |
 | 7 | Haskell client and demo applications | docs/plans/7-haskell-client-and-demo-applications.md | EP-6 | EP-5 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -254,8 +254,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-4: JWT sign → verify round-trip and JWKS public document validated (2026-06-03; `cabal test shomei-jwt`, 9/9)
 - [x] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined (2026-06-03)
 - [x] EP-5: handlers drive workflows; in-process warp test exercises signup/login/me (2026-06-03; real-ES256 hybrid, 8/8 sub-assertions)
-- [ ] EP-6: `shomei-server` boots, loads config + keys, runs migrations, serves the API
-- [ ] EP-6: full `curl` walkthrough (signup→login→refresh→reuse-detect→logout→jwks) passes
+- [x] EP-6: `shomei-server` boots, loads config + keys, runs migrations, serves the API (2026-06-03)
+- [x] EP-6: full signup→login→me→refresh→reuse-detect→logout→jwks→health lifecycle passes over real HTTP against ephemeral PostgreSQL (2026-06-03; `cabal test shomei-server`, reuse persists session revocation + event)
 - [ ] EP-7: `shomei-client` round-trips against a live server
 - [ ] EP-7: embedded demo and microservice demo (downstream local JWT verification) run
 
@@ -343,6 +343,23 @@ implementation. Provide concise evidence.
   phantom type params).** Under GHC2024 (`RoleAnnotations` on), a type-variable binder named
   `role` fails to parse; `Shomei.Servant.Authz` uses `data RequireRole r` / `data RequireScope s`
   with standalone kind signatures. Also: warp's `testWithApplication` needs `-threaded`.
+- **EP-6: the assembled server reuses EP-5's seam and bridges the two effect stacks with
+  `inject` (affects EP-7 embedded mode).** EP-5's port stack (`Shomei.Servant.Seam.AppEffects`)
+  is ports + `IOE`; the PostgreSQL interpreters need `Database` + `Error AuthError` beneath the
+  ports. So `Shomei.Server.App.AppEffects` extends EP-5's stack with those two, and
+  `Shomei.Server.Boot` builds EP-5's `Env.runPorts` by `inject`-ing the smaller stack into the
+  larger postgres one (`runAppIO`). No new servant seam was written — EP-5's `shomeiServer` +
+  `authHandler` are reused directly. The plan's `effToHandler`/`Shomei.Server.Seam` sketch (written
+  before EP-5 existed) was superseded. EP-7 builds its embedded `Env` the same way.
+- **EP-6: crypto interpreters are in `Shomei.Crypto` (`runPasswordHasherCrypto`,
+  `runTokenGenCrypto`), not in `shomei-postgres`'s port modules.** The full real stack mirrors
+  `shomei-postgres`'s own test `runApp`, extended with EP-4's `runTokenSignerJwt` /
+  `runTokenVerifierJwt`. The pool comes from `Shomei.Postgres.Pool.acquirePool`.
+- **EP-6 cascaded `coddSettingsFromConnString` into `shomei-migrations` (IP-7).** The standalone
+  server runs migrations at startup from a single `PG_CONNECTION_STRING`, so
+  `Shomei.Migrations` gained `coddSettingsFromConnString :: Text -> CoddSettings` (additive; the
+  library gained `aeson`/`attoparsec`/`containers`), and `test-support` was refactored to reuse
+  it. EP-7 and any operator tooling can build codd settings from a connection string the same way.
 - **EP-4: `currentJwks` publishes only active keys for now (affects future rotation work).**
   The `SigningKeyStore.ListActiveSigningKeys` contract returns only `KeyActive` keys, so the
   published JWKS does not yet include retired-but-valid keys. Zero-downtime overlapping-key
