@@ -40,6 +40,7 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- NB: 'embedDir' is a Template Haskell splice evaluated at COMPILE time. A brand-new
 -- .sql file under sql-migrations/ is not re-embedded until this module is recompiled;
 -- the @migrate@ Justfile recipe touches the .cabal first to force that rebuild.
+-- Account-lifecycle migrations were added on 2026-06-04, so this module must recompile.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 

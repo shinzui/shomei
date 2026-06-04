@@ -157,20 +157,25 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone M2 — codd migrations + PostgreSQL interpreters + integration tests
 
-- [ ] M2.1 Add migration `…-shomei-users-email-verified.sql` (add
-      `email_verified_at timestamptz NULL` to `shomei_users`).
-- [ ] M2.2 Add migration `…-shomei-email-verification-tokens.sql`.
-- [ ] M2.3 Add migration `…-shomei-password-reset-tokens.sql`.
-- [ ] M2.4 Extend `Shomei.Postgres.UserStore` mapping for `email_verified_at` +
-      `MarkUserEmailVerified`.
-- [ ] M2.5 Create `shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs`.
-- [ ] M2.6 Create `shomei-postgres/src/Shomei/Postgres/PasswordResetTokenStore.hs`.
-- [ ] M2.7 Extend `Shomei.Postgres.Codec` with one-time-token status codecs.
-- [ ] M2.8 Update `shomei-postgres/shomei-postgres.cabal` exposed-modules.
-- [ ] M2.9 Extend `shomei-postgres/test/Main.hs` with token round-trip and
+- [x] M2.1 Add migration `…-shomei-users-email-verified.sql` (add
+      `email_verified_at timestamptz NULL` to `shomei_users`). Completed 2026-06-04.
+- [x] M2.2 Add migration `…-shomei-email-verification-tokens.sql`. Completed 2026-06-04.
+- [x] M2.3 Add migration `…-shomei-password-reset-tokens.sql`. Completed 2026-06-04.
+- [x] M2.4 Extend `Shomei.Postgres.UserStore` mapping for `email_verified_at` +
+      `MarkUserEmailVerified`. Completed 2026-06-04.
+- [x] M2.5 Create `shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs`.
+      Completed 2026-06-04.
+- [x] M2.6 Create `shomei-postgres/src/Shomei/Postgres/PasswordResetTokenStore.hs`.
+      Completed 2026-06-04.
+- [x] M2.7 Extend `Shomei.Postgres.Codec` with one-time-token status codecs. Completed
+      2026-06-04.
+- [x] M2.8 Update `shomei-postgres/shomei-postgres.cabal` exposed-modules. Completed
+      2026-06-04.
+- [x] M2.9 Extend `shomei-postgres/test/Main.hs` with token round-trip and
       account-workflow-over-PostgreSQL tests; acceptance `cabal test shomei-postgres` green.
-- [ ] M2.10 Run `just migrate`; `\d shomei.shomei_email_verification_tokens` and the reset
-      table exist; `shomei_users` has the new column.
+      Completed 2026-06-04.
+- [x] M2.10 Run `just migrate`; `\d shomei.shomei_email_verification_tokens` and the reset
+      table exist; `shomei_users` has the new column. Completed 2026-06-04.
 
 ### Milestone M3 — ShomeiAPI routes + handlers + DTOs + config wiring
 
@@ -200,6 +205,12 @@ implementation. Provide concise evidence.
   `RefreshToken`/`RefreshTokenHash` text into `OneTimeToken`/`OneTimeTokenHash`; no new random
   byte or hashing implementation was needed. Evidence: `nix develop --command cabal test
   shomei-core` passed all 15 tests, including the new account-token cases.
+- 2026-06-04: Touching `shomei-migrations/shomei-migrations.cabal` was not sufficient to
+  force Cabal to re-run the `embedDir` splice during the test run; changing
+  `shomei-migrations/src/Shomei/Migrations.hs` itself made the migration library rebuild and
+  the codd transcript then reported 10 migrations. Evidence: the successful
+  `nix develop --command cabal test shomei-postgres` run applied the three
+  `2026-06-04-*` migrations in each throwaway database.
 
 
 ## Decision Log
@@ -284,6 +295,13 @@ Compare the result against the original purpose.
   workflows, and in-memory interpreters. `nix develop --command cabal test shomei-core`
   passes with 15 tests, including eight account lifecycle cases. M2 remains: migrations,
   PostgreSQL interpreters, and integration tests.
+- 2026-06-04: Milestone M2 is complete. The migration package embeds the three new
+  account-lifecycle migrations; PostgreSQL adapters now persist `email_verified_at`, email
+  verification tokens, and password-reset tokens; and the PostgreSQL integration suite covers
+  direct token round trips plus account verification and password reset workflows over a real
+  ephemeral database. `nix develop --command cabal test shomei-postgres` passes with 14 tests,
+  `nix develop --command cabal build all` passes, and `nix develop --command just migrate`
+  applied the three new migrations to the local `shomei` database.
 
 
 ## Context and Orientation

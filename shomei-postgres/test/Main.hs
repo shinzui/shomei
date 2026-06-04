@@ -7,10 +7,12 @@ PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
 import Data.Int (Int64)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time (addUTCTime)
 
-import Effectful (Eff, IOE, runEff)
+import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 
@@ -26,29 +28,56 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (RefreshCommand (..), SignupCommand (..))
+import Shomei.Domain.Command (LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.Notification (Notification (..))
+import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PlainPassword (..))
+import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (NewUser (..), User (..))
+import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Error (AuthError (RefreshTokenReuseDetected))
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail)
+import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword)
+import Shomei.Effect.PasswordResetTokenStore (
+    PasswordResetTokenStore,
+    createPasswordResetToken,
+    findPasswordResetTokenByHash,
+    markPasswordResetTokenConsumed,
+ )
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
 import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
-import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById)
-import Shomei.Workflow (refresh, signup)
+import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, markUserEmailVerified)
+import Shomei.Effect.VerificationTokenStore (
+    VerificationTokenStore,
+    createVerificationToken,
+    findVerificationTokenByHash,
+    markVerificationTokenConsumed,
+ )
+import Shomei.Workflow (login, refresh, signup)
+import Shomei.Workflow.Account (
+    ConfirmEmailVerification (..),
+    ConfirmPasswordReset (..),
+    RequestEmailVerification (..),
+    RequestPasswordReset (..),
+    confirmEmailVerification,
+    confirmPasswordReset,
+    requestEmailVerification,
+    requestPasswordReset,
+ )
 
 import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -56,11 +85,13 @@ import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
+import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 
 {- | The full interpreter stack used by every test. The store interpreters are peeled
 first (Database/IOE/Error remain available to them); @TokenSigner@ is a trivial fake
@@ -71,6 +102,9 @@ type AppEffects =
      , CredentialStore
      , SessionStore
      , RefreshTokenStore
+     , VerificationTokenStore
+     , PasswordResetTokenStore
+     , Notifier
      , AuthEventPublisher
      , SigningKeyStore
      , TokenSigner
@@ -83,7 +117,12 @@ type AppEffects =
      ]
 
 runApp :: Pool -> Eff AppEffects a -> IO (Either AuthError a)
-runApp pool =
+runApp pool action = do
+    ref <- newIORef []
+    runAppWithNotifications ref pool action
+
+runAppWithNotifications :: IORef [Notification] -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
+runAppWithNotifications ref pool =
     runEff
         . runErrorNoCallStack
         . runDatabasePool pool
@@ -93,6 +132,9 @@ runApp pool =
         . runTokenSignerFake
         . runSigningKeyStorePostgres
         . runAuthEventPublisherPostgres
+        . runNotifierRef ref
+        . runPasswordResetTokenStorePostgres
+        . runVerificationTokenStorePostgres
         . runRefreshTokenStorePostgres
         . runSessionStorePostgres
         . runCredentialStorePostgres
@@ -104,6 +146,10 @@ the access token's contents.
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFake = interpret_ \case
     SignAccessToken _ -> pure (AccessToken "test-access-token")
+
+runNotifierRef :: (IOE :> es) => IORef [Notification] -> Eff (Notifier : es) a -> Eff es a
+runNotifierRef ref = interpret_ \case
+    SendNotification n -> liftIO (modifyIORef' ref (n :))
 
 -- Helpers --------------------------------------------------------------------
 
@@ -160,11 +206,16 @@ tests =
     , testCredentialRoundTrip
     , testSessionRevoke
     , testRefreshTokenMarkUsed
+    , testVerificationTokenRoundTrip
+    , testPasswordResetTokenRoundTrip
+    , testMarkUserEmailVerified
     , testSigningKeys
     , testPublishEvent
     , testWorkflowSignup
     , testWorkflowRefreshRotation
     , testWorkflowReuseRevokesFamily
+    , testWorkflowAccountVerification
+    , testWorkflowPasswordReset
     ]
 
 testUserRoundTrip :: TestTree
@@ -227,6 +278,60 @@ testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-
     (beforeUse, afterUse) <- expectApp result
     fmap (.status) beforeUse @?= Just RefreshTokenActive
     fmap (.status) afterUse @?= Just RefreshTokenUsed
+
+testVerificationTokenRoundTrip :: TestTree
+testVerificationTokenRoundTrip = testCase "create verification token + consume" $ withDb \pool -> do
+    result <- runApp pool do
+        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        t <- now
+        let h = OneTimeTokenHash "hash:verify-1"
+        persisted <-
+            createVerificationToken
+                NewVerificationToken
+                    { userId = u.userId
+                    , tokenHash = h
+                    , createdAt = t
+                    , expiresAt = addUTCTime 3600 t
+                    }
+        before <- findVerificationTokenByHash h
+        markVerificationTokenConsumed persisted.verificationTokenId t
+        after <- findVerificationTokenByHash h
+        pure (before, after)
+    (before, after) <- expectApp result
+    fmap (.status) before @?= Just OneTimeTokenActive
+    fmap (.status) after @?= Just OneTimeTokenConsumed
+
+testPasswordResetTokenRoundTrip :: TestTree
+testPasswordResetTokenRoundTrip = testCase "create password reset token + consume" $ withDb \pool -> do
+    result <- runApp pool do
+        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        t <- now
+        let h = OneTimeTokenHash "hash:reset-1"
+        persisted <-
+            createPasswordResetToken
+                NewPasswordResetToken
+                    { userId = u.userId
+                    , tokenHash = h
+                    , createdAt = t
+                    , expiresAt = addUTCTime 3600 t
+                    }
+        before <- findPasswordResetTokenByHash h
+        markPasswordResetTokenConsumed persisted.passwordResetTokenId t
+        after <- findPasswordResetTokenByHash h
+        pure (before, after)
+    (before, after) <- expectApp result
+    fmap (.status) before @?= Just OneTimeTokenActive
+    fmap (.status) after @?= Just OneTimeTokenConsumed
+
+testMarkUserEmailVerified :: TestTree
+testMarkUserEmailVerified = testCase "mark user email verified sets the timestamp" $ withDb \pool -> do
+    result <- runApp pool do
+        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        t <- now
+        markUserEmailVerified u.userId t
+        findUserById u.userId
+    found <- expectApp result
+    assertBool "email_verified_at is populated" (maybe False (isJust . (.emailVerifiedAt)) found)
 
 testSigningKeys :: TestTree
 testSigningKeys = testCase "insert + list signing keys" $ withDb \pool -> do
@@ -298,3 +403,50 @@ testWorkflowReuseRevokesFamily = testCase "workflow: reuse revokes the family + 
     revokedSessions <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status = 'revoked'"
     assertBool "every refresh token in the family is revoked" (revokedToks == totalToks)
     revokedSessions @?= 1
+
+testWorkflowAccountVerification :: TestTree
+testWorkflowAccountVerification = testCase "workflow: account verification consumes token + marks user" $ withDb \pool -> do
+    notifications <- newIORef []
+    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (user, _) <- expectApp signupRes >>= expectRight
+    requestRes <- runAppWithNotifications notifications pool (requestEmailVerification cfg (RequestEmailVerification user.email))
+    _ <- expectApp requestRes >>= expectRight
+    raw <- latestVerificationToken =<< readIORef notifications
+    confirmRes <- runAppWithNotifications notifications pool (confirmEmailVerification cfg (ConfirmEmailVerification raw))
+    _ <- expectApp confirmRes >>= expectRight
+    verified <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email_verified_at IS NOT NULL"
+    consumed <- scalarInt pool "SELECT count(*) FROM shomei.shomei_email_verification_tokens WHERE status = 'consumed'"
+    verified @?= 1
+    consumed @?= 1
+
+testWorkflowPasswordReset :: TestTree
+testWorkflowPasswordReset = testCase "workflow: password reset changes password and revokes sessions" $ withDb \pool -> do
+    notifications <- newIORef []
+    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (_, pair) <- expectApp signupRes >>= expectRight
+    requestRes <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+    _ <- expectApp requestRes >>= expectRight
+    raw <- latestResetToken =<< readIORef notifications
+    confirmRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset raw (PlainPassword "correct horse battery staple two")))
+    _ <- expectApp confirmRes >>= expectRight
+    loginRes <- runAppWithNotifications notifications pool (login cfg (LoginCommand aliceEmail (PlainPassword "correct horse battery staple two")))
+    _ <- expectApp loginRes >>= expectRight
+    oldRefreshRes <- runAppWithNotifications notifications pool (refresh cfg (RefreshCommand pair.refreshToken))
+    oldRefresh <- expectApp oldRefreshRes
+    oldRefresh @?= Left RefreshTokenReuseDetected
+    consumed <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_reset_tokens WHERE status = 'consumed'"
+    revokedSessions <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status = 'revoked'"
+    revokedRefresh <- scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status = 'revoked'"
+    consumed @?= 1
+    assertBool "existing sessions are revoked" (revokedSessions >= 1)
+    assertBool "existing refresh tokens are revoked" (revokedRefresh >= 1)
+
+latestVerificationToken :: [Notification] -> IO OneTimeToken
+latestVerificationToken = \case
+    EmailVerificationRequested{token = raw} : _ -> pure raw
+    _ -> assertFailure "expected email-verification notification"
+
+latestResetToken :: [Notification] -> IO OneTimeToken
+latestResetToken = \case
+    PasswordResetRequested{token = raw} : _ -> pure raw
+    _ -> assertFailure "expected password-reset notification"

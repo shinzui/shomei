@@ -371,6 +371,14 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   scratch. The child packaging plan now says "extend" and explicitly preserves existing
   exports used by `Shomei.Server.Boot`, the executable, and tests.
 
+- **2026-06-04 migration embedding requires a source rebuild.** During EP-1 M2, adding new
+  `.sql` files and touching `shomei-migrations/shomei-migrations.cabal` was not enough for
+  the PostgreSQL test run to see the new migrations; the embedded migration list still
+  reported seven files. A small source change to `shomei-migrations/src/Shomei/Migrations.hs`
+  forced the `embedDir` Template Haskell splice to re-run, after which codd reported 10
+  migrations and applied the three `2026-06-04-*` files. Later plans that append migrations
+  should make sure this module actually recompiles before trusting tests or `just migrate`.
+
 
 ## Decision Log
 

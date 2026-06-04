@@ -10,6 +10,8 @@ module Shomei.Postgres.Codec (
     sessionStatusFromText,
     refreshTokenStatusToText,
     refreshTokenStatusFromText,
+    oneTimeTokenStatusToText,
+    oneTimeTokenStatusFromText,
     signingKeyStatusToText,
     signingKeyStatusFromText,
     emailFromDb,
@@ -20,6 +22,7 @@ import Shomei.Prelude
 
 import Data.Text qualified as Text
 import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.OneTimeToken (OneTimeTokenStatus (..))
 import Shomei.Domain.RefreshToken (RefreshTokenStatus (..))
 import Shomei.Domain.Session (SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..))
@@ -68,6 +71,21 @@ refreshTokenStatusFromText = \case
     "revoked" -> Right RefreshTokenRevoked
     "expired" -> Right RefreshTokenExpired
     t -> Left ("unknown refresh-token status: " <> t)
+
+oneTimeTokenStatusToText :: OneTimeTokenStatus -> Text
+oneTimeTokenStatusToText = \case
+    OneTimeTokenActive -> "active"
+    OneTimeTokenConsumed -> "consumed"
+    OneTimeTokenRevoked -> "revoked"
+    OneTimeTokenExpired -> "expired"
+
+oneTimeTokenStatusFromText :: Text -> Either Text OneTimeTokenStatus
+oneTimeTokenStatusFromText = \case
+    "active" -> Right OneTimeTokenActive
+    "consumed" -> Right OneTimeTokenConsumed
+    "revoked" -> Right OneTimeTokenRevoked
+    "expired" -> Right OneTimeTokenExpired
+    t -> Left ("unknown one-time-token status: " <> t)
 
 signingKeyStatusToText :: SigningKeyStatus -> Text
 signingKeyStatusToText = \case

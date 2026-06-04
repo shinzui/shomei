@@ -24,7 +24,9 @@ import Shomei.Effect.UserStore (UserStore (..))
 import Shomei.Postgres.Codec (emailFromDb, tshow, userStatusFromText, userStatusToText)
 import Shomei.Postgres.Database (Database, runSession)
 
-type UserRow = (UUID, Text, Maybe Text, Text, UTCTime, UTCTime)
+type InsertUserRow = (UUID, Text, Maybe Text, Text, UTCTime, UTCTime)
+
+type UserRow = (UUID, Text, Maybe Text, Text, Maybe UTCTime, UTCTime, UTCTime)
 
 runUserStorePostgres ::
     (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -48,8 +50,9 @@ runUserStorePostgres = interpret_ \case
     UpdateUserStatus uid st -> do
         res <- runSession (Session.statement (userIdToUUID uid, userStatusToText st) updateUserStatusStmt)
         either dbFail (const (pure ())) res
-    MarkUserEmailVerified _uid _ts ->
-        throwError (InternalAuthError "email verification persistence requires the account-lifecycle migration")
+    MarkUserEmailVerified uid ts -> do
+        res <- runSession (Session.statement (userIdToUUID uid, ts) markEmailVerifiedStmt)
+        either dbFail (const (pure ())) res
   where
     dbFail e = throwError (InternalAuthError ("database error: " <> tshow e))
     rebuild r = either (throwError . InternalAuthError) pure (rebuildUser r)
@@ -67,7 +70,7 @@ mkUser uid nu ts =
         }
 
 rebuildUser :: UserRow -> Either Text User
-rebuildUser (uid, e, dn, st, c, u) = do
+rebuildUser (uid, e, dn, st, verified, c, u) = do
     email <- emailFromDb e
     status <- userStatusFromText st
     pure
@@ -76,22 +79,23 @@ rebuildUser (uid, e, dn, st, c, u) = do
             , email = email
             , displayName = dn
             , status = status
-            , emailVerifiedAt = Nothing
+            , emailVerifiedAt = verified
             , createdAt = c
             , updatedAt = u
             }
 
 userRowDecoder :: D.Row UserRow
 userRowDecoder =
-    (,,,,,)
+    (,,,,,,)
         <$> D.column (D.nonNullable D.uuid)
         <*> D.column (D.nonNullable D.text)
         <*> D.column (D.nullable D.text)
         <*> D.column (D.nonNullable D.text)
+        <*> D.column (D.nullable D.timestamptz)
         <*> D.column (D.nonNullable D.timestamptz)
         <*> D.column (D.nonNullable D.timestamptz)
 
-insertUserStmt :: Statement UserRow ()
+insertUserStmt :: Statement InsertUserRow ()
 insertUserStmt =
     preparable
         """
@@ -113,7 +117,7 @@ findUserByIdStmt :: Statement UUID (Maybe UserRow)
 findUserByIdStmt =
     preparable
         """
-        SELECT user_id, email, display_name, status, created_at, updated_at
+        SELECT user_id, email, display_name, status, email_verified_at, created_at, updated_at
         FROM shomei.shomei_users
         WHERE user_id = $1
         """
@@ -124,7 +128,7 @@ findUserByEmailStmt :: Statement Text (Maybe UserRow)
 findUserByEmailStmt =
     preparable
         """
-        SELECT user_id, email, display_name, status, created_at, updated_at
+        SELECT user_id, email, display_name, status, email_verified_at, created_at, updated_at
         FROM shomei.shomei_users
         WHERE email = $1
         """
@@ -138,4 +142,15 @@ updateUserStatusStmt =
         UPDATE shomei.shomei_users SET status = $2 WHERE user_id = $1
         """
         (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.text)))
+        D.noResult
+
+markEmailVerifiedStmt :: Statement (UUID, UTCTime) ()
+markEmailVerifiedStmt =
+    preparable
+        """
+        UPDATE shomei.shomei_users
+        SET email_verified_at = $2, updated_at = $2
+        WHERE user_id = $1
+        """
+        (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
         D.noResult
