@@ -120,7 +120,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 | 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Complete |
 | 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Complete |
 | 6 | Standalone authentication server | docs/plans/6-standalone-authentication-server.md | EP-3, EP-4, EP-5 | None | Complete |
-| 7 | Haskell client and demo applications | docs/plans/7-haskell-client-and-demo-applications.md | EP-6 | EP-5 | Not Started |
+| 7 | Haskell client and demo applications | docs/plans/7-haskell-client-and-demo-applications.md | EP-6 | EP-5 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -256,8 +256,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-5: handlers drive workflows; in-process warp test exercises signup/login/me (2026-06-03; real-ES256 hybrid, 8/8 sub-assertions)
 - [x] EP-6: `shomei-server` boots, loads config + keys, runs migrations, serves the API (2026-06-03)
 - [x] EP-6: full signup→login→me→refresh→reuse-detect→logout→jwks→health lifecycle passes over real HTTP against ephemeral PostgreSQL (2026-06-03; `cabal test shomei-server`, reuse persists session revocation + event)
-- [ ] EP-7: `shomei-client` round-trips against a live server
-- [ ] EP-7: embedded demo and microservice demo (downstream local JWT verification) run
+- [x] EP-7: `shomei-client` round-trips against a live server (2026-06-03; derived from `ShomeiAPI`, `cabal test shomei-client`)
+- [x] EP-7: embedded demo and microservice demo (downstream local JWT verification) run (2026-06-03; both have in-process automated tests, 401/200 + tampered-401)
 
 
 ## Surprises & Discoveries
@@ -360,6 +360,18 @@ implementation. Provide concise evidence.
   `Shomei.Migrations` gained `coddSettingsFromConnString :: Text -> CoddSettings` (additive; the
   library gained `aeson`/`attoparsec`/`containers`), and `test-support` was refactored to reuse
   it. EP-7 and any operator tooling can build codd settings from a connection string the same way.
+- **EP-7: `shomei-client` widened to depend on `shomei-servant` (IP-6, as anticipated).** The
+  client derives its request record from `ShomeiAPI` via `servant-client`'s `genericClient`
+  (single source of truth, no drift). Two practical gotchas: `OverloadedRecordDot` cannot reach
+  NamedRoutes client fields (the `(:-)` type family is opaque to `HasField`) — use qualified
+  field /selectors/ (`API.signup shomeiClient`); and when embedding, do NOT add a `/auth` prefix
+  (EP-5's `ShomeiAPI` routes already carry it). `mori.dhall` widened accordingly and the two
+  example `Application`s registered.
+- **EP-7: the embedded demo reuses EP-6's assembly via new library entry points.** EP-6 already
+  shipped `shomei-server` as library+exe; EP-7 added `buildEnv`/`seamEnv`/`authContext` to
+  `Shomei.Server.Boot` so a host app builds the same `Env` and serves `shomeiServer` with the
+  same `AuthProtect` `Context`. Modules naming servant's `Context` must `import Shomei.Prelude
+  hiding (Context)` (the prelude re-exports lens's `Context`).
 - **EP-4: `currentJwks` publishes only active keys for now (affects future rotation work).**
   The `SigningKeyStore.ListActiveSigningKeys` contract returns only `KeyActive` keys, so the
   published JWKS does not yet include retired-but-valid keys. Zero-downtime overlapping-key
@@ -459,4 +471,48 @@ implementation. Provide concise evidence.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare
 the result against the original vision.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-03): the bootstrap is complete — all seven ExecPlans landed.** The vision
+holds: from an empty repository, Shōmei is now a layered Haskell auth toolkit that runs two ways
+from one set of primitives, and the full vertical slice is end-to-end demonstrable.
+
+- **EP-1** — multi-package cabal workspace (GHC 9.12.4, GHC2024, `Shomei.Prelude`, treefmt/
+  fourmolu, `nix fmt` wired); `cabal build all` green.
+- **EP-2** — `shomei-core`: domain types, TypeID `Shomei.Id`, errors, `ShomeiConfig`, the ports
+  as `effectful` effects, the auth workflows, and an in-memory interpreter; pure tests pass.
+- **EP-3** — `shomei-postgres` + `shomei-migrations`: hasql `Database`, the store/publisher/
+  signing-key interpreters, Argon2id/token crypto, codd migrations; integration tests over real
+  ephemeral PostgreSQL pass.
+- **EP-4** — `shomei-jwt`: ES256 key generation, `StoredSigningKey` ↔ JWK, signing/verification,
+  and the public JWKS document (jose pinned to PR #137); sign→verify and JWKS tests pass.
+- **EP-5** — `shomei-servant`: the `Authenticated` combinator, `RequireRole`/`RequireScope`,
+  the `ShomeiAPI` NamedRoutes type and DTOs, and handlers; an in-process warp test exercises the
+  HTTP surface over real ES256.
+- **EP-6** — `shomei-server`: the standalone service assembling the real postgres + jwt + servant
+  stack; an ephemeral-DB end-to-end test proves the whole lifecycle including refresh-token reuse
+  detection landing in PostgreSQL.
+- **EP-7** — `shomei-client` (derived from `ShomeiAPI`) and the two demos (`embedded-servant-app`,
+  `microservice-auth-stack`) proving the embedded and microservice (local JWKS verification)
+  deployment models; all three have automated tests.
+
+What the original "after the full initiative" paragraph promised is now real and tested: signup/
+login returning a JWT + opaque refresh token, refresh rotation with theft detection revoking the
+session, logout, `me`/`session`, the JWKS document, downstream local verification, the embedded
+mounting, and a typed client — all green via `cabal build all` and the per-package test suites.
+
+**Cross-cutting lessons (evidence in each plan's Surprises):** (1) the effect-stack contract is
+load-bearing — EP-5 fixed a ports+`IOE` stack for in-memory testing, and EP-6 bridged it onto the
+larger postgres stack (`Database`+`Error AuthError`) with `inject` rather than reworking EP-5;
+(2) GHC2024 surprises bit twice — `RoleAnnotations` made `role`/`scope` reserved (EP-5), and the
+prelude's re-exported lens `Context` clashes with servant's (EP-6/EP-7); (3) `OverloadedRecordDot`
+does not see through the NamedRoutes `(:-)` type family, so the client uses qualified selectors
+(EP-7); (4) honest tests drove small additive cross-plan exports — EP-2's in-memory interpreters
+(for EP-5's hybrid test), `coddSettingsFromConnString` in EP-3's migrations (for EP-6 startup), and
+`buildEnv`/`seamEnv`/`authContext` in EP-6 (for EP-7 embedding) — none of which changed an
+owned interface's semantics.
+
+**Gaps / deferred (unchanged from the original scope):** key rotation tooling and zero-downtime
+overlapping-key JWKS (EP-4 publishes only active keys today), the manual long-running `curl` /
+`process-compose` runbooks (the in-process tests cover the same behaviors), and everything the
+Vision marked out of scope (OAuth/OIDC/social/MFA/admin UI/policy engine/event-sourced audit).
+`mori.dhall` now reflects the seventh package and the two examples, and the deliberate dependency
+widenings (`shomei-client` → `shomei-servant`; `shomei-server` → `shomei-migrations`).

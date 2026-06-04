@@ -71,31 +71,33 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0: Confirm `shomei-server` is restructured as `library + thin executable` so the
-      embedded demo can import its assembly; if EP-6 shipped exe-only, refactor it (see
-      Decision Log and Context).
-- [ ] M1a: Create `packages/shomei-client/shomei-client.cabal` and `Shomei.Client` deriving
-      client functions from `ShomeiAPI` via `servant-client`.
-- [ ] M1b: Implement the generalized-auth client approach for the `Authorization: Bearer`
-      header on `Authenticated` routes (`AuthClientData` + `mkAuthenticatedRequest`).
-- [ ] M1c: Add `mkClientEnv`/`shomeiClientEnv` helper from a base URL.
-- [ ] M1d: `shomei-client` test round-trips `signup` → `login` → `me` → `refresh` against a
-      live server (ephemeral DB + warp, or the dev server); assertions on decoded responses.
-- [ ] M2a: Create `examples/embedded-servant-app/embedded-servant-app.cabal`; add to
-      `cabal.project`.
-- [ ] M2b: Define `AppAPI` mounting `NamedRoutes ShomeiAPI` under `/auth` plus a protected
-      `/projects` route; reuse `shomei-server`'s assembly (`Env`, `runAppIO`, auth `Context`).
-- [ ] M2c: Embedded demo boots against dev PostgreSQL; `/projects` returns 401 without token,
-      200 with token (automated test or documented curl runbook).
-- [ ] M3a: Create `examples/microservice-auth-stack/microservice-auth-stack.cabal` with the
-      `example-project-service` executable; add to `cabal.project`.
-- [ ] M3b: `example-project-service` fetches JWKS at startup, caches with a TTL, verifies
-      Bearer tokens locally via `shomei-jwt`'s `verifyToken`; never calls the auth service per
-      request.
-- [ ] M3c: Two-service runbook (process-compose or shell) passes: login at auth service →
-      call downstream `/projects` → 200; tampered token → 401.
-- [ ] M4: Widen `mori.dhall` (`shomei-client` depends on `shomei-servant`; register the two
-      example packages) and confirm `cabal build all` green in `nix develop`.
+- [x] M0: `shomei-server` was already `library + thin executable` (EP-6 shipped it that way).
+      Added embedding entry points to its library: `buildEnv`, `seamEnv`, `authContext`
+      (`Shomei.Server.Boot`). (2026-06-03)
+- [x] M1a: `packages/shomei-client/shomei-client.cabal` + `Shomei.Client` deriving the client
+      record from `ShomeiAPI` via `servant-client`'s `genericClient`. (2026-06-03)
+- [x] M1b: `AuthClientData (AuthProtect "shomei-jwt") = Token` + `mkAuthenticatedRequest`/
+      `addHeader` attach `Authorization: Bearer` on the `Authenticated` routes. (2026-06-03)
+- [x] M1c: `shomeiClientEnv :: String -> IO ClientEnv` (Http/Https). (2026-06-03)
+- [x] M1d: `shomei-client` test round-trips `signup → login → me → refresh` against the real
+      server (ephemeral DB + warp). `cabal test shomei-client` green. (2026-06-03)
+- [x] M2a: Created `examples/embedded-servant-app` (library + exe + test); added to
+      `cabal.project`. (2026-06-03)
+- [x] M2b: `AppAPI = NamedRoutes ShomeiAPI :<|> Authenticated :> "projects" :> ...` (the auth
+      routes already live under `/auth`, so no extra prefix — see Surprises); reuses
+      `seamEnv`/`authContext`/`shomeiServer`. (2026-06-03)
+- [x] M2c: automated warp test — `/projects` is 401 without a token, 200 with one minted via
+      the mounted `/auth` (through the typed client). `cabal test embedded-servant-app` green. (2026-06-03)
+- [x] M3a: Created `examples/microservice-auth-stack` with the `example-project-service`
+      executable (no `shomei-postgres` dep); added to `cabal.project`. (2026-06-03)
+- [x] M3b: `Downstream.Service` fetches the JWKS, TTL-caches it (15 min), verifies Bearer
+      tokens locally via `verifyToken`; never calls the auth service per request. (2026-06-03)
+- [x] M3c: automated two-service test (auth + downstream in-process) — valid token → 200
+      (offline), tampered → 401, none → 401; plus a `process-compose.yaml` runbook.
+      `cabal test microservice-auth-stack` green. (2026-06-03)
+- [x] M4: Widened `mori.dhall` (`shomei-client` → `shomei-servant`; `shomei-server` →
+      `shomei-migrations`; the two example `Application`s registered); `mori show --full`
+      reflects them and `cabal build all` is green. (2026-06-03)
 
 
 ## Surprises & Discoveries
@@ -103,7 +105,29 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **OverloadedRecordDot can't reach NamedRoutes client fields; use qualified selectors.**
+  `shomeiClient.signup` fails with `No instance for HasField "signup" ShomeiClient (...)`
+  because a NamedRoutes field type is the `(:-)` /type-family/ application, which record-dot's
+  `HasField` cannot see through. Selector /application/ does reduce it, so the client wrappers
+  use `API.signup shomeiClient body` (qualified selector) instead. (The qualified import also
+  sidesteps the clash between the field selectors and the like-named exported wrappers.)
+- **No extra `/auth` prefix when embedding `ShomeiAPI`.** EP-5's `ShomeiAPI` routes already
+  carry `"auth" :> …`, so the plan's sketched `AppAPI = "auth" :> NamedRoutes ShomeiAPI :<|> …`
+  double-prefixes to `/auth/auth/signup` (observed: the client got `404` on `/auth/signup`). The
+  embedded `AppAPI` mounts `NamedRoutes ShomeiAPI` directly (no prefix); `/auth/*` then resolves.
+- **`shomei-server` was already library+exe (M0 was a no-op refactor).** EP-6 shipped the
+  assembly as a library (`Shomei.Server.App`/`Boot`/`Config`/`Keys`). M0 only added the embedding
+  entry points `buildEnv`/`seamEnv`/`authContext`. The embedded demo reuses EP-5's
+  `shomeiServer` + the EP-6 auth `Context` directly — exactly the EP-6 "embedded mode" note.
+- **`Context` name clash (servant vs lens).** `Shomei.Prelude` re-exports `Control.Lens`, whose
+  `Context` collides with servant's `Servant.Context`. Modules that name the servant type
+  (`Shomei.Server.Boot`, `Downstream.Service`) `import Shomei.Prelude hiding (Context)`.
+- **`Servant.API` is in package `servant`, not `servant-server`.** `import "servant-server"
+  Servant.API (NamedRoutes)` fails; `NamedRoutes` is re-exported by `"servant-server" Servant`.
+- **The demos' automated acceptance is in-process, not multi-terminal.** Both example tests boot
+  the server(s) with warp's `testWithApplication` over an ephemeral PostgreSQL and drive them
+  with the real typed client + `http-client`, so the 401/200 behaviors are checked in CI rather
+  than only via the documented `curl`/`process-compose` runbooks.
 
 
 ## Decision Log
@@ -165,7 +189,41 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered all three: a typed client and the two demos that prove both deployment models.
+
+- **`shomei-client`** derives its request record from the single source-of-truth `ShomeiAPI`
+  via `genericClient`, attaches the Bearer credential on `Authenticated` routes through
+  `AuthClientData`/`mkAuthenticatedRequest`, and exposes `signup`/`login`/`refresh`/`logout`/
+  `me`/`session` over a `ClientEnv`. Its test round-trips against the real server end-to-end.
+- **`embedded-servant-app`** mounts the whole Shōmei auth API and guards its own `/projects`
+  with the same `Authenticated` combinator, reusing the real adapter assembly — a token from
+  the mounted `/auth/login` is accepted by `/projects` (401 without, 200 with).
+- **`microservice-auth-stack`**'s `example-project-service` verifies tokens locally against a
+  fetched, TTL-cached JWKS with no per-request call to the auth service and no database
+  dependency — valid → 200, tampered → 401, none → 401, all proven in-process.
+
+Each milestone has an automated, runnable acceptance (ephemeral PostgreSQL + in-process warp +
+the typed client / `http-client`), so the three headline behaviors are checked in CI, not only
+in the documented `curl`/`process-compose` runbooks.
+
+Deviations from the plan (all recorded in the Decision Log / Surprises): qualified field
+selectors instead of `OverloadedRecordDot` (NamedRoutes `(:-)` type family); no extra `/auth`
+prefix when embedding; M0 was a no-op beyond adding `buildEnv`/`seamEnv`/`authContext`; tasty
+instead of hspec; `Context` hidden from the prelude. Gaps: the "stop the auth service and prove
+`/projects` still serves" step is left to the manual runbook (the in-process test already proves
+verification is offline, since `verifyToken` makes no network call). The whole MasterPlan vertical
+slice is now end-to-end demonstrable.
+
+---
+
+### Revision note (2026-06-03)
+
+The plan's pre-EP-5/EP-6 code sketches named several symbols by role; the implementation matched
+them to the real exports and recorded the differences here: the client uses qualified selectors
+(not record-dot), the embedded `AppAPI` drops the redundant `/auth` prefix, M0 only added
+embedding entry points to the already-existing `shomei-server` library, the tests use
+`tasty`/`tasty-hunit` (repo-wide idiom) rather than `hspec`, and modules naming servant's
+`Context` hide the prelude's lens `Context`. No design intent changed.
 
 
 ## Context and Orientation
