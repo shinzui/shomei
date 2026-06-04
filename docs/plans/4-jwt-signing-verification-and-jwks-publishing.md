@@ -65,10 +65,11 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Milestone 1 — Build spike: `packages/shomei-jwt` with `jose` compiles on GHC 9.12.4
+- [x] Milestone 1 — Build spike: `packages/shomei-jwt` with `jose` compiles on GHC 9.12.4
       and a throwaway `genJWK (ECGenParam P_256)` + sign + verify proves `jose` works.
-- [ ] Milestone 1 — Record the build outcome and any `allow-newer` bump in the Decision Log
-      and Surprises & Discoveries.
+      (2026-06-03; `spike: ok`, jose-0.13 + crypton-1.1.3 + ram-0.21.1, no `allow-newer` needed.)
+- [x] Milestone 1 — Record the build outcome and any `allow-newer` bump in the Decision Log
+      and Surprises & Discoveries. (2026-06-03)
 - [ ] Milestone 2 — `Shomei.Jwt.Key`: `generateSigningKey`, `toStoredSigningKey`,
       `fromStoredSigningKey`, kid computation; round-trip test green.
 - [ ] Milestone 2 — `Shomei.Jwt.Jwks`: `jwksDocument` and the `KeySet` abstraction; JWKS
@@ -86,7 +87,47 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The PR-#137 commit is not on a branch/tag of the canonical repo, but the `sumo/hs-jose`
+  fork carries it as `master` HEAD.** `git ls-remote https://github.com/frasertweedale/hs-jose.git`
+  shows `4726d077a13b24cd1d78fb94b2db5a86c79e3f0f` only under `refs/pull/137/head`. cabal's
+  `source-repository-package` does a plain clone (which does **not** fetch `refs/pull/*`), so
+  pinning the canonical repo at that commit would fail to check out. `git ls-remote
+  https://github.com/sumo/hs-jose.git` shows the same commit as `refs/heads/master` / `HEAD`,
+  so `location: https://github.com/sumo/hs-jose.git` (the URL the Decision Log already named)
+  is the one that actually resolves. Evidence: the build log printed
+  `branch 4726d077… -> FETCH_HEAD` / `HEAD is now at 4726d07 Update to crypton >= 1.1.0 and ram
+  instead of memory`.
+- **No `allow-newer` was needed.** `cabal build shomei-jwt-spike` resolved and built jose-0.13,
+  crypton-1.1.3, crypton-x509-1.9.0, ram-0.21.1, monad-time-0.4.0.0, and concise-0.1.0.1 on
+  GHC 9.12.4 (base 4.21) with the existing `cabal.project` — no `base`/`lens` bound relaxation
+  required. Risk 2 from the Plan of Work did not materialize. The pre-existing `allow-newer:
+  haxl:time` (from EP-3) is untouched.
+- **jose's signing/verification monad is `JOSE e m` (run with `runJOSE`), NOT `ExceptT e IO`.**
+  crypton's `MonadRandom` (`Crypto.Random.Types`) has instances only for `IO` and
+  `MonadPseudoRandom` — there is no `MonadRandom (ExceptT e m)`. jose supplies its own newtype
+  `JOSE e m = JOSE (ExceptT e m)` (`Crypto.JOSE.Error`) with `instance MonadRandom m =>
+  MonadRandom (JOSE e m)`, and its own test suite (`test/JWT.hs`) runs `signClaims`/`verifyClaims`
+  inside `runJOSE $ do …`. `MonadTime (JOSE e IO)` is satisfied via monad-time's overlappable
+  `MonadTrans`-based instance (`JOSE e` is a `MonadTrans`). Consequence: the draft spike in the
+  Plan of Work using `runExceptT @JWTError` is wrong; real signing/verification code uses
+  `runJOSE` (see the corrected Decision Log entry). The spike was written this way and prints
+  `spike: ok`.
+- **jose API names differing from the Plan-of-Work drafts (confirmed against the on-disk jose
+  0.12 source, identical surface in 0.13):** signing headers are built with
+  `newJWSHeaderProtected :: ProtectionSupport p => Alg -> JWSHeader p` (giving the
+  `RequiredProtection` header `signClaims` needs) — *not* `newJWSHeader (Protected, ES256)`,
+  which yields `OptionalProtection`. Even better, `makeJWSHeader :: (MonadError e m, AsError e,
+  ProtectionSupport p) => JWK -> m (JWSHeader p)` picks the alg via `bestJWSAlg` and copies the
+  key's `kid` into the protected header automatically. `JWTError` has exactly 7 constructors:
+  `JWSError Error`, `JWTClaimsSetDecodeError String`, `JWTExpired`, `JWTNotYetValid`,
+  `JWTNotInIssuer`, `JWTNotInAudience`, `JWTIssuedAtFuture`. `JWSInvalidSignature` and
+  `CompactDecodeError` are constructors of the **inner** `Crypto.JOSE.Error.Error` (wrapped by
+  `JWSError`), not of `JWTError`. `StringOrURI` ⇄ `Text` uses the `string :: Prism' StringOrURI
+  Text` prism (and the `IsString` instance for the other direction); `Audience` is `Audience
+  [StringOrURI]` with prism `_Audience`; `NumericDate` is `NumericDate UTCTime` with prism
+  `_NumericDate`. The `JWKSet` `VerificationKeyStore` instance returns **all** keys (no kid
+  filtering), so verification simply tries each key — including the signing key in a multi-key
+  set is what makes scenario (g) pass.
 
 
 ## Decision Log
@@ -181,6 +222,29 @@ Record every decision made while working on the plan.
   before rotation, keeps working. A `KeyRevoked` key (compromised) is excluded immediately.
   More elaborate policies (overlap windows, scheduled promotion of `KeyPending` keys) are out
   of scope for this bootstrap.
+  Date: 2026-06-03
+
+- Decision: Run all jose signing/verification in jose's own `JOSE e m` monad via `runJOSE`,
+  not in `ExceptT e IO` as the Plan-of-Work draft code showed.
+  Rationale: `signClaims` requires `MonadRandom`, and crypton's `MonadRandom`
+  (`Crypto.Random.Types`) has instances only for `IO` and `MonadPseudoRandom` — there is no
+  `MonadRandom (ExceptT e m)`, so `runExceptT @JWTError (signClaims …)` does not type-check.
+  jose ships `newtype JOSE e m = JOSE (ExceptT e m)` (`Crypto.JOSE.Error`) with `instance
+  MonadRandom m => MonadRandom (JOSE e m)` and exports `runJOSE :: JOSE e m a -> m (Either e
+  a)`; `MonadTime (JOSE e IO)` comes from monad-time's overlappable `MonadTrans` instance.
+  jose's own test suite signs and verifies inside `runJOSE`. The error type is pinned with a
+  type application or a result annotation (`:: IO (Either JWTError a)`). Confirmed against the
+  jose source and proven by the Milestone-1 spike (`spike: ok`).
+  Date: 2026-06-03
+
+- Decision: Pin jose at `location: https://github.com/sumo/hs-jose.git`, `tag:
+  4726d077a13b24cd1d78fb94b2db5a86c79e3f0f`.
+  Rationale: PR #137's head commit exists on the canonical `frasertweedale/hs-jose` only under
+  `refs/pull/137/head`, which cabal's plain-clone `source-repository-package` fetch does not
+  retrieve; checkout would fail. The `sumo/hs-jose` fork carries that exact commit as its
+  `master` HEAD, so cabal resolves and checks it out cleanly (verified by `git ls-remote` on
+  both repos and by the successful build). This matches the URL the original jose Decision Log
+  entry already named.
   Date: 2026-06-03
 
 - Decision: `shomei-jwt` depends only on `shomei-core` plus `jose`/`crypton` and supporting

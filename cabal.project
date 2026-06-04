@@ -33,11 +33,13 @@ allow-newer:
   haxl:time
 
 -- ============================================================
--- EP-4 (JWT) will add jose pinned to PR #137 (crypton >= 1.1.0 + ram,
--- NOT the Hackage memory-based 0.12 — memory is deprecated/forbidden here):
---
--- source-repository-package
---   type: git
---   location: https://github.com/sumo/hs-jose.git   -- or a shinzui/hs-jose fork
---   tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
+-- EP-4 (JWT): jose pinned to PR #137 (jose 0.13; crypton >= 1.1.0 + ram,
+-- NOT the Hackage memory-based 0.12 — memory is deprecated/forbidden here).
+-- The PR #137 head commit lives on refs/pull/137/head upstream (not fetchable
+-- by a plain clone); the sumo/hs-jose fork carries it as its master HEAD, so
+-- cabal can check it out.
 -- ============================================================
+source-repository-package
+  type: git
+  location: https://github.com/sumo/hs-jose.git
+  tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
