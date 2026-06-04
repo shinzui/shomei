@@ -50,7 +50,7 @@ common stanzas) in the MasterPlan.
 - [x] M3 — Verify `nix develop -c fourmolu --version` (2026-06-03; fourmolu 0.19.0.1, cabal-fmt 0.1.12, cabal 3.16.1.0)
 - [x] M3 — Verify `nix fmt` runs clean (2026-06-03; idempotent — second run reports 0 changed)
 - [x] M3 — Verify `just build` succeeds (2026-06-03)
-- [ ] All milestones — Commit with required git trailers
+- [x] All milestones — Commit with required git trailers (2026-06-03; commits `fe883c6` docs, `c1d58f0` scaffold)
 
 
 ## Surprises & Discoveries
