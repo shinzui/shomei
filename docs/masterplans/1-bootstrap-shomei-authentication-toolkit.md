@@ -115,7 +115,7 @@ microservice demo depends on JWKS specifically, so it earns its own stream.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Project scaffolding and multi-package build foundation | docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md | None | None | Complete |
-| 2 | Core domain model, ports, and auth workflows | docs/plans/2-core-domain-model-ports-and-auth-workflows.md | EP-1 | None | Not Started |
+| 2 | Core domain model, ports, and auth workflows | docs/plans/2-core-domain-model-ports-and-auth-workflows.md | EP-1 | None | Complete |
 | 3 | PostgreSQL persistence and migrations | docs/plans/3-postgresql-persistence-and-migrations.md | EP-1, EP-2 | None | Not Started |
 | 4 | JWT signing, verification, and JWKS publishing | docs/plans/4-jwt-signing-verification-and-jwks-publishing.md | EP-2 | EP-1 | Not Started |
 | 5 | Servant integration and route protection | docs/plans/5-servant-integration-and-route-protection.md | EP-2, EP-4 | EP-3 | Not Started |
@@ -245,9 +245,9 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 
 - [x] EP-1: Multi-package cabal workspace compiles (`cabal build all` green in `nix develop`) (2026-06-03)
 - [x] EP-1: `Shomei.Prelude` and shared `common` stanzas in place; treefmt/fourmolu wired (2026-06-03)
-- [ ] EP-2: Domain types, `Shomei.Id`, errors, and `ShomeiConfig` defined
-- [ ] EP-2: Port effects + in-memory interpreters defined
-- [ ] EP-2: Signup/login/refresh-rotation/logout workflows pass pure in-memory tests
+- [x] EP-2: Domain types, `Shomei.Id`, errors, and `ShomeiConfig` defined (2026-06-03)
+- [x] EP-2: Port effects + in-memory interpreters defined (2026-06-03)
+- [x] EP-2: Signup/login/refresh-rotation/logout workflows pass pure in-memory tests (2026-06-03; 7/7 cases)
 - [ ] EP-3: codd `shomei-migrations` package + schema migrations apply to ephemeral PostgreSQL
 - [ ] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests
 - [ ] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working
@@ -279,6 +279,28 @@ implementation. Provide concise evidence.
   owns this entry, under IP-8). The corpus now registers `frasertweedale/hs-jose` at
   `/Users/shinzui/Keikaku/hub/haskell/jose-project/hs-jose`, but that copy is **0.12 (memory-based)**
   — it is for reading the API on disk; the build still uses the PR-#137 source-repository pin.
+- **EP-1: `nix fmt` was not wired by the seihou scaffold (affects every plan's formatting
+  step).** `flake.nix` imports only `nix/haskell.nix` + `flake.module.nix`; it does not import
+  `nix/treefmt.nix`, and `treefmt-nix` is not a top-level flake input, so `nix fmt` reported no
+  `formatter` attribute. EP-1 wired it from the unmanaged `flake.module.nix` via the transitive
+  `haskell-nix-dev.inputs.treefmt-nix.flakeModule` and excluded the seihou-managed `nix/*` and
+  `flake.nix` from treefmt (the pinned nixpkgs-fmt otherwise rewrote `nix/pre-commit.nix` and
+  broke idempotence). Consequence: `nix fmt` now works and only touches project sources; do not
+  edit seihou Nix files to "fix" formatting. The formatter is fourmolu 0.19.0.1 (4-space,
+  leading-comma style) — that output is the source of truth for all Haskell sources.
+- **EP-2: house Haskell conventions that bite every later plan (affects EP-3/EP-4/EP-5/EP-6/EP-7).**
+  (1) With `DuplicateRecordFields` + `OverloadedRecordDot`, `record.field` only type-checks when
+  the field is *in scope*, so any domain record whose fields you read via `.field` must be
+  imported with `(..)` (not just the type name); otherwise GHC errors `GHC-39999: Could not
+  deduce HasField …`. (2) `Shomei.Domain.Event`'s constructors deliberately share names with
+  `Shomei.Error.AuthError` and the domain status enums (`SessionRevoked`, `RefreshTokenExpired`,
+  `RefreshTokenReuseDetected`, …), so import `Shomei.Domain.Event` *qualified* and either qualify
+  or selectively import the clashing status/error constructors. (3) `-Wall`'s `-Wunused-imports`
+  flags an unused `import Shomei.Prelude`; route trivial modules through the still-implicit base
+  `Prelude` instead (the custom prelude does not set `NoImplicitPrelude`). (4) For record
+  *updates*, use `generic-lens` `#field` lenses (`x & #f .~ v`), which need `Generic` on the
+  record and a per-module `import Data.Generics.Labels ()`. The in-memory interpreter
+  (`Shomei.Port.InMemory`) is the executable reference for the expected port behavior.
 
 
 ## Decision Log

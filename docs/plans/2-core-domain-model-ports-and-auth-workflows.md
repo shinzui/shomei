@@ -70,22 +70,25 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `shomei-core.cabal` build-depends and exposed-modules updated for EP-2 deps
+- [x] M1: `shomei-core.cabal` build-depends and exposed-modules updated for EP-2 deps
   (mmzk-typeid, uuid, http-api-data, containers, time, aeson, text, lens, generic-lens,
-  bytestring, base64, effectful, effectful-core, plus test deps).
-- [ ] M1: `Shomei.Id` compiles (TypeID identifiers + orphan http-api-data instances).
-- [ ] M1: `Shomei.Error` compiles (`AuthError`, `TokenError`, `PasswordPolicyViolation`).
-- [ ] M1: `Shomei.Domain.*` modules compile (User, Email, Password, Credential, Session,
-  RefreshToken, Token, Claims, Event, SigningKey, plus the `New*` and `*Command` records).
-- [ ] M1: `Shomei.Config` compiles (`ShomeiConfig`, `defaultShomeiConfig`, transport/check
-  enums, default TTLs). Acceptance: `cabal build shomei-core`.
-- [ ] M2: `Shomei.Port.*` modules compile (UserStore, CredentialStore, SessionStore,
+  bytestring, base64, effectful, effectful-core, plus test deps). (2026-06-03; exposed-modules
+  scoped to the M1 set for incremental builds — Port.*/Workflow/test-suite re-added in M2/M3.)
+- [x] M1: `Shomei.Id` compiles (TypeID identifiers + orphan http-api-data instances). (2026-06-03)
+- [x] M1: `Shomei.Error` compiles (`AuthError`, `TokenError`, `PasswordPolicyViolation`). (2026-06-03)
+- [x] M1: `Shomei.Domain.*` modules compile (User, Email, Password, Credential, Session,
+  RefreshToken, Token, Claims, Event, SigningKey, plus the `New*` and `*Command` records). (2026-06-03)
+- [x] M1: `Shomei.Config` compiles (`ShomeiConfig`, `defaultShomeiConfig`, transport/check
+  enums, default TTLs). Acceptance: `cabal build shomei-core`. (2026-06-03; 15 modules, exit 0)
+- [x] M2: `Shomei.Port.*` modules compile (UserStore, CredentialStore, SessionStore,
   RefreshTokenStore, PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher,
-  SigningKeyStore, Clock, TokenGen) with `send` smart constructors.
-- [ ] M2: `Shomei.Port.InMemory` compiles (in-memory `World` + interpreter for every port).
-- [ ] M3: `Shomei.Workflow` compiles (signup, login, refresh, logout, verifyToken).
-- [ ] M3: `test-suite shomei-core-test` written and passing. Acceptance:
-  `cabal test shomei-core` green with all cases passing.
+  SigningKeyStore, Clock, TokenGen) with `send` smart constructors. (2026-06-03)
+- [x] M2: `Shomei.Port.InMemory` compiles (in-memory `World` + interpreter for every port).
+  (2026-06-03; `cabal build shomei-core` exit 0, zero warnings)
+- [x] M3: `Shomei.Workflow` compiles (signup, login, refresh, logout, verifyToken). (2026-06-03)
+- [x] M3: `test-suite shomei-core-test` written and passing. Acceptance:
+  `cabal test shomei-core` green with all cases passing. (2026-06-03; all 7 cases OK, zero
+  warnings; `cabal build all` also green)
 
 
 ## Surprises & Discoveries
@@ -93,7 +96,26 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **`OverloadedRecordDot` only solves `HasField` when the field is in scope.** With
+  `DuplicateRecordFields`, accessing `nu.email` for `nu :: NewUser` fails unless the
+  record is imported with its fields (`NewUser (..)`), not just the type (`NewUser`). The
+  error is `GHC-39999: Could not deduce HasField "email" NewUser Email`. Fix: import every
+  record whose fields are read via `.field` with `(..)`. This bit `Shomei.Port.InMemory`
+  for `NewUser`/`NewSession`/`NewRefreshToken`/`StoredSigningKey`.
+
+- **Generic-lens `#field` needs `Generic` on the focused record.** The in-memory `World`
+  initially lacked `deriving stock (Generic)`, so `#users %~ …` failed with
+  `No instance for 'Generic World'`. Added the derive.
+
+- **`-Wall` flags the "import the prelude everywhere" convention.** Seven port-effect
+  modules use no `Shomei.Prelude` name (only base `Maybe`/`Either`/`Bool`/`(.)`, which come
+  from the still-implicit base `Prelude`), so `-Wunused-imports` reported the
+  `Shomei.Prelude` import as redundant in each. See Decision Log for the resolution.
+
+- **The standard `Prelude` is still implicitly imported alongside `Shomei.Prelude`.**
+  `Shomei.Prelude` does not enable `NoImplicitPrelude`, so base names (`show`, `Either`,
+  `Int`, `Maybe`, `(.)`, …) remain available; the custom prelude only *adds* names. This is
+  why modules that use only base names do not need to import `Shomei.Prelude` at all.
 
 
 ## Decision Log
@@ -154,13 +176,67 @@ Record every decision made while working on the plan.
   get trivial deterministic fakes here; real signing is EP-4.
   Date: 2026-06-03
 
+- Decision (during implementation): Use `generic-lens` `#field` lenses for record *updates*
+  in `Shomei.Port.InMemory` (e.g. `tok & #status .~ RefreshTokenRevoked`), and derive
+  `Generic` on the `World` record.
+  Rationale: With `DuplicateRecordFields`, ordinary record-update syntax (`tok { status = … }`)
+  is ambiguous across the many records that share a `status` field. The `#field` lens is
+  type-directed and unambiguous, and is the house style. Reads still use `OverloadedRecordDot`
+  (`tok.status`); fresh records use explicit constructors.
+  Date: 2026-06-03
+
+- Decision (during implementation): Drop the `import Shomei.Prelude` line from the seven
+  port-effect modules that reference no `Shomei.Prelude` name (UserStore, CredentialStore,
+  PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher, TokenGen); keep it where a
+  prelude name (`UTCTime`/`Text`) is actually used (SessionStore, RefreshTokenStore,
+  SigningKeyStore, Clock) and in all domain/workflow/interpreter modules.
+  Rationale: The common stanza enables `-Wall` (hence `-Wunused-imports`), and an unused
+  `Shomei.Prelude` import produces a warning. The "import the prelude in every module"
+  convention exists to keep base `Prelude`'s partial functions out and to share the house
+  re-exports; a module that uses only base names (`Maybe`/`Either`/`Bool`/`(.)`) from the
+  still-implicit base `Prelude` violates neither intent. Warning-free `-Wall` builds take
+  precedence here. Domain modules and the workflow keep importing `Shomei.Prelude`.
+  Date: 2026-06-03
+
+- Decision (during implementation): The in-memory `TokenSigner`/`TokenVerifier` fakes
+  round-trip `AuthClaims` through aeson JSON (`encode` / `eitherDecode`), so `verifyToken`
+  would work end-to-end against them even though the seven EP-2 acceptance cases do not
+  exercise it.
+  Rationale: A faithful fake (sign then verify yields the original claims) is more useful to
+  later plans and tests than a constant stub, at negligible cost.
+  Date: 2026-06-03
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Achieved (2026-06-03).** `shomei-core` now holds the complete transport-agnostic heart of
+Shōmei: TypeID identifiers (`Shomei.Id`), the error vocabulary (`Shomei.Error`), all domain
+types with smart constructors (`Shomei.Domain.*`), the runtime config (`Shomei.Config`), the
+eleven port effects (`Shomei.Port.*`, IP-3) with `send` smart constructors, the storage-agnostic
+`StoredSigningKey` (IP-4), an in-memory interpreter for every port (`Shomei.Port.InMemory`), and
+the five auth workflows (`Shomei.Workflow`). `cabal build shomei-core` and `cabal build all` are
+green with zero warnings, and `cabal test shomei-core` passes all seven behavioral cases that
+prove the security-critical properties: signup→login round-trip, refresh rotation with the old
+token marked Used, **reuse detection that revokes the whole token family and the session**,
+logout revocation, fail-closed password verification, and the no-account-existence-leak generic
+error. The suite uses only the in-memory interpreter — no DB, JWT, or network.
+
+**Faithfulness to the contract.** The exported signatures match the plan's IP-2/IP-3/IP-4/IP-5
+contracts that EP-3/EP-4/EP-5 consume. The only deviations are internal and documented in the
+Decision Log (generic-lens for record updates; dropping the unused `Shomei.Prelude` import from
+seven trivial port modules to satisfy `-Wall`; an aeson-round-trip `TokenSigner`/`TokenVerifier`
+fake). No port *signature* changed, so no cascade to adapter plans is required.
+
+**For the next contributor.** EP-3 (PostgreSQL) and EP-4 (JWT) implement the same port effects
+against real infrastructure; the in-memory interpreter here is the executable reference for the
+expected behavior (especially `RevokeRefreshTokenFamily`'s parent-link walk and the
+fail-closed/no-leak login rules). Importing a domain record for `.field` access requires `(..)`
+(the `OverloadedRecordDot`/`DuplicateRecordFields` discovery in Surprises). The `Shomei.Domain.Event`
+constructors deliberately share names with `AuthError`/status constructors, so import that module
+qualified.
 
 
 ## Context and Orientation
