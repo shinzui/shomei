@@ -35,6 +35,7 @@ library
   import:          warnings, shared
   hs-source-dirs:  src
   exposed-modules:
+    Shomei.Notify
     Shomei.Server.App
     Shomei.Server.Boot
     Shomei.Server.Config

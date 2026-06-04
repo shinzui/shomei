@@ -12,6 +12,11 @@ module Shomei.Servant.DTO (
     LoginRequest (..),
     LoginResponse (..),
     RefreshRequest (..),
+    VerifyEmailRequest (..),
+    ConfirmEmailVerificationRequest (..),
+    PasswordResetRequest (..),
+    ConfirmPasswordResetRequest (..),
+    ChangePasswordRequest (..),
     TokenPairResponse (..),
     UserResponse (..),
     SessionResponse (..),
@@ -87,6 +92,32 @@ data LoginResponse = LoginResponse
 
 -- | @POST /auth/refresh@ body: just the opaque refresh token.
 newtype RefreshRequest = RefreshRequest {refreshToken :: Text}
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+newtype VerifyEmailRequest = VerifyEmailRequest {email :: Text}
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+newtype ConfirmEmailVerificationRequest = ConfirmEmailVerificationRequest {token :: Text}
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+newtype PasswordResetRequest = PasswordResetRequest {email :: Text}
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+data ConfirmPasswordResetRequest = ConfirmPasswordResetRequest
+    { token :: !Text
+    , newPassword :: !Text
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+data ChangePasswordRequest = ChangePasswordRequest
+    { currentPassword :: !Text
+    , newPassword :: !Text
+    }
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
 

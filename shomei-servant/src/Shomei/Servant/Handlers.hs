@@ -26,24 +26,31 @@ import Shomei.Domain.Command (
     SignupCommand (..),
  )
 import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Effect.SessionStore (findSessionById)
 import Shomei.Effect.UserStore (findUserById)
 import Shomei.Workflow qualified as Wf
+import Shomei.Workflow.Account qualified as Account
 
 import Shomei.Servant.API (ShomeiAPI (..))
 import Shomei.Servant.Auth (AuthUser (..))
 import Shomei.Servant.DTO (
+    ChangePasswordRequest (..),
+    ConfirmEmailVerificationRequest (..),
+    ConfirmPasswordResetRequest (..),
     HealthResponse (..),
     LoginRequest (..),
     LoginResponse (..),
+    PasswordResetRequest (..),
     RefreshRequest (..),
     SessionResponse,
     SignupRequest (..),
     SignupResponse (..),
     TokenPairResponse,
     UserResponse,
+    VerifyEmailRequest (..),
     sessionToResponse,
     tokenPairToResponse,
     userToResponse,
@@ -58,6 +65,11 @@ shomeiServer env =
         { signup = signupH env
         , login = loginH env
         , refresh = refreshH env
+        , verifyEmailRequest = verifyEmailRequestH env
+        , verifyEmailConfirm = verifyEmailConfirmH env
+        , passwordResetRequest = passwordResetRequestH env
+        , passwordResetConfirm = passwordResetConfirmH env
+        , passwordChange = passwordChangeH env
         , logout = logoutH env
         , me = meH env
         , session = sessionH env
@@ -88,6 +100,43 @@ refreshH :: Env -> RefreshRequest -> Handler TokenPairResponse
 refreshH env req =
     tokenPairToResponse
         <$> runAuth env (Wf.refresh env.config (RefreshCommand{refreshToken = RefreshToken req.refreshToken}))
+
+verifyEmailRequestH :: Env -> VerifyEmailRequest -> Handler NoContent
+verifyEmailRequestH env req = do
+    email <- either (throwError . authErrorToServerError) pure (mkEmail req.email)
+    runAuth env (Account.requestEmailVerification env.config (Account.RequestEmailVerification email))
+    pure NoContent
+
+verifyEmailConfirmH :: Env -> ConfirmEmailVerificationRequest -> Handler NoContent
+verifyEmailConfirmH env req = do
+    runAuth env (Account.confirmEmailVerification env.config (Account.ConfirmEmailVerification (OneTimeToken req.token)))
+    pure NoContent
+
+passwordResetRequestH :: Env -> PasswordResetRequest -> Handler NoContent
+passwordResetRequestH env req = do
+    email <- either (throwError . authErrorToServerError) pure (mkEmail req.email)
+    runAuth env (Account.requestPasswordReset env.config (Account.RequestPasswordReset email))
+    pure NoContent
+
+passwordResetConfirmH :: Env -> ConfirmPasswordResetRequest -> Handler NoContent
+passwordResetConfirmH env req = do
+    runAuth
+        env
+        ( Account.confirmPasswordReset
+            env.config
+            (Account.ConfirmPasswordReset (OneTimeToken req.token) (PlainPassword req.newPassword))
+        )
+    pure NoContent
+
+passwordChangeH :: Env -> AuthUser -> ChangePasswordRequest -> Handler NoContent
+passwordChangeH env user req = do
+    runAuth
+        env
+        ( Account.changePassword
+            env.config
+            (Account.ChangePassword user.authUserId (PlainPassword req.currentPassword) (PlainPassword req.newPassword))
+        )
+    pure NoContent
 
 logoutH :: Env -> AuthUser -> Handler NoContent
 logoutH env user = do

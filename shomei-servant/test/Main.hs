@@ -12,7 +12,7 @@ rotation, the public JWKS document, and the @RequireRole "admin"@ guard (403/200
 module Main (main) where
 
 import Data.Foldable (toList)
-import Data.IORef (IORef, newIORef)
+import Data.IORef (IORef, newIORef, readIORef)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -59,20 +59,25 @@ import Servant.Server.Experimental.Auth (AuthHandler)
 
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
+import Shomei.Domain.Notification (Notification (..))
+import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Id (genSessionId, genUserId)
 import Shomei.Effect.InMemory (
-    World,
+    World (..),
     emptyWorld,
     runAuthEventPublisher,
     runClock,
     runCredentialStore,
+    runNotifier,
+    runPasswordResetTokenStore,
     runPasswordHasher,
     runRefreshTokenStore,
     runSessionStore,
     runSigningKeyStore,
     runTokenGen,
     runUserStore,
+    runVerificationTokenStore,
  )
 
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
@@ -123,6 +128,9 @@ runHybrid ref jwk jwkset cfg =
         . runTokenVerifierJwt jwkset cfg
         . runTokenSignerJwt jwk cfg
         . runPasswordHasher ref
+        . runNotifier ref
+        . runPasswordResetTokenStore ref
+        . runVerificationTokenStore ref
         . runRefreshTokenStore ref
         . runSessionStore ref
         . runCredentialStore ref
@@ -167,18 +175,18 @@ main = do
                 , jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))
                 }
     adminToken <- mkAdminToken jwk cfg
-    defaultMain (tests env adminToken)
+    defaultMain (tests ref env adminToken)
 
-tests :: Env -> Text -> TestTree
-tests env adminToken =
+tests :: IORef World -> Env -> Text -> TestTree
+tests ref env adminToken =
     testGroup
         "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-        [ testCase "signup → login → me(±token) → refresh → jwks → RequireRole(403,200)" $
-            testWithApplication (pure (app env)) (scenario adminToken)
+        [ testCase "signup → verify/reset account → login → me(±token) → refresh → jwks → RequireRole(403,200)" $
+            testWithApplication (pure (app env)) (scenario ref adminToken)
         ]
 
-scenario :: Text -> Int -> IO ()
-scenario adminToken port = do
+scenario :: IORef World -> Text -> Int -> IO ()
+scenario ref adminToken port = do
     mgr <- newManager defaultManagerSettings
 
     -- (a) signup
@@ -189,6 +197,13 @@ scenario adminToken port = do
     (dig ["user", "status"] sresp >>= asText) @?= Just "active"
     assertBool "signup access token present" (isJust (dig ["token", "accessToken"] sresp >>= asText))
     assertBool "signup refresh token present" (isJust (dig ["token", "refreshToken"] sresp >>= asText))
+
+    -- (a2) verify email via notifier-captured token
+    (verifyReqStatus, _) <- postJSON mgr port "/auth/verify-email/request" (object ["email" .= email])
+    verifyReqStatus @?= 202
+    emailVerificationToken <- latestVerificationToken ref
+    (verifyConfirmStatus, _) <- postJSON mgr port "/auth/verify-email/confirm" (object ["token" .= emailVerificationToken])
+    verifyConfirmStatus @?= 202
 
     -- (b) login
     (lStatus, lBody) <- postJSON mgr port "/auth/login" loginBody
@@ -228,11 +243,40 @@ scenario adminToken port = do
     forbiddenStatus @?= 403
     (adminStatus, _) <- getJSON mgr port "/admin/users" (bearer adminToken)
     adminStatus @?= 200
+
+    -- (h) password-reset request/confirm allows login with the new password.
+    (resetReqStatus, _) <- postJSON mgr port "/auth/password-reset/request" (object ["email" .= email])
+    resetReqStatus @?= 202
+    resetToken <- latestResetToken ref
+    let changedPassword = "correct horse battery staple two" :: Text
+    (resetConfirmStatus, _) <-
+        postJSON
+            mgr
+            port
+            "/auth/password-reset/confirm"
+            (object ["token" .= resetToken, "newPassword" .= changedPassword])
+    resetConfirmStatus @?= 202
+    (newLoginStatus, _) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
+    newLoginStatus @?= 200
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
     signupBody = object ["email" .= email, "password" .= password, "displayName" .= ("Ada Lovelace" :: Text)]
     loginBody = object ["email" .= email, "password" .= password]
+
+latestVerificationToken :: IORef World -> IO Text
+latestVerificationToken ref = do
+    w <- readIORef ref
+    case w.sentNotifications of
+        EmailVerificationRequested{token = OneTimeToken t} : _ -> pure t
+        _ -> assertFailure "expected email-verification notification"
+
+latestResetToken :: IORef World -> IO Text
+latestResetToken ref = do
+    w <- readIORef ref
+    case w.sentNotifications of
+        PasswordResetRequested{token = OneTimeToken t} : _ -> pure t
+        _ -> assertFailure "expected password-reset notification"
 
 -- Request helpers (parseRequest does not throw on non-2xx, so 401/403/404 come back
 -- as ordinary responses).

@@ -31,7 +31,9 @@ import Shomei.Servant.Error (authErrorToServerError)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
+import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
+import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
@@ -39,6 +41,7 @@ import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
 import Shomei.Effect.UserStore (UserStore)
+import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 
 {- | The canonical, ordered Shōmei port stack. Its order matches EP-2's
 @Shomei.Effect.InMemory.runInMemory@ so the same workflows run unchanged over the
@@ -49,6 +52,9 @@ type AppEffects =
      , CredentialStore
      , SessionStore
      , RefreshTokenStore
+     , VerificationTokenStore
+     , PasswordResetTokenStore
+     , Notifier
      , PasswordHasher
      , TokenSigner
      , TokenVerifier

@@ -179,18 +179,23 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone M3 — ShomeiAPI routes + handlers + DTOs + config wiring
 
-- [ ] M3.1 Add the five DTO records to `shomei-servant` (request/response JSON).
-- [ ] M3.2 Add the five routes to the `ShomeiAPI` NamedRoutes record (IP-5).
-- [ ] M3.3 Add the five handlers driving `Shomei.Workflow.Account`.
-- [ ] M3.4 Acceptance: `cabal build shomei-servant` green; handler unit/golden tests (if EP-5
-      established a handler test harness) green.
+- [x] M3.1 Add the five DTO records to `shomei-servant` (request/response JSON).
+      Completed 2026-06-04.
+- [x] M3.2 Add the five routes to the `ShomeiAPI` NamedRoutes record (IP-5). Completed
+      2026-06-04.
+- [x] M3.3 Add the five handlers driving `Shomei.Workflow.Account`. Completed 2026-06-04.
+- [x] M3.4 Acceptance: `cabal build shomei-servant` green; handler unit/golden tests (if EP-5
+      established a handler test harness) green. Completed 2026-06-04 with the in-process
+      servant end-to-end account lifecycle test.
 
 ### Milestone M4 — server wiring + dev-log and SMTP senders + curl walkthrough
 
-- [ ] M4.1 Create `shomei-server/src/Shomei/Notify.hs` (dev log-only + SMTP
-      `Notifier` interpreters).
-- [ ] M4.2 Wire the two new store interpreters + the selected `Notifier` interpreter into the
-      server assembly in `shomei-server`.
+- [x] M4.1a Create `shomei-server/src/Shomei/Notify.hs` with config-selected log-backed
+      `Notifier` interpreters. Completed 2026-06-04.
+- [ ] M4.1b Add a real SMTP sender once a vetted SMTP dependency is registered/resolved via
+      `mori`.
+- [x] M4.2 Wire the two new store interpreters + the selected `Notifier` interpreter into the
+      server assembly in `shomei-server`. Completed 2026-06-04.
 - [ ] M4.3 Add the SMTP/email library block to `cabal.project` (IP-8).
 - [ ] M4.4 Acceptance: full `curl` walkthrough against the running server matches the
       transcript in Validation and Acceptance.
@@ -211,6 +216,11 @@ implementation. Provide concise evidence.
   the codd transcript then reported 10 migrations. Evidence: the successful
   `nix develop --command cabal test shomei-postgres` run applied the three
   `2026-06-04-*` migrations in each throwaway database.
+- 2026-06-04: No SMTP/email package was registered in the local `mori` registry for this
+  project; `mori registry search smtp`, `mori registry search HaskellNet`, and
+  `mori registry search mime-mail` returned no package source to audit. The server now has
+  the `Shomei.Notify` assembly module and explicit `SmtpNotifier` selection path, but that
+  selection is still log-backed until a vetted SMTP dependency is added.
 
 
 ## Decision Log
@@ -302,6 +312,14 @@ Compare the result against the original purpose.
   ephemeral database. `nix develop --command cabal test shomei-postgres` passes with 14 tests,
   `nix develop --command cabal build all` passes, and `nix develop --command just migrate`
   applied the three new migrations to the local `shomei` database.
+- 2026-06-04: Milestone M3 is complete and M4 is partially complete. `shomei-servant` exposes
+  the five account-lifecycle HTTP routes, their DTOs, and handlers; `shomei-server` wires the
+  PostgreSQL token stores and config-selected notifier interpreter. The servant in-process
+  HTTP test now covers signup, email verification, password reset, login, refresh, JWKS, and
+  role checks. `nix develop --command cabal test shomei-servant`,
+  `nix develop --command cabal test shomei-server`, `nix develop --command cabal build all`,
+  and `nix develop --command cabal test all` pass. Remaining M4 work is a real SMTP sender
+  and the live-server `curl` walkthrough.
 
 
 ## Context and Orientation

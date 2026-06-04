@@ -23,15 +23,20 @@ import Shomei.Domain.User (User)
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.DTO (
+    ChangePasswordRequest,
+    ConfirmEmailVerificationRequest,
+    ConfirmPasswordResetRequest,
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    PasswordResetRequest,
     RefreshRequest,
     SessionResponse,
     SignupRequest,
     SignupResponse,
     TokenPairResponse,
     UserResponse,
+    VerifyEmailRequest,
  )
 
 {- | The standalone API. @signup@/@login@/@refresh@/@logout@/@me@/@session@ live
@@ -56,6 +61,42 @@ data ShomeiAPI mode = ShomeiAPI
                 :> "refresh"
                 :> ReqBody '[JSON] RefreshRequest
                 :> Post '[JSON] TokenPairResponse
+    , verifyEmailRequest ::
+        mode
+            :- "auth"
+                :> "verify-email"
+                :> "request"
+                :> ReqBody '[JSON] VerifyEmailRequest
+                :> Verb 'POST 202 '[JSON] NoContent
+    , verifyEmailConfirm ::
+        mode
+            :- "auth"
+                :> "verify-email"
+                :> "confirm"
+                :> ReqBody '[JSON] ConfirmEmailVerificationRequest
+                :> Verb 'POST 202 '[JSON] NoContent
+    , passwordResetRequest ::
+        mode
+            :- "auth"
+                :> "password-reset"
+                :> "request"
+                :> ReqBody '[JSON] PasswordResetRequest
+                :> Verb 'POST 202 '[JSON] NoContent
+    , passwordResetConfirm ::
+        mode
+            :- "auth"
+                :> "password-reset"
+                :> "confirm"
+                :> ReqBody '[JSON] ConfirmPasswordResetRequest
+                :> Verb 'POST 202 '[JSON] NoContent
+    , passwordChange ::
+        mode
+            :- "auth"
+                :> "password"
+                :> "change"
+                :> Authenticated
+                :> ReqBody '[JSON] ChangePasswordRequest
+                :> PostNoContent
     , logout ::
         mode
             :- "auth"

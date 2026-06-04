@@ -298,6 +298,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 
 - [ ] EP-1: `Notifier` effect + dev-log and SMTP senders; verification/reset token types, stores, and migrations
 - [x] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
+- [x] EP-1: new `ShomeiAPI` routes + handlers pass in-process lifecycle HTTP tests
 - [ ] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server
 - [ ] EP-2: rate-limit + lockout policy in `ShomeiConfig`; per-IP/per-account login throttling middleware
 - [ ] EP-2: account lockout after N failed logins with generic responses; reuse/lockout integration tests pass
@@ -379,6 +380,13 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   migrations and applied the three `2026-06-04-*` files. Later plans that append migrations
   should make sure this module actually recompiles before trusting tests or `just migrate`.
 
+- **2026-06-04 EP-1 SMTP dependency remains unresolved.** `mori registry search smtp`,
+  `mori registry search HaskellNet`, and `mori registry search mime-mail` did not return a
+  registered SMTP/email package source to audit. EP-1 therefore added the `Shomei.Notify`
+  assembly module and explicit `SmtpNotifier` config path, but kept it log-backed until a
+  vetted dependency is registered/resolved. The MasterPlan should not treat EP-1's production
+  SMTP sender or live curl acceptance as complete yet.
+
 
 ## Decision Log
 
@@ -450,6 +458,13 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 the result against the original vision.
 
 (To be filled during and after implementation.)
+
+- 2026-06-04: EP-1 M3 is complete and M4 is partially complete. The servant API now exposes
+  the verify-email, password-reset, and password-change routes, and the server assembly wires
+  the PostgreSQL token stores plus config-selected notifier interpreter. The in-process HTTP
+  suite covers signup, email verification, password reset, login, refresh, JWKS, and role
+  checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
+  sender and the live-server `curl` walkthrough.
 
 
 ## Revision Notes
