@@ -1,0 +1,44 @@
+with-compiler: ghc-9.12.4
+
+packages:
+    packages/shomei-core
+    packages/shomei-jwt
+    packages/shomei-postgres
+    packages/shomei-migrations
+    packages/shomei-servant
+    packages/shomei-server
+    packages/shomei-client
+
+-- ============================================================
+-- DEPENDENCY-OVERRIDE PLACEHOLDER — later plans add their own
+-- source-repository-package / package / allow-newer blocks here.
+-- Each plan appends its own block; none rewrites another's.
+--
+-- EP-3 (persistence) will add:
+--
+-- source-repository-package
+--   type: git
+--   location: https://github.com/shinzui/ephemeral-pg.git
+--   tag: 304c160f25570ea5e225baf5024778c93f434b56
+--
+-- source-repository-package
+--   type: git
+--   location: https://github.com/shinzui/codd-project.git
+--   tag: d176b3088f23ef2218c7a1f31835e8ee0c0601aa
+--   subdir: codd
+--
+-- package codd
+--   tests: False
+--   benchmarks: False
+--
+-- allow-newer:
+--   haxl:time
+--
+-- EP-4 (JWT) will add jose pinned to PR #137 (crypton >= 1.1.0 + ram,
+-- NOT the Hackage memory-based 0.12 — memory is deprecated/forbidden here):
+--
+-- source-repository-package
+--   type: git
+--   location: https://github.com/sumo/hs-jose.git   -- or a shinzui/hs-jose fork
+--   tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
+-- ============================================================

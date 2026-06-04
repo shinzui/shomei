@@ -1,0 +1,38 @@
+cabal-version: 3.0
+name:          shomei-servant
+version:       0.1.0.0
+synopsis:
+  Servant combinators and handlers: Authenticated, RequireRole/RequireScope, ShomeiAPI
+
+license:       MIT
+author:        Nadeem Bitar
+maintainer:    nadeem@gmail.com
+category:      Web, Security
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+common shared
+  default-language:   GHC2024
+  default-extensions:
+    BlockArguments
+    DeriveAnyClass
+    DuplicateRecordFields
+    MultilineStrings
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
+    PackageImports
+    QualifiedDo
+    TemplateHaskell
+
+library
+  import:          warnings, shared
+  hs-source-dirs:  src
+  exposed-modules: Shomei.Servant.Placeholder
+  build-depends:
+    , base         >=4.18 && <5
+    , shomei-core
+    , shomei-jwt

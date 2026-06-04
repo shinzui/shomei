@@ -1,0 +1,47 @@
+cabal-version: 3.0
+name:          shomei-core
+version:       0.1.0.0
+synopsis:
+  Transport-agnostic domain: types, commands, events, errors, and ports
+
+description:
+  shomei-core contains the domain model that does not depend on any
+  transport, database, or JWT library. All other packages depend on it.
+
+license:       MIT
+author:        Nadeem Bitar
+maintainer:    nadeem@gmail.com
+category:      Web, Security
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+common shared
+  default-language:   GHC2024
+  default-extensions:
+    BlockArguments
+    DeriveAnyClass
+    DuplicateRecordFields
+    MultilineStrings
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
+    PackageImports
+    QualifiedDo
+    TemplateHaskell
+
+library
+  import:          warnings, shared
+  hs-source-dirs:  src
+  exposed-modules:
+    Shomei.Core.Placeholder
+    Shomei.Prelude
+
+  build-depends:
+    , aeson  >=2.0
+    , base   >=4.18 && <5
+    , lens   >=5.0
+    , text   >=2.0
+    , time   >=1.11
