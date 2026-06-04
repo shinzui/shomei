@@ -37,6 +37,9 @@ authErrorToServerError = \case
     RefreshTokenInvalid -> json err401 "token_invalid" "Refresh token is invalid"
     RefreshTokenExpired -> json err401 "token_expired" "Refresh token expired"
     RefreshTokenReuseDetected -> json err401 "token_reuse" "Refresh token reuse detected"
+    VerificationTokenInvalid -> json err400 "verification_token_invalid" "Verification token is invalid"
+    PasswordResetTokenInvalid -> json err400 "password_reset_token_invalid" "Password reset token is invalid"
+    EmailAlreadyVerified -> json err409 "email_already_verified" "Email is already verified"
     TokenInvalid _ -> json err401 "token_invalid" "Token is invalid"
     InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where

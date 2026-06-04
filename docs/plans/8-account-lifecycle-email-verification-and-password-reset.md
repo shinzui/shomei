@@ -115,37 +115,45 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone M1 — Notifier effect, one-time-token domain + effects + in-memory interpreter, account workflows, pure tests
 
-- [ ] M1.1 Add `VerificationTokenId` and `PasswordResetTokenId` to
+- [x] M1.1 Add `VerificationTokenId` and `PasswordResetTokenId` to
       `shomei-core/src/Shomei/Id.hs` (new `KindID` prefixes + UUID converters +
-      `gen…` helpers).
-- [ ] M1.2 Create `shomei-core/src/Shomei/Domain/OneTimeToken.hs` (shared opaque
+      `gen…` helpers). Completed 2026-06-04.
+- [x] M1.2 Create `shomei-core/src/Shomei/Domain/OneTimeToken.hs` (shared opaque
       single-use-token shape: `OneTimeToken`, `OneTimeTokenHash`, `OneTimeTokenStatus`).
-- [ ] M1.3 Create `shomei-core/src/Shomei/Domain/VerificationToken.hs`
-      (`PersistedVerificationToken`, `NewVerificationToken`).
-- [ ] M1.4 Create `shomei-core/src/Shomei/Domain/PasswordResetToken.hs`
-      (`PersistedPasswordResetToken`, `NewPasswordResetToken`).
-- [ ] M1.5 Create `shomei-core/src/Shomei/Domain/Notification.hs`
+      Completed 2026-06-04.
+- [x] M1.3 Create `shomei-core/src/Shomei/Domain/VerificationToken.hs`
+      (`PersistedVerificationToken`, `NewVerificationToken`). Completed 2026-06-04.
+- [x] M1.4 Create `shomei-core/src/Shomei/Domain/PasswordResetToken.hs`
+      (`PersistedPasswordResetToken`, `NewPasswordResetToken`). Completed 2026-06-04.
+- [x] M1.5 Create `shomei-core/src/Shomei/Domain/Notification.hs`
       (`Notification` sum: `EmailVerificationRequested` / `PasswordResetRequested`).
-- [ ] M1.6 Create `shomei-core/src/Shomei/Effect/Notifier.hs` (the IP-1 effect).
-- [ ] M1.7 Create `shomei-core/src/Shomei/Effect/VerificationTokenStore.hs`.
-- [ ] M1.8 Create `shomei-core/src/Shomei/Effect/PasswordResetTokenStore.hs`.
-- [ ] M1.9 Extend `Shomei.Domain.User` with `emailVerifiedAt :: Maybe UTCTime`; extend
-      `Shomei.Effect.UserStore` with `MarkUserEmailVerified`.
-- [ ] M1.10 Add new `AuthError` variants (`VerificationTokenInvalid`,
-      `PasswordResetTokenInvalid`, `EmailAlreadyVerified`) to `Shomei.Error`.
-- [ ] M1.11 Add new `AuthEvent` variants + `*Data` records
+      Completed 2026-06-04.
+- [x] M1.6 Create `shomei-core/src/Shomei/Effect/Notifier.hs` (the IP-1 effect).
+      Completed 2026-06-04.
+- [x] M1.7 Create `shomei-core/src/Shomei/Effect/VerificationTokenStore.hs`.
+      Completed 2026-06-04.
+- [x] M1.8 Create `shomei-core/src/Shomei/Effect/PasswordResetTokenStore.hs`.
+      Completed 2026-06-04.
+- [x] M1.9 Extend `Shomei.Domain.User` with `emailVerifiedAt :: Maybe UTCTime`; extend
+      `Shomei.Effect.UserStore` with `MarkUserEmailVerified`. Completed 2026-06-04.
+- [x] M1.10 Add new `AuthError` variants (`VerificationTokenInvalid`,
+      `PasswordResetTokenInvalid`, `EmailAlreadyVerified`) to `Shomei.Error`. Completed
+      2026-06-04.
+- [x] M1.11 Add new `AuthEvent` variants + `*Data` records
       (`EmailVerificationRequested`, `EmailVerified`, `PasswordResetRequested`,
-      `PasswordResetCompleted`) to `Shomei.Domain.Event`.
-- [ ] M1.12 Extend `Shomei.Config` with a `NotifierConfig` sub-record (append-only, IP-3):
+      `PasswordResetCompleted`) to `Shomei.Domain.Event`. Completed 2026-06-04.
+- [x] M1.12 Extend `Shomei.Config` with a `NotifierConfig` sub-record (append-only, IP-3):
       `emailVerificationRequired :: Bool`, token TTLs, `notifierTransport`, base URL.
-- [ ] M1.13 Create `shomei-core/src/Shomei/Workflow/Account.hs` with
+      Completed 2026-06-04.
+- [x] M1.13 Create `shomei-core/src/Shomei/Workflow/Account.hs` with
       `requestEmailVerification`, `confirmEmailVerification`, `requestPasswordReset`,
-      `confirmPasswordReset`, `changePassword`.
-- [ ] M1.14 Extend `Shomei.Effect.InMemory` (`World` + interpreters) for the two new stores +
-      the `Notifier` (list interpreter) + `MarkUserEmailVerified`.
-- [ ] M1.15 Update `shomei-core/shomei-core.cabal` exposed-modules + test other-modules.
-- [ ] M1.16 Write `shomei-core/test/Shomei/AccountSpec.hs` and register it; acceptance
-      `cabal test shomei-core` green with the new account cases.
+      `confirmPasswordReset`, `changePassword`. Completed 2026-06-04.
+- [x] M1.14 Extend `Shomei.Effect.InMemory` (`World` + interpreters) for the two new stores +
+      the `Notifier` (list interpreter) + `MarkUserEmailVerified`. Completed 2026-06-04.
+- [x] M1.15 Update `shomei-core/shomei-core.cabal` exposed-modules + test other-modules.
+      Completed 2026-06-04.
+- [x] M1.16 Write `shomei-core/test/Shomei/AccountSpec.hs` and register it; acceptance
+      `cabal test shomei-core` green with the new account cases. Completed 2026-06-04.
 
 ### Milestone M2 — codd migrations + PostgreSQL interpreters + integration tests
 
@@ -188,7 +196,10 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- 2026-06-04: M1 could use the existing `TokenGen` effect exactly as planned by rewrapping
+  `RefreshToken`/`RefreshTokenHash` text into `OneTimeToken`/`OneTimeTokenHash`; no new random
+  byte or hashing implementation was needed. Evidence: `nix develop --command cabal test
+  shomei-core` passed all 15 tests, including the new account-token cases.
 
 
 ## Decision Log
@@ -267,6 +278,12 @@ Summarize outcomes, gaps, and lessons learned at major milestones or at completi
 Compare the result against the original purpose.
 
 (To be filled during and after implementation.)
+
+- 2026-06-04: Milestone M1 is complete. The core package now exposes the notifier effect,
+  one-time-token domain records and store effects, `NotifierConfig`, account lifecycle
+  workflows, and in-memory interpreters. `nix develop --command cabal test shomei-core`
+  passes with 15 tests, including eight account lifecycle cases. M2 remains: migrations,
+  PostgreSQL interpreters, and integration tests.
 
 
 ## Context and Orientation

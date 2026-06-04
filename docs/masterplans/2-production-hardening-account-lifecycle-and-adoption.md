@@ -148,7 +148,7 @@ intra-MasterPlan-2 dependencies.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | Not Started |
+| 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | In Progress |
 | 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Not Started |
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Not Started |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Not Started |
@@ -297,7 +297,7 @@ register it in `mori.dhall` as MasterPlan 1 EP-3 did for `shomei-migrations`.
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
 - [ ] EP-1: `Notifier` effect + dev-log and SMTP senders; verification/reset token types, stores, and migrations
-- [ ] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
+- [x] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
 - [ ] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server
 - [ ] EP-2: rate-limit + lockout policy in `ShomeiConfig`; per-IP/per-account login throttling middleware
 - [ ] EP-2: account lockout after N failed logins with generic responses; reuse/lockout integration tests pass

@@ -9,11 +9,13 @@ module Shomei.Effect.UserStore (
     findUserById,
     findUserByEmail,
     updateUserStatus,
+    markUserEmailVerified,
 ) where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
 
+import Data.Time (UTCTime)
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.User (NewUser, User, UserStatus)
 import Shomei.Id (UserId)
@@ -23,6 +25,7 @@ data UserStore :: Effect where
     FindUserById :: UserId -> UserStore m (Maybe User)
     FindUserByEmail :: Email -> UserStore m (Maybe User)
     UpdateUserStatus :: UserId -> UserStatus -> UserStore m ()
+    MarkUserEmailVerified :: UserId -> UTCTime -> UserStore m ()
 
 type instance DispatchOf UserStore = Dynamic
 
@@ -37,3 +40,6 @@ findUserByEmail = send . FindUserByEmail
 
 updateUserStatus :: (UserStore :> es) => UserId -> UserStatus -> Eff es ()
 updateUserStatus uid st = send (UpdateUserStatus uid st)
+
+markUserEmailVerified :: (UserStore :> es) => UserId -> UTCTime -> Eff es ()
+markUserEmailVerified uid t = send (MarkUserEmailVerified uid t)

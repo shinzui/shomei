@@ -29,6 +29,9 @@ module Shomei.Effect.InMemory (
     runCredentialStore,
     runSessionStore,
     runRefreshTokenStore,
+    runVerificationTokenStore,
+    runPasswordResetTokenStore,
+    runNotifier,
     runPasswordHasher,
     runAuthEventPublisher,
     runSigningKeyStore,
@@ -55,7 +58,10 @@ import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.Notification (Notification)
+import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
+import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (
     NewRefreshToken (..),
     PersistedRefreshToken (..),
@@ -67,21 +73,28 @@ import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
+import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (
+    PasswordResetTokenId,
     RefreshTokenId,
     SessionId,
     UserId,
+    VerificationTokenId,
     genCredentialId,
+    genPasswordResetTokenId,
     genRefreshTokenId,
     genSessionId,
     genUserId,
+    genVerificationTokenId,
  )
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
+import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
+import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
@@ -89,6 +102,7 @@ import Shomei.Effect.TokenGen (TokenGen (..))
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.TokenVerifier (TokenVerifier (..))
 import Shomei.Effect.UserStore (UserStore (..))
+import Shomei.Effect.VerificationTokenStore (VerificationTokenStore (..))
 
 -- | The whole mutable test world.
 data World = World
@@ -97,8 +111,14 @@ data World = World
     , sessions :: !(Map SessionId Session)
     , refreshTokens :: !(Map RefreshTokenId PersistedRefreshToken)
     , refreshByHash :: !(Map RefreshTokenHash RefreshTokenId)
+    , verificationTokens :: !(Map VerificationTokenId PersistedVerificationToken)
+    , verificationByHash :: !(Map OneTimeTokenHash VerificationTokenId)
+    , passwordResetTokens :: !(Map PasswordResetTokenId PersistedPasswordResetToken)
+    , passwordResetByHash :: !(Map OneTimeTokenHash PasswordResetTokenId)
     , signingKeys :: !(Map Text StoredSigningKey)
     , publishedEvents :: ![Event.AuthEvent]
+    -- ^ newest-first
+    , sentNotifications :: ![Notification]
     -- ^ newest-first
     , clock :: !UTCTime
     -- ^ fixed test time
@@ -115,8 +135,13 @@ emptyWorld t =
         , sessions = Map.empty
         , refreshTokens = Map.empty
         , refreshByHash = Map.empty
+        , verificationTokens = Map.empty
+        , verificationByHash = Map.empty
+        , passwordResetTokens = Map.empty
+        , passwordResetByHash = Map.empty
         , signingKeys = Map.empty
         , publishedEvents = []
+        , sentNotifications = []
         , clock = t
         , tokenCounter = 0
         }
@@ -148,6 +173,7 @@ runUserStore ref = interpret_ \case
                     , email = nu.email
                     , displayName = nu.displayName
                     , status = UserActive
+                    , emailVerifiedAt = Nothing
                     , createdAt = w.clock
                     , updatedAt = w.clock
                     }
@@ -157,6 +183,8 @@ runUserStore ref = interpret_ \case
     FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
     UpdateUserStatus uid st ->
         liftIO (modifyIORef' ref (#users %~ Map.adjust (#status .~ st) uid))
+    MarkUserEmailVerified uid t ->
+        liftIO (modifyIORef' ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
   where
     findByEmail e w = listToMaybe [u | u <- Map.elems w.users, u.email == e]
 
@@ -241,6 +269,21 @@ runRefreshTokenStore ref = interpret_ \case
                 ref
                 (#refreshTokens %~ Map.map (\tok -> if tok.sessionId == sid then revoke t tok else tok))
             )
+    RevokeAllUserRefreshTokens uid t ->
+        liftIO
+            ( modifyIORef'
+                ref
+                ( \w ->
+                    w
+                        & #refreshTokens
+                        %~ Map.map
+                            ( \tok ->
+                                case Map.lookup tok.sessionId w.sessions of
+                                    Just s | s.userId == uid -> revoke t tok
+                                    _ -> tok
+                            )
+                )
+            )
   where
     markUsed t tok = tok & #status .~ RefreshTokenUsed & #usedAt .~ Just t
     revoke t tok = tok & #status .~ RefreshTokenRevoked & #revokedAt .~ Just t
@@ -267,6 +310,84 @@ mkPersisted rid nrt =
         , revokedAt = Nothing
         }
 
+runVerificationTokenStore :: (IOE :> es) => IORef World -> Eff (VerificationTokenStore : es) a -> Eff es a
+runVerificationTokenStore ref = interpret_ \case
+    CreateVerificationToken nvt -> do
+        tid <- genVerificationTokenId
+        let tok = mkVerificationToken tid nvt
+        liftIO
+            ( modifyIORef'
+                ref
+                ( (#verificationTokens %~ Map.insert tid tok)
+                    . (#verificationByHash %~ Map.insert nvt.tokenHash tid)
+                )
+            )
+        pure tok
+    FindVerificationTokenByHash h ->
+        liftIO (lookupVerification h <$> readIORef ref)
+    MarkVerificationTokenConsumed tid t ->
+        liftIO (modifyIORef' ref (#verificationTokens %~ Map.adjust (consume t) tid))
+    RevokeUserVerificationTokens uid t ->
+        liftIO (modifyIORef' ref (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+  where
+    lookupVerification h w = do
+        tid <- Map.lookup h w.verificationByHash
+        Map.lookup tid w.verificationTokens
+    consume t tok = tok & #status .~ OneTimeTokenConsumed & #consumedAt .~ Just t
+    revoke t tok = tok & #status .~ OneTimeTokenRevoked & #revokedAt .~ Just t
+
+mkVerificationToken :: VerificationTokenId -> NewVerificationToken -> PersistedVerificationToken
+mkVerificationToken tid nvt =
+    PersistedVerificationToken
+        { verificationTokenId = tid
+        , userId = nvt.userId
+        , tokenHash = nvt.tokenHash
+        , status = OneTimeTokenActive
+        , createdAt = nvt.createdAt
+        , expiresAt = nvt.expiresAt
+        , consumedAt = Nothing
+        , revokedAt = Nothing
+        }
+
+runPasswordResetTokenStore :: (IOE :> es) => IORef World -> Eff (PasswordResetTokenStore : es) a -> Eff es a
+runPasswordResetTokenStore ref = interpret_ \case
+    CreatePasswordResetToken nrt -> do
+        tid <- genPasswordResetTokenId
+        let tok = mkPasswordResetToken tid nrt
+        liftIO
+            ( modifyIORef'
+                ref
+                ( (#passwordResetTokens %~ Map.insert tid tok)
+                    . (#passwordResetByHash %~ Map.insert nrt.tokenHash tid)
+                )
+            )
+        pure tok
+    FindPasswordResetTokenByHash h ->
+        liftIO (lookupReset h <$> readIORef ref)
+    MarkPasswordResetTokenConsumed tid t ->
+        liftIO (modifyIORef' ref (#passwordResetTokens %~ Map.adjust (consume t) tid))
+    RevokeUserPasswordResetTokens uid t ->
+        liftIO (modifyIORef' ref (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+  where
+    lookupReset h w = do
+        tid <- Map.lookup h w.passwordResetByHash
+        Map.lookup tid w.passwordResetTokens
+    consume t tok = tok & #status .~ OneTimeTokenConsumed & #consumedAt .~ Just t
+    revoke t tok = tok & #status .~ OneTimeTokenRevoked & #revokedAt .~ Just t
+
+mkPasswordResetToken :: PasswordResetTokenId -> NewPasswordResetToken -> PersistedPasswordResetToken
+mkPasswordResetToken tid nrt =
+    PersistedPasswordResetToken
+        { passwordResetTokenId = tid
+        , userId = nrt.userId
+        , tokenHash = nrt.tokenHash
+        , status = OneTimeTokenActive
+        , createdAt = nrt.createdAt
+        , expiresAt = nrt.expiresAt
+        , consumedAt = Nothing
+        , revokedAt = Nothing
+        }
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
     HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -283,6 +404,10 @@ runTokenVerifier = interpret_ \case
 runAuthEventPublisher :: (IOE :> es) => IORef World -> Eff (AuthEventPublisher : es) a -> Eff es a
 runAuthEventPublisher ref = interpret_ \case
     PublishAuthEvent ev -> liftIO (modifyIORef' ref (#publishedEvents %~ (ev :)))
+
+runNotifier :: (IOE :> es) => IORef World -> Eff (Notifier : es) a -> Eff es a
+runNotifier ref = interpret_ \case
+    SendNotification n -> liftIO (modifyIORef' ref (#sentNotifications %~ (n :)))
 
 runSigningKeyStore :: (IOE :> es) => IORef World -> Eff (SigningKeyStore : es) a -> Eff es a
 runSigningKeyStore ref = interpret_ \case
@@ -318,6 +443,9 @@ runInMemory ::
         , CredentialStore
         , SessionStore
         , RefreshTokenStore
+        , VerificationTokenStore
+        , PasswordResetTokenStore
+        , Notifier
         , PasswordHasher
         , TokenSigner
         , TokenVerifier
@@ -338,6 +466,9 @@ runInMemory ref =
         . runTokenVerifier
         . runTokenSigner
         . runPasswordHasher ref
+        . runNotifier ref
+        . runPasswordResetTokenStore ref
+        . runVerificationTokenStore ref
         . runRefreshTokenStore ref
         . runSessionStore ref
         . runCredentialStore ref

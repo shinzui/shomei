@@ -48,6 +48,8 @@ runUserStorePostgres = interpret_ \case
     UpdateUserStatus uid st -> do
         res <- runSession (Session.statement (userIdToUUID uid, userStatusToText st) updateUserStatusStmt)
         either dbFail (const (pure ())) res
+    MarkUserEmailVerified _uid _ts ->
+        throwError (InternalAuthError "email verification persistence requires the account-lifecycle migration")
   where
     dbFail e = throwError (InternalAuthError ("database error: " <> tshow e))
     rebuild r = either (throwError . InternalAuthError) pure (rebuildUser r)
@@ -59,6 +61,7 @@ mkUser uid nu ts =
         , email = nu.email
         , displayName = nu.displayName
         , status = UserActive
+        , emailVerifiedAt = Nothing
         , createdAt = ts
         , updatedAt = ts
         }
@@ -73,6 +76,7 @@ rebuildUser (uid, e, dn, st, c, u) = do
             , email = email
             , displayName = dn
             , status = status
+            , emailVerifiedAt = Nothing
             , createdAt = c
             , updatedAt = u
             }

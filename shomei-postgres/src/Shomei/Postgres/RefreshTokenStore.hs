@@ -32,6 +32,7 @@ import Shomei.Id (
     refreshTokenIdToUUID,
     sessionIdFromUUID,
     sessionIdToUUID,
+    userIdToUUID,
  )
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Postgres.Codec (refreshTokenStatusFromText, refreshTokenStatusToText, tshow)
@@ -73,6 +74,9 @@ runRefreshTokenStorePostgres = interpret_ \case
         either dbFail (const (pure ())) res
     RevokeSessionRefreshTokens sid t -> do
         res <- runSession (Session.statement (sessionIdToUUID sid, t) revokeSessionTokensStmt)
+        either dbFail (const (pure ())) res
+    RevokeAllUserRefreshTokens uid t -> do
+        res <- runSession (Session.statement (userIdToUUID uid, t) revokeUserTokensStmt)
         either dbFail (const (pure ())) res
   where
     dbFail e = throwError (InternalAuthError ("database error: " <> tshow e))
@@ -208,6 +212,19 @@ revokeSessionTokensStmt =
         UPDATE shomei.shomei_refresh_tokens
         SET status = 'revoked', revoked_at = $2
         WHERE session_id = $1
+        """
+        (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
+        D.noResult
+
+revokeUserTokensStmt :: Statement (UUID, UTCTime) ()
+revokeUserTokensStmt =
+    preparable
+        """
+        UPDATE shomei.shomei_refresh_tokens rt
+        SET status = 'revoked', revoked_at = $2
+        FROM shomei.shomei_sessions s
+        WHERE rt.session_id = s.session_id
+          AND s.user_id = $1
         """
         (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
         D.noResult

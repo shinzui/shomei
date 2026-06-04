@@ -42,19 +42,23 @@ library
     Shomei.Domain.Credential
     Shomei.Domain.Email
     Shomei.Domain.Event
+    Shomei.Domain.Notification
+    Shomei.Domain.OneTimeToken
     Shomei.Domain.Password
+    Shomei.Domain.PasswordResetToken
     Shomei.Domain.RefreshToken
     Shomei.Domain.Session
     Shomei.Domain.SigningKey
     Shomei.Domain.Token
     Shomei.Domain.User
-    Shomei.Error
-    Shomei.Id
+    Shomei.Domain.VerificationToken
     Shomei.Effect.AuthEventPublisher
     Shomei.Effect.Clock
     Shomei.Effect.CredentialStore
     Shomei.Effect.InMemory
+    Shomei.Effect.Notifier
     Shomei.Effect.PasswordHasher
+    Shomei.Effect.PasswordResetTokenStore
     Shomei.Effect.RefreshTokenStore
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
@@ -62,8 +66,12 @@ library
     Shomei.Effect.TokenSigner
     Shomei.Effect.TokenVerifier
     Shomei.Effect.UserStore
+    Shomei.Effect.VerificationTokenStore
+    Shomei.Error
+    Shomei.Id
     Shomei.Prelude
     Shomei.Workflow
+    Shomei.Workflow.Account
 
   build-depends:
     , aeson
@@ -87,7 +95,10 @@ test-suite shomei-core-test
   hs-source-dirs: test
   main-is:        Main.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
-  other-modules:  Shomei.WorkflowSpec
+  other-modules:
+    Shomei.AccountSpec
+    Shomei.WorkflowSpec
+
   build-depends:
     , base
     , containers

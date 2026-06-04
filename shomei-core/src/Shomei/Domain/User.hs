@@ -19,6 +19,7 @@ data User = User
     , email :: !Email
     , displayName :: !(Maybe Text)
     , status :: !UserStatus
+    , emailVerifiedAt :: !(Maybe UTCTime)
     , createdAt :: !UTCTime
     , updatedAt :: !UTCTime
     }

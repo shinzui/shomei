@@ -19,10 +19,14 @@ module Shomei.Id (
     UserId,
     SessionId,
     RefreshTokenId,
+    VerificationTokenId,
+    PasswordResetTokenId,
     CredentialId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
+    genVerificationTokenId,
+    genPasswordResetTokenId,
     genCredentialId,
     idText,
     parseId,
@@ -32,6 +36,10 @@ module Shomei.Id (
     sessionIdFromUUID,
     refreshTokenIdToUUID,
     refreshTokenIdFromUUID,
+    verificationTokenIdToUUID,
+    verificationTokenIdFromUUID,
+    passwordResetTokenIdToUUID,
+    passwordResetTokenIdFromUUID,
     credentialIdToUUID,
     credentialIdFromUUID,
 ) where
@@ -51,6 +59,10 @@ type SessionId = KindID "session"
 
 type RefreshTokenId = KindID "refresh_token"
 
+type VerificationTokenId = KindID "verification_token"
+
+type PasswordResetTokenId = KindID "password_reset_token"
+
 type CredentialId = KindID "credential"
 
 genUserId :: (MonadIO m) => m UserId
@@ -61,6 +73,12 @@ genSessionId = KindID.genKindID @"session"
 
 genRefreshTokenId :: (MonadIO m) => m RefreshTokenId
 genRefreshTokenId = KindID.genKindID @"refresh_token"
+
+genVerificationTokenId :: (MonadIO m) => m VerificationTokenId
+genVerificationTokenId = KindID.genKindID @"verification_token"
+
+genPasswordResetTokenId :: (MonadIO m) => m PasswordResetTokenId
+genPasswordResetTokenId = KindID.genKindID @"password_reset_token"
 
 genCredentialId :: (MonadIO m) => m CredentialId
 genCredentialId = KindID.genKindID @"credential"
@@ -90,6 +108,18 @@ refreshTokenIdToUUID = getUUID
 
 refreshTokenIdFromUUID :: UUID -> RefreshTokenId
 refreshTokenIdFromUUID = decorateKindID
+
+verificationTokenIdToUUID :: VerificationTokenId -> UUID
+verificationTokenIdToUUID = getUUID
+
+verificationTokenIdFromUUID :: UUID -> VerificationTokenId
+verificationTokenIdFromUUID = decorateKindID
+
+passwordResetTokenIdToUUID :: PasswordResetTokenId -> UUID
+passwordResetTokenIdToUUID = getUUID
+
+passwordResetTokenIdFromUUID :: UUID -> PasswordResetTokenId
+passwordResetTokenIdFromUUID = decorateKindID
 
 credentialIdToUUID :: CredentialId -> UUID
 credentialIdToUUID = getUUID

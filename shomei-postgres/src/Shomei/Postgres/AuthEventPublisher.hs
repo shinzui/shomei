@@ -58,6 +58,14 @@ projectAuthEvent = \case
         (Nothing, Just (sessionIdToUUID sid), "refresh_token_rotated", toJSON d, occ)
     Event.RefreshTokenReuseDetected d@(Event.RefreshTokenReuseDetectedData sid _ occ) ->
         (Nothing, Just (sessionIdToUUID sid), "refresh_token_reuse_detected", toJSON d, occ)
+    Event.EmailVerificationRequested d@(Event.EmailVerificationRequestedData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "email_verification_requested", toJSON d, occ)
+    Event.EmailVerified d@(Event.EmailVerifiedData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "email_verified", toJSON d, occ)
+    Event.PasswordResetRequested d@(Event.PasswordResetRequestedData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "password_reset_requested", toJSON d, occ)
+    Event.PasswordResetCompleted d@(Event.PasswordResetCompletedData uid occ) ->
+        (Just (userIdToUUID uid), Nothing, "password_reset_completed", toJSON d, occ)
     Event.PasswordChanged d@(Event.PasswordChangedData uid occ) ->
         (Just (userIdToUUID uid), Nothing, "password_changed", toJSON d, occ)
     Event.UserSuspended d@(Event.UserSuspendedData uid occ) ->

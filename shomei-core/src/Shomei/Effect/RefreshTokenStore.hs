@@ -12,6 +12,7 @@ module Shomei.Effect.RefreshTokenStore (
     markRefreshTokenUsed,
     revokeRefreshTokenFamily,
     revokeSessionRefreshTokens,
+    revokeAllUserRefreshTokens,
 ) where
 
 import Shomei.Prelude
@@ -20,7 +21,7 @@ import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
 
 import Shomei.Domain.RefreshToken (NewRefreshToken, PersistedRefreshToken, RefreshTokenHash)
-import Shomei.Id (RefreshTokenId, SessionId)
+import Shomei.Id (RefreshTokenId, SessionId, UserId)
 
 data RefreshTokenStore :: Effect where
     CreateRefreshToken :: NewRefreshToken -> RefreshTokenStore m PersistedRefreshToken
@@ -28,6 +29,7 @@ data RefreshTokenStore :: Effect where
     MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
     RevokeRefreshTokenFamily :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
     RevokeSessionRefreshTokens :: SessionId -> UTCTime -> RefreshTokenStore m ()
+    RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()
 
 type instance DispatchOf RefreshTokenStore = Dynamic
 
@@ -45,3 +47,6 @@ revokeRefreshTokenFamily i t = send (RevokeRefreshTokenFamily i t)
 
 revokeSessionRefreshTokens :: (RefreshTokenStore :> es) => SessionId -> UTCTime -> Eff es ()
 revokeSessionRefreshTokens s t = send (RevokeSessionRefreshTokens s t)
+
+revokeAllUserRefreshTokens :: (RefreshTokenStore :> es) => UserId -> UTCTime -> Eff es ()
+revokeAllUserRefreshTokens u t = send (RevokeAllUserRefreshTokens u t)

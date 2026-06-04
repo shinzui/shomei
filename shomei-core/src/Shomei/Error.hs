@@ -45,6 +45,9 @@ data AuthError
     | RefreshTokenInvalid
     | RefreshTokenExpired
     | RefreshTokenReuseDetected
+    | VerificationTokenInvalid
+    | PasswordResetTokenInvalid
+    | EmailAlreadyVerified
     | TokenInvalid TokenError
     | InternalAuthError Text
     deriving stock (Generic, Eq, Show)

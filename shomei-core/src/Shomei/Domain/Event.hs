@@ -18,6 +18,10 @@ module Shomei.Domain.Event (
     SessionRevokedData (..),
     RefreshTokenRotatedData (..),
     RefreshTokenReuseDetectedData (..),
+    EmailVerificationRequestedData (..),
+    EmailVerifiedData (..),
+    PasswordResetRequestedData (..),
+    PasswordResetCompletedData (..),
     PasswordChangedData (..),
     UserSuspendedData (..),
     UserDeletedData (..),
@@ -82,6 +86,37 @@ data RefreshTokenReuseDetectedData = RefreshTokenReuseDetectedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+data EmailVerificationRequestedData = EmailVerificationRequestedData
+    { userId :: !UserId
+    , email :: !Email
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data EmailVerifiedData = EmailVerifiedData
+    { userId :: !UserId
+    , email :: !Email
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data PasswordResetRequestedData = PasswordResetRequestedData
+    { userId :: !UserId
+    , email :: !Email
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data PasswordResetCompletedData = PasswordResetCompletedData
+    { userId :: !UserId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data PasswordChangedData = PasswordChangedData
     { userId :: !UserId
     , occurredAt :: !UTCTime
@@ -111,6 +146,10 @@ data AuthEvent
     | SessionRevoked SessionRevokedData
     | RefreshTokenRotated RefreshTokenRotatedData
     | RefreshTokenReuseDetected RefreshTokenReuseDetectedData
+    | EmailVerificationRequested EmailVerificationRequestedData
+    | EmailVerified EmailVerifiedData
+    | PasswordResetRequested PasswordResetRequestedData
+    | PasswordResetCompleted PasswordResetCompletedData
     | PasswordChanged PasswordChangedData
     | UserSuspended UserSuspendedData
     | UserDeleted UserDeletedData

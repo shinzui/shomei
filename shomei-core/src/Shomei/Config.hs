@@ -9,10 +9,14 @@ module Shomei.Config (
     TokenTransport (..),
     SessionCheckMode (..),
     SigningKeyConfig (..),
+    NotifierConfig (..),
+    NotifierTransport (..),
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
     defaultSessionTTL,
+    defaultVerificationTokenTTL,
+    defaultPasswordResetTokenTTL,
 ) where
 
 import Shomei.Prelude
@@ -33,6 +37,20 @@ newtype SigningKeyConfig = SigningKeyConfig {algorithm :: Text}
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+data NotifierTransport = LogNotifier | SmtpNotifier
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data NotifierConfig = NotifierConfig
+    { emailVerificationRequired :: !Bool
+    , verificationTokenTTL :: !NominalDiffTime
+    , passwordResetTokenTTL :: !NominalDiffTime
+    , notifierTransport :: !NotifierTransport
+    , publicBaseUrl :: !Text
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data ShomeiConfig = ShomeiConfig
     { issuer :: !Issuer
     , audience :: !Audience
@@ -43,6 +61,7 @@ data ShomeiConfig = ShomeiConfig
     , tokenTransport :: !TokenTransport
     , signingKeyConfig :: !SigningKeyConfig
     , sessionCheckMode :: !SessionCheckMode
+    , notifierConfig :: !NotifierConfig
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -51,6 +70,10 @@ defaultAccessTokenTTL, defaultRefreshTokenTTL, defaultSessionTTL :: NominalDiffT
 defaultAccessTokenTTL = 15 * 60 -- 15 minutes
 defaultRefreshTokenTTL = 30 * 24 * 60 * 60 -- 30 days
 defaultSessionTTL = 30 * 24 * 60 * 60 -- 30 days
+
+defaultVerificationTokenTTL, defaultPasswordResetTokenTTL :: NominalDiffTime
+defaultVerificationTokenTTL = 24 * 60 * 60 -- 24 hours
+defaultPasswordResetTokenTTL = 60 * 60 -- 1 hour
 
 defaultShomeiConfig :: Issuer -> Audience -> ShomeiConfig
 defaultShomeiConfig iss aud =
@@ -64,4 +87,12 @@ defaultShomeiConfig iss aud =
         , tokenTransport = BearerToken
         , signingKeyConfig = SigningKeyConfig{algorithm = "ES256"}
         , sessionCheckMode = VerifyTokenOnly
+        , notifierConfig =
+            NotifierConfig
+                { emailVerificationRequired = False
+                , verificationTokenTTL = defaultVerificationTokenTTL
+                , passwordResetTokenTTL = defaultPasswordResetTokenTTL
+                , notifierTransport = LogNotifier
+                , publicBaseUrl = "http://localhost:8080"
+                }
         }
