@@ -47,21 +47,26 @@ import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 
-import Shomei.Config (ShomeiConfig)
+import Shomei.Config (ShomeiConfig (..))
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 
 -- | The full turnkey startup sequence.
 main :: IO ()
 main = do
     (cfg, settings) <- loadConfig
     env <- buildEnv cfg settings
+    rl <- newRateLimiter cfg.rateLimitConfig
     hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
-    Warp.run settings.serverPort (application env)
+    -- IP-4 middleware order: EP-2's per-IP rate limiter wraps the Servant app here. EP-3's
+    -- request-id + structured-logging middleware must wrap THIS expression from the OUTSIDE
+    -- when it lands, so even a 429 the limiter returns is logged with a correlation id.
+    Warp.run settings.serverPort (rateLimitMiddleware rl (application env))
 
 {- | Run the schema migrations (idempotent), acquire the pool, and bootstrap the signing
 key, yielding the assembled 'Env'. Shared by 'main' and by host applications that embed

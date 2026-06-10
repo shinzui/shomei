@@ -40,23 +40,28 @@ library
     Shomei.Server.Boot
     Shomei.Server.Config
     Shomei.Server.Keys
+    Shomei.Server.Middleware.RateLimit
 
   build-depends:
     , aeson
-    , base               >=4.18 && <5
+    , base                  >=4.18 && <5
     , bytestring
     , effectful
     , effectful-core
     , hasql-pool
+    , http-types
     , jose
+    , network
     , servant-server
     , shomei-core
     , shomei-jwt
     , shomei-migrations
     , shomei-postgres
     , shomei-servant
+    , stm
     , text
     , time
+    , unordered-containers
     , wai
     , warp
 

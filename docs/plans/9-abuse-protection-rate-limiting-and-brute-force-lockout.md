@@ -142,9 +142,11 @@ This section must always reflect the actual current state of the work.
   an `Env`-injected SHA-256 hasher), the `LoginAttemptStore` interpreter is in both the seam
   and server `AppEffects`, and the error mapping sends `AccountLocked` → generic 401 and
   `TooManyRequests` → 429. `cabal build all` + `cabal test all` green. Completed 2026-06-10.
-- [ ] M4: per-IP WAI token-bucket middleware (`Shomei.Server.Middleware.RateLimit`) added;
-  middleware ordering vs. EP-3 observability documented and applied (IP-4); end-to-end
-  bash/`curl` demonstration recorded.
+- [x] M4: per-IP WAI token-bucket middleware (`Shomei.Server.Middleware.RateLimit`, an STM
+  `TVar (HashMap ByteString Bucket)` keyed by client IP) added, scoped to the unauthenticated
+  POST endpoints and gated by `rateLimitEnabled`; wired in `Shomei.Server.Boot.main` wrapping
+  the Servant app (IP-4: EP-3's logging middleware wraps it from the outside once it lands);
+  end-to-end `curl` demonstration recorded below. Completed 2026-06-10.
 
 
 ## Surprises & Discoveries
@@ -259,7 +261,44 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+- 2026-06-10: **EP-2 complete.** All four milestones landed and the three protections from the
+  Purpose are demonstrable from a terminal against the live server.
+
+  Realized **IP-4 middleware order** (recorded as this plan lands first; EP-3 inserts its
+  request-id/logging middleware *outside* this when it lands):
+
+  ```text
+  (EP-3 request-id + logging — not yet present)
+    └─ rateLimitMiddleware rl    -- EP-2, in Shomei.Server.Boot.main
+         └─ application env       -- the Servant ShomeiAPI app
+  ```
+
+  **Demo B — per-account brute-force lockout** (default threshold 5), live `curl`:
+
+  ```text
+  signup victim@example.com                         -> 200
+  6× POST /auth/login {victim, "wrong"}             -> 401 {"error":"invalid_login",...}  (all six identical)
+  POST /auth/login {victim, CORRECT password}       -> 401 {"error":"invalid_login",...}  (locked; same bytes — no leak)
+  SELECT failed_count, locked_until IS NOT NULL …   -> 5 | t
+  ```
+
+  **Demo A — per-IP request-rate limit** (default 60 rpm / burst 60), a 120-request burst at
+  `POST /auth/signup` from one IP:
+
+  ```text
+  429 count: 58 ; non-429 count: 63 ; tail solidly 429
+  ```
+
+  i.e. ~60 requests pass the bucket (plus a few refills) and the remainder are rejected with
+  `429 {"error":"too_many_requests"}` BEFORE reaching Servant — exactly the token-bucket
+  transition the plan specified.
+
+  Gaps / deferred: a trusted `X-Forwarded-For` policy for IP extraction behind a proxy is out
+  of scope (single-instance plan); the request-rate buckets are in-memory and reset on restart
+  (the security-critical lockout is PostgreSQL-backed and survives restarts). The lockout
+  notification through EP-1's `Notifier` was left as the documented soft, optional integration
+  and not wired (EP-1's `Notifier` exists but the lockout path only publishes the `AccountLocked`
+  audit event); this can be added later without changing the effect signature.
 
 
 ## Context and Orientation

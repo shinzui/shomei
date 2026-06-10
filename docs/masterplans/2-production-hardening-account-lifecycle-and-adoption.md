@@ -149,7 +149,7 @@ intra-MasterPlan-2 dependencies.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | In Progress |
-| 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | In Progress |
+| 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Complete |
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Not Started |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Not Started |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | Not Started |
@@ -300,7 +300,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
 - [x] EP-1: new `ShomeiAPI` routes + handlers pass in-process lifecycle HTTP tests
 - [x] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server (2026-06-10, log-only notifier)
-- [~] EP-2: rate-limit + lockout policy in `ShomeiConfig` done; per-IP/per-account login throttling wired into the workflow (M1–M3). The per-IP **request-rate WAI middleware** remains (M4).
+- [x] EP-2: rate-limit + lockout policy in `ShomeiConfig`; per-IP/per-account login throttling in the workflow plus the per-IP request-rate WAI middleware (`Shomei.Server.Middleware.RateLimit`). 120-req burst → ~58 `429`s before Servant (2026-06-10).
 - [x] EP-2: account lockout after N failed logins with generic responses; pure + PostgreSQL integration tests pass (`cabal test all` green, 2026-06-10)
 - [ ] EP-3: structured JSON logging + request correlation IDs; graceful shutdown
 - [ ] EP-3: Prometheus `/metrics` and `/ready` readiness probe distinct from `/health`
@@ -465,6 +465,21 @@ the result against the original vision.
   suite covers signup, email verification, password reset, login, refresh, JWKS, and role
   checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
   sender and the live-server `curl` walkthrough.
+
+- 2026-06-10: **EP-2 (abuse protection) is Complete.** The three protections are live and
+  demonstrable: per-account brute-force lockout (locks after 5 failures, generic `401`
+  indistinguishable from a wrong password, PostgreSQL-backed), a per-IP failure throttle
+  (`429`), and a per-IP request-rate WAI token bucket (a 120-request burst yields ~58 `429`s
+  before reaching Servant). `cabal build all` / `cabal test all` green. **Cross-plan note for
+  EP-3:** EP-2 landed the WAI middleware **first**, so the realized IP-4 stack in
+  `Shomei.Server.Boot.main` is `rateLimitMiddleware rl (application env)` — EP-3 must insert
+  its request-id + structured-logging middleware **outside** the rate limiter (wrapping that
+  whole expression) so even a `429` is logged with a correlation id, without removing the
+  limiter. EP-2 also added `LoginAttemptStore` to both the seam and server `AppEffects` and the
+  `login` workflow now takes a `ClientContext` (anyone re-deriving the effect stack or calling
+  `login` directly must account for both). The optional account-lockout `Notifier` integration
+  (IP-1) was left unwired (audit event only) and can be added later without changing the
+  effect signature.
 
 - 2026-06-10: EP-1's live `curl` walkthrough (M4.4) is **done** and is the headline acceptance
   for the account-lifecycle theme. Against the dev PostgreSQL with the default log-only
