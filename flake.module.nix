@@ -1,37 +1,30 @@
-# flake.module.nix — project-specific flake-parts customizations.
-# seihou does NOT manage this file; it is safe to edit freely.
-{ inputs, ... }:
+# Project-specific flake customizations (seihou never touches this file).
+# EP-5: a reproducible OCI image built from the same pinned dependency closure as the dev
+# shell, via dockerTools.buildLayeredImage (no Docker daemon needed to build).
+#
+#   nix build .#dockerImage          # produces ./result, a loadable image tarball
+#   docker load < result             # loads shomei-server:latest
+#   docker compose up                # see docker-compose.yaml
+#
+# NOTE: authored for the deployment story; not built in the development sandbox where this
+# landed. Verify with `nix build .#dockerImage` in an environment with the flake's substituters.
+{ ... }:
 {
-  # Wire `nix fmt` (the flake formatter) via treefmt-nix.
-  #
-  # NOTE (EP-1 discovery): the seihou-generated `flake.nix` imports only
-  # `./nix/haskell.nix` and this file — it does NOT import `./nix/treefmt.nix`,
-  # and `treefmt-nix` is not a top-level flake input, so `nix fmt` is otherwise
-  # unavailable. `nix/treefmt.nix` cannot be imported directly because it
-  # references `inputs.treefmt-nix`, which only exists transitively under
-  # `haskell-nix-dev`. We therefore reach the treefmt flake module through that
-  # transitive path and inline the (same) formatter config here, keeping every
-  # seihou-managed file untouched.
-  imports = [ inputs.haskell-nix-dev.inputs.treefmt-nix.flakeModule ];
-
   perSystem = { pkgs, config, ... }: {
-    treefmt = {
-      projectRootFile = "flake.nix";
-      # Leave seihou-managed Nix files alone: seihou owns and formats them with
-      # its own toolchain, and our nixpkgs-fmt version would otherwise rewrite
-      # them (breaking `nix fmt` idempotence and touching files we must not edit).
-      settings.global.excludes = [ "nix/*" "flake.nix" ];
-      programs.nixpkgs-fmt.enable = true;
-      programs.fourmolu.enable = true;
-      programs.cabal-fmt.enable = true;
+    packages.dockerImage = pkgs.dockerTools.buildLayeredImage {
+      name = "shomei-server";
+      tag = "latest";
+      contents = [
+        config.packages.default     # provides /bin/shomei-server and /bin/shomei-admin
+        pkgs.dhall-json             # dhall-to-json, used by the config loader
+        pkgs.busybox                # sh + wget for the entrypoint and healthcheck
+        pkgs.cacert
+      ];
+      config = {
+        Entrypoint = [ "/bin/sh" "${./deploy/entrypoint.sh}" ];
+        ExposedPorts = { "8080/tcp" = { }; };
+        Env = [ "SHOMEI_PORT=8080" ];
+      };
     };
-
-    # Add cabal-install, fourmolu, and cabal-fmt to the dev shell so they are
-    # available both for `nix fmt` and interactively in `nix develop`.
-    haskellProject.extraDevPackages = [
-      pkgs.cabal-install
-      pkgs.haskellPackages.fourmolu
-      pkgs.haskellPackages.cabal-fmt
-    ];
   };
 }

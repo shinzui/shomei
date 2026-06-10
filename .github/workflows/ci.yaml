@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-test-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cache Nix store
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build all packages
+        run: nix develop --command cabal build all
+
+      - name: Run all test suites
+        run: nix develop --command cabal test all --test-options='-j2'
+
+      - name: Check formatting (treefmt / fourmolu)
+        run: nix fmt -- --fail-on-change
