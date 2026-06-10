@@ -296,10 +296,10 @@ register it in `mori.dhall` as MasterPlan 1 EP-3 did for `shomei-migrations`.
 
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
-- [ ] EP-1: `Notifier` effect + dev-log and SMTP senders; verification/reset token types, stores, and migrations
+- [~] EP-1: `Notifier` effect + dev-log sender done; verification/reset token types, stores, and migrations done. **Production SMTP sender remains blocked** on a vetted SMTP dependency being registered in `mori` (re-checked 2026-06-10).
 - [x] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
 - [x] EP-1: new `ShomeiAPI` routes + handlers pass in-process lifecycle HTTP tests
-- [ ] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server
+- [x] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server (2026-06-10, log-only notifier)
 - [ ] EP-2: rate-limit + lockout policy in `ShomeiConfig`; per-IP/per-account login throttling middleware
 - [ ] EP-2: account lockout after N failed logins with generic responses; reuse/lockout integration tests pass
 - [ ] EP-3: structured JSON logging + request correlation IDs; graceful shutdown
@@ -465,6 +465,24 @@ the result against the original vision.
   suite covers signup, email verification, password reset, login, refresh, JWKS, and role
   checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
   sender and the live-server `curl` walkthrough.
+
+- 2026-06-10: EP-1's live `curl` walkthrough (M4.4) is **done** and is the headline acceptance
+  for the account-lifecycle theme. Against the dev PostgreSQL with the default log-only
+  notifier, the full sequence was demonstrated end-to-end: signup → verify-email request (link
+  logged) → confirm (sets `email_verified_at`) → password-reset request returning a generic
+  `202` for both a registered and an unknown email with a reset link logged **only** for the
+  registered one → confirm (changes the password and revokes all sessions) → the pre-reset
+  refresh token rejected with `401` → login with the new password succeeds and the old password
+  fails. Discovery worth propagating to EP-3/EP-6: all four lifecycle endpoints (request **and**
+  confirm) return `202 Accepted` with a `NoContent` body — a uniform "accepted" status, not the
+  `200` the EP-1 prose originally implied; `docs/api.md` (EP-6) must document `202` for these
+  routes. EP-1 stays **In Progress** in the registry solely because the *production SMTP
+  sender* (M4.1b/M4.3) is blocked: `mori registry search` for `smtp`/`mail`/`HaskellNet`
+  returns nothing, so per the repo's dependency-lookup rule the real sender cannot be written
+  without guessing at an unaudited library. The `SmtpNotifier` transport is wired and
+  log-backed until such a dependency is registered. All EP-1 user-visible behaviour is
+  delivered; only the SMTP transport remains, and it blocks nothing downstream (EP-2 only needs
+  the `Notifier` effect, which exists).
 
 
 ## Revision Notes

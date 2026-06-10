@@ -193,12 +193,19 @@ This section must always reflect the actual current state of the work.
 - [x] M4.1a Create `shomei-server/src/Shomei/Notify.hs` with config-selected log-backed
       `Notifier` interpreters. Completed 2026-06-04.
 - [ ] M4.1b Add a real SMTP sender once a vetted SMTP dependency is registered/resolved via
-      `mori`.
+      `mori`. **Blocked (2026-06-10):** no SMTP/email package is registered in the local `mori`
+      registry (`mori registry search smtp|mail|HaskellNet` all return nothing), so per the
+      project's dependency-lookup rule the real sender cannot be implemented without guessing at
+      an unaudited library's API. The `SmtpNotifier` transport remains log-backed until a vetted
+      dependency is registered. This does not affect any other deliverable: the dev log-only
+      notifier is the default and drives the full acceptance below.
 - [x] M4.2 Wire the two new store interpreters + the selected `Notifier` interpreter into the
       server assembly in `shomei-server`. Completed 2026-06-04.
-- [ ] M4.3 Add the SMTP/email library block to `cabal.project` (IP-8).
-- [ ] M4.4 Acceptance: full `curl` walkthrough against the running server matches the
-      transcript in Validation and Acceptance.
+- [ ] M4.3 Add the SMTP/email library block to `cabal.project` (IP-8). **Blocked (2026-06-10)**
+      on the same unregistered-dependency reason as M4.1b.
+- [x] M4.4 Acceptance: full `curl` walkthrough against the running server. Completed 2026-06-10
+      — verified live against the dev PostgreSQL with the default log-only notifier. See the
+      transcript and the 202-status note in Surprises & Discoveries.
 
 
 ## Surprises & Discoveries
@@ -221,6 +228,39 @@ implementation. Provide concise evidence.
   `mori registry search mime-mail` returned no package source to audit. The server now has
   the `Shomei.Notify` assembly module and explicit `SmtpNotifier` selection path, but that
   selection is still log-backed until a vetted SMTP dependency is added.
+- 2026-06-10: Re-checked the SMTP blocker before the live walkthrough — `mori registry search`
+  for `smtp`, `mail`, and `HaskellNet` still return nothing. M4.1b/M4.3 remain blocked for the
+  documented reason; the rest of EP-1 is acceptance-complete via the log-only notifier.
+- 2026-06-10: **All four account-lifecycle endpoints return HTTP `202 Accepted` with a
+  `NoContent` body, including the two *confirm* endpoints** — not `200` as the original
+  Validation transcript prose stated. This is intentional in the implementation
+  (`shomei-servant/src/Shomei/Servant/API.hs` declares each as `Verb 'POST 202 '[JSON]
+  NoContent`): the lifecycle surface uses one uniform "accepted" status across request and
+  confirm so a confirm response carries no body an attacker could read and is
+  indistinguishable in shape from a request response. The behaviour is correct — the live
+  walkthrough proves the verification flip, the session revocation, and the generic
+  no-leak responses regardless of the 202-vs-200 code. The Validation section below has been
+  corrected to show `202`.
+- 2026-06-10: Live walkthrough evidence (dev PostgreSQL, default log-only notifier), run from
+  the repo root with the server started via `PG_CONNECTION_STRING="host=$PGHOST dbname=shomei
+  user=$(id -un)" cabal run shomei-server`:
+
+  ```text
+  signup alice@example.com                         -> 200 (token + user)
+  POST /auth/verify-email/request {alice}          -> 202 ; log: [shomei:log] email_verification email=alice@example.com link=…/auth/verify-email/confirm?token=<VTOKEN> …
+  POST /auth/verify-email/confirm {VTOKEN}         -> 202 ; SELECT email_verified_at -> 2026-06-10 12:04:10 (non-null)
+  POST /auth/password-reset/request {alice}        -> 202
+  POST /auth/password-reset/request {nobody}       -> 202 (byte-identical; NO log line emitted for nobody@example.com)
+  log: [shomei:log] password_reset email=alice@example.com link=…/auth/password-reset/confirm?token=<RTOKEN> …
+  POST /auth/password-reset/confirm {RTOKEN,newpw} -> 202
+  POST /auth/refresh {OLD_REFRESH from pre-reset login} -> 401 (all sessions revoked by the reset)
+  POST /auth/login {alice, NEW password}           -> 200
+  POST /auth/login {alice, OLD password}           -> 401
+  ```
+
+  This is EP-1's headline acceptance: a complete, secure account lifecycle observable from a
+  terminal, with single-use tokens, generic non-leaking request responses, and full session
+  revocation on reset.
 
 
 ## Decision Log
@@ -320,6 +360,17 @@ Compare the result against the original purpose.
   `nix develop --command cabal test shomei-server`, `nix develop --command cabal build all`,
   and `nix develop --command cabal test all` pass. Remaining M4 work is a real SMTP sender
   and the live-server `curl` walkthrough.
+- 2026-06-10: **Milestone M4 is acceptance-complete except the production SMTP sender.** The
+  full account lifecycle was demonstrated live (`curl`) against the dev PostgreSQL with the
+  default log-only notifier: signup → verify-email request (link logged) → confirm (flips
+  `email_verified_at`) → password-reset request (generic 202 for both a real and an unknown
+  email, link logged only for the real one) → confirm (changes the password, revokes all
+  sessions) → the pre-reset refresh token is rejected (401) → login with the new password
+  succeeds, old password fails. `cabal build all` is green and the embedded migrations are
+  applied. The only remaining work is M4.1b/M4.3, the *real* SMTP sender, blocked on a vetted
+  SMTP dependency being registered in `mori` (see Surprises & Discoveries); the `SmtpNotifier`
+  transport is wired and log-backed in the meantime. EP-1's user-visible behaviour is fully
+  delivered and proven; the SMTP transport is the sole externally-blocked gap.
 
 
 ## Context and Orientation
@@ -865,7 +916,8 @@ curl -s -i -X POST localhost:8080/auth/verify-email/confirm \
   -d "{\"token\":\"$VTOKEN\"}"
 ```
 
-Expected: `HTTP/1.1 200 OK`. A direct DB check confirms the flip:
+Expected: `HTTP/1.1 202 Accepted` (the confirm endpoints share the lifecycle's uniform
+`202 NoContent` status — see Surprises & Discoveries). A direct DB check confirms the flip:
 
 ```bash
 psql -c "SELECT email_verified_at FROM shomei.shomei_users WHERE email='alice@example.com';"
@@ -895,7 +947,7 @@ curl -s -i -X POST localhost:8080/auth/password-reset/confirm \
   -d "{\"token\":\"$RTOKEN\",\"newPassword\":\"a different long passphrase here\"}"
 ```
 
-Expected: `HTTP/1.1 200 OK`.
+Expected: `HTTP/1.1 202 Accepted` (uniform lifecycle status — see Surprises & Discoveries).
 
 ```bash
 # 6. The OLD refresh token issued at signup is now rejected (reset revoked all sessions).
