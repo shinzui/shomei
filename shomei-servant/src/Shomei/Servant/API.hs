@@ -30,6 +30,7 @@ import Shomei.Servant.DTO (
     LoginRequest,
     LoginResponse,
     PasswordResetRequest,
+    ReadyResponse,
     RefreshRequest,
     SessionResponse,
     SignupRequest,
@@ -125,6 +126,10 @@ data ShomeiAPI mode = ShomeiAPI
         mode
             :- "health"
                 :> Get '[JSON] HealthResponse
+    , ready ::
+        mode
+            :- "ready"
+                :> Get '[JSON] ReadyResponse
     }
     deriving stock (Generic)
 

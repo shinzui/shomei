@@ -150,7 +150,7 @@ intra-MasterPlan-2 dependencies.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | In Progress |
 | 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Complete |
-| 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Not Started |
+| 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Complete |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Not Started |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | Not Started |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Not Started |
@@ -302,8 +302,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server (2026-06-10, log-only notifier)
 - [x] EP-2: rate-limit + lockout policy in `ShomeiConfig`; per-IP/per-account login throttling in the workflow plus the per-IP request-rate WAI middleware (`Shomei.Server.Middleware.RateLimit`). 120-req burst → ~58 `429`s before Servant (2026-06-10).
 - [x] EP-2: account lockout after N failed logins with generic responses; pure + PostgreSQL integration tests pass (`cabal test all` green, 2026-06-10)
-- [ ] EP-3: structured JSON logging + request correlation IDs; graceful shutdown
-- [ ] EP-3: Prometheus `/metrics` and `/ready` readiness probe distinct from `/health`
+- [x] EP-3: structured JSON logging + request correlation IDs (X-Request-Id echo, no secrets); graceful shutdown on SIGTERM/SIGINT (2026-06-10)
+- [x] EP-3: Prometheus `/metrics` (HTTP + domain counters, hand-rolled) and `/ready` readiness probe distinct from `/health` (2026-06-10)
 - [ ] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user
 - [ ] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation
 - [ ] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig`
@@ -465,6 +465,22 @@ the result against the original vision.
   suite covers signup, email verification, password reset, login, refresh, JWKS, and role
   checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
   sender and the live-server `curl` walkthrough.
+
+- 2026-06-10: **EP-3 (observability) is Complete.** The server now emits one structured JSON
+  log line per request with a correlation id (generated or echoed from `X-Request-Id`, returned
+  in the response header) and never logs a secret; serves a Prometheus `GET /metrics` (HTTP
+  counters/gauge/histogram + `shomei_logins_succeeded/failed_total` and
+  `shomei_tokens_issued_total`); serves `GET /ready` (200 when the DB is reachable and an active
+  signing key exists, 503 otherwise) distinct from liveness `GET /health`; and shuts down
+  gracefully on SIGTERM/SIGINT (drain → close pool → exit 0). **Cross-plan notes:** (1) EP-3
+  added an `observabilityConfig` sub-record to `ShomeiConfig` and a `ready` route + `ReadyResponse`
+  DTO to `ShomeiAPI` (EP-6 docs must list `/ready` and `/metrics`; EP-6's `docs/api.md` should
+  note `/metrics` is raw WAI, not in the typed client). (2) The **realized IP-4 order** is
+  `logging → http-metrics → /metrics-endpoint → rate-limiter (EP-2) → app`. (3) EP-3 added **no
+  new external dependency** — logging and metrics are hand-rolled (rationale in EP-3's Decision
+  Log: `prometheus-client` is not registered in `mori`); EP-5's Dhall/env loader (IP-6) must
+  populate the new `observabilityConfig` fields (`logFormat`, `requestLoggingEnabled`,
+  `metricsEnabled`, `gracefulShutdownTimeoutSeconds`).
 
 - 2026-06-10: **EP-2 (abuse protection) is Complete.** The three protections are live and
   demonstrable: per-account brute-force lockout (locks after 5 failures, generic `401`

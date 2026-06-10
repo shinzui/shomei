@@ -41,11 +41,14 @@ library
     Shomei.Server.Config
     Shomei.Server.Keys
     Shomei.Server.Middleware.RateLimit
+    Shomei.Server.Observability.Logging
+    Shomei.Server.Observability.Metrics
 
   build-depends:
     , aeson
     , base                  >=4.18 && <5
     , bytestring
+    , containers
     , effectful
     , effectful-core
     , hasql-pool
@@ -61,7 +64,9 @@ library
     , stm
     , text
     , time
+    , unix
     , unordered-containers
+    , uuid
     , wai
     , warp
 

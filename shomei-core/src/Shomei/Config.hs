@@ -12,6 +12,8 @@ module Shomei.Config (
     NotifierConfig (..),
     NotifierTransport (..),
     RateLimitConfig (..),
+    ObservabilityConfig (..),
+    LogFormat (..),
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -19,6 +21,7 @@ module Shomei.Config (
     defaultVerificationTokenTTL,
     defaultPasswordResetTokenTTL,
     defaultRateLimitConfig,
+    defaultObservabilityConfig,
 ) where
 
 import Shomei.Prelude
@@ -75,6 +78,27 @@ data RateLimitConfig = RateLimitConfig
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+-- | How the per-request structured log line is rendered (EP-3 observability).
+data LogFormat = LogJson | LogPlain
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | Observability policy (EP-3). Every field carries a default (see
+'defaultObservabilityConfig') so the record stays append-only per IP-3.
+-}
+data ObservabilityConfig = ObservabilityConfig
+    { logFormat :: !LogFormat
+    -- ^ JSON (default) or plain text per-request log lines
+    , requestLoggingEnabled :: !Bool
+    -- ^ emit one structured log line per request (default True)
+    , metricsEnabled :: !Bool
+    -- ^ serve @GET /metrics@ and record HTTP/domain metrics (default True)
+    , gracefulShutdownTimeoutSeconds :: !Int
+    -- ^ how long warp waits for in-flight requests to drain on shutdown (default 30)
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data ShomeiConfig = ShomeiConfig
     { issuer :: !Issuer
     , audience :: !Audience
@@ -87,6 +111,7 @@ data ShomeiConfig = ShomeiConfig
     , sessionCheckMode :: !SessionCheckMode
     , notifierConfig :: !NotifierConfig
     , rateLimitConfig :: !RateLimitConfig
+    , observabilityConfig :: !ObservabilityConfig
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -112,6 +137,15 @@ defaultRateLimitConfig =
         , rateLimitEnabled = True
         }
 
+defaultObservabilityConfig :: ObservabilityConfig
+defaultObservabilityConfig =
+    ObservabilityConfig
+        { logFormat = LogJson
+        , requestLoggingEnabled = True
+        , metricsEnabled = True
+        , gracefulShutdownTimeoutSeconds = 30
+        }
+
 defaultShomeiConfig :: Issuer -> Audience -> ShomeiConfig
 defaultShomeiConfig iss aud =
     ShomeiConfig
@@ -133,4 +167,5 @@ defaultShomeiConfig iss aud =
                 , publicBaseUrl = "http://localhost:8080"
                 }
         , rateLimitConfig = defaultRateLimitConfig
+        , observabilityConfig = defaultObservabilityConfig
         }

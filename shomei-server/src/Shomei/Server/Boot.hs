@@ -22,8 +22,11 @@ module Shomei.Server.Boot (
 import Shomei.Prelude hiding (Context)
 
 import Data.Time (secondsToDiffTime)
-import "base" System.IO (hPutStrLn, stderr)
+import "base" System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
+import "hasql-pool" Hasql.Pool qualified as Pool
 import "text" Data.Text qualified as Text
+import "unix" System.Posix.Signals (installHandler, sigINT, sigTERM)
+import "unix" System.Posix.Signals qualified as Signals
 
 import "aeson" Data.Aeson (Value (Object), decode)
 import "aeson" Data.Aeson.KeyMap qualified as KM
@@ -47,7 +50,7 @@ import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 
-import Shomei.Config (ShomeiConfig (..))
+import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..))
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
@@ -55,18 +58,51 @@ import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 import Shomei.Server.Keys (bootstrapKeys)
 import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
+import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
+import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 
 -- | The full turnkey startup sequence.
 main :: IO ()
 main = do
+    -- Line-buffer stdout so each structured JSON log line is flushed immediately (when stdout
+    -- is a pipe/file it would otherwise be block-buffered and logs would not appear promptly).
+    hSetBuffering stdout LineBuffering
+    hSetBuffering stderr LineBuffering
     (cfg, settings) <- loadConfig
     env <- buildEnv cfg settings
     rl <- newRateLimiter cfg.rateLimitConfig
+    metrics <- newMetrics
+    let obs = cfg.observabilityConfig
+        -- IP-4 realized middleware order (outermost first): EP-3 request-id + JSON logging,
+        -- then EP-3 HTTP metrics, then EP-3's raw /metrics endpoint, then EP-2's rate limiter,
+        -- then the Servant app. Logging is outermost so even a 429 is logged with a
+        -- correlation id; metrics wrap the limiter so a throttled request is still counted.
+        withMetrics =
+            if obs.metricsEnabled
+                then metricsMiddleware metrics . metricsEndpointMiddleware metrics
+                else id
+        stack =
+            requestLoggingMiddleware obs
+                . withMetrics
+                . rateLimitMiddleware rl
+        -- Graceful shutdown: SIGTERM (orchestrator stop) and SIGINT (Ctrl-C) trigger warp's
+        -- shutdown action, which stops accepting new connections and waits up to the
+        -- configured timeout for in-flight requests to finish. After warp returns we close the
+        -- pool and exit 0.
+        installShutdown closeSocket = do
+            let stop sig = hPutStrLn stderr ("[shomei] received " <> sig <> "; draining in-flight requests") >> closeSocket
+            _ <- installHandler sigTERM (Signals.Catch (stop "SIGTERM")) Nothing
+            _ <- installHandler sigINT (Signals.Catch (stop "SIGINT")) Nothing
+            pure ()
+        warpSettings =
+            Warp.setPort settings.serverPort
+                . Warp.setGracefulShutdownTimeout (Just obs.gracefulShutdownTimeoutSeconds)
+                $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
     hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
-    -- IP-4 middleware order: EP-2's per-IP rate limiter wraps the Servant app here. EP-3's
-    -- request-id + structured-logging middleware must wrap THIS expression from the OUTSIDE
-    -- when it lands, so even a 429 the limiter returns is logged with a correlation id.
-    Warp.run settings.serverPort (rateLimitMiddleware rl (application env))
+    Warp.runSettings warpSettings (stack (application env))
+    hPutStrLn stderr "[shomei] drain complete; closing connection pool"
+    Pool.release env.envPool
+    hPutStrLn stderr "[shomei] shutdown complete"
 
 {- | Run the schema migrations (idempotent), acquire the pool, and bootstrap the signing
 key, yielding the assembled 'Env'. Shared by 'main' and by host applications that embed

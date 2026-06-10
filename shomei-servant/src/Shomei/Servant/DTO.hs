@@ -21,6 +21,7 @@ module Shomei.Servant.DTO (
     UserResponse (..),
     SessionResponse (..),
     HealthResponse (..),
+    ReadyResponse (..),
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
@@ -133,6 +134,15 @@ data SessionResponse = SessionResponse
 
 -- | @GET /health@ response.
 newtype HealthResponse = HealthResponse {status :: Text}
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | @GET /ready@ response (EP-3): which readiness checks passed.
+data ReadyResponse = ReadyResponse
+    { status :: !Text
+    , database :: !Bool
+    , signingKey :: !Bool
+    }
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
 

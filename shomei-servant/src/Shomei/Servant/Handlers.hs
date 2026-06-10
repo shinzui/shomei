@@ -13,11 +13,11 @@ module Shomei.Servant.Handlers (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson (Value)
+import "aeson" Data.Aeson (Value, encode)
 import "network" Network.Socket (SockAddr (..))
 import "text" Data.Text qualified as Text
 
-import "servant-server" Servant (Handler, NoContent (..), err404, errBody, throwError)
+import "servant-server" Servant (Handler, NoContent (..), ServerError (..), err404, err503, errBody, throwError)
 import "servant-server" Servant.Server.Generic (AsServerT)
 
 import Shomei.Domain.Command (
@@ -33,6 +33,7 @@ import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Effect.SessionStore (findSessionById)
+import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
 import Shomei.Effect.UserStore (findUserById)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
@@ -47,6 +48,7 @@ import Shomei.Servant.DTO (
     LoginRequest (..),
     LoginResponse (..),
     PasswordResetRequest (..),
+    ReadyResponse (..),
     RefreshRequest (..),
     SessionResponse,
     SignupRequest (..),
@@ -59,7 +61,7 @@ import Shomei.Servant.DTO (
     userToResponse,
  )
 import Shomei.Servant.Error (authErrorToServerError)
-import Shomei.Servant.Seam (Env (..), runAuth, runPort)
+import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
 
 -- | Assemble the server record from the per-route handlers.
 shomeiServer :: Env -> ShomeiAPI (AsServerT Handler)
@@ -78,6 +80,7 @@ shomeiServer env =
         , session = sessionH env
         , jwks = jwksH env
         , health = healthH
+        , ready = readyH env
         }
 
 signupH :: Env -> SignupRequest -> Handler SignupResponse
@@ -181,6 +184,28 @@ jwksH env = pure env.jwksJson
 
 healthH :: Handler HealthResponse
 healthH = pure HealthResponse{status = "ok"}
+
+{- | @GET /ready@ (EP-3): readiness, distinct from liveness @/health@. The single
+'listActiveSigningKeys' call covers BOTH preconditions for serving auth: it hits PostgreSQL
+(so a 'Left'/exception means the database is unreachable) and a non-empty result means an
+active signing key exists. 200 only when both hold; otherwise 503 with a JSON body naming the
+failed check, so a load balancer drains traffic. Liveness stays dependency-free.
+-}
+readyH :: Env -> Handler ReadyResponse
+readyH env = do
+    outcome <- runPortChecked env listActiveSigningKeys
+    case outcome of
+        Right keys
+            | not (null keys) -> pure ReadyResponse{status = "ready", database = True, signingKey = True}
+            | otherwise -> notReady ReadyResponse{status = "not_ready", database = True, signingKey = False}
+        Left _ -> notReady ReadyResponse{status = "not_ready", database = False, signingKey = False}
+  where
+    notReady body =
+        throwError
+            err503
+                { errBody = encode body
+                , errHeaders = [("Content-Type", "application/json")]
+                }
 
 mkDisplayName :: Text -> Maybe Text
 mkDisplayName t

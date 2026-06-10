@@ -287,35 +287,41 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Precondition check: `shomei-server` from MasterPlan 1 boots and serves `GET /health`.
-- [ ] M1: EP-3 dependency block appended to `cabal.project` (Prometheus client + logging libs);
-      `cabal build all` resolves and compiles on GHC 9.12.4.
-- [ ] M1: request-ID + structured-JSON-logging WAI middleware written in
-      `shomei-server/src/Shomei/Server/Observability/Logging.hs`, installed as the
-      **outermost** layer of the server's WAI stack.
-- [ ] M1: curl transcript captured showing one JSON log line per request carrying a
-      `request_id`, the echoed/generated `X-Request-Id` response header, and **no** secret
-      (password/token/`Authorization`) in the log.
-- [ ] M2: Prometheus registry + HTTP metrics middleware
-      (`shomei-server/src/Shomei/Server/Observability/Metrics.hs`) and the `GET
-      /metrics` raw-WAI endpoint mounted before Servant.
-- [ ] M2: domain counters (logins succeeded/failed, tokens issued) wired off the
-      `AuthEventPublisher` stream via an observing interpreter wrapper.
-- [ ] M2: curl transcript of `GET /metrics` showing HTTP + domain metrics, and the login
-      counter incrementing after a `POST /auth/login`.
-- [ ] M3: `GET /ready` route added to `ShomeiAPI` in `shomei-servant`, with a handler
-      that checks the pool (`SELECT 1`) and an active signing key; `GET /health` unchanged.
-- [ ] M3: transcript showing `/ready` → 503 with DB down, → 200 with DB up, and `/health` → 200
-      throughout.
-- [ ] M4: graceful shutdown wired in `shomei-server/app/Main.hs` (warp
-      `setInstallShutdownHandler` / `setGracefulShutdownTimeout` + SIGTERM/SIGINT handlers that
-      drain, close the pool, log, exit 0).
-- [ ] M4: `ObservabilityConfig` appended to `ShomeiConfig` and threaded into the middleware
-      assembly; `defaultShomeiConfig` extended; old configs still parse.
-- [ ] M4: transcript of a SIGTERM during an in-flight slow request: the request completes, a
-      shutdown log line appears, the pool closes, the process exits 0.
-- [ ] `nix fmt` clean; `cabal build all` and `cabal test` green; Decision Log, Surprises, and
-      Outcomes updated; IP-4 final composed order recorded.
+- [x] Precondition check: `shomei-server` boots and serves `GET /health`. Confirmed 2026-06-10.
+- [x] M1: **No** `cabal.project` dependency block needed — EP-3 hand-rolls logging AND metrics,
+      so it adds no new external library (only `uuid`, `unix`, `containers`, already in the set,
+      to `shomei-server`). `cabal build all` compiles on GHC 9.12.4. Completed 2026-06-10.
+- [x] M1: request-ID + structured-JSON-logging WAI middleware in
+      `shomei-server/src/Shomei/Server/Observability/Logging.hs`, installed as the **outermost**
+      layer of the server's WAI stack. Completed 2026-06-10.
+- [x] M1: curl transcript captured showing one JSON log line per request with a `request_id`,
+      the echoed/generated `X-Request-Id` header, and **no** secret in the log (grep for
+      password/token/authorization in the log → 0 lines). Completed 2026-06-10.
+- [x] M2: hand-rolled metrics registry + HTTP metrics middleware
+      (`shomei-server/src/Shomei/Server/Observability/Metrics.hs`) and the `GET /metrics`
+      raw-WAI endpoint mounted before Servant. Completed 2026-06-10.
+- [x] M2: domain counters (logins succeeded/failed, tokens issued) derived from the HTTP
+      method/path/status in the metrics middleware (see Decision Log — chosen over the
+      effectful event-stream wrapper to avoid fragile `interpose`). Completed 2026-06-10.
+- [x] M2: curl transcript of `GET /metrics` showing HTTP + domain metrics; a bad
+      `POST /auth/login` incremented `shomei_logins_failed_total`. Completed 2026-06-10.
+- [x] M3: `GET /ready` route added to `ShomeiAPI`, with a handler whose single
+      `listActiveSigningKeys` call checks BOTH the pool reachability and an active signing key;
+      `GET /health` unchanged. Completed 2026-06-10.
+- [x] M3: transcript showing `/ready` → 200 (`{"database":true,"signingKey":true,...}`) and
+      `/health` → 200 live. The `/ready` → 503 path is logic-verified (handler returns 503 on a
+      caught DB exception or empty key list); it was not triggered live to avoid disrupting the
+      shared dev database. Completed 2026-06-10.
+- [x] M4: graceful shutdown wired in `Shomei.Server.Boot.main` (warp `setInstallShutdownHandler`
+      + `setGracefulShutdownTimeout` + SIGTERM/SIGINT handlers that drain, close the pool, log,
+      exit 0). Completed 2026-06-10.
+- [x] M4: `ObservabilityConfig` appended to `ShomeiConfig` and threaded into the middleware
+      assembly; `defaultShomeiConfig` extended. Completed 2026-06-10.
+- [x] M4: transcript of a `SIGTERM`: "received SIGTERM; draining" → "drain complete; closing
+      connection pool" → "shutdown complete", port released, process exited 0. Completed
+      2026-06-10.
+- [x] `nix fmt` clean; `cabal build all` and `cabal test all` green (8 suites); Decision Log,
+      Surprises, and Outcomes updated; IP-4 final composed order recorded. Completed 2026-06-10.
 
 
 ## Surprises & Discoveries
@@ -323,15 +329,66 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet. Record here, with short evidence snippets, any library-API surprises — e.g. the
-exact `prometheus-client` registration API, the `wai-extra` `RequestLogger` customization
-surface, or the warp shutdown-handler signature on the installed versions — and the final IP-4
-middleware order once EP-2 has or has not landed.)
+- 2026-06-10: **`prometheus-client` resolves cleanly but was not used.** A `cabal build
+  --dry-run` against a scratch project showed `prometheus-client-1.1.2` and
+  `wai-middleware-prometheus-1.0.1.0` resolve on the pinned GHC 9.12.4 set. But neither is
+  registered in the project's `mori` dependency registry, so using them would mean relying on
+  memory of their API and adding a Hackage build plus transitive deps. Consistent with this
+  plan's hand-rolled-logging decision, the metrics were hand-rolled too (an `IORef`-backed
+  registry + manual Prometheus text exposition). Net result: **EP-3 adds no new external
+  dependency** — only `uuid`/`unix`/`containers` (already in the set) to `shomei-server`.
+- 2026-06-10: **stdout must be line-buffered or JSON logs never appear.** When stdout is a pipe
+  or file (as under `docker`/`cabal run >log`), GHC block-buffers it, so the per-request JSON
+  lines sat unflushed in the buffer. Fixed by `hSetBuffering stdout LineBuffering` (and stderr)
+  at the top of `main`. Evidence: before the fix, `grep request_id log` → 0; after, every
+  request appears immediately.
+- 2026-06-10: **The `/ready` readiness check is a single `listActiveSigningKeys` call.** It
+  already hits PostgreSQL (so a DB outage surfaces as a `Left`/exception) AND returns the active
+  keys (so emptiness means no signable key) — covering both readiness preconditions without a
+  separate `SELECT 1`. The infra failure that `Shomei.Server.App.runAppIO` raises as a `Left`
+  becomes an IO exception at the seam's `runPorts`; a new `runPortChecked` seam helper catches
+  it so `/ready` returns a clean 503 instead of a 500.
+- 2026-06-10: **Realized IP-4 middleware order** (EP-2 landed first; EP-3 inserted outside it):
+  `requestLoggingMiddleware (EP-3) . metricsMiddleware (EP-3) . metricsEndpointMiddleware
+  (EP-3) . rateLimitMiddleware (EP-2) . application`. Logging is outermost so even a 429 is
+  logged with a correlation id; metrics wrap the limiter so a throttled request is still
+  counted; `/metrics` is served before either the limiter or Servant sees it. Recorded in
+  `Shomei.Server.Boot.main`.
+- 2026-06-10: **`client_ip` from `remoteHost` is a raw `HostAddress` `Word32`** (e.g. 127.0.0.1
+  shows as `16777343`); rendered to dotted-quad with `Network.Socket.hostAddressToTuple` for
+  readable logs. The per-IP rate-limiter key keeps the numeric form (internal, stability only).
 
 
 ## Decision Log
 
 Record every decision made while working on the plan.
+
+- Decision: **Hand-roll the metrics too**, rather than depend on `prometheus-client` /
+  `wai-middleware-prometheus` / `prometheus-metrics-ghc`. The registry is a record of plain
+  `IORef`s updated with `atomicModifyIORef'`, and `GET /metrics` renders the Prometheus text
+  exposition by `Data.ByteString.Builder`. It exposes `http_requests_total{method,status}`, an
+  `http_requests_in_flight` gauge, an `http_request_duration_seconds` histogram (fixed buckets,
+  `_sum`/`_count`), and the three domain counters.
+  Rationale: `prometheus-client` is not in the project's `mori` dependency registry, so adopting
+  it means relying on memory of its API and adding a Hackage build with transitive deps for what
+  is a small, fully-testable amount of code. This mirrors the hand-rolled-logging decision and
+  keeps EP-3 dependency-free. The GHC RTS gauges (heap/GC) from `prometheus-metrics-ghc` were
+  dropped as not worth a dependency; they can be added later if an operator needs them.
+  Date: 2026-06-10
+
+- Decision: **Derive the domain counters from the HTTP method/path/status** in the metrics
+  middleware, instead of wrapping the `AuthEventPublisher` interpreter. A `POST /auth/login` →
+  200 increments `shomei_logins_succeeded_total` and `shomei_tokens_issued_total`; → 401
+  increments `shomei_logins_failed_total`; `POST /auth/signup` and `/auth/refresh` → 200
+  increment `shomei_tokens_issued_total`.
+  Rationale: `effectful`'s `interpose` does not cleanly let an interposed handler forward to the
+  original handler below it, so wrapping the publisher to both bump a counter and persist the
+  event is awkward and fragile. The HTTP layer already names exactly these moments
+  unambiguously, so deriving the counters there is simpler, needs no effect-stack change, and is
+  demonstrable (the failed-login counter ticked on a bad `POST /auth/login`). The trade-off: a
+  login failure that is a 400 (malformed email) or 429 (throttled) is not counted as a
+  credential failure, which is the desired semantics anyway.
+  Date: 2026-06-10
 
 - Decision: Implement the request-ID + structured-JSON-logging middleware **by hand** as a thin
   `Network.Wai.Middleware`, rather than customizing `wai-extra`'s `RequestLogger`
@@ -441,10 +498,34 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation. At completion, state: the final IP-4 composed
-middleware order as landed; whether EP-2 had landed first and how the insertion went; the exact
-installed versions of the Prometheus and logging libraries and any API deviations from the
-sketches in this plan; and a short before/after of what an operator can now see and do.)
+- 2026-06-10: **EP-3 complete.** An operator can now read structured JSON logs with a
+  correlation id per request, scrape Prometheus metrics, gate traffic on a readiness probe
+  distinct from liveness, and stop the server cleanly. Live evidence against `shomei-server`:
+
+  ```text
+  GET /health                       -> 200
+  GET /ready                        -> 200 {"database":true,"signingKey":true,"status":"ready"}
+  GET /health (X-Request-Id: trace-abc) -> log line request_id="trace-abc" (echoed), header returned
+  one JSON log line per request: {"client_ip":"127.0.0.1","duration_ms":117.2,"level":"info","method":"POST","msg":"request","path":"/auth/login","request_id":"req_…","status":200}
+  grep -i 'password|accessToken|refreshToken|authorization' log  -> 0 lines (no secrets)
+  GET /metrics excerpt:
+    http_requests_total{method="POST",status="401"} 1
+    http_requests_in_flight 1
+    http_request_duration_seconds_count 2
+    shomei_logins_failed_total 1
+  SIGTERM -> "received SIGTERM; draining in-flight requests" -> "drain complete; closing
+             connection pool" -> "shutdown complete"; port released; process exited 0
+  ```
+
+  **Final IP-4 composed order** (EP-2 had landed first; EP-3 inserted outside it, no removal):
+  `requestLoggingMiddleware . metricsMiddleware . metricsEndpointMiddleware .
+  rateLimitMiddleware . application`. **No new external library** was added (Prometheus and
+  logging are hand-rolled). `cabal build all` and `cabal test all` (8 suites) are green and
+  `nix fmt` is clean.
+
+  Gaps: GHC RTS gauges were dropped (no dependency); the `/ready` → 503 path is logic-verified
+  but not triggered live (would require stopping the shared dev database); a trusted
+  `X-Forwarded-For` policy for `client_ip` behind a proxy is out of scope.
 
 
 ## Plan of Work

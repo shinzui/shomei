@@ -14,11 +14,13 @@ module Shomei.Servant.Seam (
     Env (..),
     runAuth,
     runPort,
+    runPortChecked,
 ) where
 
 import Shomei.Prelude
 
 import "aeson" Data.Aeson (Value)
+import "base" Control.Exception (SomeException, try)
 import "effectful-core" Effectful (Eff, IOE)
 
 import "servant-server" Servant (Handler, throwError)
@@ -95,3 +97,10 @@ runAuth env action = do
 -- | Run a plain port action to its value; the caller branches on the result.
 runPort :: Env -> Eff AppEffects a -> Handler a
 runPort env action = liftIO (runPorts env action)
+
+{- | Run a port action, catching an infrastructure failure (which 'runPorts' surfaces as an IO
+exception) as a 'Left' instead of letting it become a 500. Used by the @/ready@ readiness
+probe so a database outage yields a clean 503 rather than a 500.
+-}
+runPortChecked :: Env -> Eff AppEffects a -> Handler (Either SomeException a)
+runPortChecked env action = liftIO (try (runPorts env action))
