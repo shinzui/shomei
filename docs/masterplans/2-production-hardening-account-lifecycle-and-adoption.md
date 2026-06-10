@@ -152,7 +152,7 @@ intra-MasterPlan-2 dependencies.
 | 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Complete |
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Complete |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
-| 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | Not Started |
+| 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | In Progress |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -306,8 +306,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-3: Prometheus `/metrics` (HTTP + domain counters, hand-rolled) and `/ready` readiness probe distinct from `/health` (2026-06-10)
 - [x] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user (live runbook, 2026-06-10)
 - [x] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation (integration test proves retired-key tokens still verify, revoked ones don't)
-- [ ] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig`
-- [ ] EP-5: OCI image + `docker compose up` brings up server + PostgreSQL; CI pipeline green
+- [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
+- [~] EP-5: OCI image (`flake.module.nix`) + `docker-compose.yaml` + CI workflow authored; image build + live `docker compose up` NOT run in the dev sandbox (deferred to CI/deploy host)
 - [ ] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written and followed end-to-end
 
 
@@ -465,6 +465,19 @@ the result against the original vision.
   suite covers signup, email verification, password reset, login, refresh, JWKS, and role
   checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
   sender and the live-server `curl` walkthrough.
+
+- 2026-06-10: **EP-5 (packaging/config/deployment) is partially complete (In Progress).**
+  M1 (the typed Dhall + env configuration loader, IP-6) is **done and verified**: it renders the
+  Dhall file with the `dhall-to-json` CLI and decodes it with aeson into the fully-extended
+  `ShomeiConfig` (a deliberate deviation from the heavy `dhall` Haskell library — see EP-5's
+  Decision Log), with env vars overriding file values; a test proves it. M4 (CI workflow) and the
+  deployment artifacts (OCI image in `flake.module.nix`, `docker-compose.yaml`, `entrypoint.sh`,
+  `Dockerfile`, `CHANGELOG.md`) are **authored and syntax-validated** but the OCI image build and
+  a live `docker compose up` were **not run in the development sandbox** (they need a Nix+Docker
+  build host; documented honestly rather than claimed). The flake still evaluates and
+  `nix develop` works. **Handoff to EP-6:** `docs/deployment.md` should document the Dhall config
+  schema, the `SHOMEI_CONFIG`/`PG_CONNECTION_STRING` precedence, the `nix build .#dockerImage` +
+  `docker compose up` flow, and that the live container verification is pending.
 
 - 2026-06-10: **EP-4 (operational CLI + key rotation) is Complete.** The `shomei-admin` binary
   (a second executable in `shomei-server`, per the default decision — no new `mori.dhall`
