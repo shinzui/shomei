@@ -14,18 +14,21 @@ module Shomei.Servant.Handlers (
 import Shomei.Prelude
 
 import "aeson" Data.Aeson (Value)
+import "network" Network.Socket (SockAddr (..))
 import "text" Data.Text qualified as Text
 
 import "servant-server" Servant (Handler, NoContent (..), err404, errBody, throwError)
 import "servant-server" Servant.Server.Generic (AsServerT)
 
 import Shomei.Domain.Command (
+    ClientContext (..),
     LoginCommand (..),
     LogoutCommand (..),
     RefreshCommand (..),
     SignupCommand (..),
  )
 import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.LoginAttempt (ClientIp (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
@@ -89,12 +92,28 @@ signupH env req = do
     (user, pair) <- runAuth env (Wf.signup env.config cmd)
     pure SignupResponse{user = userToResponse user, token = tokenPairToResponse pair}
 
-loginH :: Env -> LoginRequest -> Handler LoginResponse
-loginH env req = do
+loginH :: Env -> SockAddr -> LoginRequest -> Handler LoginResponse
+loginH env peer req = do
     email <- either (throwError . authErrorToServerError) pure (mkEmail req.email)
     let cmd = LoginCommand{email = email, password = PlainPassword req.password}
-    (user, pair) <- runAuth env (Wf.login env.config cmd)
+        ctx =
+            ClientContext
+                { clientIp = ClientIp (clientIpText peer)
+                , accountKey = env.accountKeyOf email
+                }
+    (user, pair) <- runAuth env (Wf.login env.config ctx cmd)
     pure LoginResponse{user = userToResponse user, token = tokenPairToResponse pair}
+
+{- | The source IP of the request as text, used as the per-IP throttle key. Behind a reverse
+proxy this is the proxy's address; a trusted @X-Forwarded-For@ policy would be layered in a
+deployment that fronts the server with a proxy (out of scope here). The port is dropped so
+all connections from one host share a key.
+-}
+clientIpText :: SockAddr -> Text
+clientIpText = \case
+    SockAddrInet _ host -> Text.pack (show host)
+    SockAddrInet6 _ _ host _ -> Text.pack (show host)
+    other -> Text.pack (show other)
 
 refreshH :: Env -> RefreshRequest -> Handler TokenPairResponse
 refreshH env req =

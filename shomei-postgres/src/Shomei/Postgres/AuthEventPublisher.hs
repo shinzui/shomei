@@ -23,9 +23,9 @@ import Effectful.Error.Static (Error, throwError)
 
 import Shomei.Domain.Event (AuthEvent)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (sessionIdToUUID, userIdToUUID)
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Postgres.Codec (tshow)
 import Shomei.Postgres.Database (Database, runSession)
 
@@ -72,6 +72,10 @@ projectAuthEvent = \case
         (Just (userIdToUUID uid), Nothing, "user_suspended", toJSON d, occ)
     Event.UserDeleted d@(Event.UserDeletedData uid occ) ->
         (Just (userIdToUUID uid), Nothing, "user_deleted", toJSON d, occ)
+    Event.AccountLocked d@(Event.AccountLockedData _ _ _ _ occ) ->
+        (Nothing, Nothing, "account_locked", toJSON d, occ)
+    Event.LoginThrottled d@(Event.LoginThrottledData _ _ occ) ->
+        (Nothing, Nothing, "login_throttled", toJSON d, occ)
 
 insertAuthEventStmt :: Statement AuthEventRow ()
 insertAuthEventStmt =

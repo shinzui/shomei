@@ -27,14 +27,19 @@ import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 
 import Effectful (Eff, (:>))
-import Effectful.Error.Static (runErrorNoCallStack, throwError)
+import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 
-import Shomei.Config (SessionCheckMode (..), ShomeiConfig (..))
+import Shomei.Config (RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..))
-import Shomei.Domain.Command (LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (emailText, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginAttempt (
+    AccountLockout (..),
+    LoginOutcome (..),
+    NewLoginAttempt (..),
+ )
 import Shomei.Domain.Password (validatePassword)
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Domain.RefreshToken qualified as RT
@@ -47,6 +52,15 @@ import Shomei.Id (SessionId, UserId)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail)
+import Shomei.Effect.LoginAttemptStore (
+    LoginAttemptStore,
+    clearAccountLockout,
+    countRecentFailuresByAccount,
+    countRecentFailuresByIp,
+    getAccountLockout,
+    recordLoginAttempt,
+    setAccountLockout,
+ )
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
 import Shomei.Effect.RefreshTokenStore (
     RefreshTokenStore,
@@ -127,6 +141,19 @@ signup cfg cmd = runErrorNoCallStack do
         , TokenPair{accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
         )
 
+{- | Authenticate an email/password pair, with EP-2 abuse protection layered on the
+existing generic-error contract. Before verifying the password the workflow consults the
+per-IP failure budget and the per-account lockout state; every failure path records an
+attempt and, once the per-account budget is exhausted within the window, locks the account
+for the configured cooldown. To preserve the no-leak guarantee, a wrong password, an unknown
+account, and a locked account all return the single generic 'InvalidCredentials'; only the
+per-IP throttle returns the IP-keyed 'TooManyRequests' (which discloses nothing about which
+accounts exist). A successful login records a success and clears the lockout.
+
+The caller supplies a 'ClientContext' carrying the request's source IP and the precomputed
+hashed account key for the presented email, so the core needs no crypto dependency and the
+abuse store never holds a plaintext address.
+-}
 login ::
     ( UserStore :> es
     , CredentialStore :> es
@@ -135,23 +162,44 @@ login ::
     , PasswordHasher :> es
     , TokenSigner :> es
     , AuthEventPublisher :> es
+    , LoginAttemptStore :> es
     , Clock :> es
     , TokenGen :> es
     ) =>
     ShomeiConfig ->
+    ClientContext ->
     LoginCommand ->
     Eff es (Either AuthError (User, TokenPair))
-login cfg cmd = runErrorNoCallStack do
+login cfg ctx cmd = runErrorNoCallStack do
+    ts <- now
+    let rl = cfg.rateLimitConfig
+        cutoff = addUTCTime (negate rl.lockoutWindow) ts
+    -- Per-IP throttle first: a read-only, account-agnostic gate that leaks nothing. We do
+    -- NOT record a new attempt here (that would let an attacker keep themselves throttled).
+    when rl.rateLimitEnabled do
+        ipFails <- countRecentFailuresByIp ctx.clientIp cutoff
+        when (ipFails >= rl.maxFailedLoginsPerIp) do
+            publishAuthEvent (Event.LoginThrottled (Event.LoginThrottledData ctx.clientIp ipFails ts))
+            throwError TooManyRequests
+        -- Account lockout: a still-locked account returns the SAME generic error as a wrong
+        -- password (never 'AccountLocked'), so a locked account is indistinguishable.
+        mLock <- getAccountLockout ctx.accountKey
+        when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) mLock) (throwError InvalidCredentials)
     mCred <- findPasswordCredentialByEmail cmd.email
-    cred <- maybe (throwError InvalidCredentials) pure mCred
+    cred <- maybe (failLogin rl ctx cmd.email ts) pure mCred
     mUser <- findUserById cred.userId
-    user <- maybe (throwError InvalidCredentials) pure mUser
+    user <- maybe (failLogin rl ctx cmd.email ts) pure mUser
     when (user.status /= UserActive) (throwError UserNotActive)
     ok <- verifyPassword cmd.password cred.passwordHash
-    ts <- now
-    unless ok do
-        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData cmd.email ts))
-        throwError InvalidCredentials
+    unless ok (failLogin rl ctx cmd.email ts)
+    recordLoginAttempt
+        NewLoginAttempt
+            { accountKey = ctx.accountKey
+            , clientIp = ctx.clientIp
+            , outcome = LoginSuccess
+            , occurredAt = ts
+            }
+    clearAccountLockout ctx.accountKey
     session <-
         createSession
             NewSession
@@ -177,6 +225,40 @@ login cfg cmd = runErrorNoCallStack do
         ( user
         , TokenPair{accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
         )
+
+{- | The shared failure path for 'login': record the failed attempt, publish 'LoginFailed',
+lock the account if the windowed per-account failure budget is now exhausted, then throw the
+generic 'InvalidCredentials'. Both the unknown-account branch and the wrong-password branch
+call this so they remain byte-for-byte identical at the boundary.
+-}
+failLogin ::
+    ( LoginAttemptStore :> es
+    , AuthEventPublisher :> es
+    , Error AuthError :> es
+    ) =>
+    RateLimitConfig ->
+    ClientContext ->
+    Email ->
+    UTCTime ->
+    Eff es a
+failLogin rl ctx email ts = do
+    recordLoginAttempt
+        NewLoginAttempt
+            { accountKey = ctx.accountKey
+            , clientIp = ctx.clientIp
+            , outcome = LoginFailure
+            , occurredAt = ts
+            }
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData email ts))
+    when rl.rateLimitEnabled do
+        let cutoff = addUTCTime (negate rl.lockoutWindow) ts
+        acctFails <- countRecentFailuresByAccount ctx.accountKey cutoff
+        when (acctFails >= rl.maxFailedLoginsPerAccount) do
+            let lockedUntil = addUTCTime rl.lockoutDuration ts
+            setAccountLockout (AccountLockout ctx.accountKey acctFails (Just lockedUntil) ts)
+            publishAuthEvent
+                (Event.AccountLocked (Event.AccountLockedData ctx.accountKey ctx.clientIp acctFails lockedUntil ts))
+    throwError InvalidCredentials
 
 refresh ::
     ( SessionStore :> es

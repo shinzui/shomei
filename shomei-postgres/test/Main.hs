@@ -6,11 +6,11 @@ PostgreSQL interpreters with database-state assertions.
 -}
 module Main (main) where
 
-import Data.Int (Int64)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Data.Time (addUTCTime)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -26,12 +26,13 @@ import Hasql.Statement (preparable)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
-import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (LoginCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PlainPassword (..))
@@ -42,11 +43,20 @@ import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (NewUser (..), User (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
-import Shomei.Error (AuthError (RefreshTokenReuseDetected))
+import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.Clock (Clock, now)
+import Shomei.Effect.Clock (Clock (..), now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail)
+import Shomei.Effect.LoginAttemptStore (
+    LoginAttemptStore,
+    clearAccountLockout,
+    countRecentFailuresByAccount,
+    countRecentFailuresByIp,
+    getAccountLockout,
+    recordLoginAttempt,
+    setAccountLockout,
+ )
 import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword)
 import Shomei.Effect.PasswordResetTokenStore (
@@ -85,6 +95,7 @@ import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
@@ -104,6 +115,7 @@ type AppEffects =
      , RefreshTokenStore
      , VerificationTokenStore
      , PasswordResetTokenStore
+     , LoginAttemptStore
      , Notifier
      , AuthEventPublisher
      , SigningKeyStore
@@ -133,12 +145,43 @@ runAppWithNotifications ref pool =
         . runSigningKeyStorePostgres
         . runAuthEventPublisherPostgres
         . runNotifierRef ref
+        . runLoginAttemptStorePostgres
         . runPasswordResetTokenStorePostgres
         . runVerificationTokenStorePostgres
         . runRefreshTokenStorePostgres
         . runSessionStorePostgres
         . runCredentialStorePostgres
         . runUserStorePostgres
+
+{- | Run the stack with a FIXED clock (the EP-2 lockout tests need to advance time
+deterministically across calls against the same database). Notifications are discarded.
+-}
+runAppAtTime :: UTCTime -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
+runAppAtTime t pool action = do
+    ref <- newIORef []
+    ( runEff
+            . runErrorNoCallStack
+            . runDatabasePool pool
+            . runClockFixed t
+            . runTokenGenCrypto
+            . runPasswordHasherCrypto
+            . runTokenSignerFake
+            . runSigningKeyStorePostgres
+            . runAuthEventPublisherPostgres
+            . runNotifierRef ref
+            . runLoginAttemptStorePostgres
+            . runPasswordResetTokenStorePostgres
+            . runVerificationTokenStorePostgres
+            . runRefreshTokenStorePostgres
+            . runSessionStorePostgres
+            . runCredentialStorePostgres
+            . runUserStorePostgres
+        )
+        action
+
+runClockFixed :: UTCTime -> Eff (Clock : es) a -> Eff es a
+runClockFixed t = interpret_ \case
+    Now -> pure t
 
 {- | A trivial 'TokenSigner' (real signing is EP-4); the DB-state assertions never inspect
 the access token's contents.
@@ -155,6 +198,13 @@ runNotifierRef ref = interpret_ \case
 
 cfg :: ShomeiConfig
 cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+
+-- | Tightened thresholds for the EP-2 lockout test (lock after 3 per-account failures).
+lockCfg :: ShomeiConfig
+lockCfg = cfg{rateLimitConfig = defaultRateLimitConfig{maxFailedLoginsPerAccount = 3}}
+
+t0 :: UTCTime
+t0 = UTCTime (fromGregorian 2026 1 1) 0
 
 aliceEmail :: Email
 aliceEmail = mkEmail' "alice@example.com"
@@ -216,6 +266,8 @@ tests =
     , testWorkflowReuseRevokesFamily
     , testWorkflowAccountVerification
     , testWorkflowPasswordReset
+    , testLoginAttemptStore
+    , testWorkflowLockout
     ]
 
 testUserRoundTrip :: TestTree
@@ -429,7 +481,7 @@ testWorkflowPasswordReset = testCase "workflow: password reset changes password 
     raw <- latestResetToken =<< readIORef notifications
     confirmRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset raw (PlainPassword "correct horse battery staple two")))
     _ <- expectApp confirmRes >>= expectRight
-    loginRes <- runAppWithNotifications notifications pool (login cfg (LoginCommand aliceEmail (PlainPassword "correct horse battery staple two")))
+    loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (emailText aliceEmail))) (LoginCommand aliceEmail (PlainPassword "correct horse battery staple two")))
     _ <- expectApp loginRes >>= expectRight
     oldRefreshRes <- runAppWithNotifications notifications pool (refresh cfg (RefreshCommand pair.refreshToken))
     oldRefresh <- expectApp oldRefreshRes
@@ -440,6 +492,52 @@ testWorkflowPasswordReset = testCase "workflow: password reset changes password 
     consumed @?= 1
     assertBool "existing sessions are revoked" (revokedSessions >= 1)
     assertBool "existing refresh tokens are revoked" (revokedRefresh >= 1)
+
+testLoginAttemptStore :: TestTree
+testLoginAttemptStore = testCase "login attempt store: record + windowed count + lockout upsert/clear" $ withDb \pool -> do
+    let key = AccountKey "k-abc"
+        ip = ClientIp "1.2.3.4"
+    result <- runApp pool do
+        t <- now
+        let cutoff = addUTCTime (-900) t
+        recordLoginAttempt (NewLoginAttempt key ip LoginFailure t)
+        recordLoginAttempt (NewLoginAttempt key ip LoginFailure t)
+        recordLoginAttempt (NewLoginAttempt key (ClientIp "9.9.9.9") LoginFailure t)
+        accFails <- countRecentFailuresByAccount key cutoff
+        ipFails <- countRecentFailuresByIp ip cutoff
+        future <- countRecentFailuresByAccount key (addUTCTime 3600 t)
+        setAccountLockout (AccountLockout key 5 (Just (addUTCTime 900 t)) t)
+        lo1 <- getAccountLockout key
+        clearAccountLockout key
+        lo2 <- getAccountLockout key
+        pure (accFails, ipFails, future, lo1, lo2)
+    (accFails, ipFails, future, lo1, lo2) <- expectApp result
+    accFails @?= 3 -- all three failures share the account key
+    ipFails @?= 2 -- only two came from 1.2.3.4
+    future @?= 0 -- a cutoff in the future excludes everything
+    fmap (.failedCount) lo1 @?= Just 5
+    lo2 @?= Nothing
+
+testWorkflowLockout :: TestTree
+testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlock-after-cooldown" $ withDb \pool -> do
+    seeded <- runAppAtTime t0 pool (signup lockCfg (SignupCommand aliceEmail strongPw Nothing))
+    _ <- expectApp seeded >>= expectRight
+    let ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (emailText aliceEmail))
+        badLogin = login lockCfg ctx (LoginCommand aliceEmail (PlainPassword "wrong"))
+    _ <- runAppAtTime t0 pool badLogin >>= expectApp
+    _ <- runAppAtTime t0 pool badLogin >>= expectApp
+    r3 <- runAppAtTime t0 pool badLogin >>= expectApp
+    r3 @?= Left InvalidCredentials
+    locked <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts WHERE locked_until IS NOT NULL"
+    locked @?= 1
+    -- The correct password while still locked returns the SAME generic error (no leak).
+    denied <- runAppAtTime t0 pool (login lockCfg ctx (LoginCommand aliceEmail strongPw)) >>= expectApp
+    denied @?= Left InvalidCredentials
+    -- After the cooldown (15 min default) the correct password succeeds and clears the lockout.
+    ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceEmail strongPw)) >>= expectApp
+    _ <- expectRight ok
+    remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts"
+    remaining @?= 0
 
 latestVerificationToken :: [Notification] -> IO OneTimeToken
 latestVerificationToken = \case

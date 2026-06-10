@@ -35,7 +35,10 @@ runNotifierSmtp cfg = interpret_ \case
 renderNotification :: String -> NotifierConfig -> Notification -> String
 renderNotification transport cfg = \case
     EmailVerificationRequested email token expires ->
-        "[shomei:" <> transport <> "] email_verification email=" <> Text.unpack (emailText email)
+        "[shomei:"
+            <> transport
+            <> "] email_verification email="
+            <> Text.unpack (emailText email)
             <> " link="
             <> Text.unpack cfg.publicBaseUrl
             <> "/auth/verify-email/confirm?token="
@@ -43,7 +46,10 @@ renderNotification transport cfg = \case
             <> " expires_at="
             <> show expires
     PasswordResetRequested email token expires ->
-        "[shomei:" <> transport <> "] password_reset email=" <> Text.unpack (emailText email)
+        "[shomei:"
+            <> transport
+            <> "] password_reset email="
+            <> Text.unpack (emailText email)
             <> " link="
             <> Text.unpack cfg.publicBaseUrl
             <> "/auth/password-reset/confirm?token="

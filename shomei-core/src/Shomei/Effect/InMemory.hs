@@ -31,6 +31,7 @@ module Shomei.Effect.InMemory (
     runRefreshTokenStore,
     runVerificationTokenStore,
     runPasswordResetTokenStore,
+    runLoginAttemptStore,
     runNotifier,
     runPasswordHasher,
     runAuthEventPublisher,
@@ -58,6 +59,13 @@ import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginAttempt (
+    AccountKey,
+    AccountLockout (..),
+    LoginAttempt (..),
+    LoginOutcome (..),
+    NewLoginAttempt (..),
+ )
 import Shomei.Domain.Notification (Notification)
 import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
@@ -92,6 +100,7 @@ import Shomei.Id (
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
+import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
@@ -116,6 +125,9 @@ data World = World
     , passwordResetTokens :: !(Map PasswordResetTokenId PersistedPasswordResetToken)
     , passwordResetByHash :: !(Map OneTimeTokenHash PasswordResetTokenId)
     , signingKeys :: !(Map Text StoredSigningKey)
+    , loginAttempts :: ![LoginAttempt]
+    -- ^ newest-first append-only attempt log (EP-2 brute-force protection)
+    , accountLockouts :: !(Map AccountKey AccountLockout)
     , publishedEvents :: ![Event.AuthEvent]
     -- ^ newest-first
     , sentNotifications :: ![Notification]
@@ -140,6 +152,8 @@ emptyWorld t =
         , passwordResetTokens = Map.empty
         , passwordResetByHash = Map.empty
         , signingKeys = Map.empty
+        , loginAttempts = []
+        , accountLockouts = Map.empty
         , publishedEvents = []
         , sentNotifications = []
         , clock = t
@@ -388,6 +402,51 @@ mkPasswordResetToken tid nrt =
         , revokedAt = Nothing
         }
 
+runLoginAttemptStore :: (IOE :> es) => IORef World -> Eff (LoginAttemptStore : es) a -> Eff es a
+runLoginAttemptStore ref = interpret_ \case
+    RecordLoginAttempt na ->
+        liftIO (modifyIORef' ref (#loginAttempts %~ (toAttempt na :)))
+    CountRecentFailuresByAccount k cutoff ->
+        liftIO (countAccountFailures k cutoff <$> readIORef ref)
+    CountRecentFailuresByIp ip cutoff ->
+        liftIO (countWith (\a -> a.clientIp == ip) cutoff <$> readIORef ref)
+    GetAccountLockout k ->
+        liftIO ((Map.lookup k . (.accountLockouts)) <$> readIORef ref)
+    SetAccountLockout lo ->
+        liftIO (modifyIORef' ref (#accountLockouts %~ Map.insert lo.accountKey lo))
+    ClearAccountLockout k ->
+        liftIO (modifyIORef' ref (#accountLockouts %~ Map.delete k))
+  where
+    toAttempt na =
+        LoginAttempt
+            { accountKey = na.accountKey
+            , clientIp = na.clientIp
+            , outcome = na.outcome
+            , occurredAt = na.occurredAt
+            }
+    -- Pure windowed failure count (used for the per-IP throttle).
+    countWith p cutoff w =
+        length
+            [ a | a <- w.loginAttempts, p a, a.outcome == LoginFailure, a.occurredAt >= cutoff
+            ]
+    -- Per-account failures within the window AND strictly after the most recent success,
+    -- so a successful login resets the account's brute-force progress (counter-reset-on-success)
+    -- while the window still bounds the lookback.
+    countAccountFailures k cutoff w =
+        let successes =
+                [ a.occurredAt | a <- w.loginAttempts, a.accountKey == k, a.outcome == LoginSuccess
+                ]
+            lastSuccess = if null successes then Nothing else Just (maximum successes)
+            afterSuccess a = maybe True (\ls -> a.occurredAt > ls) lastSuccess
+         in length
+                [ a
+                | a <- w.loginAttempts
+                , a.accountKey == k
+                , a.outcome == LoginFailure
+                , a.occurredAt >= cutoff
+                , afterSuccess a
+                ]
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
     HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -445,6 +504,7 @@ runInMemory ::
         , RefreshTokenStore
         , VerificationTokenStore
         , PasswordResetTokenStore
+        , LoginAttemptStore
         , Notifier
         , PasswordHasher
         , TokenSigner
@@ -467,6 +527,7 @@ runInMemory ref =
         . runTokenSigner
         . runPasswordHasher ref
         . runNotifier ref
+        . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref
         . runVerificationTokenStore ref
         . runRefreshTokenStore ref

@@ -41,6 +41,8 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- .sql file under sql-migrations/ is not re-embedded until this module is recompiled;
 -- the @migrate@ Justfile recipe touches the .cabal first to force that rebuild.
 -- Account-lifecycle migrations were added on 2026-06-04, so this module must recompile.
+-- Abuse-protection migrations (shomei_login_attempts, shomei_account_lockouts) were added
+-- on 2026-06-05 by EP-2, requiring another recompile of this splice.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 

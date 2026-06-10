@@ -110,31 +110,41 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `RateLimitConfig` sub-record appended to `ShomeiConfig`; `defaultShomeiConfig`
-  extended with `rateLimitConfig` defaults (append-only, IP-3).
-- [ ] M1: `Shomei.Domain.LoginAttempt` domain types (`LoginOutcome`, `LoginAttempt`,
-  `NewLoginAttempt`, `AccountLockout`) created.
-- [ ] M1: `Shomei.Effect.LoginAttemptStore` effect interface (record attempt; count recent
+- [x] M1: `RateLimitConfig` sub-record appended to `ShomeiConfig`; `defaultShomeiConfig`
+  extended with `rateLimitConfig` defaults (append-only, IP-3). Completed 2026-06-10.
+- [x] M1: `Shomei.Domain.LoginAttempt` domain types (`LoginOutcome`, `AccountKey`, `ClientIp`,
+  `LoginAttempt`, `NewLoginAttempt`, `AccountLockout`) created. Completed 2026-06-10.
+- [x] M1: `Shomei.Effect.LoginAttemptStore` effect interface (record attempt; count recent
   failures by account and by IP; read/set/clear account lockout) created with `send`
-  smart constructors.
-- [ ] M1: in-memory interpreter for `LoginAttemptStore` added to `Shomei.Effect.InMemory`.
-- [ ] M1: `AccountLocked` variant added to `Shomei.Error.AuthError`; `AccountLocked` and
-  `LoginThrottled` variants added to `Shomei.Domain.Event.AuthEvent`.
-- [ ] M1: `Shomei.Workflow.login` extended to consult/record attempts and lock after N,
-  returning the generic `InvalidCredentials` (never leaking lock state).
-- [ ] M1: pure tasty tests prove lock-after-N, generic-response, unlock-after-cooldown,
-  per-IP throttle, and counter-reset-on-success. Acceptance: `cabal test shomei-core`.
-- [ ] M2: codd migration `2026-06-05-00-00-00-shomei-login-attempts.sql` (+ lockout table)
-  added with timestamps later than EP-1's (IP-7).
-- [ ] M2: PostgreSQL interpreter `Shomei.Postgres.LoginAttemptStore` added, mirroring the
-  existing stores; wired into the assembled interpreter stack.
-- [ ] M2: integration tests over ephemeral PostgreSQL prove the same behaviors as M1
-  against the real database. Acceptance: `cabal test shomei-postgres`.
-- [ ] M3: lockout check wired into EP-6's login handler / workflow path; generic
-  `401`/`429` HTTP responses confirmed (requires EP-5/EP-6 to exist).
+  smart constructors. Completed 2026-06-10.
+- [x] M1: in-memory interpreter for `LoginAttemptStore` added to `Shomei.Effect.InMemory`
+  (with the asymmetric counting refinement — see Decision Log). Completed 2026-06-10.
+- [x] M1: `AccountLocked` and `TooManyRequests` variants added to `Shomei.Error.AuthError`;
+  `AccountLocked` and `LoginThrottled` variants added to `Shomei.Domain.Event.AuthEvent`.
+  Completed 2026-06-10.
+- [x] M1: `Shomei.Workflow.login` extended (now takes a `ClientContext`) to consult/record
+  attempts and lock after N, returning the generic `InvalidCredentials` (never leaking lock
+  state). Completed 2026-06-10.
+- [x] M1: pure tasty tests (`Shomei.LockoutSpec`) prove lock-after-N, generic-response,
+  unlock-after-cooldown, per-IP throttle, and counter-reset-on-success. `cabal test
+  shomei-core` green (21 tests). Completed 2026-06-10.
+- [x] M2: codd migrations `2026-06-05-00-00-00-shomei-login-attempts.sql` and
+  `2026-06-05-00-00-01-shomei-account-lockouts.sql` added with timestamps later than EP-1's
+  (IP-7); applied via `just migrate`. Completed 2026-06-10.
+- [x] M2: PostgreSQL interpreter `Shomei.Postgres.LoginAttemptStore` added, mirroring the
+  existing stores; `loginOutcome` codecs + event projections added; wired into the assembled
+  interpreter stack. Completed 2026-06-10.
+- [x] M2: integration tests over ephemeral PostgreSQL prove the round-trips and the
+  lock-after-N / unlock-after-cooldown workflow against the real database. `cabal test
+  shomei-postgres` green (16 tests). Completed 2026-06-10.
+- [x] M3: lockout check wired into the live `shomei-server` login path — `loginH` derives a
+  `ClientContext` (client IP via the servant `RemoteHost` combinator; hashed account key via
+  an `Env`-injected SHA-256 hasher), the `LoginAttemptStore` interpreter is in both the seam
+  and server `AppEffects`, and the error mapping sends `AccountLocked` → generic 401 and
+  `TooManyRequests` → 429. `cabal build all` + `cabal test all` green. Completed 2026-06-10.
 - [ ] M4: per-IP WAI token-bucket middleware (`Shomei.Server.Middleware.RateLimit`) added;
   middleware ordering vs. EP-3 observability documented and applied (IP-4); end-to-end
-  bash/`curl` demonstration recorded (requires EP-6 to exist).
+  bash/`curl` demonstration recorded.
 
 
 ## Surprises & Discoveries
@@ -142,7 +152,32 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- 2026-06-10: **Pure windowed counting cannot express "successful login clears the failure
+  counter".** The plan's acceptance #4 requires that after a success, a later single failure
+  does not re-lock. But an append-only attempt log counted purely by `occurred_at >= cutoff`
+  keeps the pre-success failures in scope, so 4-fails + success + 1-fail would still hit a
+  threshold of 5. Resolved by making the **per-account** count "failures in the window AND
+  strictly after the most recent success" (a success resets progress), while the **per-IP**
+  count stays a plain windowed count (so an attacker cannot reset the IP throttle by logging
+  into their own account). Both the in-memory and PostgreSQL interpreters implement this; the
+  PostgreSQL `countByAccountStmt` adds `AND occurred_at > COALESCE((SELECT max(occurred_at) …
+  outcome='success'), '-infinity')`. Evidence: `Shomei.LockoutSpec`'s "successful login clears
+  the failure counter" and the PostgreSQL "lock-after-N then unlock-after-cooldown" cases pass.
+- 2026-06-10: **The login workflow returns `InvalidCredentials` (not `AccountLocked`) for a
+  locked account.** Step 6 of this plan suggested `throwError AccountLocked` mapped to a 401 at
+  the boundary, but the no-leak acceptance is stronger if even a *direct core caller* cannot
+  distinguish. So `login` returns the generic `InvalidCredentials` for the locked case;
+  `AccountLocked` remains in `AuthError` (mapped to the same generic 401 in the servant error
+  table) for completeness/audit. Evidence: `LockoutSpec`'s "locked account returns the same
+  generic error (even with correct password)".
+- 2026-06-10: **Client IP reaches the handler via servant's `RemoteHost` combinator; the
+  account-key hasher is injected through the seam `Env`.** Adding `RemoteHost` to the login
+  route gives `loginH` the socket peer without a proxy header policy (deferred). Rather than
+  pull a crypto dependency into `shomei-servant`, the seam `Env` gained an
+  `accountKeyOf :: Email -> AccountKey` function; the server supplies `AccountKey . sha256Hex .
+  emailText` (a new `Shomei.Crypto.sha256Hex`), and the in-process servant test supplies a
+  trivial `AccountKey . emailText`. `RemoteHost` is client-transparent, so `shomei-client` and
+  the embedded example are unaffected.
 
 
 ## Decision Log

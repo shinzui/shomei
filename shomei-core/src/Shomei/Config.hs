@@ -11,12 +11,14 @@ module Shomei.Config (
     SigningKeyConfig (..),
     NotifierConfig (..),
     NotifierTransport (..),
+    RateLimitConfig (..),
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
     defaultSessionTTL,
     defaultVerificationTokenTTL,
     defaultPasswordResetTokenTTL,
+    defaultRateLimitConfig,
 ) where
 
 import Shomei.Prelude
@@ -51,6 +53,28 @@ data NotifierConfig = NotifierConfig
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+{- | The abuse-protection policy (EP-2). Every field carries a default (see
+'defaultRateLimitConfig') so the record is append-only per IP-3.
+-}
+data RateLimitConfig = RateLimitConfig
+    { maxFailedLoginsPerAccount :: !Int
+    -- ^ failures within 'lockoutWindow' before the account is locked (default 5)
+    , maxFailedLoginsPerIp :: !Int
+    -- ^ failures within 'lockoutWindow' from one IP before that IP is throttled (default 20)
+    , lockoutWindow :: !NominalDiffTime
+    -- ^ rolling window over which failures are counted (default 15 min)
+    , lockoutDuration :: !NominalDiffTime
+    -- ^ how long an account stays locked once tripped (default 15 min)
+    , perIpRequestsPerMinute :: !Int
+    -- ^ WAI token-bucket sustained rate per client IP (default 60)
+    , perIpBurst :: !Int
+    -- ^ WAI token-bucket capacity / burst per client IP (default 60)
+    , rateLimitEnabled :: !Bool
+    -- ^ master switch; False disables all EP-2 protections (default True)
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data ShomeiConfig = ShomeiConfig
     { issuer :: !Issuer
     , audience :: !Audience
@@ -62,6 +86,7 @@ data ShomeiConfig = ShomeiConfig
     , signingKeyConfig :: !SigningKeyConfig
     , sessionCheckMode :: !SessionCheckMode
     , notifierConfig :: !NotifierConfig
+    , rateLimitConfig :: !RateLimitConfig
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -74,6 +99,18 @@ defaultSessionTTL = 30 * 24 * 60 * 60 -- 30 days
 defaultVerificationTokenTTL, defaultPasswordResetTokenTTL :: NominalDiffTime
 defaultVerificationTokenTTL = 24 * 60 * 60 -- 24 hours
 defaultPasswordResetTokenTTL = 60 * 60 -- 1 hour
+
+defaultRateLimitConfig :: RateLimitConfig
+defaultRateLimitConfig =
+    RateLimitConfig
+        { maxFailedLoginsPerAccount = 5
+        , maxFailedLoginsPerIp = 20
+        , lockoutWindow = 15 * 60
+        , lockoutDuration = 15 * 60
+        , perIpRequestsPerMinute = 60
+        , perIpBurst = 60
+        , rateLimitEnabled = True
+        }
 
 defaultShomeiConfig :: Issuer -> Audience -> ShomeiConfig
 defaultShomeiConfig iss aud =
@@ -95,4 +132,5 @@ defaultShomeiConfig iss aud =
                 , notifierTransport = LogNotifier
                 , publicBaseUrl = "http://localhost:8080"
                 }
+        , rateLimitConfig = defaultRateLimitConfig
         }

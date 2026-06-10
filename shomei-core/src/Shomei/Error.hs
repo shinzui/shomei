@@ -48,6 +48,15 @@ data AuthError
     | VerificationTokenInvalid
     | PasswordResetTokenInvalid
     | EmailAlreadyVerified
+    | {- | INTERNAL audit signal raised when a login hits a locked account; the HTTP layer
+      maps it to the SAME generic 401 as 'InvalidCredentials' so a locked account is
+      indistinguishable from a wrong password. (The 'Shomei.Workflow.login' workflow itself
+      returns 'InvalidCredentials' for the locked case so even a direct core caller cannot
+      distinguish; 'AccountLocked' exists for completeness and future internal use.)
+      -}
+      AccountLocked
+    | -- | The per-IP failure throttle tripped; the HTTP layer maps it to 429.
+      TooManyRequests
     | TokenInvalid TokenError
     | InternalAuthError Text
     deriving stock (Generic, Eq, Show)

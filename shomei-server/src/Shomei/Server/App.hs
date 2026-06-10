@@ -32,6 +32,7 @@ import Shomei.Error (AuthError)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
+import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
 import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
@@ -47,17 +48,18 @@ import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
+import Shomei.Notify (runNotifierFromConfig)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
-import Shomei.Notify (runNotifierFromConfig)
 
 {- | The single effect stack the assembled server interprets. The high-level ports
 come first (the handler's view); 'Database', @Error AuthError@, and 'IOE' sit beneath
@@ -71,6 +73,7 @@ type AppEffects =
      , RefreshTokenStore
      , VerificationTokenStore
      , PasswordResetTokenStore
+     , LoginAttemptStore
      , Notifier
      , PasswordHasher
      , TokenSigner
@@ -115,6 +118,7 @@ runAppIO env =
         . runTokenSignerJwt env.envKey env.envConfig
         . runPasswordHasherCrypto
         . runNotifierFromConfig env.envConfig
+        . runLoginAttemptStorePostgres
         . runPasswordResetTokenStorePostgres
         . runVerificationTokenStorePostgres
         . runRefreshTokenStorePostgres

@@ -9,10 +9,11 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (LoginCommand (..), SignupCommand (..))
+import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
@@ -170,7 +171,7 @@ passwordResetRequestedWorld :: IO (IORef World, User, OneTimeToken)
 passwordResetRequestedWorld = do
     ref <- newIORef (emptyWorld fixedTime)
     (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    _ <- expectRight =<< runInMemory ref (login cfg (LoginCommand aliceEmail strongPw))
+    _ <- expectRight =<< runInMemory ref (login cfg (ClientContext (ClientIp "test-ip") (AccountKey "alice")) (LoginCommand aliceEmail strongPw))
     _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset user.email))
     raw <- latestResetToken =<< readIORef ref
     pure (ref, user, raw)

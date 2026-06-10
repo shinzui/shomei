@@ -14,6 +14,8 @@ module Shomei.Postgres.Codec (
     oneTimeTokenStatusFromText,
     signingKeyStatusToText,
     signingKeyStatusFromText,
+    loginOutcomeToText,
+    loginOutcomeFromText,
     emailFromDb,
     tshow,
 ) where
@@ -22,6 +24,7 @@ import Shomei.Prelude
 
 import Data.Text qualified as Text
 import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.LoginAttempt (LoginOutcome (..))
 import Shomei.Domain.OneTimeToken (OneTimeTokenStatus (..))
 import Shomei.Domain.RefreshToken (RefreshTokenStatus (..))
 import Shomei.Domain.Session (SessionStatus (..))
@@ -101,6 +104,17 @@ signingKeyStatusFromText = \case
     "retired" -> Right KeyRetired
     "revoked" -> Right KeyRevoked
     t -> Left ("unknown signing-key status: " <> t)
+
+loginOutcomeToText :: LoginOutcome -> Text
+loginOutcomeToText = \case
+    LoginSuccess -> "success"
+    LoginFailure -> "failure"
+
+loginOutcomeFromText :: Text -> Either Text LoginOutcome
+loginOutcomeFromText = \case
+    "success" -> Right LoginSuccess
+    "failure" -> Right LoginFailure
+    t -> Left ("unknown login outcome: " <> t)
 
 {- | Rebuild an 'Email' from a stored value. The column only ever holds emails that were
 already normalized through 'mkEmail' on the way in, so this should never fail; a 'Left'

@@ -53,6 +53,7 @@ data ShomeiAPI mode = ShomeiAPI
         mode
             :- "auth"
                 :> "login"
+                :> RemoteHost
                 :> ReqBody '[JSON] LoginRequest
                 :> Post '[JSON] LoginResponse
     , refresh ::

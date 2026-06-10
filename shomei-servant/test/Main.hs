@@ -59,19 +59,21 @@ import Servant.Server.Experimental.Auth (AuthHandler)
 
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
+import Shomei.Domain.Email (emailText)
+import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Token (AccessToken (..))
-import Shomei.Id (genSessionId, genUserId)
 import Shomei.Effect.InMemory (
     World (..),
     emptyWorld,
     runAuthEventPublisher,
     runClock,
     runCredentialStore,
+    runLoginAttemptStore,
     runNotifier,
-    runPasswordResetTokenStore,
     runPasswordHasher,
+    runPasswordResetTokenStore,
     runRefreshTokenStore,
     runSessionStore,
     runSigningKeyStore,
@@ -79,6 +81,7 @@ import Shomei.Effect.InMemory (
     runUserStore,
     runVerificationTokenStore,
  )
+import Shomei.Id (genSessionId, genUserId)
 
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
@@ -129,6 +132,7 @@ runHybrid ref jwk jwkset cfg =
         . runTokenSignerJwt jwk cfg
         . runPasswordHasher ref
         . runNotifier ref
+        . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref
         . runVerificationTokenStore ref
         . runRefreshTokenStore ref
@@ -173,6 +177,7 @@ main = do
                 , config = cfg
                 , verifier = verifyToken jwkset cfg
                 , jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))
+                , accountKeyOf = AccountKey . emailText
                 }
     adminToken <- mkAdminToken jwk cfg
     defaultMain (tests ref env adminToken)

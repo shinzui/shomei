@@ -9,11 +9,13 @@ module Shomei.Domain.Command (
     LoginCommand (..),
     RefreshCommand (..),
     LogoutCommand (..),
+    ClientContext (..),
 ) where
 
 import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
+import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
 import Shomei.Domain.Password (PlainPassword)
 import Shomei.Domain.RefreshToken (RefreshToken)
 import Shomei.Id (SessionId)
@@ -35,4 +37,15 @@ newtype RefreshCommand = RefreshCommand {refreshToken :: RefreshToken}
     deriving stock (Generic, Show)
 
 newtype LogoutCommand = LogoutCommand {sessionId :: SessionId}
+    deriving stock (Generic, Show)
+
+{- | Per-request context the 'Shomei.Workflow.login' workflow needs for abuse protection:
+the client's source IP (for the per-IP failure throttle) and the precomputed hashed account
+key for the presented email (so the core never needs a crypto dependency, and the abuse
+store never holds a plaintext address).
+-}
+data ClientContext = ClientContext
+    { clientIp :: !ClientIp
+    , accountKey :: !AccountKey
+    }
     deriving stock (Generic, Show)

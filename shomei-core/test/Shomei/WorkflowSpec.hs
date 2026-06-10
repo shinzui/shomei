@@ -18,16 +18,17 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
-import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
+import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
 import Shomei.Workflow (login, logout, refresh, signup)
 
 -- Fixtures -------------------------------------------------------------------
@@ -55,6 +56,10 @@ mkEmail' t = case mkEmail t of
     Right e -> e
     Left err -> error ("bad test email: " <> show err)
 
+-- | A fixed client context per email: a constant test IP and the email text as the account key.
+ctxFor :: Email -> ClientContext
+ctxFor e = ClientContext (ClientIp "test-ip") (AccountKey (emailText e))
+
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
 
@@ -77,7 +82,7 @@ testSignupLogin :: TestTree
 testSignupLogin = testCase "signup then login round-trips" do
     ref <- newIORef (emptyWorld fixedTime)
     (user, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
-    (user2, pair2) <- expectRight =<< runInMemory ref (login cfg (LoginCommand aliceEmail strongPw))
+    (user2, pair2) <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
     user2.userId @?= user.userId
     assertBool "login issues a different refresh token" (pair2.refreshToken /= pair.refreshToken)
 
@@ -136,7 +141,7 @@ testFailClosed :: TestTree
 testFailClosed = testCase "password verification fails closed on wrong password" do
     ref <- newIORef (emptyWorld fixedTime)
     _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    result <- runInMemory ref (login cfg (LoginCommand aliceEmail wrongPw))
+    result <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail wrongPw))
     result @?= Left InvalidCredentials
     w <- readIORef ref
     assertBool "a login-failed event was published" (any isFailed w.publishedEvents)
@@ -148,7 +153,7 @@ testNoAccountLeak :: TestTree
 testNoAccountLeak = testCase "unknown email yields the same generic error as a wrong password" do
     ref <- newIORef (emptyWorld fixedTime)
     _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    wrong <- runInMemory ref (login cfg (LoginCommand aliceEmail wrongPw))
-    unknown <- runInMemory ref (login cfg (LoginCommand unknownEmail strongPw))
+    wrong <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail wrongPw))
+    unknown <- runInMemory ref (login cfg (ctxFor unknownEmail) (LoginCommand unknownEmail strongPw))
     wrong @?= unknown
     unknown @?= Left InvalidCredentials

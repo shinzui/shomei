@@ -10,6 +10,7 @@ module Shomei.Crypto (
     generateOpaqueToken,
     hashRefreshToken,
     runTokenGenCrypto,
+    sha256Hex,
 ) where
 
 import Shomei.Prelude
@@ -22,7 +23,7 @@ import "crypton" Crypto.Hash (SHA256 (..), hashWith)
 import "crypton" Crypto.KDF.Argon2 qualified as Argon2
 import "crypton" Crypto.Random (getRandomBytes)
 import "ram" Data.ByteArray (constEq, convert)
-import "ram" Data.ByteArray.Encoding (Base (Base64, Base64URLUnpadded), convertFromBase, convertToBase)
+import "ram" Data.ByteArray.Encoding (Base (Base16, Base64, Base64URLUnpadded), convertFromBase, convertToBase)
 
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -74,6 +75,14 @@ verifyPasswordArgon2id pw (PasswordHash stored) =
         _ -> False
   where
     b64dec t = convertFromBase Base64 (TE.encodeUtf8 t) :: Either String ByteString
+
+{- | A lower-case hex SHA-256 of a UTF-8 'Text'. Used by the server to derive the abuse
+store's account key from a normalized email, so the brute-force tables never hold plaintext
+addresses (EP-2).
+-}
+sha256Hex :: Text -> Text
+sha256Hex t =
+    TE.decodeUtf8 (convertToBase Base16 (hashWith SHA256 (TE.encodeUtf8 t)))
 
 runPasswordHasherCrypto :: (IOE :> es) => Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasherCrypto = interpret_ \case

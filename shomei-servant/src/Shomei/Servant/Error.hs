@@ -24,6 +24,18 @@ import "servant-server" Servant (
 
 import Shomei.Error (AuthError (..))
 
+{- | HTTP 429 Too Many Requests. Servant ships no @err429@ constant, so we build it from the
+same shape as the other @errNNN@ values.
+-}
+err429 :: ServerError
+err429 =
+    ServerError
+        { errHTTPCode = 429
+        , errReasonPhrase = "Too Many Requests"
+        , errBody = ""
+        , errHeaders = []
+        }
+
 authErrorToServerError :: AuthError -> ServerError
 authErrorToServerError = \case
     InvalidEmail -> json err400 "invalid_email" "Email is not valid"
@@ -31,6 +43,8 @@ authErrorToServerError = \case
     EmailAlreadyRegistered -> json err409 "email_taken" "Email is already registered"
     InvalidCredentials -> json err401 "invalid_login" "Invalid email or password"
     UserNotActive -> json err401 "invalid_login" "Invalid email or password"
+    AccountLocked -> json err401 "invalid_login" "Invalid email or password"
+    TooManyRequests -> json err429 "too_many_requests" "Too many requests"
     SessionNotFound -> json err404 "session_not_found" "Session not found"
     SessionExpired -> json err401 "session_expired" "Session expired"
     SessionRevoked -> json err401 "session_revoked" "Session revoked"
