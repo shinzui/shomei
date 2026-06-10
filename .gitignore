@@ -12,3 +12,4 @@ result-*
 .pre-commit-config.yaml
 db/
 CLAUDE.local.md
+config/shomei.dhall

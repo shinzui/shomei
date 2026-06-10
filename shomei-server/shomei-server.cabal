@@ -55,6 +55,7 @@ library
     , http-types
     , jose
     , network
+    , process
     , servant-server
     , shomei-core
     , shomei-jwt
@@ -108,6 +109,19 @@ executable shomei-admin
     , shomei-postgres
     , text
     , time
+
+test-suite shomei-server-config-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Shomei/Server/ConfigSpec.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , shomei-core
+    , shomei-server
+    , tasty
+    , tasty-hunit
 
 test-suite shomei-admin-test
   import:         warnings, shared

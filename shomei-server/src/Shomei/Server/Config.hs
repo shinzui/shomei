@@ -1,36 +1,39 @@
-{- | Load runtime configuration from the environment into the core 'ShomeiConfig' plus
-the server-only 'ServerSettings' (listen port, connection string).
+{- | Load runtime configuration into the core 'ShomeiConfig' plus the server-only
+'ServerSettings' (listen port, connection string).
 
-Env-var based by deliberate choice (Decision Log); Dhall-file config is the documented
-future option per the house hierarchical-config convention. Required variables that are
-missing fail fast at boot with a clear 'userError'; optional ones fall back to
-'defaultShomeiConfig'.
+Precedence (lowest to highest, twelve-factor): (1) built-in 'defaultShomeiConfig'; (2) a typed
+Dhall file at @$SHOMEI_CONFIG@ (if set and present), rendered to JSON by the @dhall-to-json@
+CLI and decoded here; (3) individual @SHOMEI_*@ / @PG_CONNECTION_STRING@ environment variables.
+If @$SHOMEI_CONFIG@ is unset the file step is skipped and the server still boots from defaults
++ env (preserving the turnkey behavior).
 
-Variables:
-
-* @PG_CONNECTION_STRING@   libpq connection string (required).
-* @SHOMEI_PORT@            warp listen port (default 8080).
-* @SHOMEI_ISSUER@          JWT @iss@ (default @shomei@).
-* @SHOMEI_AUDIENCE@        JWT @aud@ (default @shomei-clients@).
-* @SHOMEI_ACCESS_TTL@      access-token lifetime, seconds (default: ShomeiConfig).
-* @SHOMEI_REFRESH_TTL@     refresh-token lifetime, seconds (default: ShomeiConfig).
-* @SHOMEI_SESSION_TTL@     session lifetime, seconds (default: ShomeiConfig).
-* @SHOMEI_TOKEN_TRANSPORT@ @bearer@ | @cookie@ | @both@ (default: ShomeiConfig).
-* @SHOMEI_SESSION_CHECK@   @token-only@ | @token-and-session@ (default: ShomeiConfig).
+Dhall is rendered with the @dhall-to-json@ binary (provided by the toolchain / container) rather
+than the heavyweight @dhall@ Haskell library, and the rendered JSON is decoded with @aeson@ into
+a flat 'FileConfig' of optional scalar overrides — see EP-5's Decision Log. @loadConfigFromEnv@
+remains as the env-only entry point EP-4's @shomei-admin@ and the legacy path use.
 -}
 module Shomei.Server.Config (
     ServerSettings (..),
     loadConfig,
+    loadConfigFromEnv,
+    FileConfig (..),
 ) where
 
 import Shomei.Prelude
 
+import Data.Aeson (FromJSON, eitherDecodeStrict')
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
 import "base" System.Environment (lookupEnv)
+import "base" System.IO (hPutStrLn, stderr)
 import "base" Text.Read (readMaybe)
-import "text" Data.Text qualified as Text
+import "process" System.Process (readProcess)
 
 import Shomei.Config (
+    NotifierConfig (..),
+    ObservabilityConfig (..),
+    RateLimitConfig (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
     TokenTransport (..),
@@ -45,19 +48,114 @@ data ServerSettings = ServerSettings
     }
     deriving stock (Show, Generic)
 
--- | Load both records from the environment.
+{- | The flat, all-optional shape the Dhall config file is rendered into (via @dhall-to-json@).
+Every field is a 'Maybe' scalar so a partial file is valid and absent keys fall back to the
+defaults / env.
+-}
+data FileConfig = FileConfig
+    { issuer :: !(Maybe Text)
+    , audience :: !(Maybe Text)
+    , databaseUrl :: !(Maybe Text)
+    , port :: !(Maybe Int)
+    , accessTokenTtlSeconds :: !(Maybe Int)
+    , refreshTokenTtlSeconds :: !(Maybe Int)
+    , sessionTtlSeconds :: !(Maybe Int)
+    , publicBaseUrl :: !(Maybe Text)
+    , emailVerificationRequired :: !(Maybe Bool)
+    , rateLimitEnabled :: !(Maybe Bool)
+    , maxFailedLoginsPerAccount :: !(Maybe Int)
+    , perIpRequestsPerMinute :: !(Maybe Int)
+    , metricsEnabled :: !(Maybe Bool)
+    , requestLoggingEnabled :: !(Maybe Bool)
+    , gracefulShutdownTimeoutSeconds :: !(Maybe Int)
+    }
+    deriving stock (Show, Generic)
+    deriving anyclass (FromJSON)
+
+-- | The full loader: defaults → Dhall file (if @$SHOMEI_CONFIG@) → env.
 loadConfig :: IO (ShomeiConfig, ServerSettings)
 loadConfig = do
-    connStr <- requireEnv "PG_CONNECTION_STRING"
-    port <- intEnv "SHOMEI_PORT" 8080
-    iss <- textEnv "SHOMEI_ISSUER" "shomei"
-    aud <- textEnv "SHOMEI_AUDIENCE" "shomei-clients"
-    cfg <- overlayFromEnv (defaultShomeiConfig (Issuer iss) (Audience aud))
-    pure (cfg, ServerSettings{serverPort = port, serverConnStr = connStr})
+    mFile <- loadDhallFile
+    (cfg0, settings0) <- baseFromFile mFile
+    overlayFromEnvBoth cfg0 settings0
 
--- | Apply the optional TTL/transport/session-check overrides, keeping defaults otherwise.
-overlayFromEnv :: ShomeiConfig -> IO ShomeiConfig
-overlayFromEnv base = do
+-- | The env-only loader (no Dhall file). Stable entry point for @shomei-admin@ and legacy use.
+loadConfigFromEnv :: IO (ShomeiConfig, ServerSettings)
+loadConfigFromEnv = do
+    (cfg, settings) <- baseDefaults
+    overlayFromEnvBoth cfg settings
+
+-- Dhall file ----------------------------------------------------------------
+
+loadDhallFile :: IO (Maybe FileConfig)
+loadDhallFile = do
+    mPath <- lookupEnv "SHOMEI_CONFIG"
+    case mPath of
+        Just path | not (null path) -> do
+            out <- readProcess "dhall-to-json" ["--file", path] ""
+            case eitherDecodeStrict' (TE.encodeUtf8 (Text.pack out)) of
+                Right fc -> pure (Just fc)
+                Left err -> do
+                    hPutStrLn stderr ("shomei: could not decode rendered Dhall config " <> path <> ": " <> err)
+                    ioError (userError ("invalid SHOMEI_CONFIG: " <> path))
+        _ -> pure Nothing
+
+baseDefaults :: IO (ShomeiConfig, ServerSettings)
+baseDefaults =
+    pure
+        ( defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+        , ServerSettings{serverPort = 8080, serverConnStr = ""}
+        )
+
+baseFromFile :: Maybe FileConfig -> IO (ShomeiConfig, ServerSettings)
+baseFromFile Nothing = baseDefaults
+baseFromFile (Just fc) = do
+    let iss = fromMaybe "shomei" fc.issuer
+        aud = fromMaybe "shomei-clients" fc.audience
+        cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
+        cfg =
+            cfg0
+                { accessTokenTTL = maybe cfg0.accessTokenTTL fromIntegral fc.accessTokenTtlSeconds
+                , refreshTokenTTL = maybe cfg0.refreshTokenTTL fromIntegral fc.refreshTokenTtlSeconds
+                , sessionTTL = maybe cfg0.sessionTTL fromIntegral fc.sessionTtlSeconds
+                , notifierConfig =
+                    cfg0.notifierConfig
+                        { emailVerificationRequired = fromMaybe cfg0.notifierConfig.emailVerificationRequired fc.emailVerificationRequired
+                        , publicBaseUrl = fromMaybe cfg0.notifierConfig.publicBaseUrl fc.publicBaseUrl
+                        }
+                , rateLimitConfig =
+                    cfg0.rateLimitConfig
+                        { rateLimitEnabled = fromMaybe cfg0.rateLimitConfig.rateLimitEnabled fc.rateLimitEnabled
+                        , maxFailedLoginsPerAccount = fromMaybe cfg0.rateLimitConfig.maxFailedLoginsPerAccount fc.maxFailedLoginsPerAccount
+                        , perIpRequestsPerMinute = fromMaybe cfg0.rateLimitConfig.perIpRequestsPerMinute fc.perIpRequestsPerMinute
+                        }
+                , observabilityConfig =
+                    cfg0.observabilityConfig
+                        { metricsEnabled = fromMaybe cfg0.observabilityConfig.metricsEnabled fc.metricsEnabled
+                        , requestLoggingEnabled = fromMaybe cfg0.observabilityConfig.requestLoggingEnabled fc.requestLoggingEnabled
+                        , gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
+                        }
+                }
+        settings = ServerSettings{serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
+    pure (cfg, settings)
+
+-- Env overrides --------------------------------------------------------------
+
+overlayFromEnvBoth :: ShomeiConfig -> ServerSettings -> IO (ShomeiConfig, ServerSettings)
+overlayFromEnvBoth baseCfg baseSettings = do
+    connStr <- textEnv "PG_CONNECTION_STRING" baseSettings.serverConnStr
+    portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
+    iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
+    aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
+    cfg <- overlayCoreFromEnv baseCfg{issuer = Issuer iss, audience = Audience aud}
+    when (Text.null connStr) (ioError (userError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)"))
+    pure (cfg, ServerSettings{serverPort = portV, serverConnStr = connStr})
+  where
+    issuerText (Issuer t) = t
+    audienceText (Audience t) = t
+
+overlayCoreFromEnv :: ShomeiConfig -> IO ShomeiConfig
+overlayCoreFromEnv base = do
     acc <- ttlEnv "SHOMEI_ACCESS_TTL"
     ref <- ttlEnv "SHOMEI_REFRESH_TTL"
     ses <- ttlEnv "SHOMEI_SESSION_TTL"
@@ -71,13 +169,6 @@ overlayFromEnv base = do
             , tokenTransport = fromMaybe base.tokenTransport tr
             , sessionCheckMode = fromMaybe base.sessionCheckMode sc
             }
-
-requireEnv :: Text -> IO Text
-requireEnv name = do
-    m <- lookupEnv (Text.unpack name)
-    case m of
-        Just v | not (null v) -> pure (Text.pack v)
-        _ -> ioError (userError (Text.unpack name <> " is not set"))
 
 textEnv :: Text -> Text -> IO Text
 textEnv name def = do
