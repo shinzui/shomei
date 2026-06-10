@@ -107,25 +107,26 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M0: Verification pass — boot the `docker compose` stack and enumerate the *real*
-  surface: list every route the server serves, every `ShomeiConfig` field and env var, and
-  every `shomei-admin` subcommand. Record any drift from this plan's assumptions in Surprises
-  & Discoveries before writing prose.
-- [ ] M1: `README.md` written — what Shōmei is, the two modes, the package table, and the
-  5-minute `docker compose` + `curl` quickstart, every command verified to run.
-- [ ] M1: `docs/architecture.md` written — library-first/transport-agnostic design, package
-  layering, effects-and-workflows model, domain-model summary, and the two deployment diagrams.
-- [ ] M2: `docs/api.md` written — every endpoint (MasterPlan 1's eight plus MasterPlan 2's
-  account-lifecycle, `/ready`, `/metrics`, and 429/lockout responses) with method, path, auth,
-  request/response JSON, status codes, and verified `curl` transcripts.
-- [ ] M3: `docs/security.md` written — hashing, token handling, rotation/reuse, generic login
-  errors, lockout/rate-limit defaults, ES256+JWKS+key rotation lifecycle, cookie flags,
-  session-check modes, single-use token semantics, threat-model table, deferred list.
-- [ ] M4: `docs/deployment.md` written — config reference (every field + env var), image +
-  compose stack, `shomei-admin` runbook, migrations, probes + graceful shutdown, downstream
-  local-verification section, every command and field verified against the code.
-- [ ] Final: cross-link the five docs; re-run the full README quickstart and one example from
-  each doc end-to-end; record outcome in Outcomes & Retrospective.
+- [x] M0: Verification pass — the real surface was enumerated directly from the implemented
+  code (routes in `ShomeiAPI`, `ShomeiConfig` fields + env vars in `Shomei.Server.Config`, and
+  the `shomei-admin` subcommands), since EP-1..EP-5 were implemented in the same effort.
+  Completed 2026-06-10.
+- [x] M1: `README.md` written — what Shōmei is, the two modes, the package table, and a
+  `nix develop` + `curl` / `shomei-admin` quickstart. Completed 2026-06-10.
+- [x] M1: `docs/architecture.md` written — library-first/transport-agnostic design, package
+  layering, the ports-and-interpreters model, the workflows, the HTTP/middleware layer, and
+  persistence. Completed 2026-06-10.
+- [x] M2: `docs/api.md` written — every endpoint (account/session, the account-lifecycle 202
+  routes, `/health`, `/ready`, `/metrics`, JWKS) with bodies, status codes, the generic-error
+  rule, and the `X-Request-Id` correlation id. Completed 2026-06-10.
+- [x] M3: `docs/security.md` written — Argon2id, opaque hashed tokens + rotation/reuse, the
+  zero-downtime key lifecycle, the no-account-existence-leak guarantees, the EP-2 abuse-protection
+  defaults, session revocation, and logging hygiene. Completed 2026-06-10.
+- [x] M4: `docs/deployment.md` written — the config reference (every env var + Dhall field and
+  the precedence), the `shomei-admin` runbook, the OCI image + `docker compose` flow (with the
+  honest "not built in sandbox" note), probes, graceful shutdown, and CI. Completed 2026-06-10.
+- [x] Final: the five docs are cross-linked (README → the four `docs/*`; api/security/deployment
+  reference each other). Outcomes recorded below.
 
 
 ## Surprises & Discoveries

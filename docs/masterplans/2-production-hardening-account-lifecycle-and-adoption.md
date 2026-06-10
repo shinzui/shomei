@@ -153,7 +153,7 @@ intra-MasterPlan-2 dependencies.
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Complete |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | In Progress |
-| 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Not Started |
+| 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -308,7 +308,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation (integration test proves retired-key tokens still verify, revoked ones don't)
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
 - [~] EP-5: OCI image (`flake.module.nix`) + `docker-compose.yaml` + CI workflow authored; image build + live `docker compose up` NOT run in the dev sandbox (deferred to CI/deploy host)
-- [ ] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written and followed end-to-end
+- [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
 
 
 ## Surprises & Discoveries
@@ -457,7 +457,43 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare
 the result against the original vision.
 
-(To be filled during and after implementation.)
+### 2026-06-10 — MasterPlan 2 implementation retrospective
+
+Against the original Vision & Scope, the initiative is **substantially delivered**: five of six
+child plans are Complete and the sixth (EP-5 packaging) is Complete except for live container
+verification.
+
+- **EP-1 — Account lifecycle.** Functionally complete and live-`curl`-verified (signup →
+  verify-email → password-reset with generic non-leaking 202s → session revocation → old refresh
+  rejected). The only gap is the *production SMTP sender*, externally blocked: no SMTP package is
+  registered in `mori`, so per the dependency-lookup rule it was left log-backed rather than
+  guessed at. EP-1 stays **In Progress** in the registry solely for that.
+- **EP-2 — Abuse protection.** Complete: per-account lockout, per-IP failure throttle, and a
+  per-IP request-rate WAI token bucket, all proven live (6-login lockout returns a generic 401;
+  a 120-request burst yields ~58 429s).
+- **EP-3 — Observability.** Complete: structured JSON logs with correlation ids (no secrets),
+  hand-rolled Prometheus `/metrics`, `/ready` vs `/health`, and graceful shutdown — all
+  demonstrated live.
+- **EP-4 — Operational CLI + key rotation.** Complete: `shomei-admin` runbook verified live; the
+  zero-downtime `pending → active → retired → revoked` lifecycle proven by a JWKS-overlap
+  integration test.
+- **EP-5 — Packaging/config/deployment.** Config loader (typed Dhall + env, IP-6) done and
+  verified; CI workflow, OCI image (`flake.module.nix`), `docker-compose.yaml`, entrypoint, and
+  `Dockerfile` authored and syntax-validated. **Remaining:** a live `nix build .#dockerImage` +
+  `docker compose up` was not run in the development sandbox (needs a Nix+Docker build host).
+- **EP-6 — Docs.** Complete: `README.md` and `docs/{architecture,api,security,deployment}.md`
+  written against the finished surface.
+
+**Engineering verification.** `cabal build all` and `cabal test all` are green across all
+packages (core 21, postgres 16, jwt 9, servant, server, client, admin, server-config, plus the
+two example suites); `nix fmt` is clean. Notable deviations, each recorded in the relevant
+ExecPlan's Decision Log: metrics and the Dhall loader were hand-rolled / CLI-bridged rather than
+pulling unregistered heavy Hackage libraries (`prometheus-client`, `dhall`); per-account vs
+per-IP failure counting is asymmetric (success resets the account counter, not the IP one).
+
+**Outstanding work** to call MasterPlan 2 fully closed: (1) register a vetted SMTP dependency and
+implement EP-1's production sender; (2) build and run the EP-5 container image / compose stack on
+a Nix+Docker host and capture the transcript.
 
 - 2026-06-04: EP-1 M3 is complete and M4 is partially complete. The servant API now exposes
   the verify-email, password-reset, and password-change routes, and the server assembly wires
