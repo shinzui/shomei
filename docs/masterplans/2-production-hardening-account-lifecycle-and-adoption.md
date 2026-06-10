@@ -151,7 +151,7 @@ intra-MasterPlan-2 dependencies.
 | 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | In Progress |
 | 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Complete |
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Complete |
-| 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Not Started |
+| 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | Not Started |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Not Started |
 
@@ -304,8 +304,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-2: account lockout after N failed logins with generic responses; pure + PostgreSQL integration tests pass (`cabal test all` green, 2026-06-10)
 - [x] EP-3: structured JSON logging + request correlation IDs (X-Request-Id echo, no secrets); graceful shutdown on SIGTERM/SIGINT (2026-06-10)
 - [x] EP-3: Prometheus `/metrics` (HTTP + domain counters, hand-rolled) and `/ready` readiness probe distinct from `/health` (2026-06-10)
-- [ ] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user
-- [ ] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation
+- [x] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user (live runbook, 2026-06-10)
+- [x] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation (integration test proves retired-key tokens still verify, revoked ones don't)
 - [ ] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig`
 - [ ] EP-5: OCI image + `docker compose up` brings up server + PostgreSQL; CI pipeline green
 - [ ] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written and followed end-to-end
@@ -465,6 +465,17 @@ the result against the original vision.
   suite covers signup, email verification, password reset, login, refresh, JWKS, and role
   checks; `nix develop --command cabal test all` passes. Remaining EP-1 work is a real SMTP
   sender and the live-server `curl` walkthrough.
+
+- 2026-06-10: **EP-4 (operational CLI + key rotation) is Complete.** The `shomei-admin` binary
+  (a second executable in `shomei-server`, per the default decision — no new `mori.dhall`
+  package) provides `migrate`, `keys generate/activate/retire/revoke/list`, and `users create`.
+  The signing-key rotation lifecycle (`pending → active → retired → revoked`) is proven with a
+  JWKS-overlap integration test: a token signed by an auto-retired key still verifies during the
+  grace window and stops verifying once revoked. **Hard dependency for EP-5 is now satisfied** —
+  EP-5's container entrypoint can run `shomei-admin migrate` and ensure an active key via
+  `shomei-admin keys generate`/`activate`. **Handoff to EP-5 (IP-6):** `Shomei.Admin.Env.loadAdminEnv`
+  is the single env-only config entry point EP-5's typed Dhall/env loader should supersede in
+  place; `optparse-applicative` was added (resolves from Hackage, no override needed).
 
 - 2026-06-10: **EP-3 (observability) is Complete.** The server now emits one structured JSON
   log line per request with a correlation id (generated or echoed from `X-Request-Id`, returned

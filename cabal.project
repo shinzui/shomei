@@ -45,3 +45,10 @@ source-repository-package
   type: git
   location: https://github.com/sumo/hs-jose.git
   tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
+
+-- ============================================================
+-- MasterPlan 2 / EP-4 (operational CLI): optparse-applicative for shomei-admin.
+-- On Hackage and on the GHC 9.12.4 package set; no source-repository-package needed.
+-- If a version bound blocks the solve, add an `allow-newer: optparse-applicative:base`
+-- entry here and record it in EP-4's Surprises & Discoveries.
+-- ============================================================

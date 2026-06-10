@@ -79,6 +79,68 @@ executable shomei-server
     , base
     , shomei-server
 
+-- EP-4: the operational CLI. A second executable in this package (MasterPlan 2 default;
+-- avoids registering a new mori.dhall package). It reuses the same pool/config/key/interpreter
+-- assembly the server uses, but needs no servant/wai.
+executable shomei-admin
+  import:         warnings, shared
+  hs-source-dirs: app
+  main-is:        Admin.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  other-modules:
+    Shomei.Admin.Env
+    Shomei.Admin.Keys
+    Shomei.Admin.Users
+
+  build-depends:
+    , base                  >=4.18 && <5
+    , bytestring
+    , containers
+    , contravariant-extras
+    , effectful
+    , effectful-core
+    , hasql
+    , hasql-pool
+    , optparse-applicative
+    , shomei-core
+    , shomei-jwt
+    , shomei-migrations
+    , shomei-postgres
+    , text
+    , time
+
+test-suite shomei-admin-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: app test
+  main-is:        Admin/Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  other-modules:
+    Shomei.Admin.Env
+    Shomei.Admin.Keys
+    Shomei.Admin.Users
+
+  build-depends:
+    , base
+    , bytestring
+    , containers
+    , contravariant-extras
+    , effectful
+    , effectful-core
+    , hasql
+    , hasql-pool
+    , jose
+    , optparse-applicative
+    , shomei-core
+    , shomei-jwt
+    , shomei-migrations
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , tasty
+    , tasty-hunit
+    , text
+    , time
+
 test-suite shomei-server-test
   import:         warnings, shared
   type:           exitcode-stdio-1.0

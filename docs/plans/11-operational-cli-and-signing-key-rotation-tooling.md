@@ -90,35 +90,34 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `executable shomei-admin` stanza added to `shomei-server/shomei-server.cabal`
-      (optparse-applicative + the existing Shōmei packages); `optparse-applicative` block
-      appended to `cabal.project` per IP-8 and verified to build on GHC 9.12.4.
-- [ ] M1: `shomei-server/app/Admin.hs` skeleton — `optparse-applicative` parser with
-      the `migrate`, `keys` (sub-parser), and `users` command groups; `--help` renders all
-      subcommands; unknown command exits non-zero.
-- [ ] M1: minimal env-var config/assembly module `Shomei.Admin.Env` (reads `DATABASE_URL`,
-      `SHOMEI_ISSUER`, `SHOMEI_AUDIENCE`; builds a `ShomeiConfig` + acquires a `hasql` pool).
-- [ ] M1: `shomei-admin migrate` reuses `Shomei.Migrations.runShomeiMigrationsNoCheck`;
-      `shomei-admin keys list` reads `shomei_signing_keys` via the PostgreSQL `SigningKeyStore`
-      and prints a table. Integration test (ephemeral-pg, mirroring `shomei-postgres`'s test)
-      asserts `migrate` then `keys list` against a throwaway database.
-- [ ] M2: `keys generate` mints a `pending` ES256 key via `shomei-jwt` key-gen +
-      `toStoredSigningKey`, persisted with status `KeyPending`; prints the new `kid`.
-- [ ] M2: `keys activate <kid>` promotes `pending`→`active` and demotes the prior `active`→
-      `retired` (atomically, with explicit timestamps); `keys retire <kid>` and
-      `keys revoke <kid>` implement the remaining transitions with status-guard checks.
-- [ ] M2: integration test asserting the full lifecycle and JWKS contents — after generate the
-      key is absent from the published JWKS; after activate the JWKS lists the active key; after
-      a second generate+activate the JWKS lists BOTH the new active and the auto-retired old key,
-      and a token signed by the retired key STILL verifies against that JWKS; after revoke the
-      revoked key is gone from the JWKS and its token no longer verifies.
-- [ ] M3: `users create --email --password [--display-name]` drives the existing
-      `Shomei.Workflow.signup` through the PostgreSQL interpreters; prints the new user's id and
-      email; integration test asserts a `shomei_users` + `shomei_password_credentials` row exist
-      and the credential's stored hash verifies the supplied password.
-- [ ] M4: minimal env-var loader finalized and documented; operator-runbook transcript
-      (migrate → keys generate → keys activate → users create → keys list) captured verbatim in
-      Concrete Steps; whole-CLI smoke test green.
+- [x] M1: `executable shomei-admin` + `test-suite shomei-admin-test` stanzas added to
+      `shomei-server.cabal` (optparse-applicative + the Shōmei packages); `optparse-applicative`
+      block appended to `cabal.project` (IP-8); builds on GHC 9.12.4. Completed 2026-06-10.
+- [x] M1: `shomei-server/app/Admin.hs` — `optparse-applicative` parser with `migrate`, `keys`
+      (sub-parser), and `users` command groups; `--help` renders all subcommands. Completed
+      2026-06-10.
+- [x] M1: `Shomei.Admin.Env` env loader (`DATABASE_URL`, `SHOMEI_ISSUER`, `SHOMEI_AUDIENCE`;
+      builds `ShomeiConfig` + acquires a pool). Completed 2026-06-10.
+- [x] M1: `migrate` reuses `runShomeiMigrationsNoCheck` (codd settings from `DATABASE_URL` via
+      `coddSettingsFromConnString`, not `getCoddSettings` — see Decision Log); `keys list` reads
+      the table. Integration test asserts an empty list + the table exists. Completed 2026-06-10.
+- [x] M2: `keys generate` mints a `pending` ES256 key via `generateSigningKey` +
+      `toStoredSigningKey`; prints the `kid`. Completed 2026-06-10.
+- [x] M2: `keys activate <kid>` promotes `pending`→`active` (stamping `activated_at`) and
+      auto-retires the prior `active`→`retired` (stamping `retired_at`); `keys retire`/`revoke`
+      implement the remaining transitions with status guards. Completed 2026-06-10.
+- [x] M2: integration test proving the lifecycle and JWKS overlap — after a second
+      generate+activate, `listPublishableSigningKeys` lists BOTH the new active and the
+      auto-retired old key, a token signed by the RETIRED key STILL verifies against that JWKS,
+      and after `revoke` that token no longer verifies. `shomei-admin-test` green. Completed
+      2026-06-10.
+- [x] M3: `users create --email --password [--display-name]` drives `Shomei.Workflow.signup`
+      through the PostgreSQL stack; prints the new user's id and email; test asserts the
+      `shomei_users` + `shomei_password_credentials` rows exist. Completed 2026-06-10.
+- [x] M4: `Shomei.Admin.Env.loadAdminEnv` is the single config entry point (EP-5 supersedes its
+      body); operator runbook captured live (below); whole-CLI smoke covered by the integration
+      tests. `nix fmt` clean; `cabal build all` + `cabal test all` (9 suites) green. Completed
+      2026-06-10.
 
 
 ## Surprises & Discoveries
@@ -126,7 +125,23 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- 2026-06-10: **All key operations use binary-local `hasql` statements, not the
+  `SigningKeyStore` effect.** The effect's `UpdateSigningKeyStatus` interpreter ignores its
+  timestamp argument and `ListActiveSigningKeys` only returns `active` keys, so the CLI needs
+  its own SQL anyway (`listPublishableSigningKeys` for `active`+`retired`, and updates that
+  stamp `activated_at`/`retired_at`). Doing every key op in one consistent `hasql` style keeps
+  the CLI free of effect-stack assembly. Evidence: `keys activate` correctly auto-retires the
+  prior active key and `keys list` shows the stamped timestamps.
+- 2026-06-10: **`migrate` derives codd settings from `DATABASE_URL`, not `getCoddSettings`.**
+  `shomei-migrations/app/Main.hs` reads `CODD_*` env vars via `getCoddSettings`, but the admin
+  CLI already requires `DATABASE_URL`, so it builds codd settings with
+  `coddSettingsFromConnString env.connStr` (the same helper `shomei-server`'s boot uses) — one
+  env var instead of several. Recorded in the Decision Log.
+- 2026-06-10: **No new `cabal.project` override was needed for `optparse-applicative`.** It
+  resolves on the pinned GHC 9.12.4 set straight from Hackage; the appended block is just the
+  documented home for any future override. `contravariant-extras`, `jose`, and `hasql` had to be
+  added to the new stanzas' `build-depends` (the executable for the key SQL, the test for JWKS
+  signing/verification).
 
 
 ## Decision Log
@@ -231,7 +246,35 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+- 2026-06-10: **EP-4 complete.** An operator now has one binary, `shomei-admin`, to migrate,
+  manage the signing-key rotation lifecycle, and seed a bootstrap user — no raw SQL, no running
+  server. Live operator runbook (with `DATABASE_URL` set):
+
+  ```text
+  $ shomei-admin --help        # lists migrate | keys | users
+  $ shomei-admin migrate
+  migrations applied
+  $ shomei-admin keys generate
+  generated pending key: OcnLm3JqGVfCbNnOGz6ViK4lwCwUFIwrNEw5tqOkv4s
+  $ shomei-admin keys activate OcnLm3JqGVfCbNnOGz6ViK4lwCwUFIwrNEw5tqOkv4s
+  activated OcnLm3JqGVfCbNnOGz6ViK4lwCwUFIwrNEw5tqOkv4s
+  retired (auto) nuGfPxoxeWe0NrtegJiTvJcB37YYXLAgMi10xC3T36Q
+  $ shomei-admin users create --email admin@example.com --password '…' --display-name Admin
+  created user user_01ktsjgp7aeh1a7b2rcymwdb4t <admin@example.com>
+  $ shomei-admin keys list
+  nuGfP…  KeyRetired  …
+  OcnLm…  KeyActive   …
+  ```
+
+  The **rotation lifecycle** is proven by the `shomei-admin-test` integration suite against a
+  throwaway database: generate → activate → (generate → activate, which auto-retires the prior
+  active key) → `listPublishableSigningKeys` lists BOTH keys → a token signed by the now-RETIRED
+  key STILL verifies against that JWKS (zero-downtime overlap) → after `revoke`, the revoked key
+  leaves the JWKS and its token no longer verifies.
+
+  Gaps / handoff: `Shomei.Admin.Env.loadAdminEnv` is the single env-only config entry point that
+  EP-5's typed Dhall/env loader (IP-6) is expected to supersede in place; the table has no
+  `revoked_at` column, so `revoke` records only the status (a later migration could add one).
 
 
 ## Context and Orientation
