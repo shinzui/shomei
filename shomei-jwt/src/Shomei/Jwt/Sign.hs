@@ -23,8 +23,8 @@ import Shomei.Config (ShomeiConfig)
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Claims qualified as Domain
 import Shomei.Domain.Token (AccessToken (AccessToken))
-import Shomei.Id (idText)
 import Shomei.Effect.TokenSigner (TokenSigner (SignAccessToken))
+import Shomei.Id (idText)
 
 import Control.Exception (throwIO)
 import Data.Aeson qualified as Aeson

@@ -17,8 +17,6 @@ import Shomei.Domain.SigningKey (
     SigningKeyStatus (KeyRetired, KeyRevoked),
     StoredSigningKey (..),
  )
-import Shomei.Jwt.Jwks (jwksDocument)
-import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigningKey)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.SigningKeyStore (
     SigningKeyStore,
@@ -26,6 +24,8 @@ import Shomei.Effect.SigningKeyStore (
     listActiveSigningKeys,
     updateSigningKeyStatus,
  )
+import Shomei.Jwt.Jwks (jwksDocument)
+import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigningKey)
 
 import Data.ByteString.Lazy qualified as BSL
 import Data.Either (rights)

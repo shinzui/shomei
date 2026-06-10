@@ -24,6 +24,7 @@ import Shomei.Domain.RefreshToken (
     RefreshTokenHash (..),
     RefreshTokenStatus (RefreshTokenActive),
  )
+import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (
     RefreshTokenId,
@@ -34,7 +35,6 @@ import Shomei.Id (
     sessionIdToUUID,
     userIdToUUID,
  )
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Postgres.Codec (refreshTokenStatusFromText, refreshTokenStatusToText, tshow)
 import Shomei.Postgres.Database (Database, runSession)
 

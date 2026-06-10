@@ -23,9 +23,9 @@ import Shomei.Config (ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Claims qualified as Domain
 import Shomei.Domain.Token (AccessToken (AccessToken))
+import Shomei.Effect.TokenVerifier (TokenVerifier (VerifyAccessToken))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (parseId)
-import Shomei.Effect.TokenVerifier (TokenVerifier (VerifyAccessToken))
 
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseEither)

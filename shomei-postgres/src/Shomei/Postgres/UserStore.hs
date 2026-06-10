@@ -18,9 +18,9 @@ import Effectful.Error.Static (Error, throwError)
 
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (UserActive))
+import Shomei.Effect.UserStore (UserStore (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId, genUserId, userIdFromUUID, userIdToUUID)
-import Shomei.Effect.UserStore (UserStore (..))
 import Shomei.Postgres.Codec (emailFromDb, tshow, userStatusFromText, userStatusToText)
 import Shomei.Postgres.Database (Database, runSession)
 

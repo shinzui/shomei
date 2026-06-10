@@ -1,7 +1,9 @@
 cabal-version: 3.0
 name:          microservice-auth-stack
 version:       0.1.0.0
-synopsis:      Demo: downstream service verifying Shōmei JWTs locally via fetched JWKS
+synopsis:
+  Demo: downstream service verifying Shōmei JWTs locally via fetched JWKS
+
 license:       MIT
 author:        Nadeem Bitar
 maintainer:    nadeem@gmail.com

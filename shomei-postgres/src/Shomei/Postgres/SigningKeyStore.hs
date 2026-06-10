@@ -18,8 +18,8 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 
 import Shomei.Domain.SigningKey (StoredSigningKey (..))
-import Shomei.Error (AuthError (..))
 import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
+import Shomei.Error (AuthError (..))
 import Shomei.Postgres.Codec (signingKeyStatusFromText, signingKeyStatusToText, tshow)
 import Shomei.Postgres.Database (Database, runSession)
 

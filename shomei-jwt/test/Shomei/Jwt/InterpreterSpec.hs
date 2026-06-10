@@ -9,11 +9,11 @@ import Effectful (runEff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
+import Shomei.Effect.TokenSigner (signAccessToken)
+import Shomei.Effect.TokenVerifier (verifyAccessToken)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
-import Shomei.Effect.TokenSigner (signAccessToken)
-import Shomei.Effect.TokenVerifier (verifyAccessToken)
 
 import Shomei.Jwt.TestSupport (coreFields, mkClaims, publicJwks, testConfig)
 

@@ -36,8 +36,8 @@ library
     , base            >=4.18 && <5
     , servant-server
     , shomei-core
-    , shomei-server
     , shomei-servant
+    , shomei-server
     , text
     , wai
 

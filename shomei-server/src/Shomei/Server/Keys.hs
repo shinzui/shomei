@@ -23,9 +23,9 @@ import "hasql-pool" Hasql.Pool (Pool)
 import "jose" Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Domain.SigningKey (StoredSigningKey)
-import Shomei.Error (AuthError)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, insertSigningKey, listActiveSigningKeys)
+import Shomei.Error (AuthError)
 
 import Shomei.Jwt.Jwks (KeySet (..), keySetPublicJwks)
 import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigningKey)

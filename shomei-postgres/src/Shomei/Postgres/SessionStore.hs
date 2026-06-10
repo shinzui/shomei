@@ -17,9 +17,9 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (SessionActive))
+import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, genSessionId, sessionIdFromUUID, sessionIdToUUID, userIdFromUUID, userIdToUUID)
-import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Postgres.Codec (sessionStatusFromText, sessionStatusToText, tshow)
 import Shomei.Postgres.Database (Database, runSession)
 
