@@ -7,11 +7,11 @@ module Shomei.Postgres.SigningKeyStore (
 
 import Shomei.Prelude
 
-import "contravariant-extras" Contravariant.Extras (contrazip2, contrazip8)
-import "hasql" Hasql.Decoders qualified as D
-import "hasql" Hasql.Encoders qualified as E
-import "hasql" Hasql.Session qualified as Session
-import "hasql" Hasql.Statement (Statement, preparable)
+import Contravariant.Extras (contrazip2, contrazip8)
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+import Hasql.Session qualified as Session
+import Hasql.Statement (Statement, preparable)
 
 import Effectful (Eff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)

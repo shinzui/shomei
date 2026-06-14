@@ -25,10 +25,10 @@ import Data.Aeson (FromJSON, eitherDecodeStrict')
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
-import "base" System.Environment (lookupEnv)
-import "base" System.IO (hPutStrLn, stderr)
-import "base" Text.Read (readMaybe)
-import "process" System.Process (readProcess)
+import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
+import Text.Read (readMaybe)
+import System.Process (readProcess)
 
 import Shomei.Config (
     NotifierConfig (..),

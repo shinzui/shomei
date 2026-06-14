@@ -21,10 +21,10 @@ module Shomei.Server.App (
 
 import Shomei.Prelude
 
-import "effectful-core" Effectful (Eff, IOE, runEff)
-import "effectful-core" Effectful.Error.Static (Error, runErrorNoCallStack)
-import "hasql-pool" Hasql.Pool (Pool)
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet)
+import Effectful (Eff, IOE, runEff)
+import Effectful.Error.Static (Error, runErrorNoCallStack)
+import Hasql.Pool (Pool)
+import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Config (ShomeiConfig)
 import Shomei.Error (AuthError)

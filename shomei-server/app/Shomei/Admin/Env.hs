@@ -12,8 +12,8 @@ module Shomei.Admin.Env (
 
 import Data.Text (Text)
 import Data.Text qualified as Text
-import "base" System.Environment (lookupEnv)
-import "hasql-pool" Hasql.Pool (Pool)
+import System.Environment (lookupEnv)
+import Hasql.Pool (Pool)
 
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))

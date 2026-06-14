@@ -22,18 +22,18 @@ module Downstream.Service (
 import Shomei.Prelude hiding (Context)
 
 import Data.Time (NominalDiffTime, diffUTCTime)
-import "base" Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
 
-import "aeson" Data.Aeson (eitherDecode)
-import "http-client" Network.HTTP.Client qualified as HTTP
-import "jose" Crypto.JOSE.JWK (JWKSet)
-import "text" Data.Text qualified as Text
-import "text" Data.Text.Encoding qualified as Text
+import Data.Aeson (eitherDecode)
+import Network.HTTP.Client qualified as HTTP
+import Crypto.JOSE.JWK (JWKSet)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 
-import "wai" Network.Wai (Application, Request, requestHeaders)
+import Network.Wai (Application, Request, requestHeaders)
 
-import "servant" Servant.API.Experimental.Auth (AuthProtect)
-import "servant-server" Servant (
+import Servant.API.Experimental.Auth (AuthProtect)
+import Servant (
     Context (EmptyContext, (:.)),
     Get,
     Handler,
@@ -44,7 +44,7 @@ import "servant-server" Servant (
     throwError,
     type (:>),
  )
-import "servant-server" Servant.Server.Experimental.Auth (
+import Servant.Server.Experimental.Auth (
     AuthHandler,
     AuthServerData,
     mkAuthHandler,

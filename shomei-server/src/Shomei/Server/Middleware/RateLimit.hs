@@ -25,9 +25,9 @@ import Data.ByteString.Char8 qualified as Char8
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import "http-types" Network.HTTP.Types (methodPost, status429)
-import "network" Network.Socket (SockAddr (..))
-import "wai" Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod, responseLBS)
+import Network.HTTP.Types (methodPost, status429)
+import Network.Socket (SockAddr (..))
+import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod, responseLBS)
 
 import Shomei.Config (RateLimitConfig (..))
 

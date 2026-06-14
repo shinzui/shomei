@@ -16,8 +16,8 @@ module Shomei.Servant.API (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson (Value)
-import "servant" Servant.API
+import Data.Aeson (Value)
+import Servant.API
 
 import Shomei.Domain.User (User)
 import Shomei.Servant.Auth (Authenticated)

@@ -87,7 +87,7 @@ import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet)
+import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler)

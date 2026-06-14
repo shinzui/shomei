@@ -11,11 +11,11 @@ Environment:
 -}
 module Main (main) where
 
-import "base" System.Environment (getEnv, lookupEnv)
-import "base" Text.Read (readMaybe)
-import "http-client" Network.HTTP.Client qualified as HTTP
-import "text" Data.Text qualified as Text
-import "warp" Network.Wai.Handler.Warp qualified as Warp
+import System.Environment (getEnv, lookupEnv)
+import Text.Read (readMaybe)
+import Network.HTTP.Client qualified as HTTP
+import Data.Text qualified as Text
+import Network.Wai.Handler.Warp qualified as Warp
 
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))

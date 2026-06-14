@@ -13,12 +13,12 @@ module Shomei.Servant.Handlers (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson (Value, encode)
-import "network" Network.Socket (SockAddr (..))
-import "text" Data.Text qualified as Text
+import Data.Aeson (Value, encode)
+import Network.Socket (SockAddr (..))
+import Data.Text qualified as Text
 
-import "servant-server" Servant (Handler, NoContent (..), ServerError (..), err404, err503, errBody, throwError)
-import "servant-server" Servant.Server.Generic (AsServerT)
+import Servant (Handler, NoContent (..), ServerError (..), err404, err503, errBody, throwError)
+import Servant.Server.Generic (AsServerT)
 
 import Shomei.Domain.Command (
     ClientContext (..),

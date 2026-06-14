@@ -22,23 +22,23 @@ module Shomei.Server.Boot (
 import Shomei.Prelude hiding (Context)
 
 import Data.Time (secondsToDiffTime)
-import "base" System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
-import "hasql-pool" Hasql.Pool qualified as Pool
-import "text" Data.Text qualified as Text
-import "unix" System.Posix.Signals (installHandler, sigINT, sigTERM)
-import "unix" System.Posix.Signals qualified as Signals
+import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
+import Hasql.Pool qualified as Pool
+import Data.Text qualified as Text
+import System.Posix.Signals (installHandler, sigINT, sigTERM)
+import System.Posix.Signals qualified as Signals
 
-import "aeson" Data.Aeson (Value (Object), decode)
-import "aeson" Data.Aeson.KeyMap qualified as KM
-import "effectful-core" Effectful (Eff, inject)
-import "wai" Network.Wai (Application, Request)
-import "warp" Network.Wai.Handler.Warp qualified as Warp
+import Data.Aeson (Value (Object), decode)
+import Data.Aeson.KeyMap qualified as KM
+import Effectful (Eff, inject)
+import Network.Wai (Application, Request)
+import Network.Wai.Handler.Warp qualified as Warp
 
-import "servant-server" Servant (
+import Servant (
     Context (EmptyContext, (:.)),
     serveWithContext,
  )
-import "servant-server" Servant.Server.Experimental.Auth (AuthHandler)
+import Servant.Server.Experimental.Auth (AuthHandler)
 
 import Shomei.Jwt.Jwks (jwksDocument)
 import Shomei.Jwt.Verify (verifyToken)

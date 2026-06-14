@@ -37,8 +37,8 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import "http-types" Network.HTTP.Types (Status (statusCode), methodGet, status200)
-import "wai" Network.Wai (
+import Network.HTTP.Types (Status (statusCode), methodGet, status200)
+import Network.Wai (
     Middleware,
     Request,
     rawPathInfo,

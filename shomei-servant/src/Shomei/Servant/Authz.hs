@@ -19,11 +19,11 @@ module Shomei.Servant.Authz (
     requireScope,
 ) where
 
-import "base" Data.Kind (Type)
-import "base" GHC.TypeLits (Symbol)
-import "containers" Data.Set qualified as Set
+import Data.Kind (Type)
+import GHC.TypeLits (Symbol)
+import Data.Set qualified as Set
 
-import "servant-server" Servant (Handler, err403, errBody, throwError)
+import Servant (Handler, err403, errBody, throwError)
 
 import Shomei.Domain.Claims (Role, Scope)
 import Shomei.Servant.Auth (AuthUser (..))

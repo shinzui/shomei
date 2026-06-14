@@ -23,10 +23,10 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import "crypton" Crypto.Hash (Digest)
-import "crypton" Crypto.Hash.Algorithms (SHA256)
-import "jose" Crypto.JOSE.JWA.JWK (Crv (P_256))
-import "jose" Crypto.JOSE.JWK (
+import Crypto.Hash (Digest)
+import Crypto.Hash.Algorithms (SHA256)
+import Crypto.JOSE.JWA.JWK (Crv (P_256))
+import Crypto.JOSE.JWK (
     JWK,
     KeyMaterialGenParam (ECGenParam),
     KeyUse (Sig),
@@ -36,7 +36,7 @@ import "jose" Crypto.JOSE.JWK (
     jwkUse,
     thumbprint,
  )
-import "ram" Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertToBase)
+import Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertToBase)
 
 {- | Generate a fresh ES256 (P-256) signing key, marked for signature use, with
 its @kid@ set to its RFC 7638 thumbprint (Base64URL, unpadded).

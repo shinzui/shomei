@@ -29,9 +29,9 @@ import Data.UUID.V4 qualified as UUIDv4
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.IO (stdout)
-import "http-types" Network.HTTP.Types (Status (statusCode))
-import "network" Network.Socket (SockAddr (..), hostAddressToTuple)
-import "wai" Network.Wai (
+import Network.HTTP.Types (Status (statusCode))
+import Network.Socket (SockAddr (..), hostAddressToTuple)
+import Network.Wai (
     Middleware,
     Request,
     mapResponseHeaders,

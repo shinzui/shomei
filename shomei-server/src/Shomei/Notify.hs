@@ -7,10 +7,10 @@ module Shomei.Notify (
 
 import Shomei.Prelude
 
-import "base" System.IO (hPutStrLn, stderr)
-import "effectful-core" Effectful (Eff, IOE, (:>))
-import "effectful-core" Effectful.Dispatch.Dynamic (interpret_)
-import "text" Data.Text qualified as Text
+import System.IO (hPutStrLn, stderr)
+import Effectful (Eff, IOE, (:>))
+import Effectful.Dispatch.Dynamic (interpret_)
+import Data.Text qualified as Text
 
 import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig (..))
 import Shomei.Domain.Email (emailText)

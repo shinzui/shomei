@@ -29,7 +29,6 @@ common shared
     OverloadedLabels
     OverloadedRecordDot
     OverloadedStrings
-    PackageImports
     QualifiedDo
     TemplateHaskell
     TypeFamilies

@@ -11,9 +11,9 @@ module Shomei.Servant.Error (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson qualified as Aeson
+import Data.Aeson qualified as Aeson
 
-import "servant-server" Servant (
+import Servant (
     ServerError (..),
     err400,
     err401,

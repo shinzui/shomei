@@ -29,8 +29,8 @@ module Shomei.Servant.DTO (
 
 import Shomei.Prelude
 
-import "text" Data.Text qualified as Text
-import "time" Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Text qualified as Text
+import Data.Time.Format.ISO8601 (iso8601Show)
 
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.RefreshToken (RefreshToken (..))

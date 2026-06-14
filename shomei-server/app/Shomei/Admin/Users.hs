@@ -14,7 +14,7 @@ import System.IO (hPutStrLn, stderr)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
-import "hasql-pool" Hasql.Pool (Pool)
+import Hasql.Pool (Pool)
 
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (emailText, mkEmail)

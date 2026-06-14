@@ -8,11 +8,11 @@ module Shomei.Postgres.RefreshTokenStore (
 import Shomei.Prelude
 
 import Data.UUID (UUID)
-import "contravariant-extras" Contravariant.Extras (contrazip2, contrazip9)
-import "hasql" Hasql.Decoders qualified as D
-import "hasql" Hasql.Encoders qualified as E
-import "hasql" Hasql.Session qualified as Session
-import "hasql" Hasql.Statement (Statement, preparable)
+import Contravariant.Extras (contrazip2, contrazip9)
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+import Hasql.Session qualified as Session
+import Hasql.Statement (Statement, preparable)
 
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)

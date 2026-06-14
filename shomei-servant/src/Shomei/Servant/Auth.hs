@@ -25,20 +25,20 @@ module Shomei.Servant.Auth (
 import Shomei.Prelude
 
 import Data.Set (Set)
-import "bytestring" Data.ByteString qualified as BS
-import "text" Data.Text qualified as Text
-import "text" Data.Text.Encoding qualified as Text
+import Data.ByteString qualified as BS
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 
 import Shomei.Domain.Claims (AuthClaims (..), Role, Scope)
 import Shomei.Error (TokenError)
 import Shomei.Id (SessionId, UserId)
 
-import "cookie" Web.Cookie (parseCookies)
-import "wai" Network.Wai (Request, requestHeaders)
+import Web.Cookie (parseCookies)
+import Network.Wai (Request, requestHeaders)
 
-import "servant" Servant.API.Experimental.Auth (AuthProtect)
-import "servant-server" Servant (Handler, err401, errBody, throwError)
-import "servant-server" Servant.Server.Experimental.Auth (
+import Servant.API.Experimental.Auth (AuthProtect)
+import Servant (Handler, err401, errBody, throwError)
+import Servant.Server.Experimental.Auth (
     AuthHandler,
     AuthServerData,
     mkAuthHandler,

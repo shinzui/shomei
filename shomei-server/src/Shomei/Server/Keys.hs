@@ -15,12 +15,12 @@ module Shomei.Server.Keys (
 
 import Shomei.Prelude
 
-import "text" Data.Text qualified as Text
+import Data.Text qualified as Text
 
-import "effectful-core" Effectful (Eff, IOE, runEff, (:>))
-import "effectful-core" Effectful.Error.Static (runErrorNoCallStack)
-import "hasql-pool" Hasql.Pool (Pool)
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet)
+import Effectful (Eff, IOE, runEff, (:>))
+import Effectful.Error.Static (runErrorNoCallStack)
+import Hasql.Pool (Pool)
+import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Domain.SigningKey (StoredSigningKey)
 import Shomei.Effect.Clock (Clock, now)

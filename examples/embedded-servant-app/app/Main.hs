@@ -3,8 +3,8 @@ host 'AppAPI' (mounted auth routes + a guarded @\/projects@).
 -}
 module Main (main) where
 
-import "base" System.IO (hPutStrLn, stderr)
-import "warp" Network.Wai.Handler.Warp qualified as Warp
+import System.IO (hPutStrLn, stderr)
+import Network.Wai.Handler.Warp qualified as Warp
 
 import Embedded.App (embeddedApplication)
 import Shomei.Server.Boot (buildEnv)

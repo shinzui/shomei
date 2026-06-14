@@ -24,7 +24,6 @@ common shared
     MultilineStrings
     OverloadedRecordDot
     OverloadedStrings
-    PackageImports
     TypeApplications
     TypeFamilies
     TypeOperators

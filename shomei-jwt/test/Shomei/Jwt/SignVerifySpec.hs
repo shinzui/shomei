@@ -10,7 +10,7 @@ import Data.Time (addUTCTime, getCurrentTime)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertFailure, testCase, (@?=))
 
-import "jose" Crypto.JOSE.JWK (JWK)
+import Crypto.JOSE.JWK (JWK)
 
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims, Issuer (..))

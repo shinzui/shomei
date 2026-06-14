@@ -14,7 +14,7 @@ import Shomei.Prelude
 
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BSL
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet (JWKSet), asPublicKey)
+import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet), asPublicKey)
 
 -- | A live set of signing keys: the current active key plus any retired-but-valid keys.
 data KeySet = KeySet

@@ -18,7 +18,7 @@ import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Id (genSessionId, genUserId, idText)
 
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet)
+import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Jwt.Jwks (KeySet (..), keySetPublicJwks)
 

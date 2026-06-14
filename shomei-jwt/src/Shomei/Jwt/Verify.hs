@@ -38,10 +38,10 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
-import "jose" Crypto.JOSE.Compact (decodeCompact)
-import "jose" Crypto.JOSE.Error (Error (..), runJOSE)
-import "jose" Crypto.JOSE.JWK (JWKSet)
-import "jose" Crypto.JWT (
+import Crypto.JOSE.Compact (decodeCompact)
+import Crypto.JOSE.Error (Error (..), runJOSE)
+import Crypto.JOSE.JWK (JWKSet)
+import Crypto.JWT (
     Audience (Audience),
     ClaimsSet,
     JWTError (..),

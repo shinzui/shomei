@@ -12,14 +12,14 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (addUTCTime, getCurrentTime)
 
-import "hasql" Hasql.Decoders qualified as D
-import "hasql" Hasql.Encoders qualified as E
-import "hasql" Hasql.Session qualified as Session
-import "hasql" Hasql.Statement (preparable)
-import "hasql-pool" Hasql.Pool (Pool)
-import "hasql-pool" Hasql.Pool qualified as Pool
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+import Hasql.Session qualified as Session
+import Hasql.Statement (preparable)
+import Hasql.Pool (Pool)
+import Hasql.Pool qualified as Pool
 
-import "jose" Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
+import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
 
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))

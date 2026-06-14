@@ -19,11 +19,11 @@ module Shomei.Servant.Seam (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson (Value)
-import "base" Control.Exception (SomeException, try)
-import "effectful-core" Effectful (Eff, IOE)
+import Data.Aeson (Value)
+import Control.Exception (SomeException, try)
+import Effectful (Eff, IOE)
 
-import "servant-server" Servant (Handler, throwError)
+import Servant (Handler, throwError)
 
 import Shomei.Config (ShomeiConfig)
 import Shomei.Domain.Claims (AuthClaims)

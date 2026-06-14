@@ -30,7 +30,7 @@ import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigning
 import Data.ByteString.Lazy qualified as BSL
 import Data.Either (rights)
 import Effectful (Eff, IOE, (:>))
-import "jose" Crypto.JOSE.JWK (JWK)
+import Crypto.JOSE.JWK (JWK)
 
 {- | Generate a new active key and retire whatever was active. Returns the new
 live 'JWK' (so the caller can sign with it immediately).

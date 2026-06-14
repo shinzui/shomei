@@ -18,12 +18,12 @@ import Shomei.Prelude
 import Data.ByteString (ByteString)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
-import "crypton" Crypto.Error (CryptoFailable (..))
-import "crypton" Crypto.Hash (SHA256 (..), hashWith)
-import "crypton" Crypto.KDF.Argon2 qualified as Argon2
-import "crypton" Crypto.Random (getRandomBytes)
-import "ram" Data.ByteArray (constEq, convert)
-import "ram" Data.ByteArray.Encoding (Base (Base16, Base64, Base64URLUnpadded), convertFromBase, convertToBase)
+import Crypto.Error (CryptoFailable (..))
+import Crypto.Hash (SHA256 (..), hashWith)
+import Crypto.KDF.Argon2 qualified as Argon2
+import Crypto.Random (getRandomBytes)
+import Data.ByteArray (constEq, convert)
+import Data.ByteArray.Encoding (Base (Base16, Base64, Base64URLUnpadded), convertFromBase, convertToBase)
 
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)

@@ -30,11 +30,11 @@ module Shomei.Client (
 
 import Shomei.Prelude
 
-import "http-client" Network.HTTP.Client qualified as HTTP
-import "http-client-tls" Network.HTTP.Client.TLS qualified as TLS
+import Network.HTTP.Client qualified as HTTP
+import Network.HTTP.Client.TLS qualified as TLS
 
-import "servant" Servant.API.Experimental.Auth (AuthProtect)
-import "servant-client" Servant.Client (
+import Servant.API.Experimental.Auth (AuthProtect)
+import Servant.Client (
     BaseUrl (..),
     ClientEnv,
     ClientError,
@@ -44,14 +44,14 @@ import "servant-client" Servant.Client (
     parseBaseUrl,
     runClientM,
  )
-import "servant-client-core" Servant.Client.Core (
+import Servant.Client.Core (
     AuthClientData,
     AuthenticatedRequest,
     addHeader,
     mkAuthenticatedRequest,
  )
-import "servant-client-core" Servant.Client.Core.HasClient (AsClientT)
-import "servant-client-core" Servant.Client.Generic (genericClient)
+import Servant.Client.Core.HasClient (AsClientT)
+import Servant.Client.Generic (genericClient)
 
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.API qualified as API

@@ -15,10 +15,10 @@ module Embedded.App (
 
 import Shomei.Prelude
 
-import "aeson" Data.Aeson (FromJSON, ToJSON)
-import "wai" Network.Wai (Application)
+import Data.Aeson (FromJSON, ToJSON)
+import Network.Wai (Application)
 
-import "servant-server" Servant (
+import Servant (
     Get,
     JSON,
     NamedRoutes,
@@ -27,7 +27,7 @@ import "servant-server" Servant (
     type (:<|>) ((:<|>)),
     type (:>),
  )
-import "servant-server" Servant.Server (Handler)
+import Servant.Server (Handler)
 
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated)
