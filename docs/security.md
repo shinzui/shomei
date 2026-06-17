@@ -90,6 +90,34 @@ so a stolen session is immediately useless after the legitimate owner recovers t
   exactly as before. The password remains the first factor, so the existing password-reset flow
   still recovers an account whose passkey was lost. See [passkeys.md](passkeys.md).
 
+## Impersonation / delegated tokens
+
+Shōmei can mint a **delegated token** so an authorized operator acts on behalf of a customer
+without shedding their own identity.
+
+- **Two identities, always.** The delegated access token carries the customer as `sub` and the
+  real operator as `act` (RFC 8693 token-exchange convention). Every downstream service reads both
+  out of the verified token to drive write-attribution, a UI banner, and business-action gating.
+  The `act` claim is present **only** on delegated tokens; ordinary login tokens never carry it.
+- **Short-lived, no refresh.** A delegated session is a brand-new, separately-revocable row with a
+  short TTL (`impersonationConfig.impersonationSessionTTL`, default 30 minutes) and **no refresh
+  token**, so it cannot be silently renewed and dies at its TTL. The customer's own session is
+  never reused or copied.
+- **Scope + freshness gate.** Starting impersonation requires the `impersonate:user` scope and a
+  recently-issued caller token (`impersonationConfig.actorFreshnessWindow`, default 5 minutes).
+  *(Recent authentication is enforced as a token-freshness window, not yet as an interactive MFA
+  re-prompt — a future plan can add a step-up ceremony and require it here.)*
+- **Credential endpoints refuse delegated tokens.** Password change and passkey
+  enrollment/removal return `403 impersonation_action_blocked` for any delegated token: an operator
+  can look but cannot change the customer's credentials. Each blocked attempt is audited.
+- **Everything is audited with both ids.** `impersonation_started` (with reason, ticket id, and
+  client IP), `impersonation_action_blocked`, and `impersonation_stopped` are written to
+  `shomei_auth_events` carrying both the actor and subject user ids.
+- **Out of scope, by design.** Who-may-impersonate-whom policy (e.g. "no impersonating another
+  admin"), the support console UI, ticket-workflow validation, and blocking of *business* actions
+  live in the services that embed Shōmei. Only the token mint/verify layer can guarantee the
+  two-identity invariant and refuse its own credential changes, so that is exactly what lives here.
+
 ## Logging hygiene
 
 The structured request logger reads only the method, path, response status, duration, and peer

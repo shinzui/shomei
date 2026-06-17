@@ -83,6 +83,34 @@ Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser fee
 ### `POST /auth/login/passkey/complete`
 Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion.
 
+## Impersonation / delegated tokens
+
+A *delegated token* lets an authorized internal operator act **on behalf of** a customer while
+keeping their own identity attached. The minted access token carries **two identities**: `sub`
+is the customer being acted upon and `act` is the real operator (mirroring RFC 8693). The
+delegated session is a brand-new, short-lived row with **no refresh token**, so it cannot be
+silently renewed and expires at its TTL. Shōmei gates only its own credential-changing endpoints
+against delegated tokens; who-may-impersonate-whom policy and business-action gating live in the
+embedding service, which reads `act`/`sub` from the verified token. See
+[security.md](security.md#impersonation--delegated-tokens).
+
+### `POST /auth/impersonate` *(authenticated)*
+Body `{"userId","reason","ticketId"?}`. The caller must hold the `impersonate:user` scope and
+their own access token must have been issued within the freshness window (default 5 minutes). →
+`200` `{"accessToken","subjectUserId","actorUserId","expiresAt"}` — `accessToken` is the delegated
+token (`sub`=customer, `act`=operator). `403 impersonation_forbidden` if the caller lacks the
+scope or is not fresh enough; `400 impersonation_target_invalid` if the target is missing, not
+active, or is the caller themselves.
+
+### `DELETE /auth/impersonate` *(authenticated)*
+Presented with a delegated token. → `204`. Revokes the delegated session named by the token.
+`400 impersonation_target_invalid` if the presented token is not a delegated token (no `act`).
+
+Credential-changing endpoints (`POST /auth/password/change`, `POST /auth/passkeys/register/begin`,
+`POST /auth/passkeys/register/complete`, `DELETE /auth/passkeys/{passkeyId}`) **refuse** any request
+bearing a delegated token with `403 impersonation_action_blocked` and write an audit record. An
+operator can look but cannot change the customer's credentials.
+
 ## Operational endpoints
 
 ### `GET /.well-known/jwks.json`

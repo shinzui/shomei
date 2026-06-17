@@ -64,7 +64,9 @@ This section must always reflect the actual current state of the work.
 - [x] M2: Add `actor :: Maybe UserId` to `Session`/`NewSession`; add `actor_user_id` column migration; update Postgres + in-memory session stores; store/load test passes. (done 2026-06-17)
 - [x] M3: Add `ImpersonationConfig` to `ShomeiConfig`; add `AuthError` constructors; add `AuthEvent` constructors; implement `Shomei.Workflow.Impersonation` (`startImpersonation`, `stopImpersonation`); core spec passes. (done 2026-06-17)
 - [x] M4: Add Servant DTOs, the `impersonate` + `stopImpersonate` routes, handlers, error mappings, and the `denyUnderImpersonation` gate on password-change + passkey handlers; project new events in the Postgres publisher; servant/integration tests pass. (done 2026-06-17)
-- [ ] M5: End-to-end HTTP validation transcript captured; `docs/security.md` and `docs/api.md` updated.
+- [x] M5: End-to-end validation captured as the automated servant E2E scenario (section (r)); a
+  live-curl transcript is not reproducible as written because no scope-issuance path exists in the
+  running server (see Decision Log + Validation). `docs/security.md` and `docs/api.md` updated. (done 2026-06-17)
 
 
 ## Surprises & Discoveries
@@ -130,6 +132,28 @@ Record every decision made while working on the plan.
   clear extension point. Recorded as a known limitation in the Validation section.
   Date: 2026-06-17
 
+- Decision: The M5 end-to-end proof is the automated servant E2E scenario
+  (`shomei-servant/test/Main.hs`, section (r)), not a live `curl` transcript against the standalone
+  server. Rationale: Shōmei's workflows mint tokens with **empty scopes** (`buildClaims` sets
+  `scopes = Set.empty`); the `impersonate:user` scope is granted by the embedding service, which is
+  out of scope here. A running server therefore has no path to issue an operator token carrying the
+  scope, so the validation transcript's step 2 (exchange) cannot succeed against it as written. The
+  E2E test reproduces the *exact* observable behavior by signing a scoped operator token directly
+  (`mkImpersonatorToken`) — precisely what the embedding service would do — then asserting: exchange
+  → 200 with `subjectUserId`=customer + `actorUserId` present; `/auth/me` under the delegated token
+  returns the customer; password change under it → 403; the operator's own (non-delegated) token is
+  NOT 403; `DELETE /auth/impersonate` → 204 and the delegated session row is revoked. This is a
+  stronger, repeatable proof than a hand-run transcript.
+  Date: 2026-06-17
+
+- Decision: Gate passkey **enrollment begin** as well as complete (and removal) with
+  `denyUnderImpersonation`, using action strings `"password_change"`, `"passkey_register"`,
+  `"passkey_remove"`. Rationale: refusing at `begin` rejects the delegated token before any ceremony
+  state is created, and the audit log still records the blocked attempt. A `-- TODO` on the guard
+  lists future credential endpoints (email change, account deletion, TOTP enrollment) that must also
+  call it.
+  Date: 2026-06-17
+
 - Decision: Shōmei validates the target only as "exists, is active, and is not the caller
   themselves." It does NOT implement the "target must not be another admin" rule.
   Rationale: Shōmei has no per-user role store surfaced to workflows (roles in `AuthClaims` are
@@ -144,7 +168,33 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-17):** all five milestones landed and every package test suite passes
+(`shomei-jwt` 11, `shomei-core` 47 incl. 7 new impersonation cases, `shomei-postgres` 21 incl. the
+delegated-session round-trip, `shomei-servant` 1 mega-scenario extended with section (r),
+`shomei-server` admin+e2e). The feature matches the Purpose: an authenticated caller holding
+`impersonate:user` whose login is fresh can `POST /auth/impersonate` and receive a short-lived
+delegated token whose `sub` is the customer and `act` is the operator; the delegated session is a
+dedicated refresh-less row; password change and passkey enroll/remove refuse delegated tokens with
+`403 impersonation_action_blocked`; and start/stop/blocked actions are audited with both ids.
+
+**Gaps / known limitations:**
+- "Recent authentication" is a token-freshness window (`actorFreshnessWindow`), not an interactive
+  MFA re-prompt. Shōmei has no general step-up primitive yet; a future plan can add one and require
+  it at `/auth/impersonate`.
+- The scope (`impersonate:user`) is never *issued* by Shōmei — `buildClaims` mints empty scopes —
+  so the embedding service must grant it. This is intentional (scope/role policy is out of scope)
+  but means the live-server validation transcript can't be reproduced without that external grant;
+  the automated E2E test stands in for it.
+- Who-may-impersonate-whom, the support UI/banner, ticket-workflow validation, and business-action
+  gating remain (deliberately) outside this repo. The `act`/`sub` claim contract is the integration
+  point for those consumers.
+
+**Lessons:** (1) The migration SQL is embedded at compile time via a `embedDir` TH splice, so a new
+`.sql` file is invisible until that module recompiles — touching the module (a note comment, per its
+own convention) is mandatory, otherwise the ephemeral-DB test harness silently runs the old set
+(surfaced as SQLSTATE 42703 on the new column). (2) Widening `AuthClaims`/`Session`/`NewSession`
+with a `Maybe` field is fully backward-compatible: every existing token/row stays byte-identical
+(claim absent / column NULL), and the compiler enumerates every construction site to update.
 
 
 ## Context and Orientation
@@ -699,10 +749,19 @@ that instead. Record whatever you actually ran here.)
 
 ## Validation and Acceptance
 
-The definitive end-to-end check (M5). It assumes the server is reachable at
-`http://localhost:8080`, an operator account exists and holds the `impersonate:user` scope, and a
-customer account `user_123` exists and is active. Adjust ids to your seeded data; record the real
-transcript in this section when you run it.
+**Status (2026-06-17):** the definitive end-to-end check is implemented as the automated servant
+E2E scenario in `shomei-servant/test/Main.hs` (section (r)), which reproduces every observable step
+below over the in-memory interpreters + a real ES256 key. The live-`curl` transcript that follows
+is **not reproducible as written** against the standalone server, because the running server has no
+way to issue an operator token carrying the `impersonate:user` scope — Shōmei's workflows mint
+empty-scope tokens and the scope is granted by the embedding service (see the Decision Log). The
+test substitutes for it by signing a scoped operator token directly, exactly as the embedding
+service would. The transcript below is retained as the documented contract for a deployment whose
+embedding service issues the scope.
+
+The transcript assumes the server is reachable at `http://localhost:8080`, an operator account
+exists and holds the `impersonate:user` scope, and a customer account `user_123` exists and is
+active. Adjust ids to your seeded data.
 
 1. **Log in as the operator** and capture the access token:
 
