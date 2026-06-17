@@ -32,12 +32,26 @@ newtype PasswordHash = PasswordHash Text
 data PasswordPolicy = PasswordPolicy
     { minLength :: !Int
     , maxLength :: !Int
+    , rejectCommonPasswords :: !Bool -- consumed by EP-2 (docs/plans/21-...)
+    , rejectContextualPasswords :: !Bool -- consumed by EP-2 (docs/plans/21-...)
+    , breachCheckEnabled :: !Bool -- consumed by EP-3 (docs/plans/22-...)
+    , breachCheckFailClosed :: !Bool -- consumed by EP-3 (docs/plans/22-...)
+    , breachCheckTimeoutMs :: !Int -- consumed by EP-3 (docs/plans/22-...)
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
 defaultPasswordPolicy :: PasswordPolicy
-defaultPasswordPolicy = PasswordPolicy{minLength = 12, maxLength = 256}
+defaultPasswordPolicy =
+    PasswordPolicy
+        { minLength = 12
+        , maxLength = 256
+        , rejectCommonPasswords = True
+        , rejectContextualPasswords = True
+        , breachCheckEnabled = False
+        , breachCheckFailClosed = False
+        , breachCheckTimeoutMs = 1000
+        }
 
 validatePassword :: PasswordPolicy -> PlainPassword -> Either PasswordPolicyViolation ()
 validatePassword policy (PlainPassword pw)

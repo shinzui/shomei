@@ -57,10 +57,10 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: Extend `PasswordPolicy` with the five new fields and update `defaultPasswordPolicy`
+- [x] M1 (2026-06-17): Extend `PasswordPolicy` with the five new fields and update `defaultPasswordPolicy`
       in `shomei-core/src/Shomei/Domain/Password.hs`; fix every construction site; confirm
-      `validatePassword` is unchanged.
-- [ ] M1: `cabal build all` is green and the existing `shomei-core` test suite passes.
+      `validatePassword` is unchanged. Verified `defaultPasswordPolicy` is the only construction site.
+- [x] M1 (2026-06-17): `cabal build all` is green and the existing `shomei-core` test suite passes (47 tests).
 - [ ] M2: Add the seven new optional fields to `FileConfig` in
       `shomei-server/src/Shomei/Server/Config.hs`.
 - [ ] M2: Add the matching keys to `config/shomei-types.dhall` and `config/shomei.example.dhall`.
@@ -77,7 +77,12 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- M1 (2026-06-17): `boolEnv :: Text -> IO (Maybe Bool)` **already exists** in
+  `shomei-server/src/Shomei/Server/Config.hs` (lines 274-283, used by the WebAuthn env overlay).
+  It already lowercases input and accepts `true`/`false`, erroring otherwise — functionally
+  equivalent to the helper Step 5 proposes to add. Consequence: M3 must **not** add a second
+  `boolEnv` (a duplicate definition would not compile); it only needs to add `intEnvMaybe` and
+  reuse the existing `boolEnv`. Evidence: `grep -n "boolEnv" shomei-server/src/Shomei/Server/Config.hs`.
 
 
 ## Decision Log
