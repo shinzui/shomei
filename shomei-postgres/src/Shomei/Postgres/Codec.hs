@@ -17,6 +17,8 @@ module Shomei.Postgres.Codec (
     loginOutcomeToText,
     loginOutcomeFromText,
     emailFromDb,
+    maybeEmailFromDb,
+    loginIdFromDb,
     tshow,
 ) where
 
@@ -24,6 +26,7 @@ import Shomei.Prelude
 
 import Data.Text qualified as Text
 import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.LoginAttempt (LoginOutcome (..))
 import Shomei.Domain.OneTimeToken (OneTimeTokenStatus (..))
 import Shomei.Domain.RefreshToken (RefreshTokenStatus (..))
@@ -124,3 +127,18 @@ emailFromDb :: Text -> Either Text Email
 emailFromDb t = case mkEmail t of
     Right e -> Right e
     Left _ -> Left ("invalid email in database: " <> t)
+
+{- | Rebuild an optional 'Email' from a nullable stored value: a NULL column decodes to
+'Nothing', a present value is rebuilt through 'emailFromDb'.
+-}
+maybeEmailFromDb :: Maybe Text -> Either Text (Maybe Email)
+maybeEmailFromDb = traverse emailFromDb
+
+{- | Rebuild a 'LoginId' from a stored value. The column only ever holds identifiers that
+were already normalized through 'mkLoginId' on the way in, so this should never fail; a
+'Left' here signals a corrupt row.
+-}
+loginIdFromDb :: Text -> Either Text LoginId
+loginIdFromDb t = case mkLoginId t of
+    Right l -> Right l
+    Left _ -> Left ("invalid login id in database: " <> t)

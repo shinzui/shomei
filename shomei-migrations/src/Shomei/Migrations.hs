@@ -47,6 +47,9 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- were added on 2026-06-18 by MasterPlan-3 EP-2, requiring another recompile of this splice.
 -- The impersonation actor column (shomei_sessions.actor_user_id) was added on 2026-06-17
 -- by the impersonation token-exchange plan, requiring another recompile of this splice.
+-- The generalized login identifier (shomei_users.login_id / shomei_password_credentials.login_id,
+-- with email relaxed to nullable + partial-unique) was added on 2026-06-19 by SH-25,
+-- requiring another recompile of this splice.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 

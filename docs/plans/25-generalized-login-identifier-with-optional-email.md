@@ -4,6 +4,7 @@ slug: generalized-login-identifier-with-optional-email
 title: "Generalized login identifier with optional email"
 kind: exec-plan
 created_at: 2026-06-17T22:35:51Z
+intention: intention_01kvbyj0d7edhaxdwhj2haw3vb
 ---
 
 # Generalized login identifier with optional email
@@ -70,16 +71,30 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: Introduce the `LoginId` domain type (`shomei-core/src/Shomei/Domain/LoginId.hs`),
+- [x] M1: Introduce the `LoginId` domain type (`shomei-core/src/Shomei/Domain/LoginId.hs`),
   export it from the core, and make `User`/`Credential`/`NewUser` carry `loginId` with `email`
-  optional. Core compiles; in-memory interpreter updated; new workflow tests pass.
-- [ ] M2: Update workflows (`signup`, `login`, account/password-reset) and the effect ports
+  optional. Core compiles; in-memory interpreter updated. **(2026-06-17)** Done. Note: the
+  `shomei-core` *library* could not be built in isolation at the M1 boundary because the
+  workflows (`Shomei.Workflow`) live in the same library and construct `NewUser` — see Surprises
+  & Discoveries. M1's domain/type changes therefore landed together with M2's workflow/port
+  changes in one buildable commit.
+- [x] M2: Update workflows (`signup`, `login`, account/password-reset) and the effect ports
   (`UserStore`, `CredentialStore`, `Command`) to key on `LoginId`, keeping optional
-  lookup-by-email for reset/verification. `cabal test shomei-core-test` green, including the
-  new no-email signup+login case and the email-still-works case.
-- [ ] M3: Expand/contract PostgreSQL migration + store updates: add `login_id` column with
+  lookup-by-email for reset/verification. **(2026-06-17)** Done. `cabal test shomei-core-test`
+  green — all 105 tests pass, including the new `signup+login by identifier with no email` and
+  `password reset delivers to the email when present` cases.
+- [x] M3: Expand/contract PostgreSQL migration + store updates: add `login_id` column with
   backfill, relax `email` to nullable, swap unique constraints. `cabal test
-  shomei-postgres-test` green against the ephemeral database.
+  shomei-postgres-test` green against the ephemeral database. **(2026-06-17)** Done. Four new
+  migration files (`2026-06-19-00-00-00..03`) expand/backfill/constrain `login_id` and relax
+  `email` to nullable + partial-unique on both `shomei_users` and `shomei_password_credentials`.
+  The `Shomei.Migrations` splice was edited (documenting comment) to force the `embedDir`
+  recompile — without it the new files are silently not embedded (the first test run failed with
+  `column "login_id" ... does not exist`; see Surprises & Discoveries). Postgres interpreters
+  carry `login_id` + nullable `email` (new `Codec.maybeEmailFromDb`/`loginIdFromDb`,
+  `contrazip7`, `findUserByLoginIdStmt`/`findCredByLoginIdStmt`). All 23 postgres tests pass
+  (19 migrations applied), including the new `NULL email round-trips; login_id unique; NULL
+  emails don't collide` case.
 - [ ] M4: Update the Servant DTO/handler wire surface so HTTP signup/login accept a
   `loginId` (email optional) while preserving backward compatibility for email-only callers.
   `cabal build shomei-servant` and `cabal test shomei-servant-test` green.
@@ -112,6 +127,41 @@ implementation. Provide concise evidence.
   switch to keying abuse/`accountKey` on the login id must change this helper's `Email` argument to
   `LoginId` (or its text) and update `Event.LoginFailedData` accordingly — confirmed present, as
   the plan states.
+
+- **M1 cannot build the library in isolation; M1+M2 must land together.** The plan's M1 acceptance
+  assumed `cabal build shomei-core` (library only) would succeed after the pure data-shape change.
+  It does not: the auth workflows (`Shomei.Workflow`, `Shomei.Workflow.Account`,
+  `Shomei.Workflow.Passkey`) are modules *of the `shomei-core` library*, and `Shomei.Workflow.signup`
+  constructs `NewUser{email = …}` positionally/by-field. Adding `loginId` and making `email`
+  optional immediately broke that constructor, so the library would not compile until the M2
+  workflow edits were applied. Evidence: first `cabal build shomei-core` after the M1 record change
+  failed with `Constructor 'NewUser' does not have the required strict field(s): loginId` at
+  `src/Shomei/Workflow.hs:138`. Consequence: M1 and M2 were implemented and committed together as a
+  single buildable core change; the milestone *content* is unchanged, only the commit boundary moved.
+
+- **Only two event payloads needed shape changes; the email-bearing account events were kept
+  `Email`-typed by guarding.** `Event.UserRegisteredData` gained `loginId :: LoginId` and
+  `email :: Maybe Email`; `Event.LoginFailedData` swapped `email :: Email` for `loginId :: LoginId`
+  (matching the `failLogin`/`accountKey`-on-principal change). The other email-bearing events
+  (`EmailVerificationRequestedData`, `EmailVerifiedData`, `PasswordResetRequestedData`) were left
+  `Email`-typed: the account workflows that publish them now run inside a `forM_ user.email \email ->`
+  guard (or, for `confirmEmailVerification`, a `maybe (throwError VerificationTokenInvalid) pure
+  user.email`), so an email is always in scope where those events fire. This keeps their JSON payload
+  shape (and the `EventCodec` round-trip) unchanged — no migration of stored audit rows is needed.
+
+- **`changePassword` resolves the credential by `LoginId`, not email.** Previously it called
+  `findPasswordCredentialByEmail user.email`. With email optional, it now calls
+  `findPasswordCredentialByLoginId user.loginId` (the principal is always present), which is both
+  simpler and correct for email-less accounts — no `Just`-guarding or fallback needed.
+
+- **M3: the `embedDir` splice must be forced to recompile, and `cabal build shomei-migrations`
+  will NOT do it on its own.** After adding the four new `.sql` files, `cabal build
+  shomei-migrations` reported "Up to date" and the first `cabal test shomei-postgres-test` applied
+  only 15 migrations (stopping at `2026-06-18-…`), failing with `column "login_id" of relation
+  "shomei_users" does not exist`. GHC's recompilation checker does not track new files appearing in
+  a TH-`embedDir`'d directory. Fix (matching the established convention in `Shomei.Migrations`): edit
+  the `Shomei.Migrations` source — a documenting comment above `embeddedFiles` is enough — to force
+  the splice to re-evaluate. After that the suite applied 19 migrations and went green.
 
 - **Validation pass (2026-06-17).** All other factual claims in this plan were checked against the
   live tree and hold exactly: `User`/`NewUser` fields; `mkEmail :: Text -> Either AuthError Email`
@@ -172,6 +222,23 @@ Record every decision made while working on the plan.
   Expand/contract (add nullable column → backfill → add constraints → relax old constraints) is
   idempotent, re-runnable, and safe for any pre-existing rows. It also matches how the schema
   has grown so far (every change is a new dated file; none rewrites a prior one).
+  Date: 2026-06-17
+
+- Decision: Implement and commit M1 and M2 as a single buildable core change.
+  Rationale: The `shomei-core` *library* contains the workflows, which construct `NewUser`; the
+  M1 record change alone does not compile (see Surprises & Discoveries). Rather than introduce
+  throwaway scaffolding to make an intermediate library build, M1's type changes were landed
+  together with the M2 port/workflow changes in one commit that leaves the library and the test
+  suite green. The milestone *structure* and acceptance criteria are unchanged.
+  Date: 2026-06-17
+
+- Decision: Keep `EmailVerificationRequestedData`/`EmailVerifiedData`/`PasswordResetRequestedData`
+  email-typed (only `UserRegisteredData` and `LoginFailedData` changed), guarding the publishing
+  sites on the user's `Maybe Email` instead.
+  Rationale: Those events are only meaningful for an account with an email, and the workflows that
+  emit them now run under a `Just`-email guard, so an `Email` is always available there. Leaving
+  their payload shape untouched avoids any change to the stored-audit JSON and the `EventCodec`
+  round-trip, so no audit-table migration is required.
   Date: 2026-06-17
 
 - Decision (inherited locked decision from the shared brief): shomei is enhanced upstream via

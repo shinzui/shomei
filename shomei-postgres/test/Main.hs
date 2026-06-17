@@ -30,10 +30,11 @@ import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitC
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
+import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
+import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Passkey (
@@ -68,7 +69,7 @@ import Shomei.Effect.AuthEventReader (
     queryAuthEvents,
  )
 import Shomei.Effect.Clock (Clock (..), now)
-import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail)
+import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
 import Shomei.Effect.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
 import Shomei.Effect.LoginAttemptStore (
     LoginAttemptStore,
@@ -104,7 +105,7 @@ import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById,
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
-import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, markUserEmailVerified)
+import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, findUserByLoginId, markUserEmailVerified)
 import Shomei.Effect.VerificationTokenStore (
     VerificationTokenStore,
     createVerificationToken,
@@ -269,6 +270,12 @@ aliceEmail = mkEmail' "alice@example.com"
 bobEmail :: Email
 bobEmail = mkEmail' "bob@example.com"
 
+aliceLogin :: LoginId
+aliceLogin = loginIdFromEmail aliceEmail
+
+bobLogin :: LoginId
+bobLogin = loginIdFromEmail bobEmail
+
 strongPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
 
@@ -276,6 +283,11 @@ mkEmail' :: Text -> Email
 mkEmail' t = case mkEmail t of
     Right e -> e
     Left err -> error ("bad test email: " <> show err)
+
+mkLoginId' :: Text -> LoginId
+mkLoginId' t = case mkLoginId t of
+    Right l -> l
+    Left err -> error ("bad test login id: " <> show err)
 
 -- | Run an action over a fresh migrated database and a pool.
 withDb :: (Pool -> IO a) -> IO a
@@ -313,6 +325,7 @@ main = defaultMain (testGroup "shomei-postgres" tests)
 tests :: [TestTree]
 tests =
     [ testUserRoundTrip
+    , testUserNoEmailAndUniqueLoginId
     , testCredentialRoundTrip
     , testSessionRevoke
     , testSessionActorRoundTrip
@@ -339,33 +352,65 @@ tests =
 testUserRoundTrip :: TestTree
 testUserRoundTrip = testCase "create + find user round-trips" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Just "Alice"})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Just "Alice"})
         byId <- findUserById u.userId
         byEmail <- findUserByEmail aliceEmail
         pure (u, byId, byEmail)
     (u, byId, byEmail) <- expectApp result
     fmap (.userId) byId @?= Just u.userId
-    fmap (.email) byId @?= Just aliceEmail
+    fmap (.loginId) byId @?= Just aliceLogin
+    fmap (.email) byId @?= Just (Just aliceEmail)
     fmap (.displayName) byId @?= Just (Just "Alice")
     fmap (.userId) byEmail @?= Just u.userId
+
+{- | The M3 acceptance: a user can be created with NO email, round-trips by login id with
+@email IS NULL@, the @login_id@ unique index rejects a duplicate principal, and the
+partial unique index on @email@ permits multiple NULL emails.
+-}
+testUserNoEmailAndUniqueLoginId :: TestTree
+testUserNoEmailAndUniqueLoginId =
+    testCase "user: NULL email round-trips; login_id unique; NULL emails don't collide" $ withDb \pool -> do
+        let svc = mkLoginId' "svc-bot"
+            svc2 = mkLoginId' "svc-bot-2"
+        created <- runApp pool do
+            u <- createUser (NewUser{loginId = svc, email = Nothing, displayName = Nothing})
+            byLogin <- findUserByLoginId svc
+            pure (u, byLogin)
+        (u, byLogin) <- expectApp created
+        fmap (.email) byLogin @?= Just Nothing
+        fmap (.loginId) byLogin @?= Just svc
+        fmap (.userId) byLogin @?= Just u.userId
+        -- a duplicate login id is rejected by the unique index (interpreter surfaces a Left)
+        dup <- runApp pool (createUser (NewUser{loginId = svc, email = Nothing, displayName = Nothing}))
+        case dup of
+            Left _ -> pure ()
+            Right _ -> assertFailure "expected duplicate login_id to be rejected by the unique index"
+        -- a second no-email user with a distinct login id is allowed: NULL emails don't collide
+        second <- runApp pool (createUser (NewUser{loginId = svc2, email = Nothing, displayName = Nothing}))
+        _ <- expectApp second
+        nullEmails <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email IS NULL"
+        nullEmails @?= 2
 
 testCredentialRoundTrip :: TestTree
 testCredentialRoundTrip = testCase "create credential + find-by-email" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         h <- hashPassword strongPw
-        _ <- createPasswordCredential u.userId aliceEmail h
-        found <- findPasswordCredentialByEmail aliceEmail
-        pure (u, h, found)
-    (u, h, found) <- expectApp result
-    fmap (.userId) found @?= Just u.userId
-    fmap (.email) found @?= Just aliceEmail
-    fmap (.passwordHash) found @?= Just h
+        _ <- createPasswordCredential u.userId aliceLogin (Just aliceEmail) h
+        byEmail <- findPasswordCredentialByEmail aliceEmail
+        byLogin <- findPasswordCredentialByLoginId aliceLogin
+        pure (u, h, byEmail, byLogin)
+    (u, h, byEmail, byLogin) <- expectApp result
+    fmap (.userId) byEmail @?= Just u.userId
+    fmap (.email) byEmail @?= Just (Just aliceEmail)
+    fmap (.passwordHash) byEmail @?= Just h
+    fmap (.userId) byLogin @?= Just u.userId
+    fmap (.loginId) byLogin @?= Just aliceLogin
 
 testSessionRevoke :: TestTree
 testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
         revokeSession s.sessionId t
@@ -376,8 +421,8 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
 testSessionActorRoundTrip :: TestTree
 testSessionActorRoundTrip = testCase "create delegated session persists actor" $ withDb \pool -> do
     result <- runApp pool do
-        subject <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
-        operator <- createUser (NewUser{email = bobEmail, displayName = Nothing})
+        subject <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+        operator <- createUser (NewUser{loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
         t <- now
         delegated <-
             createSession
@@ -399,7 +444,7 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
 testRefreshTokenMarkUsed :: TestTree
 testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-used" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
         h <- hashRefreshToken (RefreshToken "token-1")
@@ -423,7 +468,7 @@ testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-
 testVerificationTokenRoundTrip :: TestTree
 testVerificationTokenRoundTrip = testCase "create verification token + consume" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         let h = OneTimeTokenHash "hash:verify-1"
         persisted <-
@@ -445,7 +490,7 @@ testVerificationTokenRoundTrip = testCase "create verification token + consume" 
 testPasswordResetTokenRoundTrip :: TestTree
 testPasswordResetTokenRoundTrip = testCase "create password reset token + consume" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         let h = OneTimeTokenHash "hash:reset-1"
         persisted <-
@@ -467,7 +512,7 @@ testPasswordResetTokenRoundTrip = testCase "create password reset token + consum
 testMarkUserEmailVerified :: TestTree
 testMarkUserEmailVerified = testCase "mark user email verified sets the timestamp" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         markUserEmailVerified u.userId t
         findUserById u.userId
@@ -501,7 +546,7 @@ testPublishEvent :: TestTree
 testPublishEvent = testCase "publish auth event lands a row" $ withDb \pool -> do
     result <- runApp pool do
         t <- now
-        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceEmail t))
+        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceLogin t))
     _ <- expectApp result
     n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events"
     n @?= 1
@@ -511,14 +556,14 @@ testAuditEventReader = testCase "audit reader: filter + order + keyset paginatio
     let tt :: Int -> UTCTime
         tt n = addUTCTime (fromIntegral n) t0
     result <- runApp pool do
-        alice <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
-        bob <- createUser (NewUser{email = bobEmail, displayName = Nothing})
+        alice <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+        bob <- createUser (NewUser{loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
         s1 <- genSessionId
         s2 <- genSessionId
         -- Five events at strictly increasing times (newest = tt 4).
-        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceEmail (tt 0)))
+        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceLogin (tt 0)))
         publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData alice.userId s1 (tt 1)))
-        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData bobEmail (tt 2)))
+        publishAuthEvent (Event.LoginFailed (Event.LoginFailedData bobLogin (tt 2)))
         publishAuthEvent (Event.PasswordChanged (Event.PasswordChangedData alice.userId (tt 3)))
         publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData bob.userId s2 (tt 4)))
         allEvents <- queryAuthEvents emptyAuditQuery
@@ -558,12 +603,12 @@ testAuditEventReader = testCase "audit reader: filter + order + keyset paginatio
     case reverse failedEvents of
         (oldest : _) ->
             reconstructAuthEvent (storedEventType oldest) (storedPayload oldest)
-                @?= Right (Event.LoginFailed (Event.LoginFailedData aliceEmail (tt 0)))
+                @?= Right (Event.LoginFailed (Event.LoginFailedData aliceLogin (tt 0)))
         [] -> assertFailure "expected at least one failed-login row"
 
 testWorkflowSignup :: TestTree
 testWorkflowSignup = testCase "workflow: signup persists user + session + token" $ withDb \pool -> do
-    inner <- runApp pool (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
+    inner <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw (Just "Alice")))
     _ <- expectApp inner >>= expectRight
     users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users"
     sessions <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions"
@@ -574,7 +619,7 @@ testWorkflowSignup = testCase "workflow: signup persists user + session + token"
 
 testWorkflowRefreshRotation :: TestTree
 testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + inserts child" $ withDb \pool -> do
-    signupRes <- runApp pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
     (_, pair) <- expectApp signupRes >>= expectRight
     refreshRes <- runApp pool (refresh cfg (RefreshCommand pair.refreshToken))
     _ <- expectApp refreshRes >>= expectRight
@@ -587,7 +632,7 @@ testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + 
 
 testWorkflowReuseRevokesFamily :: TestTree
 testWorkflowReuseRevokesFamily = testCase "workflow: reuse revokes the family + session" $ withDb \pool -> do
-    signupRes <- runApp pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
     (_, pair) <- expectApp signupRes >>= expectRight
     rotateRes <- runApp pool (refresh cfg (RefreshCommand pair.refreshToken))
     _ <- expectApp rotateRes >>= expectRight
@@ -603,9 +648,9 @@ testWorkflowReuseRevokesFamily = testCase "workflow: reuse revokes the family + 
 testWorkflowAccountVerification :: TestTree
 testWorkflowAccountVerification = testCase "workflow: account verification consumes token + marks user" $ withDb \pool -> do
     notifications <- newIORef []
-    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    (user, _) <- expectApp signupRes >>= expectRight
-    requestRes <- runAppWithNotifications notifications pool (requestEmailVerification cfg (RequestEmailVerification user.email))
+    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+    _ <- expectApp signupRes >>= expectRight
+    requestRes <- runAppWithNotifications notifications pool (requestEmailVerification cfg (RequestEmailVerification aliceEmail))
     _ <- expectApp requestRes >>= expectRight
     raw <- latestVerificationToken =<< readIORef notifications
     confirmRes <- runAppWithNotifications notifications pool (confirmEmailVerification cfg (ConfirmEmailVerification raw))
@@ -618,14 +663,14 @@ testWorkflowAccountVerification = testCase "workflow: account verification consu
 testWorkflowPasswordReset :: TestTree
 testWorkflowPasswordReset = testCase "workflow: password reset changes password and revokes sessions" $ withDb \pool -> do
     notifications <- newIORef []
-    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
     (_, pair) <- expectApp signupRes >>= expectRight
     requestRes <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
     _ <- expectApp requestRes >>= expectRight
     raw <- latestResetToken =<< readIORef notifications
     confirmRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset raw (PlainPassword "correct horse battery staple two")))
     _ <- expectApp confirmRes >>= expectRight
-    loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (emailText aliceEmail))) (LoginCommand aliceEmail (PlainPassword "correct horse battery staple two")))
+    loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (loginIdText aliceLogin))) (LoginCommand aliceLogin (PlainPassword "correct horse battery staple two")))
     _ <- expectApp loginRes >>= expectRight
     oldRefreshRes <- runAppWithNotifications notifications pool (refresh cfg (RefreshCommand pair.refreshToken))
     oldRefresh <- expectApp oldRefreshRes
@@ -664,10 +709,10 @@ testLoginAttemptStore = testCase "login attempt store: record + windowed count +
 
 testWorkflowLockout :: TestTree
 testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlock-after-cooldown" $ withDb \pool -> do
-    seeded <- runAppAtTime t0 pool (signup lockCfg (SignupCommand aliceEmail strongPw Nothing))
+    seeded <- runAppAtTime t0 pool (signup lockCfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
     _ <- expectApp seeded >>= expectRight
-    let ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (emailText aliceEmail))
-        badLogin = login lockCfg ctx (LoginCommand aliceEmail (PlainPassword "wrong"))
+    let ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (loginIdText aliceLogin))
+        badLogin = login lockCfg ctx (LoginCommand aliceLogin (PlainPassword "wrong"))
     _ <- runAppAtTime t0 pool badLogin >>= expectApp
     _ <- runAppAtTime t0 pool badLogin >>= expectApp
     r3 <- runAppAtTime t0 pool badLogin >>= expectApp
@@ -675,10 +720,10 @@ testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlo
     locked <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts WHERE locked_until IS NOT NULL"
     locked @?= 1
     -- The correct password while still locked returns the SAME generic error (no leak).
-    denied <- runAppAtTime t0 pool (login lockCfg ctx (LoginCommand aliceEmail strongPw)) >>= expectApp
+    denied <- runAppAtTime t0 pool (login lockCfg ctx (LoginCommand aliceLogin strongPw)) >>= expectApp
     denied @?= Left InvalidCredentials
     -- After the cooldown (15 min default) the correct password succeeds and clears the lockout.
-    ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceEmail strongPw)) >>= expectApp
+    ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceLogin strongPw)) >>= expectApp
     _ <- expectRight ok
     remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts"
     remaining @?= 0
@@ -717,7 +762,7 @@ newPasskey u t =
 testPasskeyCreateAndFind :: TestTree
 testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         created <- createPasskey (newPasskey u t)
         byUser <- findPasskeysByUser u.userId
@@ -739,7 +784,7 @@ testPasskeyCreateAndFind = testCase "passkey store: create + find by user/creden
 testPasskeyUpdateCountDelete :: TestTree
 testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + count + delete (user-scoped)" $ withDb \pool -> do
     result <- runApp pool do
-        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        u <- createUser (NewUser{loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         t <- now
         created <- createPasskey (newPasskey u t)
         let pid = pkPasskeyId created
