@@ -24,6 +24,7 @@ import Shomei.Id (PasskeyId)
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.DTO (
+    AuditEventsPage,
     ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
@@ -156,28 +157,28 @@ data ShomeiAPI mode = ShomeiAPI
                 :> Authenticated
                 :> Capture "passkeyId" PasskeyId
                 :> Verb 'DELETE 204 '[JSON] NoContent
-    , -- | Finish a password-then-passkey step-up. Unauthenticated: completing the second
-      -- factor is exactly how the caller obtains a session. (The challenge itself rides in the
-      -- @mfa_required@ arm of @POST \/auth\/login@, so there is no @\/auth\/mfa\/begin@.)
-      mfaComplete ::
+    , mfaComplete ::
         mode
             :- "auth"
                 :> "mfa"
                 :> "complete"
                 :> ReqBody '[JSON] MfaCompleteRequest
                 :> Post '[JSON] TokenPairResponse
-    , -- | Begin a passwordless passkey login (no account named; the browser's discoverable
-      -- credential picker chooses one). Unauthenticated.
-      passkeyLoginBegin ::
+    {- ^ Finish a password-then-passkey step-up. Unauthenticated: completing the second
+    factor is exactly how the caller obtains a session. (The challenge itself rides in the
+    @mfa_required@ arm of @POST \/auth\/login@, so there is no @\/auth\/mfa\/begin@.)
+    -}
+    , passkeyLoginBegin ::
         mode
             :- "auth"
                 :> "login"
                 :> "passkey"
                 :> "begin"
                 :> Post '[JSON] PasskeyLoginBeginResponse
-    , -- | Finish a passwordless passkey login. Unauthenticated: the passkey IS the strong
-      -- factor, so this returns a token pair directly (never an MFA challenge).
-      passkeyLoginComplete ::
+    {- ^ Begin a passwordless passkey login (no account named; the browser's discoverable
+    credential picker chooses one). Unauthenticated.
+    -}
+    , passkeyLoginComplete ::
         mode
             :- "auth"
                 :> "login"
@@ -185,10 +186,10 @@ data ShomeiAPI mode = ShomeiAPI
                 :> "complete"
                 :> ReqBody '[JSON] PasskeyLoginCompleteRequest
                 :> Post '[JSON] TokenPairResponse
-    , -- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
-      -- token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
-      -- client IP for the audit record.
-      impersonate ::
+    {- ^ Finish a passwordless passkey login. Unauthenticated: the passkey IS the strong
+    factor, so this returns a token pair directly (never an MFA challenge).
+    -}
+    , impersonate ::
         mode
             :- "auth"
                 :> "impersonate"
@@ -196,14 +197,39 @@ data ShomeiAPI mode = ShomeiAPI
                 :> RemoteHost
                 :> ReqBody '[JSON] ImpersonateRequest
                 :> Post '[JSON] ImpersonateResponse
-    , -- | @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session
-      -- named by the presented token. Authenticated.
-      stopImpersonate ::
+    {- ^ @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
+    token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
+    client IP for the audit record.
+    -}
+    , stopImpersonate ::
         mode
             :- "auth"
                 :> "impersonate"
                 :> Authenticated
                 :> DeleteNoContent
+    {- ^ @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session
+    named by the presented token. Authenticated.
+    -}
+    , auditEvents ::
+        mode
+            :- "admin"
+                :> "audit"
+                :> "events"
+                :> Authenticated
+                :> QueryParam "user" Text
+                :> QueryParam "session" Text
+                :> QueryParams "type" Text
+                :> QueryParam "since" Text
+                :> QueryParam "until" Text
+                :> QueryParam "limit" Int
+                :> QueryParam "before" Text
+                :> Get '[JSON] AuditEventsPage
+    {- ^ @GET /admin/audit/events@ (EP-7): an admin-gated, filtered, keyset-paginated page
+    of the audit trail. Repeated @?type=@ collects into a list; @?before=@ takes an
+    opaque cursor from a previous page's @nextCursor@. The handler enforces the @admin@
+    role with 'Shomei.Servant.Authz.requireRole' (no production flow grants that role yet
+    — see the plan's Decision Log).
+    -}
     , jwks ::
         mode
             :- ".well-known"

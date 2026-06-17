@@ -30,12 +30,17 @@ module Shomei.Servant.DTO (
     PasskeyLoginCompleteRequest (..),
     ImpersonateRequest (..),
     ImpersonateResponse (..),
+    AuditEventResponse (..),
+    AuditEventsPage (..),
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
     passkeyToResponse,
     loginResultToResponse,
     impersonateToResponse,
+    storedToResponse,
+    encodeCursor,
+    decodeCursor,
 ) where
 
 import Shomei.Prelude
@@ -44,7 +49,9 @@ import Data.Aeson (Value, object, withObject, (.:))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser)
 import Data.Text qualified as Text
-import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
+import Data.UUID (UUID)
+import Data.UUID qualified as UUID
 
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.Passkey (PasskeyCredential (..))
@@ -52,6 +59,7 @@ import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Domain.Session (Session (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (User (..), UserStatus (..))
+import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Id (idText)
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 
@@ -292,7 +300,8 @@ tokenPairToResponse tp =
 
 {- | Map the core 'LoginResult' to the wire 'LoginResponse'. 'MfaChallenge' is read via a
 record pattern (not @ch.ceremonyId@ dot syntax) for consistency with the rest of the
-passkey-touching code. -}
+passkey-touching code.
+-}
 loginResultToResponse :: LoginResult -> LoginResponse
 loginResultToResponse = \case
     LoginComplete user pair ->
@@ -335,6 +344,60 @@ impersonateToResponse s (AccessToken tok) =
         , actorUserId = maybe "" idText s.actor
         , expiresAt = Text.pack (iso8601Show s.expiresAt)
         }
+
+{- | One audit-trail row as wire JSON. The envelope columns plus the raw event 'payload'
+(passed through verbatim — the read path never reshapes the stored JSON). Identifiers are
+rendered as UUID text; @createdAt@ is ISO-8601.
+-}
+data AuditEventResponse = AuditEventResponse
+    { eventId :: !Text
+    , eventType :: !Text
+    , userId :: !(Maybe Text)
+    , sessionId :: !(Maybe Text)
+    , createdAt :: !Text
+    , payload :: !Value
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | A page of audit events plus an opaque 'nextCursor'. A non-'Nothing' cursor is passed
+back as @?before=@ to fetch the next (older) page; it is 'Nothing' when the page was not
+full (i.e. the last page).
+-}
+data AuditEventsPage = AuditEventsPage
+    { events :: ![AuditEventResponse]
+    , nextCursor :: !(Maybe Text)
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | Render a 'StoredAuthEvent' to its wire DTO (raw payload passed through).
+storedToResponse :: StoredAuthEvent -> AuditEventResponse
+storedToResponse s =
+    AuditEventResponse
+        { eventId = UUID.toText s.storedEventId
+        , eventType = s.storedEventType
+        , userId = UUID.toText <$> s.storedUserId
+        , sessionId = UUID.toText <$> s.storedSessionId
+        , createdAt = Text.pack (iso8601Show s.storedCreatedAt)
+        , payload = s.storedPayload
+        }
+
+{- | The opaque keyset cursor wire format: @"\<iso8601Z\>;\<uuid\>"@ — the
+@(created_at, event_id)@ of the last row of a page. 'encodeCursor'/'decodeCursor' are
+total inverses; a malformed cursor decodes to 'Nothing' (the handler maps that to 400).
+-}
+encodeCursor :: AuditCursor -> Text
+encodeCursor c = Text.pack (iso8601Show c.cursorCreatedAt) <> ";" <> UUID.toText c.cursorEventId
+
+decodeCursor :: Text -> Maybe AuditCursor
+decodeCursor t = case Text.breakOn ";" t of
+    (tsPart, rest)
+        | Just idPart <- Text.stripPrefix ";" rest -> do
+            ts <- iso8601ParseM (Text.unpack tsPart)
+            eid <- UUID.fromText idPart
+            pure (AuditCursor ts eid)
+    _ -> Nothing
 
 -- | Render a domain 'Session' to the wire DTO (timestamps as ISO-8601).
 sessionToResponse :: Session -> SessionResponse

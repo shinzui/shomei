@@ -8,10 +8,10 @@ module Shomei.Postgres.AuthEventPublisher (
 
 import Shomei.Prelude
 
+import Contravariant.Extras (contrazip6)
+import Data.Aeson (Value)
 import Data.UUID (UUID)
 import Data.UUID.V4 qualified as UUIDv4
-import Data.Aeson (Value)
-import Contravariant.Extras (contrazip6)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
@@ -21,11 +21,9 @@ import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 
-import Shomei.Domain.Event (AuthEvent)
-import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.EventCodec (projectAuthEvent)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Error (AuthError (..))
-import Shomei.Id (sessionIdToUUID, userIdToUUID)
 import Shomei.Postgres.Codec (tshow)
 import Shomei.Postgres.Database (Database, runSession)
 
@@ -41,59 +39,6 @@ runAuthEventPublisherPostgres = interpret_ \case
         let (mUser, mSession, etype, payload, ts) = projectAuthEvent ev
         res <- runSession (Session.statement (eid, mUser, mSession, etype, payload, ts) insertAuthEventStmt)
         either (\e -> throwError (InternalAuthError ("database error: " <> tshow e))) (const (pure ())) res
-
-projectAuthEvent :: AuthEvent -> (Maybe UUID, Maybe UUID, Text, Value, UTCTime)
-projectAuthEvent = \case
-    Event.UserRegistered d@(Event.UserRegisteredData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "user_registered", toJSON d, occ)
-    Event.LoginSucceeded d@(Event.LoginSucceededData uid sid occ) ->
-        (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "login_succeeded", toJSON d, occ)
-    Event.LoginFailed d@(Event.LoginFailedData _ occ) ->
-        (Nothing, Nothing, "login_failed", toJSON d, occ)
-    Event.SessionStarted d@(Event.SessionStartedData sid uid occ) ->
-        (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "session_started", toJSON d, occ)
-    Event.SessionRevoked d@(Event.SessionRevokedData sid occ) ->
-        (Nothing, Just (sessionIdToUUID sid), "session_revoked", toJSON d, occ)
-    Event.RefreshTokenRotated d@(Event.RefreshTokenRotatedData sid _ occ) ->
-        (Nothing, Just (sessionIdToUUID sid), "refresh_token_rotated", toJSON d, occ)
-    Event.RefreshTokenReuseDetected d@(Event.RefreshTokenReuseDetectedData sid _ occ) ->
-        (Nothing, Just (sessionIdToUUID sid), "refresh_token_reuse_detected", toJSON d, occ)
-    Event.EmailVerificationRequested d@(Event.EmailVerificationRequestedData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "email_verification_requested", toJSON d, occ)
-    Event.EmailVerified d@(Event.EmailVerifiedData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "email_verified", toJSON d, occ)
-    Event.PasswordResetRequested d@(Event.PasswordResetRequestedData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "password_reset_requested", toJSON d, occ)
-    Event.PasswordResetCompleted d@(Event.PasswordResetCompletedData uid occ) ->
-        (Just (userIdToUUID uid), Nothing, "password_reset_completed", toJSON d, occ)
-    Event.PasswordChanged d@(Event.PasswordChangedData uid occ) ->
-        (Just (userIdToUUID uid), Nothing, "password_changed", toJSON d, occ)
-    Event.UserSuspended d@(Event.UserSuspendedData uid occ) ->
-        (Just (userIdToUUID uid), Nothing, "user_suspended", toJSON d, occ)
-    Event.UserDeleted d@(Event.UserDeletedData uid occ) ->
-        (Just (userIdToUUID uid), Nothing, "user_deleted", toJSON d, occ)
-    Event.AccountLocked d@(Event.AccountLockedData _ _ _ _ occ) ->
-        (Nothing, Nothing, "account_locked", toJSON d, occ)
-    Event.LoginThrottled d@(Event.LoginThrottledData _ _ occ) ->
-        (Nothing, Nothing, "login_throttled", toJSON d, occ)
-    Event.PasskeyRegistered d@(Event.PasskeyRegisteredData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "passkey_registered", toJSON d, occ)
-    Event.PasskeyRemoved d@(Event.PasskeyRemovedData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "passkey_removed", toJSON d, occ)
-    Event.MfaChallenged d@(Event.MfaChallengedData uid _ occ) ->
-        (Just (userIdToUUID uid), Nothing, "mfa_challenged", toJSON d, occ)
-    Event.MfaSucceeded d@(Event.MfaSucceededData uid sid occ) ->
-        (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "mfa_succeeded", toJSON d, occ)
-    Event.MfaFailed d@(Event.MfaFailedData mUid _ occ) ->
-        (fmap userIdToUUID mUid, Nothing, "mfa_failed", toJSON d, occ)
-    -- For impersonation events the subject (customer) is the row's user_id; the actor
-    -- (operator) and reason/ticket live inside the JSONB payload.
-    Event.ImpersonationStarted d ->
-        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_started", toJSON d, d.occurredAt)
-    Event.ImpersonationStopped d ->
-        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_stopped", toJSON d, d.occurredAt)
-    Event.ImpersonationActionBlocked d ->
-        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_action_blocked", toJSON d, d.occurredAt)
 
 insertAuthEventStmt :: Statement AuthEventRow ()
 insertAuthEventStmt =

@@ -57,6 +57,7 @@ library
     , shomei-core
     , text
     , time
+    , uuid
     , wai
 
 test-suite shomei-servant-test
@@ -82,5 +83,6 @@ test-suite shomei-servant-test
     , tasty-hunit
     , text
     , time
+    , uuid
     , wai
     , warp

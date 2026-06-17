@@ -13,7 +13,7 @@ module Main (main) where
 
 import Data.Foldable (toList)
 import Data.IORef (IORef, newIORef, readIORef)
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -41,6 +41,7 @@ import Network.HTTP.Client (
     responseStatus,
  )
 import Network.HTTP.Types (Header, statusCode)
+import Network.HTTP.Types.URI (urlEncode)
 import Network.Wai (Application, Request)
 import Network.Wai.Handler.Warp (testWithApplication)
 
@@ -63,16 +64,17 @@ import Data.Map.Strict qualified as Map
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
 import Shomei.Domain.Email (emailText)
-import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
+import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Effect.InMemory (
     World (..),
     emptyWorld,
     runAuthEventPublisher,
+    runAuthEventReader,
     runClock,
     runCredentialStore,
     runLoginAttemptStore,
@@ -92,11 +94,11 @@ import Shomei.Effect.InMemory (
  )
 import Shomei.Id (genSessionId, genUserId)
 
+import Crypto.JOSE.JWK (JWK, JWKSet)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
-import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler)
@@ -136,6 +138,7 @@ runHybrid ref jwk jwkset cfg =
         . runTokenGen ref
         . runClock ref
         . runSigningKeyStore ref
+        . runAuthEventReader ref
         . runAuthEventPublisher ref
         . runTokenVerifierJwt jwkset cfg
         . runTokenSignerJwt jwk cfg
@@ -465,6 +468,56 @@ scenario ref adminToken impToken port = do
     case delegated of
         [s] -> s.status @?= SessionRevoked
         _ -> assertFailure ("expected exactly one delegated session, got " <> show (length delegated))
+
+    -- (s) EP-7 audit retrieval: admin reads the trail; non-admin/no-token are refused;
+    -- filters and keyset pagination behave.
+    (auditNoTokStatus, _) <- getJSON mgr port "/admin/audit/events" []
+    auditNoTokStatus @?= 401
+    (auditForbiddenStatus, _) <- getJSON mgr port "/admin/audit/events" (bearer plAccess)
+    auditForbiddenStatus @?= 403
+    (auditStatus, auditBody) <- getJSON mgr port "/admin/audit/events" (bearer adminToken)
+    auditStatus @?= 200
+    auditResp <- must "audit body" auditBody
+    case dig ["events"] auditResp of
+        Just (Array xs) -> assertBool "audit trail is non-empty" (not (null xs))
+        _ -> assertFailure "expected an events array"
+
+    -- type filter: every returned row is a login_succeeded (and there is at least one)
+    (auditTypeStatus, auditTypeBody) <- getJSON mgr port "/admin/audit/events?type=login_succeeded" (bearer adminToken)
+    auditTypeStatus @?= 200
+    auditTypeResp <- must "audit type body" auditTypeBody
+    case dig ["events"] auditTypeResp of
+        Just (Array xs) -> do
+            assertBool "at least one login_succeeded event" (not (null xs))
+            assertBool
+                "every returned event is login_succeeded"
+                (all (\e -> (field "eventType" e >>= asText) == Just "login_succeeded") (toList xs))
+        _ -> assertFailure "expected an events array"
+
+    -- a malformed UUID filter is a 400
+    (auditBadStatus, _) <- getJSON mgr port "/admin/audit/events?user=not-a-uuid" (bearer adminToken)
+    auditBadStatus @?= 400
+
+    -- keyset pagination: limit=1, then follow nextCursor; the two pages are disjoint.
+    (p1Status, p1Body) <- getJSON mgr port "/admin/audit/events?limit=1" (bearer adminToken)
+    p1Status @?= 200
+    p1Resp <- must "audit page1 body" p1Body
+    p1Events <- case dig ["events"] p1Resp of
+        Just (Array xs) -> pure (toList xs)
+        _ -> assertFailure "expected events array (page1)"
+    assertBool "page1 has exactly one event" (length p1Events == 1)
+    cursor <- must "page1 nextCursor" (dig ["nextCursor"] p1Resp >>= asText)
+    let p1Id = listToMaybe p1Events >>= field "eventId" >>= asText
+    (p2Status, p2Body) <-
+        getJSON mgr port ("/admin/audit/events?limit=1&before=" <> urlEncodeText cursor) (bearer adminToken)
+    p2Status @?= 200
+    p2Resp <- must "audit page2 body" p2Body
+    p2Events <- case dig ["events"] p2Resp of
+        Just (Array xs) -> pure (toList xs)
+        _ -> assertFailure "expected events array (page2)"
+    assertBool "page2 has exactly one event" (length p2Events == 1)
+    let p2Id = listToMaybe p2Events >>= field "eventId" >>= asText
+    assertBool "the two pages are disjoint" (p1Id /= p2Id)
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
@@ -530,6 +583,10 @@ deleteAuth mgr port path hdrs = do
 
 bearer :: Text -> [Header]
 bearer tok = [("Authorization", "Bearer " <> Text.encodeUtf8 tok)]
+
+-- | Percent-encode a query-string value (the audit cursor carries @:@, @.@, @;@).
+urlEncodeText :: Text -> String
+urlEncodeText = T.unpack . Text.decodeUtf8 . urlEncode True . Text.encodeUtf8
 
 -- JSON navigation helpers.
 

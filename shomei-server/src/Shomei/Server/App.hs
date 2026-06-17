@@ -21,17 +21,18 @@ module Shomei.Server.App (
 
 import Shomei.Prelude
 
+import Crypto.JOSE.JWK (JWK, JWKSet)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Network.HTTP.Client (Manager)
-import Crypto.JOSE.JWK (JWK, JWKSet)
 
 import Shomei.Config (ShomeiConfig (passwordPolicy), webauthnConfig)
 import Shomei.Domain.Password (PasswordPolicy (breachCheckTimeoutMs))
 import Shomei.Error (AuthError)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
+import Shomei.Effect.AuthEventReader (AuthEventReader)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -55,9 +56,8 @@ import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
 import Shomei.Notify (runNotifierFromConfig)
-import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
-import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
+import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
@@ -70,6 +70,8 @@ import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
+import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
+import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
 
 {- | The single effect stack the assembled server interprets. The high-level ports
 come first (the handler's view); 'Database', @Error AuthError@, and 'IOE' sit beneath
@@ -93,6 +95,7 @@ type AppEffects =
      , TokenSigner
      , TokenVerifier
      , AuthEventPublisher
+     , AuthEventReader
      , SigningKeyStore
      , Clock
      , TokenGen
@@ -129,6 +132,7 @@ runAppIO env =
         . runTokenGenCrypto
         . runClockIO
         . runSigningKeyStorePostgres
+        . runAuthEventReaderPostgres
         . runAuthEventPublisherPostgres
         . runTokenVerifierJwt env.envJwks env.envConfig
         . runTokenSignerJwt env.envKey env.envConfig

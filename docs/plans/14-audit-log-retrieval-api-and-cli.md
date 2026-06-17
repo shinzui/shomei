@@ -83,12 +83,12 @@ Milestone 1 — Read/query layer (shomei-core port + shomei-postgres interpreter
 - [x] Add the PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/AuthEventReader.hs`): filtered, keyset-paginated SELECT + COUNT (Params-monoid encoder; `text[]` via `E.foldableArray`; applicative row decoder).
 - [x] Wire `runAuthEventReaderPostgres` into the `shomei-postgres` test stack (both interpreter chains + `AppEffects`) and add `testAuditEventReader` (seed 5 events for two users, assert newest-first ordering, user/type/time filters, `count`, two-page keyset walk is disjoint+complete, one reconstruct check). 22 postgres tests pass.
 
-Milestone 2 — HTTP API (`GET /admin/audit/events`):
+Milestone 2 — HTTP API (`GET /admin/audit/events`): **DONE (2026-06-17)**
 
-- [ ] Add `AuditEventReader` to the servant and server effect stacks; wire `runAuthEventReaderPostgres` in `shomei-server`.
-- [ ] Add DTOs (`AuditEventResponse`, `AuditEventsPage`) and the cursor codec to `shomei-servant`.
-- [ ] Add the `auditEvents` route to `ShomeiAPI`, the handler (admin-gated), and wire it into `shomeiServer`.
-- [ ] Add servant integration tests: admin token → 200 with events; non-admin token → 403; filters and pagination behave.
+- [x] Add `AuthEventReader` to the servant (`Shomei.Servant.Seam.AppEffects`) and server (`Shomei.Server.App.AppEffects`) effect stacks; wire `runAuthEventReaderPostgres` into `runAppIO`. The `inject` bridge in `Shomei.Server.Boot` type-checks unchanged. Also added an in-memory `runAuthEventReader` to `Shomei.Effect.InMemory` so the hybrid servant-test stack interprets the new port (see Decision Log: the event→envelope projection was hoisted to `Shomei.Domain.EventCodec.projectAuthEvent` as the single source of truth, and the PostgreSQL writer now delegates to it).
+- [x] Add DTOs (`AuditEventResponse`, `AuditEventsPage`) + `storedToResponse` and the opaque cursor codec (`encodeCursor`/`decodeCursor`, `"<iso8601>;<uuid>"`) to `shomei-servant/src/Shomei/Servant/DTO.hs`. Added `uuid` to the servant cabal.
+- [x] Add the `auditEvents` route to `ShomeiAPI` (QueryParam/QueryParams), the admin-gated `auditEventsH` + total `buildQuery` (malformed UUID/timestamp/cursor → 400), and wire `auditEvents = auditEventsH env` into `shomeiServer`.
+- [x] Servant integration tests: admin token → 200 with a non-empty trail; non-admin → 403; no token → 401; `?type=login_succeeded` filters; `?user=not-a-uuid` → 400; `?limit=1` + follow `nextCursor` walks disjoint pages. `shomei-servant-test` passes.
 
 Milestone 3 — CLI (`shomei-admin audit ...`):
 
@@ -178,6 +178,36 @@ Record every decision made while working on the plan.
   (not rejected).
   Rationale: Prevents an unbounded scan from one careless query while keeping the interface
   forgiving. Both surfaces share the same clamp inside the query layer.
+  Date: 2026-06-17
+
+- Decision: Hoist the event→envelope projection into `shomei-core`
+  (`Shomei.Domain.EventCodec.projectAuthEvent :: AuthEvent -> (Maybe UUID, Maybe UUID, Text,
+  Value, UTCTime)`) as the single source of truth, and have the PostgreSQL writer
+  (`Shomei.Postgres.AuthEventPublisher`) delegate to it (it keeps generating the row's
+  `event_id`). The round-trip spec now pins `project → reconstruct` for all 24 constructors.
+  Rationale: Milestone 2 needs an in-memory `AuthEventReader` for the servant test's hybrid
+  stack, which must project the `World`'s typed event log into `StoredAuthEvent` rows
+  identically to the writer. Rather than duplicate the 24-case mapping in two places (which
+  could drift), one core function is shared by the writer, the in-memory reader, and the
+  round-trip test. This is additive — `projectAuthEvent` was previously private to the writer,
+  the `event_type` strings are unchanged, and no effect-stack entry was reordered or removed
+  (IP-9). Verified: `shomei-postgres-test` (incl. `testPublishEvent`) still green.
+  Date: 2026-06-17
+
+- Decision: The `runAuthEventReader` in-memory interpreter assigns each event a synthetic,
+  insertion-ordered `event_id` (`UUID.fromWords 0 0 0 i`) because the `World` event log stores
+  only the typed `AuthEvent`, not the random `event_id` the SQL writer generates.
+  Rationale: The reader's keyset order is `(created_at, event_id) DESC`; the in-memory test's
+  fixed clock makes every event share `created_at`, so a deterministic, monotone-with-insertion
+  `event_id` is needed for a stable total order and correct cursor pagination. This only affects
+  the in-memory test path; the PostgreSQL interpreter (proven in M1) uses the real `event_id`.
+  Date: 2026-06-17
+
+- Decision: `runAuthEventReaderPostgres` is constrained `(Database :> es, Error AuthError :> es)`
+  — no `IOE` — narrowing the signature the plan documented.
+  Rationale: Reads go entirely through the `Database` effect; there is no `liftIO`. It still
+  composes into the server/test chains (which also provide `IOE`). Avoids a
+  `-Wredundant-constraints` warning. (Also recorded in Surprises & Discoveries.)
   Date: 2026-06-17
 
 

@@ -13,13 +13,18 @@ module Shomei.Servant.Handlers (
 
 import Shomei.Prelude
 
-import Data.Aeson (Value, encode)
-import Network.Socket (SockAddr (..))
+import Data.Aeson (Value, encode, object)
+import Data.Aeson qualified as Aeson
 import Data.Text qualified as Text
+import Data.Time.Format.ISO8601 (iso8601ParseM)
+import Data.UUID (UUID)
+import Data.UUID qualified as UUID
+import Network.Socket (SockAddr (..))
 
-import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, throwError)
+import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, throwError)
 import Servant.Server.Generic (AsServerT)
 
+import Shomei.Domain.Claims (AuthClaims (..), Role (..))
 import Shomei.Domain.Command (
     ClientContext (..),
     LoginCommand (..),
@@ -27,7 +32,6 @@ import Shomei.Domain.Command (
     RefreshCommand (..),
     SignupCommand (..),
  )
-import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (ClientIp (..))
@@ -35,6 +39,14 @@ import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Effect.AuthEventPublisher (publishAuthEvent)
+import Shomei.Effect.AuthEventReader (
+    AuditCursor (..),
+    AuditEventQuery (..),
+    StoredAuthEvent (..),
+    clampLimit,
+    emptyAuditQuery,
+    queryAuthEvents,
+ )
 import Shomei.Effect.Clock (now)
 import Shomei.Effect.SessionStore (findSessionById)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
@@ -49,7 +61,9 @@ import Shomei.Workflow.Passkey qualified as Passkey
 
 import Shomei.Servant.API (ShomeiAPI (..))
 import Shomei.Servant.Auth (AuthUser (..))
+import Shomei.Servant.Authz (requireRole)
 import Shomei.Servant.DTO (
+    AuditEventsPage (..),
     ChangePasswordRequest (..),
     ConfirmEmailVerificationRequest (..),
     ConfirmPasswordResetRequest (..),
@@ -73,12 +87,15 @@ import Shomei.Servant.DTO (
     TokenPairResponse,
     UserResponse,
     VerifyEmailRequest (..),
+    decodeCursor,
+    encodeCursor,
+    impersonateToResponse,
     loginResultToResponse,
     passkeyToResponse,
     sessionToResponse,
+    storedToResponse,
     tokenPairToResponse,
     userToResponse,
-    impersonateToResponse,
  )
 import Shomei.Servant.Error (authErrorToServerError)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
@@ -107,6 +124,7 @@ shomeiServer env =
         , passkeyLoginComplete = passkeyLoginCompleteH env
         , impersonate = impersonateH env
         , stopImpersonate = stopImpersonateH env
+        , auditEvents = auditEventsH env
         , jwks = jwksH env
         , health = healthH
         , ready = readyH env
@@ -313,6 +331,85 @@ stopImpersonateH :: Env -> AuthUser -> Handler NoContent
 stopImpersonateH env caller = do
     runAuth env (Imp.stopImpersonation caller.authClaims)
     pure NoContent
+
+{- | @GET /admin/audit/events@ (EP-7): admin-gated, filtered, keyset-paginated audit-trail
+read. The query params arrive in route order. 'requireRole' rejects a non-admin principal
+with 403 before any work; a malformed param (bad UUID, timestamp, or cursor) is a 400 via
+'buildQuery'. 'nextCursor' is set only when the page came back full (exactly the requested,
+clamped limit), so a caller paginates until it is 'Nothing'.
+-}
+auditEventsH ::
+    Env ->
+    AuthUser ->
+    Maybe Text -> -- ?user=<uuid>
+    Maybe Text -> -- ?session=<uuid>
+    [Text] -> -- ?type=<t>&type=<t>…
+    Maybe Text -> -- ?since=<iso8601>
+    Maybe Text -> -- ?until=<iso8601>
+    Maybe Int -> -- ?limit=<n>
+    Maybe Text -> -- ?before=<cursor>
+    Handler AuditEventsPage
+auditEventsH env user mUser mSession types mSince mUntil mLimit mBefore = do
+    requireRole (Role "admin") user
+    q <- either badRequest pure (buildQuery mUser mSession types mSince mUntil mLimit mBefore)
+    rows <- runPort env (queryAuthEvents q)
+    let full = length rows == clampLimit q.queryLimit
+        next = if full then encodeCursor . lastCursor <$> lastMay rows else Nothing
+    pure AuditEventsPage{events = map storedToResponse rows, nextCursor = next}
+  where
+    lastCursor s = AuditCursor{cursorCreatedAt = s.storedCreatedAt, cursorEventId = s.storedEventId}
+    lastMay = \case
+        [] -> Nothing
+        xs -> Just (last xs)
+    badRequest msg =
+        throwError
+            err400
+                { errBody = encode (object ["error" Aeson..= ("bad_request" :: Text), "message" Aeson..= (msg :: Text)])
+                , errHeaders = [("Content-Type", "application/json")]
+                }
+
+{- | Parse the textual query params into an 'AuditEventQuery'. Total: any parse failure is a
+'Left' the handler maps to 400. The limit defaults to 50 and is clamped inside the query
+layer; an empty @type@ list means "all types".
+-}
+buildQuery ::
+    Maybe Text ->
+    Maybe Text ->
+    [Text] ->
+    Maybe Text ->
+    Maybe Text ->
+    Maybe Int ->
+    Maybe Text ->
+    Either Text AuditEventQuery
+buildQuery mUser mSession types mSince mUntil mLimit mBefore = do
+    user <- optUuid "user" mUser
+    session <- optUuid "session" mSession
+    since <- optTime "since" mSince
+    until_ <- optTime "until" mUntil
+    before <- optCursor mBefore
+    pure
+        emptyAuditQuery
+            { queryUserId = user
+            , querySessionId = session
+            , queryEventTypes = types
+            , querySince = since
+            , queryUntil = until_
+            , queryLimit = fromMaybe 50 mLimit
+            , queryBefore = before
+            }
+  where
+    optUuid :: Text -> Maybe Text -> Either Text (Maybe UUID)
+    optUuid name = \case
+        Nothing -> Right Nothing
+        Just t -> maybe (Left ("invalid " <> name <> " parameter (expected a UUID)")) (Right . Just) (UUID.fromText t)
+    optTime :: Text -> Maybe Text -> Either Text (Maybe UTCTime)
+    optTime name = \case
+        Nothing -> Right Nothing
+        Just t -> maybe (Left ("invalid " <> name <> " parameter (expected an ISO-8601 timestamp)")) (Right . Just) (iso8601ParseM (Text.unpack t))
+    optCursor :: Maybe Text -> Either Text (Maybe AuditCursor)
+    optCursor = \case
+        Nothing -> Right Nothing
+        Just t -> maybe (Left "invalid before cursor") (Right . Just) (decodeCursor t)
 
 jwksH :: Env -> Handler Value
 jwksH env = pure env.jwksJson

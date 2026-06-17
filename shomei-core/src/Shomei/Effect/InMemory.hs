@@ -38,6 +38,7 @@ module Shomei.Effect.InMemory (
     runPasswordHasher,
     runPasswordBreachCheckerFake,
     runAuthEventPublisher,
+    runAuthEventReader,
     runSigningKeyStore,
     runClock,
     runTokenGen,
@@ -53,29 +54,23 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
+import Data.List (sortBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
+import Data.Ord (Down (..), comparing)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
+import Data.UUID qualified as UUID
 
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 
 import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Passkey (
-    NewPasskeyCredential (..),
-    PasskeyCredential (..),
-    PendingCeremony (..),
-    PublicKeyBytes,
-    SignatureCounter (..),
-    UserHandle,
-    WebAuthnCredentialId,
- )
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (
@@ -87,6 +82,15 @@ import Shomei.Domain.LoginAttempt (
  )
 import Shomei.Domain.Notification (Notification)
 import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus (..))
+import Shomei.Domain.Passkey (
+    NewPasskeyCredential (..),
+    PasskeyCredential (..),
+    PendingCeremony (..),
+    PublicKeyBytes,
+    SignatureCounter (..),
+    UserHandle,
+    WebAuthnCredentialId,
+ )
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
 import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (
@@ -119,7 +123,15 @@ import Shomei.Id (
     genVerificationTokenId,
  )
 
+import Shomei.Domain.EventCodec (projectAuthEvent)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
+import Shomei.Effect.AuthEventReader (
+    AuditCursor (..),
+    AuditEventQuery (..),
+    AuthEventReader (..),
+    StoredAuthEvent (..),
+    clampLimit,
+ )
 import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
@@ -591,6 +603,51 @@ runAuthEventPublisher :: (IOE :> es) => IORef World -> Eff (AuthEventPublisher :
 runAuthEventPublisher ref = interpret_ \case
     PublishAuthEvent ev -> liftIO (modifyIORef' ref (#publishedEvents %~ (ev :)))
 
+{- | In-memory mirror of 'Shomei.Postgres.AuthEventReader.runAuthEventReaderPostgres' over the
+'World''s @publishedEvents@ log. Each event is projected with the shared
+'Shomei.Domain.EventCodec.projectAuthEvent' (the same mapping the writer uses) and assigned a
+synthetic, insertion-ordered @event_id@ so the @(created_at, event_id)@ keyset is stable and
+monotone with insertion. Filters, newest-first ordering, the @before@ cursor, and the limit
+clamp all match the SQL interpreter; 'CountAuthEvents' applies the filters only (no
+cursor/limit), as the SQL @COUNT@ does.
+-}
+runAuthEventReader :: (IOE :> es) => IORef World -> Eff (AuthEventReader : es) a -> Eff es a
+runAuthEventReader ref = interpret_ \case
+    QueryAuthEvents q -> liftIO (queryRows q <$> readIORef ref)
+    CountAuthEvents q -> liftIO (length . filterRows q . allRows <$> readIORef ref)
+  where
+    -- Oldest-first index → synthetic event_id, so a later insert sorts after an earlier one.
+    allRows :: World -> [StoredAuthEvent]
+    allRows w = zipWith toStored [0 ..] (reverse w.publishedEvents)
+    toStored :: Int -> Event.AuthEvent -> StoredAuthEvent
+    toStored i ev =
+        let (uid, sid, etype, payload, occ) = projectAuthEvent ev
+         in StoredAuthEvent
+                { storedEventId = UUID.fromWords 0 0 0 (fromIntegral i)
+                , storedEventType = etype
+                , storedUserId = uid
+                , storedSessionId = sid
+                , storedCreatedAt = occ
+                , storedPayload = payload
+                }
+    filterRows :: AuditEventQuery -> [StoredAuthEvent] -> [StoredAuthEvent]
+    filterRows q =
+        filter \r ->
+            maybe True (\u -> r.storedUserId == Just u) q.queryUserId
+                && maybe True (\s -> r.storedSessionId == Just s) q.querySessionId
+                && (null q.queryEventTypes || r.storedEventType `elem` q.queryEventTypes)
+                && maybe True (\s -> r.storedCreatedAt >= s) q.querySince
+                && maybe True (\u -> r.storedCreatedAt < u) q.queryUntil
+    queryRows :: AuditEventQuery -> World -> [StoredAuthEvent]
+    queryRows q w =
+        let base = filterRows q (allRows w)
+            afterCursor = case q.queryBefore of
+                Nothing -> base
+                Just (AuditCursor t e) -> filter (\r -> (r.storedCreatedAt, r.storedEventId) < (t, e)) base
+            ordered = sortBy (comparing (Down . sortKey)) afterCursor
+         in take (clampLimit q.queryLimit) ordered
+    sortKey r = (r.storedCreatedAt, r.storedEventId)
+
 runNotifier :: (IOE :> es) => IORef World -> Eff (Notifier : es) a -> Eff es a
 runNotifier ref = interpret_ \case
     SendNotification n -> liftIO (modifyIORef' ref (#sentNotifications %~ (n :)))
@@ -691,8 +748,8 @@ fakeCompleteRegistration blob credJson =
                         }
             | otherwise -> Left WebAuthnChallengeMismatch
 
-fakeCompleteAuthentication
-    :: ByteString -> StoredCredentialForVerify -> Value -> Either WebAuthnError VerifiedAuthentication
+fakeCompleteAuthentication ::
+    ByteString -> StoredCredentialForVerify -> Value -> Either WebAuthnError VerifiedAuthentication
 fakeCompleteAuthentication blob StoredCredentialForVerify{credentialId = storedCid, signCounter = SignatureCounter n} credJson =
     case parseMaybe credentialFields credJson of
         Nothing -> Left (WebAuthnDecodeError "fake: malformed credential JSON")

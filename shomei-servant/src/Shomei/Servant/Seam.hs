@@ -19,8 +19,8 @@ module Shomei.Servant.Seam (
 
 import Shomei.Prelude
 
-import Data.Aeson (Value)
 import Control.Exception (SomeException, try)
+import Data.Aeson (Value)
 import Effectful (Eff, IOE)
 
 import Servant (Handler, throwError)
@@ -33,6 +33,7 @@ import Shomei.Error (AuthError, TokenError)
 import Shomei.Servant.Error (authErrorToServerError)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
+import Shomei.Effect.AuthEventReader (AuthEventReader)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -73,6 +74,7 @@ type AppEffects =
      , TokenSigner
      , TokenVerifier
      , AuthEventPublisher
+     , AuthEventReader
      , SigningKeyStore
      , Clock
      , TokenGen
