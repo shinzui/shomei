@@ -13,6 +13,9 @@ author:        Nadeem Bitar
 maintainer:    nadeem@gmail.com
 category:      Web, Security
 
+-- Embedded at compile time by Shomei.Domain.CommonPasswords via Template Haskell.
+extra-source-files: data/common-passwords.txt
+
 common warnings
   ghc-options:
     -Wall -Wcompat -Widentities -Wincomplete-record-updates
@@ -38,6 +41,7 @@ library
     Shomei.Config
     Shomei.Domain.Claims
     Shomei.Domain.Command
+    Shomei.Domain.CommonPasswords
     Shomei.Domain.Credential
     Shomei.Domain.Email
     Shomei.Domain.Event
@@ -90,6 +94,7 @@ library
     , containers
     , effectful
     , effectful-core
+    , file-embed     >=0.0.15 && <0.0.17
     , generic-lens
     , http-api-data
     , lens
@@ -106,6 +111,7 @@ test-suite shomei-core-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     Shomei.AccountSpec
+    Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec
     Shomei.WebAuthnCeremonySpec
