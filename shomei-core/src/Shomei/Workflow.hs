@@ -43,7 +43,7 @@ import Shomei.Domain.LoginAttempt (
     LoginOutcome (..),
     NewLoginAttempt (..),
  )
-import Shomei.Domain.Password (validatePassword)
+import Shomei.Domain.Password (PasswordContext (..), validatePassword)
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Domain.RefreshToken qualified as RT
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (SessionActive))
@@ -121,7 +121,12 @@ signup ::
     Eff es (Either AuthError (User, TokenPair))
 signup cfg cmd = runErrorNoCallStack do
     email <- either throwError pure (mkEmail (emailText cmd.email))
-    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy cmd.password)
+    let pwContext =
+            PasswordContext
+                { contextEmail = Just (emailText email)
+                , contextDisplayName = cmd.displayName
+                }
+    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.password)
     existing <- findUserByEmail email
     when (isJust existing) (throwError EmailAlreadyRegistered)
     pwHash <- hashPassword cmd.password

@@ -7,7 +7,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
-import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -16,14 +16,17 @@ import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
-import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
+import Shomei.Domain.Password (PasswordHash (..), PasswordPolicy (..), PlainPassword (..))
 import Shomei.Domain.PasswordResetToken (PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Domain.VerificationToken (PersistedVerificationToken (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
-import Shomei.Error (AuthError (InvalidCredentials, PasswordResetTokenInvalid, VerificationTokenInvalid))
+import Shomei.Error (
+    AuthError (InvalidCredentials, PasswordResetTokenInvalid, VerificationTokenInvalid, WeakPassword),
+    PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
+ )
 import Shomei.Workflow (login, signup)
 import Shomei.Workflow.Account (
     ChangePassword (..),
@@ -79,7 +82,38 @@ tests =
         , testConfirmPasswordReset
         , testRejectConsumedReset
         , testChangePasswordWrongCurrent
+        , testChangePasswordRejectsCommon
+        , testChangePasswordRejectsIdentity
+        , testConfirmResetRejectsCommon
         ]
+
+-- | A policy with a small minimum length so identity-derived passwords (e.g. "alice")
+-- reach the contextual check instead of failing the default length guard first.
+smallMinCfg :: ShomeiConfig
+smallMinCfg = cfg{passwordPolicy = cfg.passwordPolicy{minLength = 4}}
+
+commonPw :: PlainPassword
+commonPw = PlainPassword "passwordpassword" -- in the bundled dictionary, length >= 12
+
+testChangePasswordRejectsCommon :: TestTree
+testChangePasswordRejectsCommon = testCase "change password rejects a common new password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (changePassword cfg (ChangePassword user.userId strongPw commonPw))
+    result @?= Left (WeakPassword PasswordTooCommon)
+
+testChangePasswordRejectsIdentity :: TestTree
+testChangePasswordRejectsIdentity = testCase "change password rejects an identity-derived new password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    (user, _) <- expectRight =<< runInMemory ref (signup smallMinCfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (changePassword smallMinCfg (ChangePassword user.userId strongPw (PlainPassword "alice")))
+    result @?= Left (WeakPassword PasswordResemblesIdentity)
+
+testConfirmResetRejectsCommon :: TestTree
+testConfirmResetRejectsCommon = testCase "confirm password reset rejects a common new password" do
+    (ref, _, raw) <- passwordResetRequestedWorld
+    result <- runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset raw commonPw))
+    result @?= Left (WeakPassword PasswordTooCommon)
 
 testRequestEmailVerification :: TestTree
 testRequestEmailVerification = testCase "request email verification emits a notification with a token" do

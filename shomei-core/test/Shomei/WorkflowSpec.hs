@@ -16,19 +16,22 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
-import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.Password (PlainPassword (..))
+import Shomei.Domain.Password (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
-import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
+import Shomei.Error (
+    AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
+    PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
+ )
 import Shomei.Workflow (LoginResult (..), login, logout, refresh, signup)
 
 -- Fixtures -------------------------------------------------------------------
@@ -76,7 +79,27 @@ tests =
         , testLogoutRevokes
         , testFailClosed
         , testNoAccountLeak
+        , testSignupRejectsCommon
+        , testSignupRejectsIdentity
         ]
+
+-- | A policy with a small minimum length so identity-derived passwords (e.g. "alice",
+-- shorter than the default 12) reach the contextual check instead of failing on length.
+smallMinCfg :: ShomeiConfig
+smallMinCfg = cfg{passwordPolicy = cfg.passwordPolicy{minLength = 4}}
+
+testSignupRejectsCommon :: TestTree
+testSignupRejectsCommon = testCase "signup rejects a common password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    -- "passwordpassword" is in the bundled dictionary and is long enough to pass minLength.
+    res <- runInMemory ref (signup cfg (SignupCommand aliceEmail (PlainPassword "passwordpassword") Nothing))
+    res @?= Left (WeakPassword PasswordTooCommon)
+
+testSignupRejectsIdentity :: TestTree
+testSignupRejectsIdentity = testCase "signup rejects the email local-part as password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    res <- runInMemory ref (signup smallMinCfg (SignupCommand aliceEmail (PlainPassword "alice") Nothing))
+    res @?= Left (WeakPassword PasswordResemblesIdentity)
 
 testSignupLogin :: TestTree
 testSignupLogin = testCase "signup then login round-trips" do

@@ -51,21 +51,21 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Pre-flight: confirm EP-1 (`docs/plans/20-configurable-password-policy-end-to-end.md`)
-      is Complete and that `rejectCommonPasswords` and `rejectContextualPasswords` exist
-      on `PasswordPolicy` in `shomei-core/src/Shomei/Domain/Password.hs`.
-- [ ] M1: Add `PasswordResemblesIdentity` constructor to `PasswordPolicyViolation` in
-      `shomei-core/src/Shomei/Error.hs`; grep the repo for every match site; verify the
-      Servant mapping covers it; `cabal build all` clean (no non-exhaustive warnings).
-- [ ] M2: Create `shomei-core/data/common-passwords.txt`; add the `file-embed` dependency
-      and `data` source to `shomei-core/shomei-core.cabal`; create
+- [x] Pre-flight (2026-06-17): confirmed EP-1 Complete; `rejectCommonPasswords` and
+      `rejectContextualPasswords` exist on `PasswordPolicy`.
+- [x] M1 (2026-06-17): Added `PasswordResemblesIdentity` constructor to `PasswordPolicyViolation`;
+      grep found no per-constructor matches (only the `WeakPassword _` wildcard in the Servant
+      mapping), so no HTTP edit needed; `cabal build all` clean, no non-exhaustive warnings.
+- [x] M2 (2026-06-17): Created `shomei-core/data/common-passwords.txt`; added `file-embed`
+      dependency + `extra-source-files` to `shomei-core.cabal`; created
       `shomei-core/src/Shomei/Domain/CommonPasswords.hs` exporting `isCommonPassword`;
-      add the pure `Shomei.Domain.PasswordSpec` test module and register it in `Main.hs`.
-- [ ] M3: Add `PasswordContext`; change `validatePassword` to be context-aware; thread
-      context through `signup`, `changePassword`, and `confirmPasswordReset`; add
-      workflow-level tests; run `cabal test all` and fix any newly-failing fixtures.
-- [ ] Final: full `cabal build all` and `cabal test all` green; Decision Log, Surprises,
-      and Outcomes updated.
+      added the pure `Shomei.Domain.PasswordSpec` test module and registered it in `Main.hs`.
+- [x] M3 (2026-06-17): Added `PasswordContext`; made `validatePassword` context-aware; threaded
+      context through `signup`, `changePassword`, and `confirmPasswordReset` (the latter gains a
+      `UserStore` constraint and a `findUserById` lookup); added pure + workflow-level rejection
+      tests; `cabal test all` green (no fixture changes needed — `strongPw` survives the default-on flags).
+- [x] Final (2026-06-17): full `cabal build all` and `cabal test all` green (all 11 suites);
+      Decision Log, Surprises, and Outcomes updated.
 
 
 ## Surprises & Discoveries
@@ -73,7 +73,28 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- M1 (2026-06-17): the Servant mapping is exactly the predicted wildcard
+  (`shomei-servant/src/Shomei/Servant/Error.hs:43` — `WeakPassword _ -> json err400 ...`), and a
+  repo-wide grep for `PasswordTooCommon`/`PasswordMissingRequiredClass`/`PasswordResemblesIdentity`
+  found NO other pattern-match sites. So adding the constructor required zero changes outside
+  `Shomei.Error`, and `shomei-servant/test` has no weak-password rendering assertion to update.
+
+- M2 (2026-06-17): used `Data.FileEmbed.makeRelativeToProject "data/common-passwords.txt" >>=
+  embedStringFile` (the project-anchored TH idiom) rather than a bare `embedStringFile`, so the
+  splice resolves the path against the package directory regardless of the build's CWD. Added the
+  16-char dictionary entry `passwordpassword` specifically so workflow tests can exercise the
+  common-password branch under the default `minLength = 12` without a small-min override.
+
+- M3 (2026-06-17): no existing fixture needed changing. The shared `strongPw`
+  (`"correct horse battery staple"`) and `newPw` (`"... two"`) are neither in the starter
+  dictionary nor identity-derived, so the EP-1 default-on flags did not break any prior test —
+  contrary to the MasterPlan's cautionary note, which proved unnecessary here. Confirmed by a green
+  `cabal test all` with no fixture edits.
+
+- M3 (2026-06-17): `cabal test all` run in parallel intermittently reports one postgres-backed
+  suite as `0 of 1 ... passed` due to several suites sharing one `postgres` database concurrently;
+  every suite passes when run individually or with `-j1`. This is pre-existing test-infra
+  contention, unrelated to EP-2 (which adds only pure-core + in-memory tests).
 
 
 ## Decision Log
@@ -121,6 +142,21 @@ Record every decision made while working on the plan.
   fast enough for a one-time per-request check, and it avoids adding a dependency.
   Date: 2026-06-17
 
+- Decision: Resolve the embedded dictionary path with
+  `makeRelativeToProject "data/common-passwords.txt" >>= embedStringFile` rather than a bare
+  `embedStringFile "data/common-passwords.txt"`.
+  Rationale: anchors the Template Haskell splice at the package directory (where the `.cabal`
+  lives), so the build does not depend on the invoking CWD. Verified the library compiles and the
+  dictionary set is non-empty.
+  Date: 2026-06-17
+
+- Decision: In `changePassword`, load the user first and validate the new password against the
+  resulting context BEFORE checking the current password.
+  Rationale: the contextual check needs `user.email`/`user.displayName`, so the user must be loaded
+  first. A side effect is that an unknown `userId` returns `InvalidCredentials` before the password
+  is inspected — acceptable and arguably safer; no existing test asserts on the old ordering.
+  Date: 2026-06-17
+
 - Decision: Bundle a starter `common-passwords.txt` with a few hundred well-known entries
   and leave a prominent header comment instructing the operator to replace/extend it with
   a full top-10k list (e.g. SecLists `10-million-password-list-top-10000`).
@@ -135,7 +171,27 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered the two local, offline checks exactly as scoped. `validatePassword` is now
+context-aware (`PasswordPolicy -> PasswordContext -> PlainPassword -> Either ...`), rejecting
+dictionary hits with `PasswordTooCommon` and identity-derived passwords (email local-part, full
+email, or display name — exact, normalized equality) with the new `PasswordResemblesIdentity`.
+Both checks are individually gated by the EP-1 flags `rejectCommonPasswords` /
+`rejectContextualPasswords` (default on; provably skipped when off). All three password-accepting
+workflows enforce them: `signup` builds context from the command, `changePassword` was reordered
+to load the user first, and `confirmPasswordReset` gained a `UserStore` constraint plus a
+`findUserById tok.userId` lookup so resets are checked consistently.
+
+Matches the original purpose: pure-level and workflow-level acceptance criteria all verified by new
+tests (`Shomei.Domain.PasswordSpec` plus signup/change/reset rejection cases). At the HTTP layer the
+new violations surface through the existing `400 weak_password` wildcard with no Servant change.
+
+Lessons / deviations:
+- The MasterPlan warned that default-on flags might break existing fixtures; in practice none did
+  (the shared strong fixtures are neither common nor identity-derived).
+- Reordering `changePassword` to validate the new password after loading the user means an unknown
+  `userId` now returns `InvalidCredentials` before the new password is inspected — no test asserts
+  on that ordering, and it is the safer behavior.
+- Set the `file-embed` path with `makeRelativeToProject` for CWD-independent resolution.
 
 
 ## Context and Orientation

@@ -9,6 +9,8 @@ module Shomei.Domain.Password (
     PlainPassword (..),
     PasswordHash (..),
     PasswordPolicy (..),
+    PasswordContext (..),
+    emptyPasswordContext,
     defaultPasswordPolicy,
     validatePassword,
 ) where
@@ -16,6 +18,7 @@ module Shomei.Domain.Password (
 import Shomei.Prelude
 
 import Data.Text qualified as Text
+import Shomei.Domain.CommonPasswords (isCommonPassword)
 import Shomei.Error (PasswordPolicyViolation (..))
 
 -- | Never logged, serialized, or persisted: redacting 'Show', no 'FromJSON'/'ToJSON'.
@@ -53,8 +56,42 @@ defaultPasswordPolicy =
         , breachCheckTimeoutMs = 1000
         }
 
-validatePassword :: PasswordPolicy -> PlainPassword -> Either PasswordPolicyViolation ()
-validatePassword policy (PlainPassword pw)
+-- | The identity context a password is checked against (for the contextual check).
+data PasswordContext = PasswordContext
+    { contextEmail :: !(Maybe Text)
+    -- ^ the user's email address (raw text), if known
+    , contextDisplayName :: !(Maybe Text)
+    -- ^ the user's display name, if any
+    }
+    deriving stock (Generic, Eq, Show)
+
+-- | No identity context (length and common-password checks still apply).
+emptyPasswordContext :: PasswordContext
+emptyPasswordContext = PasswordContext{contextEmail = Nothing, contextDisplayName = Nothing}
+
+{- | Validate a password against the policy and the user's identity context. Check order:
+length (cheap) first, then the common-password dictionary (if 'rejectCommonPasswords'),
+then the contextual identity check (if 'rejectContextualPasswords').
+-}
+validatePassword ::
+    PasswordPolicy -> PasswordContext -> PlainPassword -> Either PasswordPolicyViolation ()
+validatePassword policy context (PlainPassword pw)
     | Text.length pw < policy.minLength = Left (PasswordTooShort policy.minLength)
     | Text.length pw > policy.maxLength = Left (PasswordTooLong policy.maxLength)
+    | policy.rejectCommonPasswords && isCommonPassword pw = Left PasswordTooCommon
+    | policy.rejectContextualPasswords && resemblesIdentity context pw = Left PasswordResemblesIdentity
     | otherwise = Right ()
+
+{- | Does the password (trimmed, lowercased) exactly equal the user's email local-part,
+full email, or display name (each trimmed, lowercased)? Exact equality only — no
+substring rule, to avoid rejecting long passphrases that merely contain a short name.
+-}
+resemblesIdentity :: PasswordContext -> Text -> Bool
+resemblesIdentity ctx pw =
+    let p = Text.toLower (Text.strip pw)
+        norm = Text.toLower . Text.strip
+        emailCandidates = case ctx.contextEmail of
+            Nothing -> []
+            Just e -> let e' = norm e in [e', Text.takeWhile (/= '@') e']
+        nameCandidates = maybe [] (\n -> [norm n]) ctx.contextDisplayName
+     in not (Text.null p) && p `elem` (emailCandidates <> nameCandidates)

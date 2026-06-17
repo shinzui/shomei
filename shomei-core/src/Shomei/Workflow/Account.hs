@@ -20,11 +20,11 @@ import Effectful.Error.Static (runErrorNoCallStack, throwError)
 
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email)
+import Shomei.Domain.Email (Email, emailText)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
-import Shomei.Domain.Password (PlainPassword, validatePassword)
+import Shomei.Domain.Password (PasswordContext (..), PlainPassword, validatePassword)
 import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..), RefreshTokenHash (..))
 import Shomei.Domain.User (User (..), UserStatus (UserActive))
@@ -156,7 +156,8 @@ requestPasswordReset cfg cmd = do
     pure (Right ())
 
 confirmPasswordReset ::
-    ( PasswordResetTokenStore :> es
+    ( UserStore :> es
+    , PasswordResetTokenStore :> es
     , CredentialStore :> es
     , PasswordHasher :> es
     , SessionStore :> es
@@ -169,11 +170,17 @@ confirmPasswordReset ::
     ConfirmPasswordReset ->
     Eff es (Either AuthError ())
 confirmPasswordReset cfg cmd = runErrorNoCallStack do
-    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy cmd.newPassword)
     ts <- now
     h <- hashOneTimeToken cmd.token
     tok <- maybe (throwError PasswordResetTokenInvalid) pure =<< findPasswordResetTokenByHash h
     either throwError pure (ensureUsableReset tok ts)
+    user <- maybe (throwError PasswordResetTokenInvalid) pure =<< findUserById tok.userId
+    let pwContext =
+            PasswordContext
+                { contextEmail = Just (emailText user.email)
+                , contextDisplayName = user.displayName
+                }
+    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
     newHash <- hashPassword cmd.newPassword
     updatePasswordHash tok.userId newHash
     markPasswordResetTokenConsumed tok.passwordResetTokenId ts
@@ -194,8 +201,13 @@ changePassword ::
     ChangePassword ->
     Eff es (Either AuthError ())
 changePassword cfg cmd = runErrorNoCallStack do
-    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy cmd.newPassword)
     user <- maybe (throwError InvalidCredentials) pure =<< findUserById cmd.userId
+    let pwContext =
+            PasswordContext
+                { contextEmail = Just (emailText user.email)
+                , contextDisplayName = user.displayName
+                }
+    either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
     cred <- maybe (throwError InvalidCredentials) pure =<< findPasswordCredentialByEmail user.email
     ok <- verifyPassword cmd.currentPassword cred.passwordHash
     unless ok (throwError InvalidCredentials)
