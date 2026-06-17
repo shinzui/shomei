@@ -24,9 +24,11 @@ import Shomei.Prelude
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
+import Network.HTTP.Client (Manager)
 import Crypto.JOSE.JWK (JWK, JWKSet)
 
-import Shomei.Config (ShomeiConfig, webauthnConfig)
+import Shomei.Config (ShomeiConfig (passwordPolicy), webauthnConfig)
+import Shomei.Domain.Password (PasswordPolicy (breachCheckTimeoutMs))
 import Shomei.Error (AuthError)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
@@ -35,6 +37,7 @@ import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
 import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.PasskeyStore (PasskeyStore)
+import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
@@ -53,6 +56,7 @@ import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
 import Shomei.Notify (runNotifierFromConfig)
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
+import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
@@ -84,6 +88,7 @@ type AppEffects =
      , PendingCeremonyStore
      , Notifier
      , WebAuthnCeremony
+     , PasswordBreachChecker
      , PasswordHasher
      , TokenSigner
      , TokenVerifier
@@ -105,6 +110,8 @@ data Env = Env
     , envConfig :: !ShomeiConfig
     , envKey :: !JWK
     , envJwks :: !JWKSet
+    , envHttpManager :: !Manager
+    -- ^ shared TLS manager for the HIBP breach-check interpreter (EP-3)
     }
 
 {- | Interpret the whole 'AppEffects' stack down to IO, surfacing an infrastructure
@@ -126,6 +133,7 @@ runAppIO env =
         . runTokenVerifierJwt env.envJwks env.envConfig
         . runTokenSignerJwt env.envKey env.envConfig
         . runPasswordHasherCrypto
+        . runPasswordBreachCheckerHibp env.envHttpManager breachTimeoutMs
         . runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)
         . runNotifierFromConfig env.envConfig
         . runPendingCeremonyStorePostgres
@@ -137,3 +145,8 @@ runAppIO env =
         . runSessionStorePostgres
         . runCredentialStorePostgres
         . runUserStorePostgres
+  where
+    policy :: PasswordPolicy
+    policy = env.envConfig.passwordPolicy
+    breachTimeoutMs :: Int
+    breachTimeoutMs = policy.breachCheckTimeoutMs

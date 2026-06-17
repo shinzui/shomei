@@ -82,6 +82,7 @@ library
     Shomei.Prelude
     Shomei.Workflow
     Shomei.Workflow.Account
+    Shomei.Workflow.Breach
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
     Shomei.Workflow.Passkey

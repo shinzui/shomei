@@ -50,8 +50,9 @@ tests =
             withShomeiMigratedDatabase \connStr -> do
                 pool <- acquirePool 4 connStr
                 (key, jwks) <- bootstrapKeys pool
+                envMgr <- newManager defaultManagerSettings
                 let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-                    env = Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks}
+                    env = Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
                 testWithApplication (pure (embeddedApplication env)) \port -> do
                     mgr <- newManager defaultManagerSettings
 

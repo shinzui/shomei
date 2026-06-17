@@ -50,6 +50,7 @@ test-suite shomei-client-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     , base
+    , http-client
     , shomei-client
     , shomei-core
     , shomei-migrations:test-support

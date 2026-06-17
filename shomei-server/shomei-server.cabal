@@ -36,6 +36,7 @@ library
   exposed-modules:
     Shomei.Notify
     Shomei.Server.App
+    Shomei.Server.BreachChecker
     Shomei.Server.Boot
     Shomei.Server.Config
     Shomei.Server.Keys
@@ -51,6 +52,8 @@ library
     , effectful
     , effectful-core
     , hasql-pool
+    , http-client
+    , http-client-tls
     , http-types
     , jose
     , network

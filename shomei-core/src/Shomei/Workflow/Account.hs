@@ -36,6 +36,7 @@ import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.CredentialStore (CredentialStore, findPasswordCredentialByEmail, updatePasswordHash)
 import Shomei.Effect.Notifier (Notifier, sendNotification)
+import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
 import Shomei.Effect.PasswordResetTokenStore (
     PasswordResetTokenStore,
@@ -53,6 +54,8 @@ import Shomei.Effect.VerificationTokenStore (
     findVerificationTokenByHash,
     markVerificationTokenConsumed,
  )
+
+import Shomei.Workflow.Breach (enforceBreachPolicy)
 
 newtype RequestEmailVerification = RequestEmailVerification {email :: Email}
     deriving stock (Generic, Show)
@@ -160,6 +163,7 @@ confirmPasswordReset ::
     , PasswordResetTokenStore :> es
     , CredentialStore :> es
     , PasswordHasher :> es
+    , PasswordBreachChecker :> es
     , SessionStore :> es
     , RefreshTokenStore :> es
     , AuthEventPublisher :> es
@@ -181,6 +185,7 @@ confirmPasswordReset cfg cmd = runErrorNoCallStack do
                 , contextDisplayName = user.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
+    enforceBreachPolicy cfg.passwordPolicy cmd.newPassword
     newHash <- hashPassword cmd.newPassword
     updatePasswordHash tok.userId newHash
     markPasswordResetTokenConsumed tok.passwordResetTokenId ts
@@ -192,6 +197,7 @@ changePassword ::
     ( UserStore :> es
     , CredentialStore :> es
     , PasswordHasher :> es
+    , PasswordBreachChecker :> es
     , SessionStore :> es
     , RefreshTokenStore :> es
     , AuthEventPublisher :> es
@@ -208,6 +214,7 @@ changePassword cfg cmd = runErrorNoCallStack do
                 , contextDisplayName = user.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
+    enforceBreachPolicy cfg.passwordPolicy cmd.newPassword
     cred <- maybe (throwError InvalidCredentials) pure =<< findPasswordCredentialByEmail user.email
     ok <- verifyPassword cmd.currentPassword cred.passwordHash
     unless ok (throwError InvalidCredentials)

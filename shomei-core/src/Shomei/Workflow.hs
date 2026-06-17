@@ -65,6 +65,7 @@ import Shomei.Effect.LoginAttemptStore (
     setAccountLockout,
  )
 import Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser)
+import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (
@@ -82,6 +83,7 @@ import Shomei.Effect.TokenVerifier (TokenVerifier, verifyAccessToken)
 import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 
+import Shomei.Workflow.Breach (enforceBreachPolicy)
 import Shomei.Workflow.Mfa (prepareMfaChallenge)
 import Shomei.Workflow.Session (buildClaims, issueSession)
 
@@ -111,6 +113,7 @@ signup ::
     , SessionStore :> es
     , RefreshTokenStore :> es
     , PasswordHasher :> es
+    , PasswordBreachChecker :> es
     , TokenSigner :> es
     , AuthEventPublisher :> es
     , Clock :> es
@@ -127,6 +130,7 @@ signup cfg cmd = runErrorNoCallStack do
                 , contextDisplayName = cmd.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.password)
+    enforceBreachPolicy cfg.passwordPolicy cmd.password
     existing <- findUserByEmail email
     when (isJust existing) (throwError EmailAlreadyRegistered)
     pwHash <- hashPassword cmd.password

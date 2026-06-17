@@ -7,6 +7,7 @@ module Main (main) where
 
 import Data.Text (Text)
 
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -41,8 +42,9 @@ tests =
             withShomeiMigratedDatabase \connStr -> do
                 pool <- acquirePool 4 connStr
                 (key, jwks) <- bootstrapKeys pool
+                envMgr <- newManager defaultManagerSettings
                 let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-                    env = Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks}
+                    env = Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
                 testWithApplication (pure (application env)) \port -> do
                     cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 

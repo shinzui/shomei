@@ -31,6 +31,7 @@ import System.Posix.Signals qualified as Signals
 import Data.Aeson (Value (Object), decode)
 import Data.Aeson.KeyMap qualified as KM
 import Effectful (Eff, inject)
+import Network.HTTP.Client.TLS (newTlsManager)
 import Network.Wai (Application, Request)
 import Network.Wai.Handler.Warp qualified as Warp
 
@@ -114,7 +115,8 @@ buildEnv cfg settings = do
     _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
     pool <- acquirePool 10 settings.serverConnStr
     (key, jwks) <- bootstrapKeys pool
-    pure Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks}
+    mgr <- newTlsManager
+    pure Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = mgr}
 
 {- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 'Context', whose verifier closes over this 'Env's JWKSet and config so verification

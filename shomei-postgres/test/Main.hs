@@ -79,6 +79,7 @@ import Shomei.Effect.PasskeyStore (
     findPasskeysByUserHandle,
     updatePasskeySignCounter,
  )
+import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword)
 import Shomei.Effect.PasswordResetTokenStore (
     PasswordResetTokenStore,
@@ -92,7 +93,7 @@ import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById,
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
-import Shomei.Effect.InMemory (emptyWorld, runWebAuthnCeremonyFake)
+import Shomei.Effect.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
 import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, markUserEmailVerified)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Effect.VerificationTokenStore (
@@ -149,6 +150,7 @@ type AppEffects =
      , AuthEventPublisher
      , SigningKeyStore
      , TokenSigner
+     , PasswordBreachChecker
      , PasswordHasher
      , TokenGen
      , Clock
@@ -171,6 +173,7 @@ runAppWithNotifications ref pool action = do
             . runClockIO
             . runTokenGenCrypto
             . runPasswordHasherCrypto
+            . runPasswordBreachCheckerFake wref
             . runTokenSignerFake
             . runSigningKeyStorePostgres
             . runAuthEventPublisherPostgres
@@ -201,6 +204,7 @@ runAppAtTime t pool action = do
             . runClockFixed t
             . runTokenGenCrypto
             . runPasswordHasherCrypto
+            . runPasswordBreachCheckerFake wref
             . runTokenSignerFake
             . runSigningKeyStorePostgres
             . runAuthEventPublisherPostgres

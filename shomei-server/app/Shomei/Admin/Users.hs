@@ -26,6 +26,7 @@ import Shomei.Error (AuthError)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
+import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.SessionStore (SessionStore)
@@ -63,6 +64,7 @@ runSignup ::
         , CredentialStore
         , SessionStore
         , RefreshTokenStore
+        , PasswordBreachChecker
         , PasswordHasher
         , TokenSigner
         , AuthEventPublisher
@@ -83,6 +85,7 @@ runSignup pool =
         . runAuthEventPublisherPostgres
         . runTokenSignerFake
         . runPasswordHasherCrypto
+        . runPasswordBreachCheckerNoCheck
         . runRefreshTokenStorePostgres
         . runSessionStorePostgres
         . runCredentialStorePostgres
@@ -91,6 +94,13 @@ runSignup pool =
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFake = interpret_ \case
     SignAccessToken _ -> pure (AccessToken "admin-cli-token")
+
+-- | The admin CLI does not perform the network breach check (mirroring its fake signer): it is
+-- an operator-trusted seeding path, so every password is treated as not-breached. The HTTP HIBP
+-- interpreter lives in 'Shomei.Server.BreachChecker' and is used only by the running server.
+runPasswordBreachCheckerNoCheck :: Eff (PasswordBreachChecker : es) a -> Eff es a
+runPasswordBreachCheckerNoCheck = interpret_ \case
+    CheckPasswordBreached _ -> pure NotBreached
 
 die :: String -> IO a
 die msg = hPutStrLn stderr ("shomei-admin: " <> msg) >> exitFailure

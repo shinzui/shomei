@@ -1,7 +1,8 @@
 module Shomei.AccountSpec (tests) where
 
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Test.Tasty (TestTree, testGroup)
@@ -25,7 +26,7 @@ import Shomei.Domain.VerificationToken (PersistedVerificationToken (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
 import Shomei.Error (
     AuthError (InvalidCredentials, PasswordResetTokenInvalid, VerificationTokenInvalid, WeakPassword),
-    PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
+    PasswordPolicyViolation (PasswordBreached, PasswordResemblesIdentity, PasswordTooCommon),
  )
 import Shomei.Workflow (login, signup)
 import Shomei.Workflow.Account (
@@ -85,7 +86,87 @@ tests =
         , testChangePasswordRejectsCommon
         , testChangePasswordRejectsIdentity
         , testConfirmResetRejectsCommon
+        , testSignupRejectsBreached
+        , testSignupAcceptsCleanWhenEnabled
+        , testSignupAllowsBreachedWhenDisabled
+        , testSignupFailOpen
+        , testSignupFailClosed
+        , testChangePasswordRejectsBreached
+        , testConfirmResetRejectsBreached
         ]
+
+-- EP-3 breach-check fixtures. The pure validation runs first, so the password used in these
+-- tests ('strongPw'/'newPw') must clear the length/common/contextual checks and be rejected
+-- only by the breach guard. The in-memory fake treats a plaintext as breached iff it is in the
+-- World's 'breachedPasswords' set, and reports 'BreachCheckUnavailable' when
+-- 'breachCheckAvailable' is False.
+
+breachCfg :: ShomeiConfig
+breachCfg = cfg{passwordPolicy = cfg.passwordPolicy{breachCheckEnabled = True}}
+
+breachCfgFailClosed :: ShomeiConfig
+breachCfgFailClosed =
+    cfg{passwordPolicy = cfg.passwordPolicy{breachCheckEnabled = True, breachCheckFailClosed = True}}
+
+seedBreached :: IORef World -> PlainPassword -> IO ()
+seedBreached ref (PlainPassword pw) =
+    modifyIORef' ref (\w -> w{breachedPasswords = Set.insert pw w.breachedPasswords})
+
+markBreachCheckUnavailable :: IORef World -> IO ()
+markBreachCheckUnavailable ref = modifyIORef' ref (\w -> w{breachCheckAvailable = False})
+
+testSignupRejectsBreached :: TestTree
+testSignupRejectsBreached = testCase "signup rejects a breached password when the check is enabled" do
+    ref <- newIORef (emptyWorld fixedTime)
+    seedBreached ref strongPw
+    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    fmap fst result @?= Left (WeakPassword PasswordBreached)
+
+testSignupAcceptsCleanWhenEnabled :: TestTree
+testSignupAcceptsCleanWhenEnabled = testCase "signup accepts a clean password when the check is enabled" do
+    ref <- newIORef (emptyWorld fixedTime)
+    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    assertBool "expected Right" (isRightResult result)
+
+testSignupAllowsBreachedWhenDisabled :: TestTree
+testSignupAllowsBreachedWhenDisabled = testCase "signup allows a breached password when the check is disabled (default)" do
+    ref <- newIORef (emptyWorld fixedTime)
+    seedBreached ref strongPw
+    result <- runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    assertBool "expected Right" (isRightResult result)
+
+testSignupFailOpen :: TestTree
+testSignupFailOpen = testCase "fail-open: an unreachable checker allows the password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    seedBreached ref strongPw
+    markBreachCheckUnavailable ref
+    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    assertBool "expected Right" (isRightResult result)
+
+testSignupFailClosed :: TestTree
+testSignupFailClosed = testCase "fail-closed: an unreachable checker rejects the password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    markBreachCheckUnavailable ref
+    result <- runInMemory ref (signup breachCfgFailClosed (SignupCommand aliceEmail strongPw Nothing))
+    fmap fst result @?= Left (WeakPassword PasswordBreached)
+
+testChangePasswordRejectsBreached :: TestTree
+testChangePasswordRejectsBreached = testCase "change password rejects a breached new password" do
+    ref <- newIORef (emptyWorld fixedTime)
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    seedBreached ref newPw
+    result <- runInMemory ref (changePassword breachCfg (ChangePassword user.userId strongPw newPw))
+    result @?= Left (WeakPassword PasswordBreached)
+
+testConfirmResetRejectsBreached :: TestTree
+testConfirmResetRejectsBreached = testCase "confirm password reset rejects a breached new password" do
+    (ref, _, raw) <- passwordResetRequestedWorld
+    seedBreached ref newPw
+    result <- runInMemory ref (confirmPasswordReset breachCfg (ConfirmPasswordReset raw newPw))
+    result @?= Left (WeakPassword PasswordBreached)
+
+isRightResult :: Either e a -> Bool
+isRightResult = either (const False) (const True)
 
 -- | A policy with a small minimum length so identity-derived passwords (e.g. "alice")
 -- reach the contextual check instead of failing the default length guard first.

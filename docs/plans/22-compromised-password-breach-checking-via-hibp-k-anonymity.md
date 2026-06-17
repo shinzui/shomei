@@ -67,10 +67,22 @@ This section must always reflect the actual current state of the work.
       `runPasswordHasher` in the chain); added `Shomei.BreachSpec` unit tests. Dep added to
       `shomei-core`: `crypton` (SHA-1) and `ram` (provides `Data.ByteArray.Encoding`). `cabal
       build all` + `shomei-core-test` (70 tests) green.
-- [ ] M3: append `enforceBreachPolicy` guard to `signup`, `changePassword`,
-      `confirmPasswordReset`; add enabled / disabled / fail-open / fail-closed workflow tests.
-- [ ] M4: production `runPasswordBreachCheckerHibp` (http-client-tls + crypton); wire into
-      `runAppIO` and both `AppEffects` lists; cabal deps; optional manual integration check.
+- [x] M3 (2026-06-17): added shared guard `Shomei.Workflow.Breach.enforceBreachPolicy`
+      (new exposed-module); appended it after the pure validation in `signup`
+      (`Shomei.Workflow`), `confirmPasswordReset`, and `changePassword`
+      (`Shomei.Workflow.Account`), and added the `PasswordBreachChecker :> es` constraint to
+      each. Added enabled/clean/disabled/fail-open/fail-closed signup tests plus one each for
+      change & reset in `Shomei.AccountSpec`. `shomei-core-test`: 77 tests green.
+- [x] M4 (2026-06-17): wrote `Shomei.Server.BreachChecker.runPasswordBreachCheckerHibp`
+      (http-client + http-client-tls; SHA-1 via the shared `shomei-core` pure helper, so no
+      crypton dep was needed in `shomei-server`); added `envHttpManager :: Manager` to
+      `Shomei.Server.App.Env` (built via `newTlsManager` in `Shomei.Server.Boot.buildEnv`);
+      wired `runPasswordBreachCheckerHibp` into `runAppIO` and added `PasswordBreachChecker` to
+      BOTH `AppEffects` lists (`Shomei.Server.App`, `Shomei.Servant.Seam`). Updated every
+      hand-composed harness/stack: the admin CLI (`Shomei.Admin.Users`, with a local
+      always-`NotBreached` interpreter), the servant test, the postgres test (two stacks), and
+      the `Env` constructions in the server-E2E / client / embedded / microservice tests. Full
+      `cabal build all` and `cabal test all` green (all suites incl. DB-backed E2E).
 
 
 ## Surprises & Discoveries
@@ -86,6 +98,29 @@ implementation. Provide concise evidence.
   `crypton` + `ram`.
 - M2 (2026-06-17): `cabal` test-component target is `shomei-core:shomei-core-test` (not
   `shomei-core:test` as the plan's commands wrote) — the component is named `shomei-core-test`.
+- M4 (2026-06-17): the new `PasswordBreachChecker :> es` workflow constraint propagated to MANY
+  more hand-composed stacks than the plan listed. Beyond `runInMemory`, the two `AppEffects`
+  lists, and the production `runAppIO`, the following also had to gain the effect (each is a
+  separately hand-written effect list / composition, NOT derived from a shared alias):
+  the admin CLI's `runSignup` (`shomei-server/app/Shomei/Admin/Users.hs`); the **postgres**
+  integration test's own `AppEffects` alias plus its `runAppWithNotifications` AND `runAppAtTime`
+  compositions (`shomei-postgres/test/Main.hs`); and the `Env` record gained a field, so every
+  `Env{...}` literal had to add `envHttpManager` — there are FIVE: `buildEnv` (Boot) plus the
+  server-E2E, shomei-client, embedded-servant-app, and microservice-auth-stack test harnesses.
+- M4 (2026-06-17): `crypton` was NOT needed in `shomei-server` — the SHA-1 hashing lives in the
+  `shomei-core` pure helper `sha1PrefixSuffix`, which the interpreter imports, so the HIBP
+  interpreter module imports no `Crypto.*` directly. Only `http-client` + `http-client-tls` were
+  added to `shomei-server`. (The plan's M4.2 already flagged this as the likely outcome.)
+- M4 (2026-06-17): selecting `env.envConfig.passwordPolicy.breachCheckTimeoutMs` via
+  OverloadedRecordDot in `Shomei.Server.App` failed (`No instance for HasField "passwordPolicy"
+  ...` / `"breachCheckTimeoutMs"`) because `App.hs` imports `ShomeiConfig`/`PasswordPolicy` as
+  type-only; the field SELECTORS must be in scope for the HasField instance. Fixed by importing
+  `ShomeiConfig (passwordPolicy)` and `PasswordPolicy (breachCheckTimeoutMs)` and binding the
+  timeout in a typed `where` clause. (Other modules avoid this because they import the records
+  with `(..)`.)
+- M4 (2026-06-17): the admin CLI does not perform the network breach check; it uses a local
+  always-`NotBreached` interpreter (`runPasswordBreachCheckerNoCheck`), mirroring its existing
+  fake `TokenSigner`. See the Decision Log.
 
 
 ## Decision Log
@@ -131,13 +166,55 @@ Record every decision made while working on the plan.
   behavioral coverage. A manual ghci snippet is documented for ad-hoc verification.
   Date: 2026-06-17
 
+- Decision: The admin CLI (`shomei-admin users create`) does NOT perform the HIBP breach check;
+  it wires a local `runPasswordBreachCheckerNoCheck` interpreter that always returns
+  `NotBreached`.
+  Rationale: the admin executable does not depend on `shomei-server` (where the HIBP interpreter
+  lives) and we did not want to add a network dependency or a TLS manager to an operator-only
+  seeding path. This mirrors the CLI's existing fake `TokenSigner`. Operators seeding users via
+  the CLI are trusted; the running server still enforces the policy on the HTTP signup/change/
+  reset paths. If CLI-side breach checking is wanted later, give the CLI a TLS manager and reuse
+  `Shomei.Server.BreachChecker.runPasswordBreachCheckerHibp`.
+  Date: 2026-06-17
+
+- Decision: Construct the shared TLS `Manager` once at startup (`buildEnv`) and store it on
+  `Env` (`envHttpManager`), passing it into `runPasswordBreachCheckerHibp` when the stack is
+  assembled.
+  Rationale: an HTTP `Manager` is meant to be long-lived and connection-pooling; building one per
+  request would defeat keep-alive. `runAppIO` assembles the stack per call but closes over the
+  one manager from `Env`, so all calls share it.
+  Date: 2026-06-17
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered exactly the original purpose. An operator can now opt in to HIBP breach checking with
+`breachCheckEnabled = True`; a signup/change/reset with a breached password is rejected with
+`WeakPassword PasswordBreached`, surfaced as the same `400 weak_password` as every other policy
+violation (the Servant wildcard covers it — no HTTP edit was needed). With the flag off (the
+default) behavior is unchanged and no network call is made. The check is privacy-preserving by
+construction: only the 5-char uppercase SHA-1 prefix leaves the process (`sha1PrefixSuffix`),
+and an unreachable HIBP resolves to `BreachCheckUnavailable`, honored as fail-open by default or
+fail-closed under `breachCheckFailClosed`.
+
+The IO check lives in a new `effectful` port (`PasswordBreachChecker`) with a production HIBP
+interpreter (`Shomei.Server.BreachChecker`) and an in-memory fake seeded from the test `World`,
+exactly mirroring the `PasswordHasher` precedent. Pure parsing/hashing logic
+(`parseHibpResponse`, `sha1PrefixSuffix`) is factored out and unit-tested hermetically. All
+coverage is hermetic (no network); the real-API check remains a documented manual ghci snippet.
+
+Outcome vs. plan: the design matched the plan; the only surprise was breadth, not shape — adding
+one workflow constraint rippled into ~10 hand-composed effect stacks / `Env` literals across the
+workspace (admin CLI, two postgres test stacks, five `Env{}` sites). The compiler's effect-order
+and missing-handler errors made each site mechanical to find and fix. `crypton` was not needed in
+`shomei-server` after all (SHA-1 is computed in the `shomei-core` helper). Full `cabal build all`
+and `cabal test all` are green, including the DB-backed E2E suites.
+
+No gaps against scope. Known intentional limitation: the admin CLI bypasses the breach check
+(see Decision Log).
 
 
 ## Context and Orientation
