@@ -980,3 +980,11 @@ EP-1 (`docs/plans/8-…` and MasterPlan 2's Decision Log): Shōmei emits notific
 "SMTP sender" / "real PostgreSQL/JWT/SMTP" phrasings from the adoption-doc requirements. The
 shipped docs (`docs/{architecture,api}.md`) already describe the log sender, so this is a
 plan-prose correction only.
+
+2026-06-17: Added a fifth adoption guide, `docs/notifications.md`, documenting how a downstream
+service sends account-lifecycle email through its own provider by implementing a custom
+`Notifier` effect interpreter (with the `Notification`/`Notifier` contract, a worked
+provider-call example, the webhook variant, the wiring point in `Shomei.Server.App.runAppIO`,
+and the fire-and-forget / in-process-Haskell caveats). Linked from `README.md` and
+cross-referenced from `docs/architecture.md` and `docs/api.md`. This is the operator-facing
+counterpart to the EP-1 descoping decision.

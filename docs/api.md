@@ -34,7 +34,9 @@ Body `{"refreshToken"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` 
 
 The two *request* endpoints always return `202 Accepted` regardless of whether the email exists
 (no account-existence leak); when the account exists a one-time link is delivered through the
-`Notifier` (the development sender logs it). The *confirm* endpoints also return `202`.
+`Notifier` (the development sender logs it). The *confirm* endpoints also return `202`. Shōmei
+does not send email itself — see [notifications.md](notifications.md) for delivering these links
+through your own provider.
 
 ### `POST /auth/verify-email/request`
 Body `{"email"}`. → `202`. Logs a verification link for a real, unverified account.

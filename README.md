@@ -63,6 +63,7 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 - [docs/architecture.md](docs/architecture.md) — design, package layering, the ports & workflows pattern.
 - [docs/api.md](docs/api.md) — every HTTP endpoint with request/response shapes and status codes.
 - [docs/security.md](docs/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
+- [docs/notifications.md](docs/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.
 - [docs/deployment.md](docs/deployment.md) — configuration reference, the container image, `docker compose`, and the operator runbook.
 
 ## License

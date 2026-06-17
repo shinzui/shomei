@@ -33,7 +33,10 @@ There are two interpreter assemblies for the same canonical effect stack (`AppEf
   ES256) so signing is genuinely exercised.
 
 Because the workflows depend only on the interface order, the identical `signup`/`login`/`refresh`
-/account-lifecycle code runs unchanged over either assembly.
+/account-lifecycle code runs unchanged over either assembly. The same property is the extension
+point for email: Shōmei emits account-lifecycle notifications through the `Notifier` effect and
+ships only a dev log sender — to deliver them through your provider you supply your own `Notifier`
+interpreter (see [notifications.md](notifications.md)).
 
 ## The workflows
 
