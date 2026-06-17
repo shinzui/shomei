@@ -106,7 +106,7 @@ Points) and a recommended ordering (EP-2 before EP-3) captured as a soft depende
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| EP-1 | Configurable Password Policy End-to-End | docs/plans/20-configurable-password-policy-end-to-end.md | None | None | In Progress |
+| EP-1 | Configurable Password Policy End-to-End | docs/plans/20-configurable-password-policy-end-to-end.md | None | None | Complete |
 | EP-2 | Common and Context-Specific Weak Password Rejection | docs/plans/21-common-and-context-specific-weak-password-rejection.md | EP-1 | None | Not Started |
 | EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | Not Started |
 
@@ -218,9 +218,9 @@ with a `runPasswordBreachCheckerFake` interpreter whose breached-set is seeded f
 Track milestone-level progress across all child plans. Each entry names the child plan
 and the milestone. This section provides an at-a-glance view of the entire initiative.
 
-- [ ] EP-1: Extend `PasswordPolicy` record + `defaultPasswordPolicy` with the seven fields (IP-1).
-- [ ] EP-1: Wire fields through `FileConfig`, Dhall schema + example, and `baseFromFile` merge.
-- [ ] EP-1: Add `SHOMEI_PASSWORD_*` env overrides (+ `boolEnv` helper) and config tests proving precedence.
+- [x] EP-1 (2026-06-17): Extend `PasswordPolicy` record + `defaultPasswordPolicy` with the seven fields (IP-1).
+- [x] EP-1 (2026-06-17): Wire fields through `FileConfig`, Dhall schema + example, and `baseFromFile` merge.
+- [x] EP-1 (2026-06-17): Add `SHOMEI_PASSWORD_*` env overrides (reused existing `boolEnv`, added `intEnvMaybe`) and config tests proving precedence.
 - [ ] EP-2: Embed common-password dictionary and implement the dictionary check (`PasswordTooCommon`).
 - [ ] EP-2: Implement context-aware validation (`PasswordResemblesIdentity`) and thread context through the three workflows (IP-3).
 - [ ] EP-2: Servant error mapping for new violation + tests (signup/change/reset reject common & identity-derived passwords).
@@ -247,6 +247,13 @@ interactions between child plans. Provide concise evidence.
   compose fakes in `AppEffects` order. Adding the `PasswordBreachChecker` effect (IP-5) therefore
   touches more than `runInMemory`: both `AppEffects` definitions and the production stack
   assembly (`runAppIO`) must gain the effect in matching order. EP-3's plan accounts for this.
+
+- EP-1 implementation (2026-06-17) found that a `boolEnv :: Text -> IO (Maybe Bool)` helper
+  **already exists** in `shomei-server/src/Shomei/Server/Config.hs` (added for the WebAuthn env
+  overlay; lowercases input, accepts `true`/`false`, errors otherwise). EP-1 therefore added only
+  `intEnvMaybe` and reused the existing `boolEnv`; the plan's instruction to add `boolEnv` was
+  correctly skipped (a duplicate definition would not compile). No effect on EP-2/EP-3, which add
+  no env helpers, but noted so future config-plumbing work does not re-add it.
 
 - EP-2 authoring flagged a test-design trap from the chosen defaults: `defaultPasswordPolicy`
   sets `minLength = 12`, so a would-be "common password" fixture shorter than 12 characters

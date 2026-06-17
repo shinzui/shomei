@@ -11,6 +11,7 @@ import Test.Tasty (TestTree, defaultMain)
 import Test.Tasty.HUnit (testCase, (@?=))
 
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), WebAuthnConfig (..))
+import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 
 configPath :: FilePath
@@ -24,6 +25,8 @@ dhallContents =
         <> ", port = 8080"
         <> ", maxFailedLoginsPerAccount = 7"
         <> ", metricsEnabled = False"
+        <> ", passwordMinLength = 16"
+        <> ", passwordRejectCommon = False"
         <> ", webauthnRpId = \"auth.fromfile.test\""
         <> ", webauthnOrigins = [ \"https://auth.fromfile.test\" ]"
         <> ", webauthnUserVerification = \"required\""
@@ -47,6 +50,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and an env var overrides it
     -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
     settings.serverPort @?= 8080
     cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
+    -- File values beat the default password policy (default minLength is 12, rejectCommon True):
+    cfg.passwordPolicy.minLength @?= 16
+    cfg.passwordPolicy.rejectCommonPasswords @?= False
     -- PG_CONNECTION_STRING (env) overrides the file's databaseUrl:
     settings.serverConnStr @?= "host=fromenv dbname=shomei"
     -- WebAuthn fields load from the Dhall file (defaults are rpId="localhost", mfaRequired=True).
@@ -67,6 +73,11 @@ testLoadAndOverride = testCase "Dhall file is loaded and an env var overrides it
     let WebAuthnConfig{rpId = envRpId, mfaRequired = envMfa} = webauthnConfig cfg2
     envRpId @?= "auth.fromenv.test"
     envMfa @?= True
+    -- An env var overrides the file's password min length (file says 16):
+    setEnv "SHOMEI_PASSWORD_MIN_LENGTH" "20"
+    (cfg3, _) <- loadConfig
+    cfg3.passwordPolicy.minLength @?= 20
+    unsetEnv "SHOMEI_PASSWORD_MIN_LENGTH"
     unsetEnv "SHOMEI_CONFIG"
     unsetEnv "SHOMEI_PORT"
     unsetEnv "PG_CONNECTION_STRING"

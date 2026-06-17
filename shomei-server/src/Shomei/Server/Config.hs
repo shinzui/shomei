@@ -194,6 +194,13 @@ overlayCoreFromEnv base = do
     tr <- transportEnv
     sc <- sessionCheckEnv
     wa <- overlayWebAuthnFromEnv base.webauthnConfig
+    pwMin <- intEnvMaybe "SHOMEI_PASSWORD_MIN_LENGTH"
+    pwMax <- intEnvMaybe "SHOMEI_PASSWORD_MAX_LENGTH"
+    pwRejCommon <- boolEnv "SHOMEI_PASSWORD_REJECT_COMMON"
+    pwRejCtx <- boolEnv "SHOMEI_PASSWORD_REJECT_CONTEXTUAL"
+    pwBreach <- boolEnv "SHOMEI_PASSWORD_BREACH_CHECK"
+    pwBreachFC <- boolEnv "SHOMEI_PASSWORD_BREACH_FAIL_CLOSED"
+    pwBreachTo <- intEnvMaybe "SHOMEI_PASSWORD_BREACH_TIMEOUT_MS"
     pure
         base
             { accessTokenTTL = fromMaybe base.accessTokenTTL acc
@@ -202,6 +209,16 @@ overlayCoreFromEnv base = do
             , tokenTransport = fromMaybe base.tokenTransport tr
             , sessionCheckMode = fromMaybe base.sessionCheckMode sc
             , webauthnConfig = wa
+            , passwordPolicy =
+                base.passwordPolicy
+                    { minLength = fromMaybe base.passwordPolicy.minLength pwMin
+                    , maxLength = fromMaybe base.passwordPolicy.maxLength pwMax
+                    , rejectCommonPasswords = fromMaybe base.passwordPolicy.rejectCommonPasswords pwRejCommon
+                    , rejectContextualPasswords = fromMaybe base.passwordPolicy.rejectContextualPasswords pwRejCtx
+                    , breachCheckEnabled = fromMaybe base.passwordPolicy.breachCheckEnabled pwBreach
+                    , breachCheckFailClosed = fromMaybe base.passwordPolicy.breachCheckFailClosed pwBreachFC
+                    , breachCheckTimeoutMs = fromMaybe base.passwordPolicy.breachCheckTimeoutMs pwBreachTo
+                    }
             }
 
 {- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
@@ -338,6 +355,17 @@ intEnv name def = do
         Just "" -> pure def
         Just s -> case readMaybe s of
             Just n -> pure n
+            Nothing -> ioError (userError (Text.unpack name <> " must be an integer"))
+
+-- | Like 'intEnv' but overlay-only: absent/empty → Nothing, non-integer → error.
+intEnvMaybe :: Text -> IO (Maybe Int)
+intEnvMaybe name = do
+    m <- lookupEnv (Text.unpack name)
+    case m of
+        Nothing -> pure Nothing
+        Just "" -> pure Nothing
+        Just s -> case readMaybe s of
+            Just n -> pure (Just n)
             Nothing -> ioError (userError (Text.unpack name <> " must be an integer"))
 
 ttlEnv :: Text -> IO (Maybe NominalDiffTime)

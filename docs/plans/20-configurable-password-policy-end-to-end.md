@@ -66,11 +66,11 @@ This section must always reflect the actual current state of the work.
 - [x] M2 (2026-06-17): Add the matching keys to `config/shomei-types.dhall` and `config/shomei.example.dhall`;
       `dhall-to-json --file config/shomei.example.dhall` renders all seven new keys.
 - [x] M2 (2026-06-17): Add the `passwordPolicy = cfg0.passwordPolicy { … }` overlay block in `baseFromFile`.
-- [ ] M3: Add `boolEnv` and `intEnvMaybe` helpers and the `passwordPolicy` env overlay in
-      `overlayCoreFromEnv`.
-- [ ] M3: Extend `shomei-server/test/Shomei/Server/ConfigSpec.hs` to prove default → file → env
-      precedence for a password field.
-- [ ] M3: `cabal test all` is green.
+- [x] M3 (2026-06-17): Add `intEnvMaybe` helper (reused the pre-existing `boolEnv`) and the
+      `passwordPolicy` env overlay in `overlayCoreFromEnv` reading the seven `SHOMEI_PASSWORD_*` vars.
+- [x] M3 (2026-06-17): Extend `shomei-server/test/Shomei/Server/ConfigSpec.hs` to prove default → file → env
+      precedence for `minLength` (default 12 → file 16 → env 20) and file-beats-default for `rejectCommonPasswords`.
+- [x] M3 (2026-06-17): `cabal test all` is green (all suites pass, including `shomei-server-config-test`).
 
 
 ## Surprises & Discoveries
@@ -124,7 +124,22 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+EP-1 delivered exactly as scoped. The `PasswordPolicy` record now carries all seven knobs
+(two length bounds plus five new flags), wired end-to-end through the configuration pipeline:
+built-in defaults (`defaultPasswordPolicy`) → Dhall file (`FileConfig` + `config/shomei-types.dhall`
++ `config/shomei.example.dhall` + the `baseFromFile` overlay) → `SHOMEI_PASSWORD_*` environment
+variables (the `overlayCoreFromEnv` overlay). The new `ConfigSpec` assertions prove the
+twelve-factor precedence concretely (`minLength`: default 12 → file 16 → env 20).
+
+Matches the original purpose. The five new flags are inert scaffolding as intended —
+`validatePassword` is still length-only — so EP-2 (common/contextual) and EP-3 (HIBP breach
+check) can add behavior without touching any configuration surface.
+
+Lessons / deviations:
+- `boolEnv` already existed (added for the WebAuthn env overlay), so M3 added only `intEnvMaybe`
+  and reused `boolEnv`; the plan's Step 5 `boolEnv` addition was correctly skipped to avoid a
+  duplicate-definition compile error. Recorded in Surprises & Discoveries.
+- No package or `.cabal` changes were needed; the work was pure configuration plumbing.
 
 
 ## Context and Orientation
