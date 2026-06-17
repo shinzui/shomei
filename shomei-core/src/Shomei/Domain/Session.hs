@@ -22,6 +22,9 @@ data Session = Session
     , createdAt :: !UTCTime
     , expiresAt :: !UTCTime
     , revokedAt :: !(Maybe UTCTime)
+    , actor :: !(Maybe UserId)
+    -- ^ for a delegated (impersonation) session, the operator acting on behalf
+    -- of 'userId'; 'Nothing' for every ordinary login session.
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -30,6 +33,8 @@ data NewSession = NewSession
     { userId :: !UserId
     , createdAt :: !UTCTime
     , expiresAt :: !UTCTime
+    , actor :: !(Maybe UserId)
+    -- ^ set to @Just operator@ when minting a delegated session; 'Nothing' otherwise.
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

@@ -61,7 +61,7 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M1: Add `actor :: Maybe UserId` to `AuthClaims`; encode/decode the `act` JWT claim; round-trip test passes. (done 2026-06-17)
-- [ ] M2: Add `actor :: Maybe UserId` to `Session`/`NewSession`; add `actor_user_id` column migration; update Postgres + in-memory session stores; store/load test passes.
+- [x] M2: Add `actor :: Maybe UserId` to `Session`/`NewSession`; add `actor_user_id` column migration; update Postgres + in-memory session stores; store/load test passes. (done 2026-06-17)
 - [ ] M3: Add `ImpersonationConfig` to `ShomeiConfig`; add `AuthError` constructors; add `AuthEvent` constructors; implement `Shomei.Workflow.Impersonation` (`startImpersonation`, `stopImpersonation`); core spec passes.
 - [ ] M4: Add Servant DTOs, the `impersonate` + `stopImpersonate` routes, handlers, error mappings, and the `denyUnderImpersonation` gate on password-change + passkey handlers; project new events in the Postgres publisher; servant/integration tests pass.
 - [ ] M5: End-to-end HTTP validation transcript captured; `docs/security.md` and `docs/api.md` updated.
@@ -72,7 +72,13 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- M2: The migration SQL files are embedded into `Shomei.Migrations` at **compile time** via a
+  `embedDir "sql-migrations"` Template Haskell splice. Adding a new `.sql` file does not take
+  effect until that module recompiles. Touching the source (a note comment, per the module's
+  existing convention) forces the rebuild; without it the ephemeral-DB test harness applied only
+  the 14 previously-embedded migrations and the new `actor_user_id` column was missing, surfacing
+  as `column "actor_user_id" ... does not exist` (Postgres SQLSTATE 42703) on every session insert.
+  Date: 2026-06-17
 
 
 ## Decision Log

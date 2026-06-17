@@ -248,6 +248,9 @@ t0 = UTCTime (fromGregorian 2026 1 1) 0
 aliceEmail :: Email
 aliceEmail = mkEmail' "alice@example.com"
 
+bobEmail :: Email
+bobEmail = mkEmail' "bob@example.com"
+
 strongPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
 
@@ -294,6 +297,7 @@ tests =
     [ testUserRoundTrip
     , testCredentialRoundTrip
     , testSessionRevoke
+    , testSessionActorRoundTrip
     , testRefreshTokenMarkUsed
     , testVerificationTokenRoundTrip
     , testPasswordResetTokenRoundTrip
@@ -344,18 +348,41 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
     result <- runApp pool do
         u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
         t <- now
-        s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t})
+        s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
         revokeSession s.sessionId t
         findSessionById s.sessionId
     found <- expectApp result
     fmap (.status) found @?= Just SessionRevoked
+
+testSessionActorRoundTrip :: TestTree
+testSessionActorRoundTrip = testCase "create delegated session persists actor" $ withDb \pool -> do
+    result <- runApp pool do
+        subject <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        operator <- createUser (NewUser{email = bobEmail, displayName = Nothing})
+        t <- now
+        delegated <-
+            createSession
+                ( NewSession
+                    { userId = subject.userId
+                    , createdAt = t
+                    , expiresAt = addUTCTime 3600 t
+                    , actor = Just operator.userId
+                    }
+                )
+        normal <- createSession (NewSession{userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+        foundDelegated <- findSessionById delegated.sessionId
+        foundNormal <- findSessionById normal.sessionId
+        pure (operator.userId, foundDelegated, foundNormal)
+    (op, foundDelegated, foundNormal) <- expectApp result
+    fmap (.actor) foundDelegated @?= Just (Just op)
+    fmap (.actor) foundNormal @?= Just Nothing
 
 testRefreshTokenMarkUsed :: TestTree
 testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-used" $ withDb \pool -> do
     result <- runApp pool do
         u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
         t <- now
-        s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t})
+        s <- createSession (NewSession{userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
         h <- hashRefreshToken (RefreshToken "token-1")
         persisted <-
             createRefreshToken

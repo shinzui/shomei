@@ -292,6 +292,7 @@ mkSession sid ns =
         , createdAt = ns.createdAt
         , expiresAt = ns.expiresAt
         , revokedAt = Nothing
+        , actor = ns.actor
         }
 
 runRefreshTokenStore :: (IOE :> es) => IORef World -> Eff (RefreshTokenStore : es) a -> Eff es a

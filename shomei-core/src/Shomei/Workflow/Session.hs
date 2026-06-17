@@ -80,6 +80,7 @@ issueSession cfg user ts = do
                 { userId = user.userId
                 , createdAt = ts
                 , expiresAt = addUTCTime cfg.sessionTTL ts
+                , actor = Nothing
                 }
     rawToken <- generateOpaqueToken
     tokHash <- hashRefreshToken rawToken
