@@ -26,7 +26,7 @@ import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
 
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..))
-import Shomei.Domain.Claims (AuthClaims (..))
+import Shomei.Domain.Claims (AuthClaims (..), noExtraClaims)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.Session (NewSession (..), Session (..))
 import Shomei.Domain.Token (AccessToken)
@@ -100,6 +100,7 @@ startImpersonation cfg cmd = runErrorNoCallStack do
                 , scopes = Set.empty
                 , roles = Set.empty
                 , actor = Just caller.subject
+                , extraClaims = noExtraClaims
                 }
     access <- signAccessToken claims
     publishAuthEvent

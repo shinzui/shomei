@@ -28,6 +28,8 @@ import Shomei.Error (TokenError (..))
 import Shomei.Id (parseId)
 
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseEither)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict (Map)
@@ -137,6 +139,16 @@ claimsToAuth cs = do
     expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
     let scs = Set.fromList (map Domain.Scope (lookupStringList "scopes"))
         rls = Set.fromList (map Domain.Role (lookupStringList "roles"))
+        -- The custom claims Shōmei manages itself; everything else in the
+        -- unregistered map is the consuming service's extra bag, returned verbatim.
+        -- (The registered iss/sub/aud/iat/exp claims are never in this map.)
+        managed = ["sid", "scopes", "roles", "act"]
+        extra =
+            KeyMap.fromList
+                [ (Key.fromText k, v)
+                | (k, v) <- Map.toList claims
+                , k `notElem` managed
+                ]
     -- The @act@ claim is present only on delegated (impersonation) tokens. Absent
     -- → 'Nothing'; present but unparseable → a malformed token.
     actor' <- case lookupString "act" of
@@ -153,6 +165,7 @@ claimsToAuth cs = do
             , scopes = scs
             , roles = rls
             , actor = actor'
+            , extraClaims = extra
             }
   where
     note msg = maybe (Left (TokenOtherError msg)) Right

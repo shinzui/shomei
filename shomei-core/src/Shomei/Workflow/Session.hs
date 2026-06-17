@@ -15,18 +15,20 @@ would otherwise form between 'Shomei.Workflow' (which calls 'issueSession') and
 -}
 module Shomei.Workflow.Session (
     buildClaims,
+    buildClaimsWith,
     issueSession,
 ) where
 
 import Shomei.Prelude
 
+import Data.Aeson (Object)
 import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 
 import Effectful (Eff, (:>))
 
 import Shomei.Config (ShomeiConfig (..))
-import Shomei.Domain.Claims (AuthClaims (..))
+import Shomei.Domain.Claims (AuthClaims (..), mkExtraClaims, noExtraClaims)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.RefreshToken (NewRefreshToken (..))
 import Shomei.Domain.Session (NewSession (..), Session (..))
@@ -55,7 +57,17 @@ buildClaims cfg uid sid ts =
         , scopes = Set.empty
         , roles = Set.empty
         , actor = Nothing
+        , extraClaims = noExtraClaims
         }
+
+{- | Like 'buildClaims' but attaches a service-supplied custom-claims object (reserved
+keys are dropped by 'mkExtraClaims'). A consuming service uses this to add its own
+top-level JWT claims without modifying Shōmei; the standard workflows keep calling
+'buildClaims'.
+-}
+buildClaimsWith :: ShomeiConfig -> Object -> UserId -> SessionId -> UTCTime -> AuthClaims
+buildClaimsWith cfg extra uid sid ts =
+    (buildClaims cfg uid sid ts){extraClaims = mkExtraClaims extra}
 
 {- | Mint a fresh session + refresh token + signed access token for an authenticated user,
 publishing 'LoginSucceeded' and 'SessionStarted'. Returns the new session id alongside the

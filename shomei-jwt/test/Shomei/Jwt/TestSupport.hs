@@ -51,6 +51,7 @@ mkClaimsWith cfg iat expd = do
             , scopes = Set.fromList [Scope "read", Scope "write"]
             , roles = Set.fromList [Role "user"]
             , actor = Nothing
+            , extraClaims = mempty
             }
 
 -- | The public 'JWKSet' for an active key plus any additional keys.

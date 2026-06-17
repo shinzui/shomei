@@ -175,6 +175,7 @@ mkAdminToken jwk cfg = do
                 , scopes = Set.empty
                 , roles = Set.fromList [Role "admin"]
                 , actor = Nothing
+                , extraClaims = mempty
                 }
     r <- signAccessToken jwk claims
     case r of
@@ -200,6 +201,7 @@ mkImpersonatorToken jwk cfg t = do
                 , scopes = Set.fromList [cfg.impersonationConfig.impersonateScope]
                 , roles = Set.empty
                 , actor = Nothing
+                , extraClaims = mempty
                 }
     r <- signAccessToken jwk claims
     case r of

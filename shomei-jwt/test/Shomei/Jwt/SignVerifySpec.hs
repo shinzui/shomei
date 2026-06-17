@@ -19,11 +19,11 @@ import Test.Tasty.HUnit (Assertion, assertFailure, testCase, (@?=))
 import Crypto.JOSE.JWK (JWK)
 
 import Shomei.Config (defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), mkExtraClaims)
 import Shomei.Domain.SigningKey (SigningAlgorithm (RS256))
 import Shomei.Domain.Token (AccessToken (AccessToken))
 import Shomei.Error (TokenError (..))
-import Shomei.Id (genUserId)
+import Shomei.Id (genUserId, idText)
 import Shomei.Jwt.Key (generateSigningKey, generateSigningKeyFor, keyKid)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
@@ -121,6 +121,34 @@ tests =
             wire <- signOrFail jwk ac
             hdr <- decodeHeader wire
             KeyMap.lookup "alg" hdr @?= Just (String "ES256")
+        , testCase "custom extra claims round-trip through sign/verify" $ do
+            jwk <- generateSigningKey
+            t <- getCurrentTime
+            base <- mkClaims testConfig t
+            let extra =
+                    mkExtraClaims
+                        ( KeyMap.fromList
+                            [ ("impersonated", Aeson.Bool False)
+                            , ("userId", String "u-123")
+                            , ("userInfo", Aeson.object ["userRole" Aeson..= String "agent"])
+                            ]
+                        )
+                ac = base{extraClaims = extra}
+            wire <- signOrFail jwk ac
+            res <- verifyToken (publicJwks jwk []) testConfig wire
+            case res of
+                Right ac' -> ac'.extraClaims @?= extra
+                Left e -> assertFailure ("verify failed: " <> show e)
+        , testCase "a custom sub in the extra bag cannot forge the subject" $ do
+            jwk <- generateSigningKey
+            t <- getCurrentTime
+            base <- mkClaims testConfig t
+            let ac = base{extraClaims = mkExtraClaims (KeyMap.fromList [("sub", String "attacker")])}
+            wire <- signOrFail jwk ac
+            res <- verifyToken (publicJwks jwk []) testConfig wire
+            case res of
+                Right ac' -> idText ac'.subject @?= idText base.subject
+                Left e -> assertFailure ("verify failed: " <> show e)
         ]
 
 {- | Decode the protected-header segment of a compact JWS (the part before the

@@ -62,7 +62,7 @@ This section must always reflect the actual current state of the work.
 - [x] M0 — Read the affected modules and confirm the current behavior with a baseline build/test. (2026-06-17: `cabal build all` exit 0; `cabal test shomei-jwt` → all 11 tests PASS.)
 - [x] M1 — Add the `SigningAlgorithm` type and thread it through key generation, storage, and the JWKS. (2026-06-17: `SigningAlgorithm`/`signingAlgorithmToText`/`signingAlgorithmFromText` in `shomei-core`; `generateSigningKeyFor`/`toStoredSigningKeyFor` in `shomei-jwt`; new `KeySpec` RS256 case PASS — 12 tests.)
 - [x] M2 — Make signing honor the configured algorithm (fix the `bestJWSAlg` PSS pitfall for RSA). (2026-06-17: `algForKey` picks RS256 for RSA / ES256 for EC; header built with `newJWSHeaderProtected`; 3 new SignVerify cases PASS, ES256 header unchanged — 15 tests.)
-- [ ] M3 — Add the extensible custom-claims bag to `AuthClaims`, serialize and recover it.
+- [x] M3 — Add the extensible custom-claims bag to `AuthClaims`, serialize and recover it. (2026-06-17: `extraClaims`/`mkExtraClaims`/`noExtraClaims`/`reservedClaimKeys` in `shomei-core`; `claimsFromAuth` folds extras in *first* so standard claims override; `claimsToAuth` recovers them; `buildClaimsWith` added; all `AuthClaims{}` sites updated. New round-trip + reserved-key cases PASS — shomei-jwt 17, shomei-core 103.)
 - [ ] M4 — Wire algorithm + custom claims through `Config`, the server bootstrap, and `shomei-admin`.
 - [ ] M5 — Acceptance: RS256 token carrying a custom claim round-trips through the JWKS verify path.
 
@@ -135,6 +135,22 @@ implementation. Provide concise evidence.
   `Data.ByteArray.Encoding` is provided to `shomei-jwt` by `ram` (see `mori registry show
   ram`); the M2/M5 header-decoding tests therefore add `ram` (not `memory`) to the
   `shomei-jwt-test` `build-depends`.
+
+- **M3: the plan's `claimsFromAuth` snippet applied `addExtra` outermost, which would
+  let custom keys WIN — the opposite of the documented guarantee.** With
+  `addExtra extra $ (emptyClaimsSet & ... & addClaim "sid" ...)`, `addExtra` runs last and
+  overwrites `sid`/`scopes`/`roles`. Corrected to seed the base first
+  (`addExtra extra emptyClaimsSet & claimIss ?~ ... & addClaim "sid" ...`) so the standard
+  chain is applied on top and always overrides a colliding custom key. The reserved-key
+  test (`sid`/`act` etc.) now genuinely passes by ordering, not just by `mkExtraClaims`.
+
+- **jose itself strips registered claim keys from the unregistered map on BOTH encode and
+  decode** (`Crypto.JWT.filterUnregistered` over `registeredClaims = aud/exp/iat/iss/jti/
+  nbf/sub`). So a custom `"sub"`/`"iss"`/… in the extra bag can never reach the wire or be
+  recovered as a standard claim — registered-claim forgery is impossible even if a caller
+  bypasses `mkExtraClaims`. The `sid`/`scopes`/`roles`/`act` claims are NOT registered in
+  jose, so their protection relies on Shōmei's `addExtra`-first ordering (above) plus
+  `mkExtraClaims` dropping them at construction.
 
 - (Add further discoveries here as work proceeds.)
 

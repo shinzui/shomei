@@ -28,6 +28,8 @@ import Shomei.Id (idText)
 
 import Control.Exception (throwIO)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as BSL
 import Data.Set qualified as Set
 import Data.String (fromString)
@@ -82,7 +84,13 @@ directly; session id, scopes, and roles travel as the custom claims @sid@,
 claimsFromAuth :: AuthClaims -> ClaimsSet
 claimsFromAuth ac =
     withActor $
-        emptyClaimsSet
+        -- 'addExtra' seeds the custom claims into the base FIRST, then the standard
+        -- registered claims (iss/sub/aud/iat/exp via typed slots) and the managed
+        -- custom claims (sid/scopes/roles below, act in 'withActor') are applied on
+        -- top, so a same-named custom key is always overwritten by Shōmei's value.
+        -- Combined with 'mkExtraClaims' dropping reserved keys at construction, a
+        -- service (or attacker-influenced input) can never forge a standard claim.
+        addExtra ac.extraClaims emptyClaimsSet
             & claimIss
             ?~ sou (issuerText ac.issuer)
             & claimSub
@@ -97,6 +105,7 @@ claimsFromAuth ac =
             & addClaim "scopes" (Aeson.toJSON (Set.toList ac.scopes))
             & addClaim "roles" (Aeson.toJSON (Set.toList ac.roles))
   where
+    addExtra obj cs = KeyMap.foldrWithKey (\k v -> addClaim (Key.toText k) v) cs obj
     -- Add the @act@ claim only for delegated tokens, leaving ordinary tokens
     -- byte-identical to before this field existed.
     withActor cs = case ac.actor of

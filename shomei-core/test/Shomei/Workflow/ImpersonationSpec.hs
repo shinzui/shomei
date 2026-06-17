@@ -74,6 +74,7 @@ callerClaims uid sid scs iat =
         , scopes = scs
         , roles = Set.empty
         , actor = Nothing
+        , extraClaims = mempty
         }
 
 -- | Sign up the customer and return their (active) user id.

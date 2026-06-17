@@ -211,6 +211,7 @@ signWith jwk = do
                 , scopes = Set.empty
                 , roles = Set.empty
                 , actor = Nothing
+                , extraClaims = mempty
                 }
     r <- signAccessToken jwk claims
     case r of
