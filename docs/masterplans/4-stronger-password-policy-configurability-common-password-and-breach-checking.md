@@ -108,7 +108,7 @@ Points) and a recommended ordering (EP-2 before EP-3) captured as a soft depende
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Configurable Password Policy End-to-End | docs/plans/20-configurable-password-policy-end-to-end.md | None | None | Complete |
 | EP-2 | Common and Context-Specific Weak Password Rejection | docs/plans/21-common-and-context-specific-weak-password-rejection.md | EP-1 | None | Complete |
-| EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | Not Started |
+| EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | In Progress |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).

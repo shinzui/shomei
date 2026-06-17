@@ -26,6 +26,8 @@ data PasswordPolicyViolation
     | -- | the password is essentially the user's own identity (email local-part,
       -- full email, or display name)
       PasswordResemblesIdentity
+    | -- | the password appears in a known public breach (HIBP). EP-3.
+      PasswordBreached
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 

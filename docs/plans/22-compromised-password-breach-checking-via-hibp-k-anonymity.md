@@ -51,11 +51,14 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] Pre-flight: confirm EP-1 (`docs/plans/20-configurable-password-policy-end-to-end.md`)
-      is Complete and that `PasswordPolicy` in `shomei-core/src/Shomei/Domain/Password.hs`
-      has `breachCheckEnabled`, `breachCheckFailClosed`, `breachCheckTimeoutMs`.
-- [ ] M1: add `PasswordBreached` to `PasswordPolicyViolation` in `shomei-core/src/Shomei/Error.hs`;
-      confirm servant mapping; `cabal build all` green.
+- [x] Pre-flight (2026-06-17): confirmed EP-1 fields `breachCheckEnabled`,
+      `breachCheckFailClosed`, `breachCheckTimeoutMs` exist on `PasswordPolicy`
+      (`shomei-core/src/Shomei/Domain/Password.hs:40-42`).
+- [x] M1 (2026-06-17): added `PasswordBreached` to `PasswordPolicyViolation` in
+      `shomei-core/src/Shomei/Error.hs`; confirmed servant mapping is the `WeakPassword _`
+      wildcard (`shomei-servant/src/Shomei/Servant/Error.hs:43`) — no edit needed; the only
+      other matches on the constructors are test expectations (not exhaustive cases);
+      `cabal build all` green.
 - [ ] M2: create `Shomei.Effect.PasswordBreachChecker` (effect + `BreachResult`); add the
       pure helpers `sha1PrefixSuffix` and `parseHibpResponse`; add the `World` breach fields
       and the fake interpreter; wire into `runInMemory`; add unit tests for the pure helpers.
