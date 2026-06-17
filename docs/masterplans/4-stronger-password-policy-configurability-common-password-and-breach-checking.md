@@ -108,7 +108,7 @@ Points) and a recommended ordering (EP-2 before EP-3) captured as a soft depende
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Configurable Password Policy End-to-End | docs/plans/20-configurable-password-policy-end-to-end.md | None | None | Complete |
 | EP-2 | Common and Context-Specific Weak Password Rejection | docs/plans/21-common-and-context-specific-weak-password-rejection.md | EP-1 | None | Complete |
-| EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | In Progress |
+| EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -224,9 +224,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-2 (2026-06-17): Embed common-password dictionary and implement the dictionary check (`PasswordTooCommon`).
 - [x] EP-2 (2026-06-17): Implement context-aware validation (`PasswordResemblesIdentity`) and thread context through the three workflows (IP-3).
 - [x] EP-2 (2026-06-17): Confirmed Servant wildcard covers the new violation (no edit needed) + tests (signup/change/reset reject common & identity-derived passwords).
-- [ ] EP-3: Add `PasswordBreachChecker` effect + in-memory fake wired into `runInMemory` (IP-5).
-- [ ] EP-3: Implement HIBP k-anonymity production interpreter (SHA-1 prefix range query, fail-open/closed, timeout).
-- [ ] EP-3: Add effectful breach guard to the three workflows (IP-3), Servant mapping for `PasswordBreached`, and tests.
+- [x] EP-3 (2026-06-17): Added `PasswordBreachChecker` effect (tri-state `BreachResult`) + pure helpers + in-memory fake wired into `runInMemory` (IP-5); added `PasswordBreached` violation (IP-2) — Servant wildcard already covers it (IP-4 no-op).
+- [x] EP-3 (2026-06-17): Implemented HIBP k-anonymity production interpreter `runPasswordBreachCheckerHibp` (SHA-1 prefix range query, fail-open/closed, configurable timeout); wired into `runAppIO` + both `AppEffects` lists with a shared TLS `Manager` on `Env`.
+- [x] EP-3 (2026-06-17): Added effectful breach guard `enforceBreachPolicy` to the three workflows (IP-3); hermetic enabled/clean/disabled/fail-open/fail-closed tests; full `cabal test all` green.
 
 
 ## Surprises & Discoveries
@@ -280,6 +280,28 @@ interactions between child plans. Provide concise evidence.
   (e.g. `password123`, 11 chars) is rejected by the length check first and never reaches the
   common/contextual branch. EP-2 tests must use a small-`minLength` test policy to exercise the
   common and contextual checks in isolation.
+
+- EP-3 implementation (2026-06-17) confirmed the EP-3-authoring discovery about `AppEffects`
+  duplication understated the blast radius. Adding the `PasswordBreachChecker :> es` workflow
+  constraint touched ~10 hand-composed effect stacks / `Env` literals, NOT just `runInMemory` +
+  the two `AppEffects` lists: also the admin CLI's own `runSignup` stack, the **postgres**
+  integration test's separate `AppEffects` alias plus BOTH its composition functions, and — once
+  `Env` gained `envHttpManager :: Manager` — five `Env{...}` construction sites (`buildEnv` plus
+  the server-E2E, shomei-client, embedded-servant-app, and microservice-auth-stack test
+  harnesses). All are compiler-caught (missing-handler / missing-field errors), so the fix was
+  mechanical, but future cross-cutting effect additions under this codebase should budget for
+  every hand-written stack, not only the canonical ones. This does not affect any remaining work
+  (EP-3 was the last child plan).
+
+- EP-3 implementation (2026-06-17) confirmed IP-4 is fully a no-op: `PasswordBreached` renders as
+  `400 weak_password` through the existing `WeakPassword _` Servant wildcard, with no
+  per-constructor edit. EP-3 chose to reuse `WeakPassword PasswordBreached` (not a distinct
+  `AuthError`/HTTP code), so the wildcard suffices — matching the EP-2 finding.
+
+- EP-3 implementation (2026-06-17) found `crypton` was NOT needed in `shomei-server`: SHA-1 is
+  computed by the `shomei-core` pure helper `sha1PrefixSuffix`, which `shomei-core` gained
+  `crypton` + `ram` for. The server's HIBP interpreter only needed `http-client` +
+  `http-client-tls`. (`Data.ByteArray.Encoding` is provided by `ram`, not `memory`/`crypton`.)
 
 
 ## Decision Log
@@ -336,4 +358,39 @@ interactions between child plans. Provide concise evidence.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original vision.
 
-(To be filled during and after implementation.)
+**Status: complete (2026-06-17).** All three child plans (EP-1, EP-2, EP-3) are Complete and the
+full vision is delivered. `cabal build all` and `cabal test all` are green, including the
+DB-backed E2E suites.
+
+Against the original vision, an operator of Shōmei can now:
+
+1. **Tune the password policy from configuration** (EP-1) — `minLength`, `maxLength`, and the
+   five new check flags flow through `defaultPasswordPolicy` → Dhall (`config/shomei-types.dhall`
+   + example) → `SHOMEI_PASSWORD_*` env overrides with the established defaults→file→env
+   precedence, no recompilation needed.
+2. **Reject common and context-specific passwords** (EP-2) — a bundled dictionary check
+   (`PasswordTooCommon`) and an identity-resemblance check (`PasswordResemblesIdentity`), both
+   local/no-network, on by default, threaded through all three password-accepting workflows via a
+   context-aware `validatePassword`.
+3. **Optionally reject breached passwords** (EP-3) — an opt-in HIBP k-anonymity check
+   (`PasswordBreached`) behind a swappable `PasswordBreachChecker` port with a production
+   interpreter and a test fake, off by default and fail-open by default, where only the 5-char
+   SHA-1 prefix ever leaves the process.
+
+Each behavior is observable end-to-end and toggleable by editing a Dhall file or setting an env
+var. The out-of-scope items (character-class rules, entropy scoring, history/reuse, rotation,
+server-side pepper) remain deferred as the plan intended.
+
+Lessons learned:
+
+- **Concentrating config-surface edits in EP-1 paid off.** EP-2 and EP-3 added behavior without
+  touching `Config.hs`, the Dhall files, or the env-override code, exactly as the decomposition
+  predicted — no merge friction on shared configuration.
+- **The inert-flag scaffold worked.** EP-1's flags sat dormant until EP-2/EP-3 gave them meaning;
+  the only required follow-through was EP-2 adjusting fixtures once the local defaults turned on.
+- **The recommended EP-2→EP-3 ordering eliminated the integration cost.** EP-3 appended its
+  effectful guard onto EP-2's already-reshaped call sites with zero semantic conflict.
+- **A cross-cutting effect addition (EP-3) is broader than the canonical stacks.** Adding one
+  workflow constraint rippled into ~10 hand-composed effect stacks / `Env` literals. All were
+  compiler-caught, but future effect additions should budget for every hand-written stack, not
+  just `runInMemory` + the two `AppEffects` aliases. See Surprises & Discoveries.
