@@ -100,28 +100,32 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone 2 — migrations + PostgreSQL interpreters + DB stack wiring
 
-- [ ] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-00-shomei-webauthn-credentials.sql`.
-- [ ] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`.
-- [ ] Touch `shomei-migrations/src/Shomei/Migrations.hs` (add a comment line referencing the
-      two new files) to force the `embedDir` Template Haskell splice to recompile.
-- [ ] Confirm `shomei-migrations.cabal` `extra-source-files: sql-migrations/*.sql` already
-      globs the new files (it does — no edit needed; record this in the Decision Log).
-- [ ] Create `shomei-postgres/src/Shomei/Postgres/PasskeyStore.hs`
+- [x] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-00-shomei-webauthn-credentials.sql`.
+- [x] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`.
+- [x] Touch `shomei-migrations/src/Shomei/Migrations.hs` (added a two-line comment referencing
+      the two new files) to force the `embedDir` Template Haskell splice to recompile.
+- [x] Confirm `shomei-migrations.cabal` `extra-source-files: sql-migrations/*.sql` already
+      globs the new files (it does — no edit needed; see Decision Log).
+- [x] Create `shomei-postgres/src/Shomei/Postgres/PasskeyStore.hs`
       (`runPasskeyStorePostgres`).
-- [ ] Create `shomei-postgres/src/Shomei/Postgres/PendingCeremonyStore.hs`
+- [x] Create `shomei-postgres/src/Shomei/Postgres/PendingCeremonyStore.hs`
       (`runPendingCeremonyStorePostgres`).
-- [ ] Add both modules to `shomei-postgres.cabal` `exposed-modules`.
-- [ ] Add `runPasskeyStorePostgres . runPendingCeremonyStorePostgres` to
+- [x] Add both modules to `shomei-postgres.cabal` `exposed-modules`.
+- [x] Add `. runPendingCeremonyStorePostgres . runPasskeyStorePostgres` to
       `Shomei.Server.App.runAppIO`, in the position matching the AppEffects list (right after
-      `runLoginAttemptStorePostgres`, before `runNotifierFromConfig`).
-- [ ] Insert `PasskeyStore, PendingCeremonyStore` after `LoginAttemptStore` in the
+      `runNotifierFromConfig`, before `runLoginAttemptStorePostgres` in the source text —
+      i.e. the composition is the reverse of the type list).
+- [x] Insert `PasskeyStore, PendingCeremonyStore` after `LoginAttemptStore` in the
       `shomei-postgres/test/Main.hs` `AppEffects`, and add
-      `runPasskeyStorePostgres . runPendingCeremonyStorePostgres` to its `runApp*` chains in
-      the matching position.
-- [ ] Add the new integration test cases to `shomei-postgres/test/Main.hs` `tests`.
-- [ ] `nix develop --command cabal build all` green.
-- [ ] `nix develop --command cabal test shomei-postgres-test` green; the embedded migration
-      count grew and the new cases pass.
+      `. runPendingCeremonyStorePostgres . runPasskeyStorePostgres` to its `runApp*` chains in
+      the matching position. Also updated the servant test's `runHybrid` chain
+      (`shomei-servant/test/Main.hs`), which interprets the servant `AppEffects` and would
+      otherwise not type-check.
+- [x] Add the new integration test cases to `shomei-postgres/test/Main.hs` `tests`.
+- [x] `nix develop --command cabal build all` green.
+- [x] `nix develop --command cabal test shomei-postgres-test` green; the embedded migration
+      count grew from 12 to 14 (codd applied both new migrations) and all 4 new cases pass.
+      `cabal test all` green across all 11 suites.
 
 ### Remaining / follow-on (not this plan)
 
@@ -133,19 +137,38 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet. Anticipated items — verify and convert to evidence as you implement.)
+Confirmed during implementation (2026-06-17):
 
-- `shomei-migrations.cabal` already lists `extra-source-files: sql-migrations/*.sql` (a
-  glob), so unlike a per-file list it does not need editing when new `.sql` files are added.
-  The *embedding* still requires a recompile of `Shomei.Migrations` (the `embedDir` splice is
-  compile-time); the `just migrate` recipe `touch`es the `.cabal` to force this, and this
-  plan touches `Migrations.hs` directly for the same effect.
-- The current `Shomei.Servant.Seam.AppEffects` and `Shomei.Server.App.AppEffects` do **not**
-  yet contain `WebAuthnCeremony` — EP-1 adds it. If, when you implement this plan, EP-1 has
-  already landed and `WebAuthnCeremony` sits after `Notifier`, leave it exactly where it is
-  and still insert `PasskeyStore, PendingCeremonyStore` *before* `Notifier`. If EP-1 has not
-  landed, the canonical order in "Interfaces and Dependencies" still tells you where your two
-  entries go; do not add `WebAuthnCeremony` yourself.
+- **The embedded migration count grew from 12 to 14, as predicted.** Verified directly with
+  `print (length Shomei.Migrations.embeddedFiles)` in a `cabal repl` (temporarily exporting
+  `embeddedFiles` for the check, then reverting): it printed `14`. The `shomei-postgres-test`
+  run then shows codd applying both new files
+  (`Applying 2026-06-18-00-00-00-shomei-webauthn-credentials.sql`,
+  `…-01-shomei-webauthn-pending-ceremonies.sql`). Touching `Shomei.Migrations.hs` (a two-line
+  comment) was sufficient to force the `embedDir` splice to re-run; no `.cabal` edit was
+  needed (the `extra-source-files: sql-migrations/*.sql` glob already covers new files).
+- **EP-1 had already landed `WebAuthnCeremony` after `Notifier` in every stack** (the master
+  plan marks EP-1 Complete). As instructed, it was left untouched and the two new ports were
+  inserted between `LoginAttemptStore` and `Notifier`. The canonical order is now
+  `… LoginAttemptStore, PasskeyStore, PendingCeremonyStore, Notifier, WebAuthnCeremony …`.
+- **The composition order is the exact reverse of the type-list order** (the head of the
+  effect list is interpreted by the *rightmost* `.`-applied runner). The plan's M1 edit-4
+  "order check" note listed the two new interpreters as
+  `runPasskeyStore . runPendingCeremonyStore`, but with the type list ordered
+  `PasskeyStore, PendingCeremonyStore` the composition must read
+  `… runNotifier . runPendingCeremonyStore . runPasskeyStore . runLoginAttemptStore …`
+  (PendingCeremony *before* Passkey, textually). The compiler is the arbiter; the reversed
+  order type-checks and all five lists are consistent. Same shape in `runAppIO`,
+  `runHybrid`, and the two `shomei-postgres` test chains.
+- **`contrazip10` exists** (`contravariant-extras` generates `contrazip2 .. contrazip42`), so
+  the 10-column passkey insert encoder did not need nesting.
+- **`OverloadedRecordDot` is unreliable for the EP-1 passkey/ceremony records** (the
+  MasterPlan-3 discovery applies to `PasskeyCredential`/`NewPasskeyCredential`/`PendingCeremony`
+  too, which share field names under `DuplicateRecordFields`). Every read of those records in
+  this plan — in-memory interpreter, both PostgreSQL interpreters, both test suites — uses
+  plain record-pattern accessors (`pkUserId PasskeyCredential{userId} = userId`) rather than
+  `value.field`; record *construction* with the explicit constructor and `#label`/`#signCounter`
+  generic-lens label updates work fine.
 
 
 ## Decision Log
@@ -211,13 +234,70 @@ Record every decision made while working on the plan.
   be user-scoped. This matches the canonical port contract in MasterPlan 3 IP-2.
   Date: 2026-06-17
 
+- Decision: Confirmed `shomei-migrations.cabal` already globs the new `.sql` files via
+  `extra-source-files: sql-migrations/*.sql`; left it unedited and forced the `embedDir`
+  re-embed solely by appending a two-line comment to `Shomei.Migrations.hs`.
+  Rationale: The glob (verified by reading the `.cabal`) packages any file under
+  `sql-migrations/`; only the compile-time splice needs a kick, which a source edit to the
+  splice-holding module provides. The embedded count then read 14 (was 12), proving the
+  re-embed. No `.cabal` change keeps the diff minimal.
+  Date: 2026-06-17
+
+- Decision: Read every EP-1 passkey/ceremony record via plain record-pattern accessors
+  (e.g. `pkUserId PasskeyCredential{userId} = userId`), never via `value.field`
+  `OverloadedRecordDot`.
+  Rationale: MasterPlan 3's EP-1 discovery records that `OverloadedRecordDot`/`HasField` is
+  unreliable for the new `DuplicateRecordFields` records even for unique fields. Record
+  patterns (and `DisambiguateRecordFields` construction) resolve unambiguously via the
+  constructor and are guaranteed to compile. Generic-lens `#field` label *updates*
+  (`& #signCounter .~ …`) remain reliable and are used in the in-memory interpreter.
+  Date: 2026-06-17
+
+- Decision: Defined `ceremonyKindToText`/`ceremonyKindFromText` locally inside
+  `Shomei.Postgres.PendingCeremonyStore` rather than adding them to the shared
+  `Shomei.Postgres.Codec`.
+  Rationale: The two-constructor `CeremonyKind` enum is local to ceremonies and used by
+  exactly one interpreter; keeping it inline avoids growing the shared codec module for a
+  single consumer. (The plan explicitly permits either choice; this is the less-coupled one.)
+  Date: 2026-06-17
+
+- Decision: `PutPendingCeremony` uses a plain `INSERT` (no `ON CONFLICT`).
+  Rationale: Ceremony ids are freshly generated by the workflow per ceremony (a UUIDv7
+  `CeremonyId`), so a collision cannot occur in practice; a plain insert is simplest and a
+  duplicate would (correctly) surface as a database error rather than silently overwriting.
+  Date: 2026-06-17
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-17): complete and green.** Both milestones landed exactly as scoped. The
+purpose — "insert a passkey, look it up three ways, bump its counter, count, delete it; and
+stash a pending ceremony and consume it exactly once" — is now demonstrable two ways:
+
+- `shomei-core/test/Shomei/PasskeyStoreSpec.hs` (pure, in-memory): 6 cases, all green within
+  `shomei-core-test` (29 tests total).
+- `shomei-postgres/test/Main.hs` (real hasql interpreters against an ephemeral migrated
+  PostgreSQL): `testPasskeyCreateAndFind`, `testPasskeyUpdateCountDelete`,
+  `testPendingCeremonyConsumeOnce`, `testPendingCeremonyExpired` — all green within
+  `shomei-postgres-test` (20 tests total). The consume-once security invariant is proven by
+  the `DELETE … RETURNING` count assertions (a second take returns `Nothing`; an expired take
+  returns `Nothing` yet still removes the stale row).
+
+`cabal build all` and `cabal test all` are green across all 11 suites. The two new ports sit
+in every effect-stack list between `LoginAttemptStore` and `Notifier`, leaving EP-1's
+`WebAuthnCeremony` untouched. The embedded migration count rose 12 → 14.
+
+**Gaps / deferred (as planned):** EP-3 (enrollment) and EP-4 (login/MFA) consume these ports
+and own their HTTP surfaces; not in scope here. `DeleteExpiredCeremonies` is implemented and
+wired but has no caller yet (the future sweeper/cron is EP-4's or operational concern).
+
+**Lessons:** (1) the effect-stack composition is the strict reverse of the type list — the
+plan's M1 order-check note had the two new interpreters in the wrong relative order; trust
+the compiler. (2) `OverloadedRecordDot` genuinely does not work for the new EP-1 records, so
+record-pattern accessors were used everywhere; this is worth carrying into EP-3/EP-4.
 
 
 ## Context and Orientation

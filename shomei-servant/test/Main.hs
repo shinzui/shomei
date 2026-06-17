@@ -72,8 +72,10 @@ import Shomei.Effect.InMemory (
     runCredentialStore,
     runLoginAttemptStore,
     runNotifier,
+    runPasskeyStore,
     runPasswordHasher,
     runPasswordResetTokenStore,
+    runPendingCeremonyStore,
     runRefreshTokenStore,
     runSessionStore,
     runSigningKeyStore,
@@ -134,6 +136,8 @@ runHybrid ref jwk jwkset cfg =
         . runPasswordHasher ref
         . runWebAuthnCeremonyFake ref
         . runNotifier ref
+        . runPendingCeremonyStore ref
+        . runPasskeyStore ref
         . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref
         . runVerificationTokenStore ref

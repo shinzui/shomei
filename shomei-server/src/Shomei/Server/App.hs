@@ -58,7 +58,9 @@ import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
+import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
+import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
@@ -126,6 +128,8 @@ runAppIO env =
         . runPasswordHasherCrypto
         . runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)
         . runNotifierFromConfig env.envConfig
+        . runPendingCeremonyStorePostgres
+        . runPasskeyStorePostgres
         . runLoginAttemptStorePostgres
         . runPasswordResetTokenStorePostgres
         . runVerificationTokenStorePostgres

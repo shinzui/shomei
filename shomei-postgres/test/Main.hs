@@ -35,6 +35,16 @@ import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
+import Shomei.Domain.Passkey (
+    CeremonyKind (..),
+    NewPasskeyCredential (..),
+    PasskeyCredential (..),
+    PendingCeremony (..),
+    PublicKeyBytes (..),
+    SignatureCounter (..),
+    UserHandle (..),
+    WebAuthnCredentialId (..),
+ )
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
@@ -44,6 +54,7 @@ import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (NewUser (..), User (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
+import Shomei.Id (PasskeyId, genCeremonyId, genUserId)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock (..), now)
@@ -58,6 +69,16 @@ import Shomei.Effect.LoginAttemptStore (
     setAccountLockout,
  )
 import Shomei.Effect.Notifier (Notifier (..))
+import Shomei.Effect.PasskeyStore (
+    PasskeyStore,
+    countPasskeysByUser,
+    createPasskey,
+    deletePasskey,
+    findPasskeyByCredentialId,
+    findPasskeysByUser,
+    findPasskeysByUserHandle,
+    updatePasskeySignCounter,
+ )
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword)
 import Shomei.Effect.PasswordResetTokenStore (
     PasswordResetTokenStore,
@@ -65,6 +86,7 @@ import Shomei.Effect.PasswordResetTokenStore (
     findPasswordResetTokenByHash,
     markPasswordResetTokenConsumed,
  )
+import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
 import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
@@ -98,7 +120,9 @@ import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
+import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
+import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
@@ -118,6 +142,8 @@ type AppEffects =
      , VerificationTokenStore
      , PasswordResetTokenStore
      , LoginAttemptStore
+     , PasskeyStore
+     , PendingCeremonyStore
      , Notifier
      , WebAuthnCeremony
      , AuthEventPublisher
@@ -150,6 +176,8 @@ runAppWithNotifications ref pool action = do
             . runAuthEventPublisherPostgres
             . runWebAuthnCeremonyFake wref
             . runNotifierRef ref
+            . runPendingCeremonyStorePostgres
+            . runPasskeyStorePostgres
             . runLoginAttemptStorePostgres
             . runPasswordResetTokenStorePostgres
             . runVerificationTokenStorePostgres
@@ -178,6 +206,8 @@ runAppAtTime t pool action = do
             . runAuthEventPublisherPostgres
             . runWebAuthnCeremonyFake wref
             . runNotifierRef ref
+            . runPendingCeremonyStorePostgres
+            . runPasskeyStorePostgres
             . runLoginAttemptStorePostgres
             . runPasswordResetTokenStorePostgres
             . runVerificationTokenStorePostgres
@@ -277,6 +307,10 @@ tests =
     , testWorkflowPasswordReset
     , testLoginAttemptStore
     , testWorkflowLockout
+    , testPasskeyCreateAndFind
+    , testPasskeyUpdateCountDelete
+    , testPendingCeremonyConsumeOnce
+    , testPendingCeremonyExpired
     ]
 
 testUserRoundTrip :: TestTree
@@ -546,6 +580,126 @@ testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlo
     ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceEmail strongPw)) >>= expectApp
     _ <- expectRight ok
     remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts"
+    remaining @?= 0
+
+-- Passkey field accessors: OverloadedRecordDot is unreliable for these
+-- DuplicateRecordFields records (MasterPlan 3 discovery), so read via record-pattern.
+pkPasskeyId :: PasskeyCredential -> PasskeyId
+pkPasskeyId PasskeyCredential{passkeyId} = passkeyId
+
+pkSignCounter :: PasskeyCredential -> SignatureCounter
+pkSignCounter PasskeyCredential{signCounter} = signCounter
+
+pkLastUsedAt :: PasskeyCredential -> Maybe UTCTime
+pkLastUsedAt PasskeyCredential{lastUsedAt} = lastUsedAt
+
+pkTransports :: PasskeyCredential -> [Text]
+pkTransports PasskeyCredential{transports} = transports
+
+pkLabel :: PasskeyCredential -> Maybe Text
+pkLabel PasskeyCredential{label} = label
+
+-- | A 'NewPasskeyCredential' with canned bytes for the given user and time.
+newPasskey :: User -> UTCTime -> NewPasskeyCredential
+newPasskey u t =
+    NewPasskeyCredential
+        { userId = u.userId
+        , credentialId = WebAuthnCredentialId "cred-1"
+        , userHandle = UserHandle "uh-1"
+        , publicKey = PublicKeyBytes "pk-1"
+        , signCounter = SignatureCounter 0
+        , transports = ["usb", "nfc"]
+        , label = Just "key"
+        , createdAt = t
+        }
+
+testPasskeyCreateAndFind :: TestTree
+testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do
+    result <- runApp pool do
+        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        t <- now
+        created <- createPasskey (newPasskey u t)
+        byUser <- findPasskeysByUser u.userId
+        byCred <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
+        byHandle <- findPasskeysByUserHandle (UserHandle "uh-1")
+        pure (created, byUser, byCred, byHandle)
+    (created, byUser, byCred, byHandle) <- expectApp result
+    -- all three lookups resolve to the created passkey
+    map pkPasskeyId byUser @?= [pkPasskeyId created]
+    fmap pkPasskeyId byCred @?= Just (pkPasskeyId created)
+    map pkPasskeyId byHandle @?= [pkPasskeyId created]
+    -- the jsonb transports + bigint counter + label survived the round trip
+    fmap pkTransports byCred @?= Just ["usb", "nfc"]
+    fmap pkLabel byCred @?= Just (Just "key")
+    fmap pkSignCounter byCred @?= Just (SignatureCounter 0)
+    n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials"
+    n @?= 1
+
+testPasskeyUpdateCountDelete :: TestTree
+testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + count + delete (user-scoped)" $ withDb \pool -> do
+    result <- runApp pool do
+        u <- createUser (NewUser{email = aliceEmail, displayName = Nothing})
+        t <- now
+        created <- createPasskey (newPasskey u t)
+        let pid = pkPasskeyId created
+        updatePasskeySignCounter pid (SignatureCounter 42) t
+        afterUpdate <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
+        cnt <- countPasskeysByUser u.userId
+        otherUid <- genUserId
+        deletePasskey otherUid pid -- wrong user: must NOT delete
+        pure (afterUpdate, cnt, u.userId, pid)
+    (afterUpdate, cnt, uid, pid) <- expectApp result
+    fmap pkSignCounter afterUpdate @?= Just (SignatureCounter 42)
+    assertBool "last_used_at is populated after the counter bump" (maybe False (isJust . pkLastUsedAt) afterUpdate)
+    cnt @?= 1
+    afterWrongUser <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials"
+    afterWrongUser @?= 1 -- wrong-user delete left it
+    _ <- runApp pool (deletePasskey uid pid) >>= expectApp
+    afterOwner <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials"
+    afterOwner @?= 0 -- owner delete removed it
+
+testPendingCeremonyConsumeOnce :: TestTree
+testPendingCeremonyConsumeOnce = testCase "pending ceremony store: put then take consumes exactly once" $ withDb \pool -> do
+    result <- runApp pool do
+        cid <- genCeremonyId
+        t <- now
+        putPendingCeremony
+            PendingCeremony
+                { ceremonyId = cid
+                , userId = Nothing
+                , kind = RegistrationCeremony
+                , optionsBlob = "{\"challenge\":\"abc\"}"
+                , createdAt = t
+                , expiresAt = addUTCTime 300 t
+                }
+        first <- takePendingCeremony cid t
+        pure (cid, t, first)
+    (cid, t, first) <- expectApp result
+    assertBool "first take returns the ceremony" (isJust first)
+    afterFirst <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies"
+    afterFirst @?= 0 -- DELETE ... RETURNING removed it
+    second <- runApp pool (takePendingCeremony cid t) >>= expectApp
+    second @?= (Nothing :: Maybe PendingCeremony)
+
+testPendingCeremonyExpired :: TestTree
+testPendingCeremonyExpired = testCase "pending ceremony store: expired ceremony is not returned" $ withDb \pool -> do
+    result <- runApp pool do
+        cid <- genCeremonyId
+        t <- now
+        putPendingCeremony
+            PendingCeremony
+                { ceremonyId = cid
+                , userId = Nothing
+                , kind = AuthenticationCeremony
+                , optionsBlob = "{\"challenge\":\"xyz\"}"
+                , createdAt = t
+                , expiresAt = t -- expires immediately
+                }
+        -- "now" is past expiry: returns Nothing but still removes the stale row
+        takePendingCeremony cid (addUTCTime 1 t)
+    taken <- expectApp result
+    taken @?= (Nothing :: Maybe PendingCeremony)
+    remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies"
     remaining @?= 0
 
 latestVerificationToken :: [Notification] -> IO OneTimeToken

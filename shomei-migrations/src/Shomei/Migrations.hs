@@ -43,6 +43,8 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- Account-lifecycle migrations were added on 2026-06-04, so this module must recompile.
 -- Abuse-protection migrations (shomei_login_attempts, shomei_account_lockouts) were added
 -- on 2026-06-05 by EP-2, requiring another recompile of this splice.
+-- WebAuthn migrations (shomei_webauthn_credentials, shomei_webauthn_pending_ceremonies)
+-- were added on 2026-06-18 by MasterPlan-3 EP-2, requiring another recompile of this splice.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 

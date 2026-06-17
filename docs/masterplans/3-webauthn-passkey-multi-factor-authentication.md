@@ -191,7 +191,7 @@ only intra-MasterPlan-3 dependencies.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Complete |
-| 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | In Progress |
+| 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Complete |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Not Started |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
 | 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | Not Started |
@@ -362,8 +362,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4 (patched fork `shinzui/webauthn-project` @ `a8b5636`, pinned as a source-repository-package; `allow-newer: webauthn:*`); a register→authenticate ceremony verifies (the fork's own emulation test, real ECDSA, 100 cases), and the pending-options WJ-JSON serialization round-trips (100 cases) — 2026-06-17
 - [x] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`; deterministic fake interpreter + core unit test; port slotted into all effect-stack lists (server uses a temporary stub until M2) — `cabal build all`/`test all` green — 2026-06-17
 - [x] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; wired into the server's `runAppIO`; `cabal build all`/`cabal test all` green (11 suites); `mori show --full` lists it — 2026-06-17
-- [ ] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grows)
-- [ ] EP-2: PostgreSQL interpreters for both stores; integration test inserts/queries a passkey and consumes a pending ceremony exactly once
+- [x] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grew 12→14); pure `PasskeyStoreSpec` green — 2026-06-17
+- [x] EP-2: PostgreSQL interpreters for both stores (`runPasskeyStorePostgres`/`runPendingCeremonyStorePostgres`); integration test inserts/queries a passkey three ways and consumes a pending ceremony exactly once (`DELETE … RETURNING`); `cabal test all` green across all 11 suites — 2026-06-17
 - [ ] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests; `PasskeyRegistered`/`PasskeyRemoved` events
 - [ ] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey
 - [ ] EP-4: `login` widened to `LoginComplete`/`MfaRequired`; pending-MFA token; `mfaRequired` policy; pure step-up tests
@@ -487,6 +487,27 @@ Discoveries during EP-1 implementation (2026-06-17) that affect later plans:
   (+ `runAppIO`, now using the real `runWebAuthnCeremonyLibrary`), and the `shomei-postgres` test
   stack. Per IP-6, **EP-2 inserts `PasskeyStore`/`PendingCeremonyStore` right after
   `LoginAttemptStore` (before `Notifier`/`WebAuthnCeremony`)** so this position is not disturbed.
+
+Discoveries during EP-2 implementation (2026-06-17) that affect later plans:
+
+- **The canonical port order is now fixed at
+  `… LoginAttemptStore, PasskeyStore, PendingCeremonyStore, Notifier, WebAuthnCeremony …`** in all
+  five lists (`runInMemory`, servant `Seam.AppEffects` + `runHybrid`, server `App.AppEffects` +
+  `runAppIO`, and the `shomei-postgres` test `AppEffects` + its two `runApp*` chains). EP-3/EP-4
+  add **no new ports** (they consume EP-1's `WebAuthnCeremony` and EP-2's two stores), so they
+  must not touch this order. Reminder: a stack's interpreter composition is the **strict reverse**
+  of its type list (the list head is interpreted by the rightmost `.`-applied runner).
+- **The two stores' interpreters (`runPasskeyStorePostgres`, `runPendingCeremonyStorePostgres`)
+  are exported from `Shomei.Postgres.PasskeyStore`/`…PendingCeremonyStore`** and their smart
+  constructors from `Shomei.Effect.PasskeyStore`/`…PendingCeremonyStore`. EP-3 enrollment uses
+  `createPasskey`/`findPasskeysByUser`/`deletePasskey`/`countPasskeysByUser` and the pending store's
+  `putPendingCeremony`/`takePendingCeremony`; EP-4 login uses `findPasskeyByCredentialId`/
+  `findPasskeysByUserHandle`/`updatePasskeySignCounter` plus the pending store. The
+  `WebAuthnCredentialId`/`UserHandle`/`PublicKeyBytes` byte newtypes persist as `bytea`, the
+  `SignatureCounter` (`Word32`) as `bigint`, and `transports :: [Text]` as `jsonb`.
+- **`OverloadedRecordDot` confirmed unreliable for `PasskeyCredential`/`NewPasskeyCredential`/
+  `PendingCeremony`** (not just EP-1's config/verify records). EP-2 reads them exclusively via
+  record-pattern accessors; EP-3/EP-4 should do the same.
 
 
 ## Decision Log
