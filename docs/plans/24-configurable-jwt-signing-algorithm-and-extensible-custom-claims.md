@@ -63,8 +63,8 @@ This section must always reflect the actual current state of the work.
 - [x] M1 — Add the `SigningAlgorithm` type and thread it through key generation, storage, and the JWKS. (2026-06-17: `SigningAlgorithm`/`signingAlgorithmToText`/`signingAlgorithmFromText` in `shomei-core`; `generateSigningKeyFor`/`toStoredSigningKeyFor` in `shomei-jwt`; new `KeySpec` RS256 case PASS — 12 tests.)
 - [x] M2 — Make signing honor the configured algorithm (fix the `bestJWSAlg` PSS pitfall for RSA). (2026-06-17: `algForKey` picks RS256 for RSA / ES256 for EC; header built with `newJWSHeaderProtected`; 3 new SignVerify cases PASS, ES256 header unchanged — 15 tests.)
 - [x] M3 — Add the extensible custom-claims bag to `AuthClaims`, serialize and recover it. (2026-06-17: `extraClaims`/`mkExtraClaims`/`noExtraClaims`/`reservedClaimKeys` in `shomei-core`; `claimsFromAuth` folds extras in *first* so standard claims override; `claimsToAuth` recovers them; `buildClaimsWith` added; all `AuthClaims{}` sites updated. New round-trip + reserved-key cases PASS — shomei-jwt 17, shomei-core 103.)
-- [ ] M4 — Wire algorithm + custom claims through `Config`, the server bootstrap, and `shomei-admin`.
-- [ ] M5 — Acceptance: RS256 token carrying a custom claim round-trips through the JWKS verify path.
+- [x] M4 — Wire algorithm + custom claims through `Config`, the server bootstrap, and `shomei-admin`. (2026-06-17: `configSigningAlgorithm`, `SHOMEI_SIGNING_ALG`/Dhall `signingAlgorithm` (both validated), `bootstrapKeys alg`, `keys generate --alg`, `rotateSigningKeyFor`. Committed f98895c; six test call sites of the changed signatures fixed in 0dd0c93. The `configSigningAlgorithm` parse/fallback test passes.)
+- [x] M5 — Acceptance: RS256 token carrying a custom claim round-trips through the JWKS verify path. (2026-06-17: `RsaCustomClaimSpec` committed c2ce915. Validated in an isolated `git worktree` at the SH-24 head — `cabal build all` clean and `cabal test all` EXIT=0, all 10 suites PASS including the `RsaCustomClaim` group.)
 
 
 ## Surprises & Discoveries
@@ -241,7 +241,43 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Completed 2026-06-17.** All six milestones (M0–M5) are done and the feature meets its
+original purpose: a consuming service can now (1) choose the JWT signing algorithm —
+default **ES256** or **RS256** — carried by config and reflected in the generated/stored
+key, the JWT protected header's `alg`, and the published JWKS, with the `kid` unchanged; and
+(2) attach arbitrary top-level custom claims to every token via `AuthClaims.extraClaims`,
+which serialize alongside the standard claims, survive a verify round trip, and are returned
+to the service — with a reserved-key guarantee so a standard claim can never be forged
+through the bag. This delivers exactly the two seams auth-service-v2 EP-3 consumes.
+
+**Validation.** `cabal build all` is clean and `cabal test all` is green (10 suites, EXIT=0),
+including the headline `RsaCustomClaim` acceptance group (RS256 token carrying a custom claim,
+header proven `alg:RS256`, payload proven to carry the custom + standard claims, verified
+through the public JWKS) and the `configSigningAlgorithm` parse/fallback unit test. Existing
+ES256 behavior is unchanged (the prior `SignVerify` cases still pass; empty-`extraClaims`
+tokens serialize as before).
+
+**Key technical outcomes / lessons.**
+- The single most important pitfall held: `jose`'s `bestJWSAlg`/`makeJWSHeader` prefers PSS
+  (PS512) for RSA keys. Pinning `RS256` explicitly via `newJWSHeaderProtected` + key-material
+  inspection (`algForKey`) was essential. (The plan's `OptionalProtection`/`HeaderParam` import
+  recipe didn't type-check against `signClaims`, which needs `RequiredProtection`; the
+  protection-polymorphic `newJWSHeaderProtected`/`newHeaderParamProtected` are the right tools.)
+- Custom-claim safety is layered: `mkExtraClaims` drops reserved keys at construction; the
+  signer seeds extras *before* the standard chain so Shōmei's values override `sid/scopes/
+  roles/act`; and `jose` itself filters the registered keys (`iss/sub/aud/iat/exp`) from the
+  unregistered map on both encode and decode, so registered-claim forgery is impossible.
+- The `algorithm` text column / config string already existed but were inert; this plan made
+  them meaningful with no schema migration, exactly as scoped.
+
+**Process note / gap.** Throughout M4–M5 the working tree was concurrently modified by an
+unrelated, in-progress, non-compiling **plan-25** change set (login-identifier/optional-email),
+which broke `cabal build all` in the shared tree. SH-24 was kept strictly isolated (no plan-25
+file touched; explicit per-file `git add`, never `git add -A` for code after this was noticed)
+and validated in a dedicated `git worktree` checked out at the SH-24 head, where the tree
+compiles against the committed baseline. **Open item for the operator:** a final `cabal test
+all` on the integrated trunk should be re-run once plan-25 is itself complete and compiling;
+SH-24's own correctness is fully established by the isolated-worktree run.
 
 
 ## Context and Orientation
