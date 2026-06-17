@@ -13,9 +13,18 @@ logs. The minimum-length / policy check runs before hashing.
 
 ## Tokens
 
-- **Access tokens** are ES256 (P-256) JWTs signed by the active signing key, carrying the subject
-  (user id), session id, issuer, audience, and expiry. They are verified offline against the
-  published JWKS.
+- **Access tokens** are JWTs signed by the active signing key, carrying the subject (user id),
+  session id, issuer, audience, and expiry. They are verified offline against the published JWKS.
+  The signing algorithm is configurable: **ES256** (ECDSA P-256, the default) or **RS256**
+  (RSASSA-PKCS1-v1_5) — see `SHOMEI_SIGNING_ALG` in [deployment.md](deployment.md). The choice is
+  reflected in the key, the JWT header's `alg`, and the JWKS; the `kid` keeps identifying which
+  key signed a token, so rotation and multi-key verification work unchanged.
+- **Custom claims.** A service embedding Shōmei as a library can attach arbitrary top-level JSON
+  claims to every token via `AuthClaims.extraClaims` (e.g. `buildClaimsWith`). They serialize
+  alongside the standard claims and are returned on verification. Reserved standard claims (`iss`,
+  `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, `act`) **cannot be forged** through the
+  bag: `mkExtraClaims` drops them at construction, the signer always writes Shōmei's own value
+  last, and `jose` filters the registered claims from the custom map on both sign and verify.
 - **Refresh tokens** and the single-use **email-verification** / **password-reset** tokens are
   opaque random strings of which only the **SHA-256 hash** is persisted — a database leak never
   reveals a usable token. Refresh tokens rotate on every use; presenting an already-used token is
@@ -35,7 +44,9 @@ Keys move through `pending → active → retired → revoked` (managed by `shom
   compromised key, deliberately breaking its outstanding tokens.
 
 The published JWKS (`GET /.well-known/jwks.json`) therefore lists both `active` and `retired`
-keys during the overlap window.
+keys during the overlap window. Rotation is also how you **switch signing algorithm** on a live
+deployment: `shomei-admin keys generate --alg RS256` then `keys activate <kid>` moves signing to
+RS256 while the retired ES256 key keeps verifying its outstanding tokens until they expire.
 
 ## No account-existence leakage
 

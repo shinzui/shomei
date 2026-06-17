@@ -25,3 +25,15 @@ tagged release.
 - **Packaging & config (EP-5):** typed Dhall + environment configuration loader; a production
   OCI image via the Nix flake; a local `process-compose` stack (PostgreSQL on a Unix socket +
   the server) for development/test; and a CI pipeline.
+
+### Added — Configurable JWT signing algorithm and extensible custom claims (SH-24)
+
+- **Selectable signing algorithm:** keys are **ES256** (ECDSA P-256) by default or **RS256**
+  (RSASSA-PKCS1-v1_5), chosen via `SHOMEI_SIGNING_ALG` / the Dhall `signingAlgorithm` field /
+  `shomei-admin keys generate --alg`. The choice drives key generation, the JWT header `alg`, and
+  the published JWKS; the `kid` is unchanged so rotation and multi-key verification still work.
+  RS256 is pinned explicitly (never the PSS variant `jose` would otherwise prefer for RSA keys).
+- **Extensible custom claims:** a host service can attach arbitrary top-level JSON claims to every
+  token via `AuthClaims.extraClaims` / `buildClaimsWith`; they round-trip through sign/verify.
+  Reserved standard claims cannot be forged through the bag. Ordinary (empty-`extraClaims`) ES256
+  tokens are byte-for-byte unchanged.

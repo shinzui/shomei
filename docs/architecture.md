@@ -29,8 +29,8 @@ There are two interpreter assemblies for the same canonical effect stack (`AppEf
 - **In-memory** (`shomei-core/src/Shomei/Effect/InMemory.hs`) — a single mutable `World` in an
   `IORef`, used by the pure test suites. No database, JWT library, or network.
 - **Production** (`shomei-server`/`runAppIO`) — the `hasql` PostgreSQL interpreters plus the real
-  `jose` signer/verifier. The servant in-process test uses a *hybrid* (in-memory stores + real
-  ES256) so signing is genuinely exercised.
+  `jose` signer/verifier (ES256 by default, RS256 selectable). The servant in-process test uses a
+  *hybrid* (in-memory stores + real ES256) so signing is genuinely exercised.
 
 Because the workflows depend only on the interface order, the identical `signup`/`login`/`refresh`
 /account-lifecycle code runs unchanged over either assembly. The same property is the extension

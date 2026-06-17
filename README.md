@@ -2,7 +2,7 @@
 
 Shōmei is a Haskell authentication toolkit for building **embedded Servant auth** and
 **standalone auth services** from the same transport-agnostic core. It issues and verifies
-ES256 JSON Web Tokens, manages the full account lifecycle (signup, login, refresh, email
+ES256 (or, configurably, RS256) JSON Web Tokens, manages the full account lifecycle (signup, login, refresh, email
 verification, password reset/change), supports **passkey enrollment and WebAuthn multi-factor
 login** (password-then-passkey step-up and passwordless), and ships production hardening
 (brute-force lockout, rate limiting), observability (structured logs, Prometheus metrics,
@@ -22,7 +22,7 @@ signing-key rotation).
 | Package | Role |
 |---|---|
 | `shomei-core` | Transport-agnostic heart: domain types, the `effectful` effect interfaces (ports), the auth workflows, and an in-memory interpreter. No database/HTTP/JWT dependency. |
-| `shomei-jwt` | ES256 JWT signing/verification and the JWKS document (`jose`). |
+| `shomei-jwt` | ES256/RS256 JWT signing/verification and the JWKS document (`jose`). |
 | `shomei-postgres` | `hasql` adapters: a PostgreSQL interpreter for each port, plus Argon2id hashing and SHA-256 token hashing (`crypton`/`ram`). |
 | `shomei-migrations` | `codd`-managed SQL schema in the `shomei` PostgreSQL schema. |
 | `shomei-servant` | The `ShomeiAPI` `NamedRoutes` record, request/response DTOs, handlers, and the `Authenticated`/`RequireRole` combinators. |

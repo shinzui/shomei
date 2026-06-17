@@ -21,6 +21,7 @@ twelve-factor — env always wins):
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both` | `bearer` |
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
+| `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_WEBAUTHN_RP_ID` | passkey relying-party domain (no scheme/port) | `localhost` |
 | `SHOMEI_WEBAUTHN_RP_NAME` | human RP name shown by the authenticator | `Shōmei` |
 | `SHOMEI_WEBAUTHN_ORIGINS` | allowed page origins (comma-separated) | `http://localhost:8080` |
@@ -52,7 +53,7 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `access
 
 ```text
 shomei-admin migrate                              # apply pending migrations
-shomei-admin keys generate                        # mint a pending ES256 key, print its kid
+shomei-admin keys generate [--alg ES256|RS256]    # mint a pending key (default ES256), print its kid
 shomei-admin keys activate <kid>                  # promote pending → active (old key auto-retires)
 shomei-admin keys retire <kid>                    # active → retired (still trusted in JWKS)
 shomei-admin keys revoke <kid>                    # → revoked (removed from JWKS, distrusted)
@@ -63,6 +64,15 @@ shomei-admin users create --email … --password … [--display-name …]
 A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <kid>` → optionally
 `users create`. The container entrypoint (`deploy/entrypoint.sh`) does the first three
 automatically.
+
+**Choosing the signing algorithm.** Keys are **ES256** (ECDSA P-256) by default; set
+`SHOMEI_SIGNING_ALG=RS256` (or the Dhall `signingAlgorithm` field, or `keys generate --alg
+RS256`) to mint **RS256** (RSASSA-PKCS1-v1_5) keys instead — required by verifiers that only
+accept RS256. The choice shows up in the generated key, the JWT header's `alg`, and the
+published JWKS. First-boot key generation is **guarded on "no active key"**, so changing
+`SHOMEI_SIGNING_ALG` on an already-keyed database has no effect until you rotate: run
+`keys generate --alg <desired>` then `keys activate <kid>` (zero-downtime — both keys publish
+during the overlap).
 
 ## Local development/test stack (`process-compose`)
 
@@ -89,9 +99,10 @@ foreground TUI (press `q`/Ctrl-C to stop).
    URI pointing at the socket directory).
 2. `create_schema` — `just create-database`: creates the `shomei` database (over the socket) and
    applies all migrations. Idempotent.
-3. `bootstrap_keys` — ensures an active ES256 signing key exists (via `shomei-admin keys
-   list`/`generate`/`activate`). `shomei-admin` reads `DATABASE_URL`, which this step bridges
-   from the dev shell's `PG_CONNECTION_STRING`.
+3. `bootstrap_keys` — ensures an active signing key exists (via `shomei-admin keys
+   list`/`generate`/`activate`); the algorithm is `SHOMEI_SIGNING_ALG` (default `ES256`).
+   `shomei-admin` reads `DATABASE_URL`, which this step bridges from the dev shell's
+   `PG_CONNECTION_STRING`.
 4. `shomei-server` — `cabal run exe:shomei-server` (`exe:` disambiguates from the `shomei-admin`
    executable in the same package), reachable at `http://localhost:8080`; its readiness probe
    hits `/ready`.
