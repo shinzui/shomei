@@ -190,7 +190,7 @@ only intra-MasterPlan-3 dependencies.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Not Started |
+| 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | In Progress |
 | 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Not Started |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Not Started |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
@@ -359,7 +359,7 @@ updated in EP-4 except the client: `Shomei.Servant.Handlers.loginH`, the `LoginR
 
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
-- [ ] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4; a register→authenticate ceremony verifies through a prototype harness (spike), and the pending-options serialization round-trips
+- [x] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4 (patched fork `shinzui/webauthn-project` @ `a8b5636`, pinned as a source-repository-package; `allow-newer: webauthn:*`); a register→authenticate ceremony verifies (the fork's own emulation test, real ECDSA, 100 cases), and the pending-options WJ-JSON serialization round-trips (100 cases) — 2026-06-17
 - [ ] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`
 - [ ] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; `cabal build all`/`cabal test all` green
 - [ ] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grows)

@@ -76,18 +76,24 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 0 — build/verification spike (de-risk the heavy dependency):
+Milestone 0 — build/verification spike (de-risk the heavy dependency): **COMPLETE (2026-06-17).**
 
-- [ ] Add the `webauthn` source-repository-package / `allow-newer` block to `cabal.project`
-      (its own block; do not edit other plans' blocks).
-- [ ] Confirm `nix develop --command cabal build webauthn` succeeds on GHC 9.12.4 (or record
-      the exact failure and the fallback taken — see Decision Log placeholder).
-- [ ] Write a throwaway harness (a `Main` under a temporary `spike/` dir, or a temporary test
-      module) that performs begin-registration → simulated authenticator → verify-registration
-      → begin-authentication → simulated authenticator → verify-authentication, printing
-      `ceremony verified`.
-- [ ] Validate the chosen `optionsBlob` serialization round-trips inside the harness.
-- [ ] Record the spike outcome (allow-newer set, serialization choice proven) in the Decision
+- [x] Add the `webauthn` source-repository-package / `allow-newer` block to `cabal.project`
+      (its own block; do not edit other plans' blocks). — pinned `shinzui/webauthn-project`
+      @ `a8b5636`, subdir `webauthn`, `allow-newer: webauthn:*`, `tests: False`.
+- [x] Confirm `nix develop --command cabal build webauthn` succeeds on GHC 9.12.4 — succeeds
+      after four fork patches (memory→ram, jose 0.13 RequiredProtection, SignedJWT annotation,
+      validation toEither); see Decision Log.
+- [x] Drive begin-registration → simulated authenticator → verify-registration →
+      begin-authentication → simulated authenticator → verify-authentication. — Done by reusing
+      the fork's own pure software-authenticator emulation test (`Emulation > None > succeeds`),
+      which passes 100/100 on this build (real ECDSA verify). A bespoke throwaway harness was
+      unnecessary given the library ships a complete emulator.
+- [x] Validate the chosen `optionsBlob` serialization round-trips — confirmed via the fork's
+      `Encoding > … can be roundtripped` WJ JSON props (options + credentials), 100 cases each,
+      0 failures. This is exactly the `encode`/`decode` Internal.WebAuthnJson path the M2
+      interpreter uses for the persisted options blob.
+- [x] Record the spike outcome (allow-newer set, serialization choice proven) in the Decision
       Log and Surprises sections.
 
 Milestone 1 — core domain, port, config, fake interpreter, wiring:
@@ -166,7 +172,32 @@ as implementation proceeds.
   `Failure`/`Success` (not `Left`/`Right`) and collapse the `NonEmpty` error list to one
   `WebAuthnError`.
 
-(No implementation surprises yet.)
+Implementation surprises (M0, 2026-06-17):
+
+- **`allow-newer: webauthn:*` alone was insufficient; four source patches were needed.** The
+  bounds wildcard resolved the solver, but the build then failed to *compile* against the bumped
+  deps. See the Decision Log `allow-newer` entry for the full list. The headline cause is that
+  `crypton >= 1.1` provides its `ByteArrayAccess (Digest h)` instance via `ram`, not `memory`;
+  the secondary cause is jose 0.13's `RequiredProtection` JWS-header protection parameter.
+
+- **The on-disk webauthn is the user's own fork (`shinzui/webauthn-project`), not `tweag/webauthn`
+  directly.** It is a `git subtree` import of tweag `ad0f088` under the `webauthn/` subdir. The
+  patches were committed and pushed to that fork's `master`
+  (`a8b56361dc9c359186c88daec065e91a409b39f3`) and pinned via `source-repository-package` with
+  `subdir: webauthn`.
+
+- **The webauthn test-suite needs the library's project dir as CWD.** `tests/MetadataSpec.hs`
+  reads `tests/golden-metadata/**` at spec-construction time, so running the test binary from the
+  Shōmei repo root throws `withBinaryFile: does not exist`. This only affects running the *fork's*
+  test-suite directly (used in M0 to prove the ceremony); `cabal test all` does not build it
+  because the pin sets `package webauthn { tests: False }`. M2's `shomei-webauthn` test is
+  self-contained and does not read golden files.
+
+- **The full ceremony crypto was never the real risk.** The fork's emulation tests
+  (`Emulation > None > succeeds`) drive a real software authenticator (ECDSA P-256 via crypton)
+  through `verifyRegistrationResponse`/`verifyAuthenticationResponse` and pass 100/100; the
+  bump to crypton 1.1 did not disturb the primitives. The real M0 value was confirming the WJ
+  JSON serialization round-trips on this build (it does — 4 props, 100 cases each).
 
 
 ## Decision Log
@@ -212,14 +243,58 @@ Record every decision made while working on the plan.
   hexagonal layering. The package depends only on `shomei-core` + `webauthn` + `crypton`.
   Date: 2026-06-17
 
-- Decision: **`allow-newer` outcome — PLACEHOLDER, fill during M0.**
-  Record here the exact `cabal.project` lines added to make `webauthn 0.11.0.0` build on GHC
-  9.12.4 (the `allow-newer` targets, e.g. `webauthn:crypton`, `webauthn:jose`,
-  `webauthn:base`, `webauthn:containers`), whether a patched `source-repository-package` of
-  `webauthn` was needed (and its fork/commit if so), and how `memory` was handled. If it could
-  not be made to build at all, record the blocking error and revise the MasterPlan (its
-  Surprises section already flags this risk).
-  Date: (to be filled at M0)
+- Decision: **`allow-newer` outcome — RESOLVED at M0 (2026-06-17).** `webauthn 0.11.0.0`
+  builds on GHC 9.12.4 with a **patched fork** plus a single wildcard `allow-newer`. The exact
+  `cabal.project` block now reads:
+
+  ```text
+  source-repository-package
+    type: git
+    location: https://github.com/shinzui/webauthn-project.git
+    tag: a8b56361dc9c359186c88daec065e91a409b39f3
+    subdir: webauthn
+
+  package webauthn
+    tests: False
+    benchmarks: False
+
+  allow-newer:
+    webauthn:*
+  ```
+
+  `allow-newer: webauthn:*` (relax all of webauthn's dependency upper bounds) was sufficient on
+  the bounds side — the only enumerated conflict was `crypton-x509 1.9.1` vs webauthn's
+  `crypton-x509 < 1.9` (jose pulls `crypton-x509 1.9.1`). The wildcard avoids enumerating the
+  whole `crypton-*`/`jose`/`base`/`containers`/`singletons` set; it is safe because `allow-newer`
+  only relaxes version bounds, never the API (API breaks surface as compile errors regardless).
+
+  Four **source patches** to the fork were required (committed as
+  `a8b56361dc9c359186c88daec065e91a409b39f3` on `shinzui/webauthn-project` master, pushed):
+  1. **`memory` → `ram`.** With `crypton >= 1.1`, the `ByteArrayAccess (Digest h)` instance comes
+     from `ram` (crypton's byte-array dependency), not the standalone `memory` package, so
+     webauthn's `Data.ByteArray (convert)` over a `Digest` failed with "No instance for
+     `memory-0.18.0:…ByteArrayAccess (Digest h)`". Swapping the `memory` build-dep for `ram`
+     (same `Data.ByteArray*` module names) aligns the class. Done in both the `library` and
+     `test-suite` stanzas of `webauthn.cabal`.
+  2. **jose 0.13 protection parameter.** jose 0.13 changed the JWS header protection type from
+     `()` to `RequiredProtection` (`type CompactJWS = JWS Identity RequiredProtection`). The two
+     `VerificationKeyStore … (JWSHeader ()) …` instances (`RootCertificate` in
+     `Metadata/Service/Processing.hs`; `VerificationHostName` in `…/AndroidSafetyNet.hs`) became
+     `(JWSHeader RequiredProtection)`, and the SafetyNet `HeaderParam () x5c` pattern became
+     `HeaderParam _ x5c`.
+  3. **`verifyJWT` is header-polymorphic** in jose 0.13; annotate the decoded JWT as `SignedJWT`
+     in `Processing.hs:jwtToAdditionalData` to fix `h ~ JWSHeader`.
+  4. **`validation` dropped `toEither`** (only used by the test-suite); defined locally in
+     `tests/Emulation.hs` and `tests/Main.hs`.
+
+  Patches 2–4 touch only the MDS/SafetyNet/test code (deferred for consumer passkeys per the
+  MasterPlan scope); the registration/authentication ceremony crypto path is unchanged. M0
+  proof: the fork's own emulation test-suite passes on this build —
+  `Emulation > None > succeeds` (full register→authenticate, real ECDSA, 100 cases, 0 failures)
+  and the four `Encoding > … can be roundtripped` WJ JSON props (options + credentials, 100
+  cases each), validating the `optionsBlob` serialization strategy. The library is pinned as a
+  `source-repository-package` (not a local path) so the build is reproducible.
+  Date: 2026-06-17
 
 
 ## Outcomes & Retrospective

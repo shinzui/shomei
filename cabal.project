@@ -52,3 +52,25 @@ source-repository-package
 -- If a version bound blocks the solve, add an `allow-newer: optparse-applicative:base`
 -- entry here and record it in EP-4's Surprises & Discoveries.
 -- ============================================================
+
+-- ============================================================
+-- MasterPlan 3 / EP-1 (WebAuthn): the tweag/webauthn library (registered in mori
+-- as tweag/webauthn) is tested with GHC 9.10.3 and constrains crypton < 1.1 and
+-- jose < 0.12; Shōmei builds with GHC 9.12.4 and carries crypton >= 1.1.0 + a pinned
+-- jose 0.13. The shinzui/webauthn-project fork patches the library to build against
+-- that set (memory -> ram, jose 0.13 RequiredProtection header param, SignedJWT
+-- annotation, validation toEither); see EP-1 Decision Log. The webauthn package
+-- lives in the fork's `webauthn` subdir. allow-newer relaxes its upper bounds.
+-- ============================================================
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/webauthn-project.git
+  tag: a8b56361dc9c359186c88daec065e91a409b39f3
+  subdir: webauthn
+
+package webauthn
+  tests: False
+  benchmarks: False
+
+allow-newer:
+  webauthn:*
