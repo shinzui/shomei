@@ -62,6 +62,7 @@ test-suite shomei-jwt-test
     Shomei.Jwt.InterpreterSpec
     Shomei.Jwt.JwksSpec
     Shomei.Jwt.KeySpec
+    Shomei.Jwt.RsaCustomClaimSpec
     Shomei.Jwt.SignVerifySpec
     Shomei.Jwt.TestSupport
 
