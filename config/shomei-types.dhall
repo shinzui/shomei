@@ -18,6 +18,15 @@
 , metricsEnabled : Bool
 , requestLoggingEnabled : Bool
 , gracefulShutdownTimeoutSeconds : Natural
+-- Password policy (MasterPlan 4). Length bounds plus toggles for the local common/contextual
+-- checks (EP-2) and the opt-in HIBP breach check (EP-3).
+, passwordMinLength : Natural
+, passwordMaxLength : Natural
+, passwordRejectCommon : Bool
+, passwordRejectContextual : Bool
+, passwordBreachCheckEnabled : Bool
+, passwordBreachCheckFailClosed : Bool
+, passwordBreachCheckTimeoutMs : Natural
 -- WebAuthn / passkey relying-party identity and ceremony policy (MasterPlan 3).
 , webauthnRpId : Text                       -- registrable domain, e.g. "auth.example.com"
 , webauthnRpName : Text                      -- human label shown by the authenticator

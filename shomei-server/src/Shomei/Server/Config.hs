@@ -43,6 +43,7 @@ import Shomei.Config (
     defaultShomeiConfig,
  )
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
+import Shomei.Domain.Password (PasswordPolicy (..))
 
 -- | Server-only settings not part of the transport-agnostic 'ShomeiConfig'.
 data ServerSettings = ServerSettings
@@ -71,6 +72,13 @@ data FileConfig = FileConfig
     , metricsEnabled :: !(Maybe Bool)
     , requestLoggingEnabled :: !(Maybe Bool)
     , gracefulShutdownTimeoutSeconds :: !(Maybe Int)
+    , passwordMinLength :: !(Maybe Int)
+    , passwordMaxLength :: !(Maybe Int)
+    , passwordRejectCommon :: !(Maybe Bool)
+    , passwordRejectContextual :: !(Maybe Bool)
+    , passwordBreachCheckEnabled :: !(Maybe Bool)
+    , passwordBreachCheckFailClosed :: !(Maybe Bool)
+    , passwordBreachCheckTimeoutMs :: !(Maybe Int)
     , webauthnRpId :: !(Maybe Text)
     , webauthnRpName :: !(Maybe Text)
     , webauthnOrigins :: !(Maybe [Text])
@@ -141,6 +149,16 @@ baseFromFile (Just fc) = do
                         { rateLimitEnabled = fromMaybe cfg0.rateLimitConfig.rateLimitEnabled fc.rateLimitEnabled
                         , maxFailedLoginsPerAccount = fromMaybe cfg0.rateLimitConfig.maxFailedLoginsPerAccount fc.maxFailedLoginsPerAccount
                         , perIpRequestsPerMinute = fromMaybe cfg0.rateLimitConfig.perIpRequestsPerMinute fc.perIpRequestsPerMinute
+                        }
+                , passwordPolicy =
+                    cfg0.passwordPolicy
+                        { minLength = fromMaybe cfg0.passwordPolicy.minLength fc.passwordMinLength
+                        , maxLength = fromMaybe cfg0.passwordPolicy.maxLength fc.passwordMaxLength
+                        , rejectCommonPasswords = fromMaybe cfg0.passwordPolicy.rejectCommonPasswords fc.passwordRejectCommon
+                        , rejectContextualPasswords = fromMaybe cfg0.passwordPolicy.rejectContextualPasswords fc.passwordRejectContextual
+                        , breachCheckEnabled = fromMaybe cfg0.passwordPolicy.breachCheckEnabled fc.passwordBreachCheckEnabled
+                        , breachCheckFailClosed = fromMaybe cfg0.passwordPolicy.breachCheckFailClosed fc.passwordBreachCheckFailClosed
+                        , breachCheckTimeoutMs = fromMaybe cfg0.passwordPolicy.breachCheckTimeoutMs fc.passwordBreachCheckTimeoutMs
                         }
                 , observabilityConfig =
                     cfg0.observabilityConfig

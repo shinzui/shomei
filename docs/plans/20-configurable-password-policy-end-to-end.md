@@ -61,10 +61,11 @@ This section must always reflect the actual current state of the work.
       in `shomei-core/src/Shomei/Domain/Password.hs`; fix every construction site; confirm
       `validatePassword` is unchanged. Verified `defaultPasswordPolicy` is the only construction site.
 - [x] M1 (2026-06-17): `cabal build all` is green and the existing `shomei-core` test suite passes (47 tests).
-- [ ] M2: Add the seven new optional fields to `FileConfig` in
-      `shomei-server/src/Shomei/Server/Config.hs`.
-- [ ] M2: Add the matching keys to `config/shomei-types.dhall` and `config/shomei.example.dhall`.
-- [ ] M2: Add the `passwordPolicy = cfg0.passwordPolicy { … }` overlay block in `baseFromFile`.
+- [x] M2 (2026-06-17): Add the seven new optional fields to `FileConfig` in
+      `shomei-server/src/Shomei/Server/Config.hs` (+ `PasswordPolicy (..)` import).
+- [x] M2 (2026-06-17): Add the matching keys to `config/shomei-types.dhall` and `config/shomei.example.dhall`;
+      `dhall-to-json --file config/shomei.example.dhall` renders all seven new keys.
+- [x] M2 (2026-06-17): Add the `passwordPolicy = cfg0.passwordPolicy { … }` overlay block in `baseFromFile`.
 - [ ] M3: Add `boolEnv` and `intEnvMaybe` helpers and the `passwordPolicy` env overlay in
       `overlayCoreFromEnv`.
 - [ ] M3: Extend `shomei-server/test/Shomei/Server/ConfigSpec.hs` to prove default → file → env

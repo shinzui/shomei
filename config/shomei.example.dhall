@@ -18,6 +18,15 @@ in    { issuer = "shomei"
       , metricsEnabled = True
       , requestLoggingEnabled = True
       , gracefulShutdownTimeoutSeconds = 30
+      -- Password policy (MasterPlan 4). Local common/contextual checks default on; the
+      -- network HIBP breach check is opt-in and, when enabled, fails open by default.
+      , passwordMinLength = 12
+      , passwordMaxLength = 256
+      , passwordRejectCommon = True
+      , passwordRejectContextual = True
+      , passwordBreachCheckEnabled = False
+      , passwordBreachCheckFailClosed = False
+      , passwordBreachCheckTimeoutMs = 1000
       -- WebAuthn / passkeys. The localhost defaults work for local development; in production
       -- set webauthnRpId to your registrable domain and webauthnOrigins to your exact page
       -- origin(s). See docs/passkeys.md.
