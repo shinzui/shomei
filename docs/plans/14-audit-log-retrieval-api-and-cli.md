@@ -75,13 +75,13 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Read/query layer (shomei-core port + shomei-postgres interpreter):
+Milestone 1 — Read/query layer (shomei-core port + shomei-postgres interpreter): **DONE (2026-06-17)**
 
-- [ ] Add `reconstructAuthEvent :: Text -> Value -> Either String AuthEvent` to `shomei-core` (new module `Shomei.Domain.EventCodec`).
-- [ ] Add a pure round-trip test proving every one of the 16 event constructors survives `project → toJSON → reconstruct`.
-- [ ] Add the `AuthEventReader` effect port (`shomei-core/src/Shomei/Effect/AuthEventReader.hs`) with `AuditEventQuery`, `AuditCursor`, `StoredAuthEvent`, `queryAuthEvents`, `countAuthEvents`.
-- [ ] Add the PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/AuthEventReader.hs`): filtered, keyset-paginated SELECT + COUNT.
-- [ ] Wire `runAuthEventReaderPostgres` into the `shomei-postgres` test stack and add interpreter tests (seed events, query by each filter, assert ordering + pagination).
+- [x] Add `reconstructAuthEvent :: Text -> Value -> Either String AuthEvent` to `shomei-core` (new module `Shomei.Domain.EventCodec`). **Covers all 24 constructors** (the vocabulary grew past the 16 the plan described — see Surprises).
+- [x] Add a pure round-trip test proving every one of the **24** event constructors survives `project → toJSON → reconstruct` (`Shomei.Domain.EventCodecSpec`, wired into `shomei-core:shomei-core-test`; a count guard asserts coverage of all 24). 103 core tests pass.
+- [x] Add the `AuthEventReader` effect port (`shomei-core/src/Shomei/Effect/AuthEventReader.hs`) with `AuditEventQuery`, `AuditCursor`, `StoredAuthEvent`, `queryAuthEvents`, `countAuthEvents`, `emptyAuditQuery`, `maxAuditLimit`, `clampLimit`.
+- [x] Add the PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/AuthEventReader.hs`): filtered, keyset-paginated SELECT + COUNT (Params-monoid encoder; `text[]` via `E.foldableArray`; applicative row decoder).
+- [x] Wire `runAuthEventReaderPostgres` into the `shomei-postgres` test stack (both interpreter chains + `AppEffects`) and add `testAuditEventReader` (seed 5 events for two users, assert newest-first ordering, user/type/time filters, `count`, two-page keyset walk is disjoint+complete, one reconstruct check). 22 postgres tests pass.
 
 Milestone 2 — HTTP API (`GET /admin/audit/events`):
 
@@ -106,7 +106,31 @@ Milestone 4 — Docs, runbook, and limitations:
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **2026-06-17 — the `AuthEvent` vocabulary has grown from 16 to 24 constructors.** The plan
+  was authored against a 16-arm `AuthEvent`; the live `shomei-core/src/Shomei/Domain/Event.hs`
+  now also has `PasskeyRegistered`, `PasskeyRemoved`, `MfaChallenged`, `MfaSucceeded`,
+  `MfaFailed`, `ImpersonationStarted`, `ImpersonationStopped`, and `ImpersonationActionBlocked`
+  (added by later MasterPlan-3 work). Their `event_type` strings are taken verbatim from the
+  writer (`projectAuthEvent`): `passkey_registered`, `passkey_removed`, `mfa_challenged`,
+  `mfa_succeeded`, `mfa_failed`, `impersonation_started`, `impersonation_stopped`,
+  `impersonation_action_blocked`. `reconstructAuthEvent` handles all 24, and the round-trip
+  spec asserts coverage of all 24 (`testConstructorCount`) so a future 25th constructor fails
+  the test loudly. This is read-only and backward compatible; no migration.
+
+- **2026-06-17 — `hasql`'s `Decoders.Row` is `Applicative`, not `Monad`, in the installed
+  version (`hasql >=1.10`).** The plan's `storedRowDecoder` used `do`-notation; that failed
+  with `No instance for 'Monad D.Row'`. Rewrote it as a positional applicative
+  (`mk <$> col <*> col <*> …`) with a `mk` helper that reorders the SELECT columns
+  (`event_id, user_id, session_id, event_type, payload, created_at`) into the `StoredAuthEvent`
+  field order. The `text[]` filter encoder is `E.foldableArray (E.nonNullable E.text)`
+  (confirmed against the registered `hasql` source via `mori`).
+
+- **2026-06-17 — `runAuthEventReaderPostgres` needs no `IOE` constraint.** Unlike the write
+  interpreter (which `liftIO`s a random UUID), the reader goes entirely through the `Database`
+  effect, so its constraint is `(Database :> es, Error AuthError :> es)` — a minor narrowing of
+  the signature the plan documented (`+ IOE :> es`). It still composes into any stack that also
+  provides `IOE` (e.g. the server/test chains), so no wiring changed. Recorded in the Decision
+  Log.
 
 
 ## Decision Log

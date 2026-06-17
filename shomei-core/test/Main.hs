@@ -4,6 +4,7 @@ import Test.Tasty (defaultMain, testGroup)
 
 import Shomei.AccountSpec qualified
 import Shomei.BreachSpec qualified
+import Shomei.Domain.EventCodecSpec qualified
 import Shomei.Domain.PasswordSpec qualified
 import Shomei.LockoutSpec qualified
 import Shomei.PasskeyStoreSpec qualified
@@ -21,6 +22,7 @@ main =
             [ Shomei.WorkflowSpec.tests
             , Shomei.AccountSpec.tests
             , Shomei.BreachSpec.tests
+            , Shomei.Domain.EventCodecSpec.tests
             , Shomei.Domain.PasswordSpec.tests
             , Shomei.LockoutSpec.tests
             , Shomei.PasskeyStoreSpec.tests

@@ -45,6 +45,7 @@ library
     Shomei.Domain.Credential
     Shomei.Domain.Email
     Shomei.Domain.Event
+    Shomei.Domain.EventCodec
     Shomei.Domain.LoginAttempt
     Shomei.Domain.Notification
     Shomei.Domain.OneTimeToken
@@ -58,6 +59,7 @@ library
     Shomei.Domain.User
     Shomei.Domain.VerificationToken
     Shomei.Effect.AuthEventPublisher
+    Shomei.Effect.AuthEventReader
     Shomei.Effect.Clock
     Shomei.Effect.CredentialStore
     Shomei.Effect.InMemory
@@ -116,6 +118,7 @@ test-suite shomei-core-test
   other-modules:
     Shomei.AccountSpec
     Shomei.BreachSpec
+    Shomei.Domain.EventCodecSpec
     Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec
@@ -137,3 +140,4 @@ test-suite shomei-core-test
     , tasty-hunit
     , text
     , time
+    , uuid

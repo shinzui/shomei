@@ -167,7 +167,7 @@ intra-MasterPlan-2 dependencies.
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | In Progress |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Complete |
-| 7 | Audit log retrieval API and CLI | docs/plans/14-audit-log-retrieval-api-and-cli.md | None | EP-2, EP-3, EP-4 | Not Started |
+| 7 | Audit log retrieval API and CLI | docs/plans/14-audit-log-retrieval-api-and-cli.md | None | EP-2, EP-3, EP-4 | In Progress |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
