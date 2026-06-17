@@ -59,9 +59,14 @@ This section must always reflect the actual current state of the work.
       wildcard (`shomei-servant/src/Shomei/Servant/Error.hs:43`) — no edit needed; the only
       other matches on the constructors are test expectations (not exhaustive cases);
       `cabal build all` green.
-- [ ] M2: create `Shomei.Effect.PasswordBreachChecker` (effect + `BreachResult`); add the
-      pure helpers `sha1PrefixSuffix` and `parseHibpResponse`; add the `World` breach fields
-      and the fake interpreter; wire into `runInMemory`; add unit tests for the pure helpers.
+- [x] M2 (2026-06-17): created `Shomei.Effect.PasswordBreachChecker` (effect + `BreachResult`
+      tri-state + `checkPasswordBreached` smart constructor); added pure helpers
+      `sha1PrefixSuffix` and `parseHibpResponse`; added `World` fields `breachedPasswords` /
+      `breachCheckAvailable` (seeded in `emptyWorld`) and `runPasswordBreachCheckerFake`; wired
+      the fake into `runInMemory` (just before `PasswordHasher` in the list, just above
+      `runPasswordHasher` in the chain); added `Shomei.BreachSpec` unit tests. Dep added to
+      `shomei-core`: `crypton` (SHA-1) and `ram` (provides `Data.ByteArray.Encoding`). `cabal
+      build all` + `shomei-core-test` (70 tests) green.
 - [ ] M3: append `enforceBreachPolicy` guard to `signup`, `changePassword`,
       `confirmPasswordReset`; add enabled / disabled / fail-open / fail-closed workflow tests.
 - [ ] M4: production `runPasswordBreachCheckerHibp` (http-client-tls + crypton); wire into
@@ -73,7 +78,14 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- M2 (2026-06-17): `Data.ByteArray.Encoding` is **not** provided by `crypton` or `memory` in
+  this workspace — it comes from the `ram` package (a `memory` fork; `crypton` depends on it but
+  does not re-export it). The plan's M2.1 note guessed `memory`; the correct dep is `ram`.
+  Evidence: `shomei-postgres/shomei-postgres.cabal` already lists both `crypton` and `ram`, and
+  GHC's "hidden package `ram-0.22.0`" error named it explicitly. `shomei-core` now lists
+  `crypton` + `ram`.
+- M2 (2026-06-17): `cabal` test-component target is `shomei-core:shomei-core-test` (not
+  `shomei-core:test` as the plan's commands wrote) — the component is named `shomei-core-test`.
 
 
 ## Decision Log

@@ -64,6 +64,7 @@ library
     Shomei.Effect.LoginAttemptStore
     Shomei.Effect.Notifier
     Shomei.Effect.PasskeyStore
+    Shomei.Effect.PasswordBreachChecker
     Shomei.Effect.PasswordHasher
     Shomei.Effect.PasswordResetTokenStore
     Shomei.Effect.PendingCeremonyStore
@@ -92,6 +93,7 @@ library
     , base64
     , bytestring
     , containers
+    , crypton
     , effectful
     , effectful-core
     , file-embed     >=0.0.15 && <0.0.17
@@ -99,6 +101,7 @@ library
     , http-api-data
     , lens
     , mmzk-typeid
+    , ram
     , text
     , time
     , uuid
@@ -111,6 +114,7 @@ test-suite shomei-core-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     Shomei.AccountSpec
+    Shomei.BreachSpec
     Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec

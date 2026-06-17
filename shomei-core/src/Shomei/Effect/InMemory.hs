@@ -36,6 +36,7 @@ module Shomei.Effect.InMemory (
     runPendingCeremonyStore,
     runNotifier,
     runPasswordHasher,
+    runPasswordBreachCheckerFake,
     runAuthEventPublisher,
     runSigningKeyStore,
     runClock,
@@ -55,6 +56,8 @@ import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
@@ -122,6 +125,7 @@ import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.PasskeyStore (PasskeyStore (..))
+import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore (..))
@@ -169,6 +173,10 @@ data World = World
     -- ^ deterministic opaque tokens
     , ceremonyCounter :: !Int
     -- ^ deterministic WebAuthn ceremony challenges (fake interpreter)
+    , breachedPasswords :: !(Set Text)
+    -- ^ EP-3: plaintexts the breach-checker fake treats as breached
+    , breachCheckAvailable :: !Bool
+    -- ^ EP-3: when False the fake returns 'BreachCheckUnavailable' (test seam for fail-open/closed)
     }
     deriving stock (Generic)
 
@@ -194,6 +202,8 @@ emptyWorld t =
         , clock = t
         , tokenCounter = 0
         , ceremonyCounter = 0
+        , breachedPasswords = Set.empty
+        , breachCheckAvailable = True
         }
 
 -- Token signer/verifier fakes: round-trip claims through JSON.
@@ -556,6 +566,19 @@ runPasswordHasher _ref = interpret_ \case
     HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
     VerifyPassword (PlainPassword pw) (PasswordHash h) -> pure (h == "argon2-fake:" <> pw)
 
+{- | EP-3 in-memory breach-checker fake: a password is 'Breached' iff its plaintext is in the
+'World''s @breachedPasswords@ set; when @breachCheckAvailable@ is False it returns
+'BreachCheckUnavailable' so tests can exercise the fail-open/fail-closed policy branches.
+-}
+runPasswordBreachCheckerFake :: (IOE :> es) => IORef World -> Eff (PasswordBreachChecker : es) a -> Eff es a
+runPasswordBreachCheckerFake ref = interpret_ \case
+    CheckPasswordBreached (PlainPassword pw) -> liftIO do
+        w <- readIORef ref
+        pure
+            if not w.breachCheckAvailable
+                then BreachCheckUnavailable
+                else if Set.member pw w.breachedPasswords then Breached else NotBreached
+
 runTokenSigner :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSigner = interpret_ \case
     SignAccessToken claims -> pure (AccessToken (renderClaims claims))
@@ -699,6 +722,7 @@ runInMemory ::
         , PendingCeremonyStore
         , Notifier
         , WebAuthnCeremony
+        , PasswordBreachChecker
         , PasswordHasher
         , TokenSigner
         , TokenVerifier
@@ -719,6 +743,7 @@ runInMemory ref =
         . runTokenVerifier
         . runTokenSigner
         . runPasswordHasher ref
+        . runPasswordBreachCheckerFake ref
         . runWebAuthnCeremonyFake ref
         . runNotifier ref
         . runPendingCeremonyStore ref
