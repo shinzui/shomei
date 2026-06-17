@@ -569,6 +569,21 @@ Discoveries during EP-4 implementation (2026-06-17) that affect EP-5:
   fails decoding is 400 (EP-3's `WebAuthnCeremonyError`). The body never leaks why a factor failed.
 
 
+Discoveries during EP-5 implementation (2026-06-17):
+
+- **EP-1 added `WebAuthnConfig` to the core but never wired it into the server config loader.**
+  `Shomei.Server.Config` (the `FileConfig` Dhall shape, the `config/shomei-types.dhall` schema,
+  and the `SHOMEI_*` env overlay) carried no webauthn fields, so the RP identity was pinned to
+  the compiled `localhost` default and an operator could not set `rpId`/`origins` for a real
+  domain without recompiling — contradicting the Vision's promise (IP-3) that the RP identity is
+  "loaded the same Dhall/env way as every other setting." Per the user's decision, **EP-5 closed
+  this gap** (a scope expansion beyond EP-5's "no server behavior" charter): eight `webauthn*`
+  fields on `FileConfig` + the Dhall schema + `config/shomei.example.dhall`, a `mergeWebAuthn`
+  Dhall-merge step, and a `SHOMEI_WEBAUTHN_*` env overlay (`overlayWebAuthnFromEnv`), validated by
+  an extended `shomei-server-config-test`. Future note: if a later plan revisits EP-1, this
+  wiring now lives in EP-5, not EP-1.
+
+
 ## Decision Log
 
 - Decision: Author MasterPlan 3 to deliver MFA as **WebAuthn passkeys**, using the

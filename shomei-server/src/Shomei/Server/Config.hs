@@ -31,12 +31,15 @@ import Text.Read (readMaybe)
 import System.Process (readProcess)
 
 import Shomei.Config (
+    AttestationPolicy (..),
     NotifierConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
     TokenTransport (..),
+    UserVerificationPolicy (..),
+    WebAuthnConfig (..),
     defaultShomeiConfig,
  )
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
@@ -68,6 +71,16 @@ data FileConfig = FileConfig
     , metricsEnabled :: !(Maybe Bool)
     , requestLoggingEnabled :: !(Maybe Bool)
     , gracefulShutdownTimeoutSeconds :: !(Maybe Int)
+    , webauthnRpId :: !(Maybe Text)
+    , webauthnRpName :: !(Maybe Text)
+    , webauthnOrigins :: !(Maybe [Text])
+    , webauthnUserVerification :: !(Maybe Text)
+    -- ^ @required@ | @preferred@ | @discouraged@
+    , webauthnAttestation :: !(Maybe Text)
+    -- ^ @none@ | @direct@
+    , webauthnCeremonyTimeoutSeconds :: !(Maybe Int)
+    , webauthnPendingCeremonyTtlSeconds :: !(Maybe Int)
+    , webauthnMfaRequired :: !(Maybe Bool)
     }
     deriving stock (Show, Generic)
     deriving anyclass (FromJSON)
@@ -135,6 +148,7 @@ baseFromFile (Just fc) = do
                         , requestLoggingEnabled = fromMaybe cfg0.observabilityConfig.requestLoggingEnabled fc.requestLoggingEnabled
                         , gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                         }
+                , webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc
                 }
         settings = ServerSettings{serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
     pure (cfg, settings)
@@ -161,6 +175,7 @@ overlayCoreFromEnv base = do
     ses <- ttlEnv "SHOMEI_SESSION_TTL"
     tr <- transportEnv
     sc <- sessionCheckEnv
+    wa <- overlayWebAuthnFromEnv base.webauthnConfig
     pure
         base
             { accessTokenTTL = fromMaybe base.accessTokenTTL acc
@@ -168,7 +183,127 @@ overlayCoreFromEnv base = do
             , sessionTTL = fromMaybe base.sessionTTL ses
             , tokenTransport = fromMaybe base.tokenTransport tr
             , sessionCheckMode = fromMaybe base.sessionCheckMode sc
+            , webauthnConfig = wa
             }
+
+{- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
+'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot
+syntax), which the new passkey/config records do not support under @DuplicateRecordFields@
+(MasterPlan 3, EP-1 discovery); @fc.field@ dot access on 'FileConfig' is unaffected.
+-}
+mergeWebAuthn :: WebAuthnConfig -> FileConfig -> WebAuthnConfig
+mergeWebAuthn base fc =
+    base
+        { rpId = fromMaybe baseRpId fc.webauthnRpId
+        , rpName = fromMaybe baseRpName fc.webauthnRpName
+        , origins = fromMaybe baseOrigins fc.webauthnOrigins
+        , userVerification = maybe baseUv parseUserVerification fc.webauthnUserVerification
+        , attestation = maybe baseAtt parseAttestation fc.webauthnAttestation
+        , ceremonyTimeout = maybe baseTimeout fromIntegral fc.webauthnCeremonyTimeoutSeconds
+        , pendingCeremonyTTL = maybe baseTtl fromIntegral fc.webauthnPendingCeremonyTtlSeconds
+        , mfaRequired = fromMaybe baseMfa fc.webauthnMfaRequired
+        }
+  where
+    WebAuthnConfig
+        { rpId = baseRpId
+        , rpName = baseRpName
+        , origins = baseOrigins
+        , userVerification = baseUv
+        , attestation = baseAtt
+        , ceremonyTimeout = baseTimeout
+        , pendingCeremonyTTL = baseTtl
+        , mfaRequired = baseMfa
+        } = base
+
+-- | Overlay the @SHOMEI_WEBAUTHN_*@ environment variables onto the WebAuthn policy.
+overlayWebAuthnFromEnv :: WebAuthnConfig -> IO WebAuthnConfig
+overlayWebAuthnFromEnv base = do
+    rpId' <- textEnv "SHOMEI_WEBAUTHN_RP_ID" baseRpId
+    rpName' <- textEnv "SHOMEI_WEBAUTHN_RP_NAME" baseRpName
+    origins' <- originsEnv baseOrigins
+    uv <- uvEnv
+    att <- attestationEnv
+    timeout' <- ttlEnv "SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT"
+    ttl' <- ttlEnv "SHOMEI_WEBAUTHN_PENDING_TTL"
+    mfa <- boolEnv "SHOMEI_WEBAUTHN_MFA_REQUIRED"
+    pure
+        base
+            { rpId = rpId'
+            , rpName = rpName'
+            , origins = origins'
+            , userVerification = fromMaybe baseUv uv
+            , attestation = fromMaybe baseAtt att
+            , ceremonyTimeout = fromMaybe baseTimeout timeout'
+            , pendingCeremonyTTL = fromMaybe baseTtl ttl'
+            , mfaRequired = fromMaybe baseMfa mfa
+            }
+  where
+    WebAuthnConfig
+        { rpId = baseRpId
+        , rpName = baseRpName
+        , origins = baseOrigins
+        , userVerification = baseUv
+        , attestation = baseAtt
+        , ceremonyTimeout = baseTimeout
+        , pendingCeremonyTTL = baseTtl
+        , mfaRequired = baseMfa
+        } = base
+    -- A comma-separated list, e.g. "https://auth.example.com,https://www.example.com".
+    originsEnv def = do
+        m <- lookupEnv "SHOMEI_WEBAUTHN_ORIGINS"
+        pure $ case m of
+            Just v | not (null v) -> filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v)))
+            _ -> def
+    uvEnv = do
+        m <- lookupEnv "SHOMEI_WEBAUTHN_USER_VERIFICATION"
+        case m of
+            Nothing -> pure Nothing
+            Just "" -> pure Nothing
+            Just s -> case parseUserVerificationMaybe (Text.pack s) of
+                Just p -> pure (Just p)
+                Nothing -> ioError (userError "SHOMEI_WEBAUTHN_USER_VERIFICATION must be required|preferred|discouraged")
+    attestationEnv = do
+        m <- lookupEnv "SHOMEI_WEBAUTHN_ATTESTATION"
+        case m of
+            Nothing -> pure Nothing
+            Just "" -> pure Nothing
+            Just s -> case parseAttestationMaybe (Text.pack s) of
+                Just p -> pure (Just p)
+                Nothing -> ioError (userError "SHOMEI_WEBAUTHN_ATTESTATION must be none|direct")
+
+boolEnv :: Text -> IO (Maybe Bool)
+boolEnv name = do
+    m <- lookupEnv (Text.unpack name)
+    case m of
+        Nothing -> pure Nothing
+        Just "" -> pure Nothing
+        Just s -> case Text.toLower (Text.pack s) of
+            "true" -> pure (Just True)
+            "false" -> pure (Just False)
+            _ -> ioError (userError (Text.unpack name <> " must be true|false"))
+
+-- | Parse a WebAuthn user-verification policy string (Dhall path; defaults to @preferred@ on
+-- unrecognized input, matching 'defaultWebAuthnConfig').
+parseUserVerification :: Text -> UserVerificationPolicy
+parseUserVerification = fromMaybe UVPreferred . parseUserVerificationMaybe
+
+parseUserVerificationMaybe :: Text -> Maybe UserVerificationPolicy
+parseUserVerificationMaybe t = case Text.toLower t of
+    "required" -> Just UVRequired
+    "preferred" -> Just UVPreferred
+    "discouraged" -> Just UVDiscouraged
+    _ -> Nothing
+
+-- | Parse a WebAuthn attestation policy string (Dhall path; defaults to @none@ on
+-- unrecognized input, matching 'defaultWebAuthnConfig').
+parseAttestation :: Text -> AttestationPolicy
+parseAttestation = fromMaybe AttestationNone . parseAttestationMaybe
+
+parseAttestationMaybe :: Text -> Maybe AttestationPolicy
+parseAttestationMaybe t = case Text.toLower t of
+    "none" -> Just AttestationNone
+    "direct" -> Just AttestationDirect
+    _ -> Nothing
 
 textEnv :: Text -> Text -> IO Text
 textEnv name def = do

@@ -159,6 +159,20 @@ implementation. Provide concise evidence.
   factor, so EP-4 returns tokens directly and never re-challenges. Handled in the Decision Log.
   `passkeyLoginBegin` is parameterless (no account-hint body) and there is no `mfaBegin` route.
 
+- **`webauthnConfig` was never wired into the server config loader (a gap in EP-1).** Although
+  EP-1 added the `WebAuthnConfig` record and `defaultWebAuthnConfig` to `shomei-core`, the
+  server's `Shomei.Server.Config` loader (`FileConfig`, the Dhall schema
+  `config/shomei-types.dhall`, and the `SHOMEI_*` env overlay) had **no** webauthn fields, so
+  the effective RP identity was always the compiled `localhost` default — an operator could not
+  set `rpId`/`origins` for a real domain without recompiling. This contradicts the MasterPlan
+  Vision ("an operator can configure the Relying Party identity … loaded the same Dhall/env
+  way as every other setting"). Per the user's decision (2026-06-17), EP-5 closed the gap:
+  eight `webauthn*` fields added to `FileConfig` + the Dhall schema + `config/shomei.example.dhall`,
+  a `mergeWebAuthn` Dhall-merge step, and a `SHOMEI_WEBAUTHN_*` env overlay (`overlayWebAuthnFromEnv`).
+  Verified by an extended `shomei-server-config-test` (loads `rpId`/`origins`/`mfaRequired` from
+  a Dhall file and proves a `SHOMEI_WEBAUTHN_*` env var overrides it). This is recorded as a
+  cross-plan discovery in the MasterPlan too.
+
 - (Record further concrete evidence — compiler output, browser console transcripts — as you
   implement.)
 
@@ -183,6 +197,23 @@ Record every decision made while working on the plan.
   the doc comment and exports, not the signature. If EP-4 instead introduced a *new* response
   type for `login` (e.g. renamed the field to `LoginResult`), update the import and the
   `login` wrapper's return type accordingly and re-record here.
+  Date: 2026-06-17
+
+- Decision: Wire `webauthnConfig` into the server config loader as part of EP-5 (a scope
+  expansion beyond "EP-5 adds no server behavior"), rather than only documenting the gap.
+  EP-1 shipped the `WebAuthnConfig` type + default but never connected it to
+  `Shomei.Server.Config`, so the RP identity was unconfigurable at runtime. The change adds the
+  eight `webauthn*` optional fields to `FileConfig`, a pure `mergeWebAuthn :: WebAuthnConfig ->
+  FileConfig -> WebAuthnConfig` applied in `baseFromFile`, an `overlayWebAuthnFromEnv` reading
+  `SHOMEI_WEBAUTHN_RP_ID`/`RP_NAME`/`ORIGINS` (comma-separated)/`USER_VERIFICATION`/`ATTESTATION`/
+  `CEREMONY_TIMEOUT`/`PENDING_TTL`/`MFA_REQUIRED`, plus the same eight fields on the Dhall schema
+  `config/shomei-types.dhall` and `config/shomei.example.dhall`. WebAuthnConfig is read via
+  record destructuring (its fields do not support `value.field` dot syntax under
+  `DuplicateRecordFields`). `docs/passkeys.md` and `docs/deployment.md` therefore document a
+  **working** config surface (both the Dhall keys and the env vars), not a non-functional one.
+  Rationale: The user chose "Wire it now" when asked; the MasterPlan Vision promises operator
+  configuration of the RP identity, and documenting non-functional config would violate the
+  docs' implemented-behavior voice. Validated by the extended `shomei-server-config-test`.
   Date: 2026-06-17
 
 - Decision: `passkeyLoginComplete` wraps a route returning `TokenPairResponse`, not

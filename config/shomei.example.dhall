@@ -18,5 +18,16 @@ in    { issuer = "shomei"
       , metricsEnabled = True
       , requestLoggingEnabled = True
       , gracefulShutdownTimeoutSeconds = 30
+      -- WebAuthn / passkeys. The localhost defaults work for local development; in production
+      -- set webauthnRpId to your registrable domain and webauthnOrigins to your exact page
+      -- origin(s). See docs/passkeys.md.
+      , webauthnRpId = "localhost"
+      , webauthnRpName = "Shōmei"
+      , webauthnOrigins = [ "http://localhost:8080" ]
+      , webauthnUserVerification = "preferred"
+      , webauthnAttestation = "none"
+      , webauthnCeremonyTimeoutSeconds = 300
+      , webauthnPendingCeremonyTtlSeconds = 300
+      , webauthnMfaRequired = True
       }
     : Schema

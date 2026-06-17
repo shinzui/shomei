@@ -18,4 +18,13 @@
 , metricsEnabled : Bool
 , requestLoggingEnabled : Bool
 , gracefulShutdownTimeoutSeconds : Natural
+-- WebAuthn / passkey relying-party identity and ceremony policy (MasterPlan 3).
+, webauthnRpId : Text                       -- registrable domain, e.g. "auth.example.com"
+, webauthnRpName : Text                      -- human label shown by the authenticator
+, webauthnOrigins : List Text                -- allowed page origins, e.g. [ "https://auth.example.com" ]
+, webauthnUserVerification : Text            -- "required" | "preferred" | "discouraged"
+, webauthnAttestation : Text                 -- "none" | "direct"
+, webauthnCeremonyTimeoutSeconds : Natural   -- browser ceremony timeout
+, webauthnPendingCeremonyTtlSeconds : Natural -- how long a begun ceremony stays valid server-side
+, webauthnMfaRequired : Bool                 -- require the second factor for accounts that have a passkey
 }
