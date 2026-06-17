@@ -76,28 +76,33 @@ This section must always reflect the actual current state of the work.
 
 **Preflight — confirm the consumed surface before writing anything:**
 
-- [ ] Confirm EP-1..EP-4 have landed on `master`: `ShomeiAPI` contains the seven new fields
+- [x] Confirm EP-1..EP-4 have landed on `master`: `ShomeiAPI` contains the seven new fields
       (`passkeyRegisterBegin`, `passkeyRegisterComplete`, `passkeyList`, `passkeyDelete`,
       `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete`) and `LoginResponse` is the
-      tagged sum. Reconcile any field-name drift against EP-3/EP-4 and record it in the
-      Decision Log (see the "EP-4 was a skeleton at authoring time" decision below).
+      tagged sum (`LoginCompleteResponse`/`LoginMfaRequiredResponse`). All DTO names and every
+      `webauthnConfig` field match the plan verbatim. **One drift found:** `passkeyLoginComplete`
+      returns `TokenPairResponse`, not `LoginResponse` (recorded in the Decision Log). No
+      `mfaBegin` field exists (as expected). — 2026-06-17
 
 **Milestone 1 — `shomei-client` passkey + MFA functions, updated `login`:**
 
-- [ ] Add the new DTO imports to `Shomei.Client` (`PasskeyRegisterBeginResponse`,
+- [x] Add the new DTO imports to `Shomei.Client` (`PasskeyRegisterBeginResponse`,
       `PasskeyRegisterCompleteRequest`, `PasskeyResponse`, `MfaCompleteRequest`,
       `PasskeyLoginBeginResponse`, `PasskeyLoginCompleteRequest`, and `PasskeyId` from
-      `Shomei.Id`).
-- [ ] Add `passkeyRegisterBegin`, `passkeyRegisterComplete`, `listPasskeys`, `deletePasskey`
-      (Bearer/`bearer`) to the module body and export list.
-- [ ] Add `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete` (unauthenticated) to the
-      body and export list.
-- [ ] Update `login`'s comment to note callers must handle the `mfa_required` arm; its
+      `Shomei.Id`). — 2026-06-17
+- [x] Add `passkeyRegisterBegin`, `passkeyRegisterComplete`, `listPasskeys`, `deletePasskey`
+      (Bearer/`bearer`) to the module body and export list. — 2026-06-17
+- [x] Add `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete` (unauthenticated) to the
+      body and export list. `passkeyLoginComplete` returns `TokenPairResponse` (drift; see
+      Decision Log). — 2026-06-17
+- [x] Update `login`'s comment to note callers must handle the `mfa_required` arm; its
       signature is unchanged in Haskell (still returns `LoginResponse`) but `LoginResponse` is
-      now a sum — confirm and note in the Decision Log.
-- [ ] Add a `usage` doc-comment block (or a `shomei-client` test) exercising the new
-      functions against the embedded demo, if the harness supports it.
-- [ ] `cabal build all` green.
+      now a sum — confirmed and noted in the Decision Log. — 2026-06-17
+- [x] Documented usage inline: each new wrapper carries a doc comment explaining when/how to
+      call it, and `login`'s comment spells out the `mfa_required` → `mfaComplete` follow-up.
+      A separate `shomei-client` test was not added (the end-to-end client/demo path is the
+      human-run M3 walkthrough; EP-3/EP-4 already cover the server wire shapes in-process). — 2026-06-17
+- [x] `cabal build all` green. — 2026-06-17
 
 **Milestone 2 — documentation:**
 
@@ -141,6 +146,19 @@ implementation. Provide concise evidence.
   and the demo, and recording it in the Decision Log. EP-1 (config) and EP-3 (enrollment)
   *were* fully written and their names are used verbatim below.
 
+- **EP-4 reconciliation (the surface as merged matches this plan, with one drift).** Greps of
+  the merged `shomei-servant/src/Shomei/Servant/API.hs`, `…/DTO.hs`, and
+  `shomei-core/src/Shomei/Config.hs` (2026-06-17) confirm: the seven route fields, all DTO type
+  names (`PasskeyRegisterBeginResponse`, `PasskeyRegisterCompleteRequest`, `PasskeyResponse`,
+  `MfaCompleteRequest`, `PasskeyLoginBeginResponse`, `PasskeyLoginCompleteRequest`), the tagged
+  `LoginResponse` (`LoginCompleteResponse`/`LoginMfaRequiredResponse` with the `status`
+  discriminator), and every `WebAuthnConfig` field (`rpId`, `rpName`, `origins`,
+  `userVerification`, `attestation`, `ceremonyTimeout`, `pendingCeremonyTTL`, `mfaRequired`)
+  match this plan's assumptions verbatim. **The one drift:** `passkeyLoginComplete` returns
+  `TokenPairResponse`, not `LoginResponse` (API.hs:185) — passwordless login IS the strong
+  factor, so EP-4 returns tokens directly and never re-challenges. Handled in the Decision Log.
+  `passkeyLoginBegin` is parameterless (no account-hint body) and there is no `mfaBegin` route.
+
 - (Record further concrete evidence — compiler output, browser console transcripts — as you
   implement.)
 
@@ -165,6 +183,19 @@ Record every decision made while working on the plan.
   the doc comment and exports, not the signature. If EP-4 instead introduced a *new* response
   type for `login` (e.g. renamed the field to `LoginResult`), update the import and the
   `login` wrapper's return type accordingly and re-record here.
+  Date: 2026-06-17
+
+- Decision: `passkeyLoginComplete` wraps a route returning `TokenPairResponse`, not
+  `LoginResponse` as this plan originally assumed. EP-4 as merged declares
+  `passkeyLoginComplete :: … :> Post '[JSON] TokenPairResponse` (`shomei-servant/src/Shomei/Servant/API.hs`),
+  with the rationale (in EP-4's own route comment) that "the passkey IS the strong factor, so
+  this returns a token pair directly (never an MFA challenge)." The client wrapper's return
+  type is therefore `IO (Either ClientError TokenPairResponse)`, and `docs/api.md`/`docs/passkeys.md`
+  document `POST /auth/login/passkey/complete` as returning a token pair
+  (`{"accessToken","refreshToken","expiresIn"}`), not a tagged `LoginResponse`.
+  Rationale: Prefer the merged EP-4 wire shape over the authoring-time assumption, per this
+  plan's reconciliation rule. A passwordless passkey login cannot yield `mfa_required` (the
+  passkey already satisfies the factor), so a flat token pair is the correct and simpler shape.
   Date: 2026-06-17
 
 - Decision: The new authenticated client functions (`passkeyRegisterBegin`,
