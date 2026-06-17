@@ -14,6 +14,10 @@ module Shomei.Config (
     RateLimitConfig (..),
     ObservabilityConfig (..),
     LogFormat (..),
+    WebAuthnConfig (..),
+    UserVerificationPolicy (..),
+    AttestationPolicy (..),
+    defaultWebAuthnConfig,
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -111,6 +115,52 @@ data ObservabilityConfig = ObservabilityConfig
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+{- | WebAuthn / passkey policy (MasterPlan 3, IP-3). Carries the Relying Party
+identity (the @rpId@ scope domain, the allowed @origins@, the human RP name) and
+ceremony policy. Every field has a default (see 'defaultWebAuthnConfig') so the
+record stays append-only per IP-3; the @shomei-webauthn@ interpreter reads the RP
+identity and 'EP-4' reads 'mfaRequired'.
+-}
+data UserVerificationPolicy = UVRequired | UVPreferred | UVDiscouraged
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data AttestationPolicy = AttestationNone | AttestationDirect
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data WebAuthnConfig = WebAuthnConfig
+    { rpId :: !Text
+    -- ^ the scope domain a passkey is bound to, e.g. @auth.example.com@
+    , rpName :: !Text
+    -- ^ the human-readable Relying Party name shown by the authenticator
+    , origins :: ![Text]
+    -- ^ allowed web origins, e.g. @https://auth.example.com@
+    , userVerification :: !UserVerificationPolicy
+    , attestation :: !AttestationPolicy
+    , ceremonyTimeout :: !NominalDiffTime
+    -- ^ browser-facing ceremony timeout
+    , pendingCeremonyTTL :: !NominalDiffTime
+    -- ^ how long a begun ceremony's options blob stays valid server-side
+    , mfaRequired :: !Bool
+    -- ^ whether accounts that have a passkey MUST complete MFA at login
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+defaultWebAuthnConfig :: WebAuthnConfig
+defaultWebAuthnConfig =
+    WebAuthnConfig
+        { rpId = "localhost"
+        , rpName = "Shōmei"
+        , origins = ["http://localhost:8080"]
+        , userVerification = UVPreferred
+        , attestation = AttestationNone
+        , ceremonyTimeout = 300
+        , pendingCeremonyTTL = 300
+        , mfaRequired = True
+        }
+
 data ShomeiConfig = ShomeiConfig
     { issuer :: !Issuer
     , audience :: !Audience
@@ -124,6 +174,7 @@ data ShomeiConfig = ShomeiConfig
     , notifierConfig :: !NotifierConfig
     , rateLimitConfig :: !RateLimitConfig
     , observabilityConfig :: !ObservabilityConfig
+    , webauthnConfig :: !WebAuthnConfig
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -180,4 +231,5 @@ defaultShomeiConfig iss aud =
                 }
         , rateLimitConfig = defaultRateLimitConfig
         , observabilityConfig = defaultObservabilityConfig
+        , webauthnConfig = defaultWebAuthnConfig
         }

@@ -96,20 +96,29 @@ Milestone 0 — build/verification spike (de-risk the heavy dependency): **COMPL
 - [x] Record the spike outcome (allow-newer set, serialization choice proven) in the Decision
       Log and Surprises sections.
 
-Milestone 1 — core domain, port, config, fake interpreter, wiring:
+Milestone 1 — core domain, port, config, fake interpreter, wiring: **COMPLETE (2026-06-17).**
 
-- [ ] Add `PasskeyId`, `CeremonyId` (+ `gen…` + uuid conversions) to `Shomei.Id`.
-- [ ] Add `Shomei.Domain.Passkey` with the credential/ceremony domain types.
-- [ ] Add `Shomei.Effect.WebAuthnCeremony` (port + smart constructors + error type + records).
-- [ ] Add `WebAuthnConfig`/`UserVerificationPolicy`/`AttestationPolicy`/`defaultWebAuthnConfig`
+- [x] Add `PasskeyId`, `CeremonyId` (+ `gen…` + uuid conversions) to `Shomei.Id`.
+- [x] Add `Shomei.Domain.Passkey` with the credential/ceremony domain types (plus the
+      `b64urlEncode`/`b64urlDecode` helpers, using the `base64` package — NOT
+      `base64-bytestring`; see Surprises).
+- [x] Add `Shomei.Effect.WebAuthnCeremony` (port + smart constructors + error type + records).
+- [x] Add `WebAuthnConfig`/`UserVerificationPolicy`/`AttestationPolicy`/`defaultWebAuthnConfig`
       and the `webauthnConfig` field to `Shomei.Config.ShomeiConfig`/`defaultShomeiConfig`.
-- [ ] Add the in-memory **fake** `runWebAuthnCeremonyFake` to `Shomei.Effect.InMemory`,
-      extend `World`, and slot `WebAuthnCeremony` into `runInMemory`'s effect list/chain.
-- [ ] Slot `WebAuthnCeremony` into `Shomei.Servant.Seam.AppEffects` and
-      `Shomei.Server.App.AppEffects` (position: right after `Notifier`).
-- [ ] Slot `WebAuthnCeremony` into the `shomei-postgres` test `AppEffects` list and its runner.
-- [ ] Add a core unit test that drives `runWebAuthnCeremonyFake` deterministically.
-- [ ] `nix develop --command cabal build all` and `… cabal test all` stay green.
+- [x] Add the in-memory **fake** `runWebAuthnCeremonyFake` to `Shomei.Effect.InMemory`,
+      extend `World` (`ceremonyCounter`), and slot `WebAuthnCeremony` into `runInMemory`'s list/chain.
+- [x] Slot `WebAuthnCeremony` into `Shomei.Servant.Seam.AppEffects` and the servant test's
+      `runHybrid`, and into `Shomei.Server.App.AppEffects` (right after `Notifier`). The
+      server's `runAppIO` interprets it with a temporary `runWebAuthnCeremonyStub` in M1
+      (no ceremony routes exist yet); M2 swaps in the real `runWebAuthnCeremonyLibrary`.
+- [x] Slot `WebAuthnCeremony` into the `shomei-postgres` test `AppEffects` list and its runners
+      (`runWebAuthnCeremonyFake` over a per-run `World` ref).
+- [x] Add a core unit test (`Shomei.WebAuthnCeremonySpec`) that drives the fake deterministically
+      (begin→complete registration; begin→complete authentication bumps the counter to 1; a wrong
+      challenge yields `Left WebAuthnChallengeMismatch`) and asserts `defaultShomeiConfig`'s
+      `webauthnConfig` equals `defaultWebAuthnConfig`.
+- [x] `nix develop --command cabal build all` and `… cabal test all` stay green (all suites pass;
+      shomei-core-test: 23 OK including the 2 new ceremony/config cases).
 
 Milestone 2 — the `shomei-webauthn` package and the real interpreter:
 
@@ -199,6 +208,35 @@ Implementation surprises (M0, 2026-06-17):
   bump to crypton 1.1 did not disturb the primitives. The real M0 value was confirming the WJ
   JSON serialization round-trips on this build (it does — 4 props, 100 cases each).
 
+Implementation surprises (M1, 2026-06-17):
+
+- **`shomei-core` depends on `base64`, not `base64-bytestring`.** The plan's contract note
+  suggested `base64-bytestring`, but the core's actual dependency is the modern `base64` (1.0)
+  package. Its base64url API is typed: `Data.ByteString.Base64.URL.encodeBase64Unpadded ::
+  ByteString -> Base64 'UrlUnpadded Text` (unwrap with `Data.Base64.Types.extractBase64`) and
+  `decodeBase64UnpaddedUntyped :: ByteString -> Either Text ByteString`. `b64urlEncode`/
+  `b64urlDecode` in `Shomei.Domain.Passkey` are written against that.
+
+- **aeson's `(.=)` clashes with lens's `(.=)` in core modules.** `Shomei.Prelude` re-exports all
+  of `Control.Lens`, which includes the state-assign `(.=)`. In `Shomei.Effect.InMemory` the
+  aeson object builder had to be qualified (`Aeson..=`) to disambiguate.
+
+- **`OverloadedRecordDot`/`HasField` does not fire for a record whose field name is duplicated
+  across records in the SAME module.** `stored.credentialId` on `StoredCredentialForVerify`
+  failed with "No instance for HasField ... credentialId" because `Shomei.Effect.WebAuthnCeremony`
+  defines `credentialId` on both `StoredCredentialForVerify` and `VerifiedRegistration`. The fix
+  is to destructure with a named-field pattern (`StoredCredentialForVerify{credentialId = …}`)
+  rather than dot-access. Equality comparisons in the spec sidestep field access entirely.
+
+- **The Seam/Server/InMemory/servant-test stacks are tightly coupled and must move together.**
+  `Shomei.Servant.Seam.Env.runPorts` is `forall a. Eff AppEffects a -> IO a`, so adding
+  `WebAuthnCeremony` to `runInMemory`'s concrete list forces the same insertion into
+  `Seam.AppEffects`, the servant test's `runHybrid`, and `Shomei.Server.App` (both the type and
+  the `runAppIO` chain) in lock-step — a partial change does not type-check. The plan's
+  suggestion to "defer the Server.App change to M2" is therefore not literally possible; M1
+  instead inserts the entry everywhere and uses a temporary stub runner in the server (see the
+  M1 Decision Log entry).
+
 
 ## Decision Log
 
@@ -234,6 +272,21 @@ Record every decision made while working on the plan.
   only on `SignatureCounterZero` mapped to `cloneWarning = False` and never returns a success
   for `SignatureCounterPotentiallyCloned`. (If a future plan wants a "warn, don't fail"
   policy it can flip this with a Decision Log entry in the MasterPlan IP-1.)
+  Date: 2026-06-17
+
+- Decision (M1, 2026-06-17): **The server's `runAppIO` interprets `WebAuthnCeremony` with a
+  temporary stub in M1, replaced by the real `runWebAuthnCeremonyLibrary` in M2.**
+  Rationale: `Shomei.Servant.Seam.Env.runPorts` fixes the whole port stack as one type, so
+  `WebAuthnCeremony` cannot be added to `runInMemory`/`Seam.AppEffects` without also adding it to
+  `Shomei.Server.App.AppEffects` and its `runAppIO` chain (otherwise nothing type-checks). The
+  real interpreter lives in `shomei-webauthn`, which does not exist until M2. To keep M1's
+  `cabal build all`/`test all` green, `runAppIO` uses `runWebAuthnCeremonyStub` (an
+  `interpret_ \case _ -> error …`); it is never invoked because no passkey ceremony routes exist
+  before EP-3/EP-4. M2 deletes the stub and wires `runWebAuthnCeremonyLibrary
+  env.envConfig.webauthnConfig`. The plan's preference for "defer the Server.App change to M2"
+  (Plan of Work step 7, option a) was infeasible given that coupling; option (b) was taken.
+  The `shomei-postgres` and servant test stacks use the real fake (`runWebAuthnCeremonyFake`)
+  over a fresh `World` ref, so only the production server carries a stub.
   Date: 2026-06-17
 
 - Decision: **Put the `webauthn` library behind a dedicated `shomei-webauthn` package**

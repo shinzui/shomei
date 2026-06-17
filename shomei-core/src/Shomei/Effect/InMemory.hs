@@ -38,11 +38,16 @@ module Shomei.Effect.InMemory (
     runSigningKeyStore,
     runClock,
     runTokenGen,
+    runWebAuthnCeremonyFake,
 ) where
 
 import Shomei.Prelude
 
-import Data.Aeson (eitherDecode, encode)
+import Data.Aeson (Value, eitherDecode, eitherDecodeStrict', encode, object)
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Types (Parser, parseMaybe, withObject, (.:))
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Data.Map.Strict (Map)
@@ -57,6 +62,12 @@ import Effectful.Dispatch.Dynamic (interpret_)
 
 import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
+import Shomei.Domain.Passkey (
+    PublicKeyBytes,
+    SignatureCounter (..),
+    UserHandle,
+    WebAuthnCredentialId,
+ )
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (
@@ -112,6 +123,14 @@ import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.TokenVerifier (TokenVerifier (..))
 import Shomei.Effect.UserStore (UserStore (..))
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore (..))
+import Shomei.Effect.WebAuthnCeremony (
+    BeginCeremony (..),
+    StoredCredentialForVerify (..),
+    VerifiedAuthentication (..),
+    VerifiedRegistration (..),
+    WebAuthnCeremony (..),
+    WebAuthnError (..),
+ )
 
 -- | The whole mutable test world.
 data World = World
@@ -136,6 +155,8 @@ data World = World
     -- ^ fixed test time
     , tokenCounter :: !Int
     -- ^ deterministic opaque tokens
+    , ceremonyCounter :: !Int
+    -- ^ deterministic WebAuthn ceremony challenges (fake interpreter)
     }
     deriving stock (Generic)
 
@@ -158,6 +179,7 @@ emptyWorld t =
         , sentNotifications = []
         , clock = t
         , tokenCounter = 0
+        , ceremonyCounter = 0
         }
 
 -- Token signer/verifier fakes: round-trip claims through JSON.
@@ -494,6 +516,92 @@ runTokenGen ref = interpret_ \case
         pure (RefreshToken ("rt-" <> Text.pack (show n)))
     HashRefreshToken (RefreshToken t) -> pure (RefreshTokenHash ("hash:" <> t))
 
+{- | A deterministic, cryptography-free fake of 'WebAuthnCeremony' for tests
+(EP-3/EP-4 drive their workflows through this without a real authenticator).
+
+The contract a test must follow:
+
+  * A /begin/ step ('BeginRegistrationCeremony' / 'BeginAuthenticationCeremony')
+    returns a 'BeginCeremony' whose @optionsJson@ is the canned object
+    @{ "challenge": "ceremony-challenge-N" }@ (N from a per-'World' counter) and
+    whose @optionsBlob@ is the UTF-8 'Data.Aeson.encode' of that same object, so the
+    blob and the JSON always agree on the challenge.
+
+  * To complete, the test crafts a credential 'Value' echoing the blob's challenge
+    plus the credential fields it wants verified — an object with keys
+    @challenge@ (matching the begin step), and base64url-without-padding strings
+    @credentialId@, @userHandle@, @publicKey@. 'CompleteRegistrationCeremony'
+    succeeds with those fields and @signCounter = 0@ when the challenges match,
+    else returns @Left WebAuthnChallengeMismatch@ (or @Left WebAuthnDecodeError@ for
+    malformed JSON).
+
+  * 'CompleteAuthenticationCeremony' additionally requires the crafted
+    @credentialId@ to equal the @StoredCredentialForVerify@'s; on success it returns
+    @newSignCounter = stored + 1@ and @cloneWarning = False@, on a credential-id
+    mismatch @Left WebAuthnSignatureInvalid@, on a challenge mismatch
+    @Left WebAuthnChallengeMismatch@.
+-}
+runWebAuthnCeremonyFake :: (IOE :> es) => IORef World -> Eff (WebAuthnCeremony : es) a -> Eff es a
+runWebAuthnCeremonyFake ref = interpret_ \case
+    BeginRegistrationCeremony _userInfo _exclude -> liftIO (mkCannedCeremony ref)
+    BeginAuthenticationCeremony _allow -> liftIO (mkCannedCeremony ref)
+    CompleteRegistrationCeremony blob credJson -> pure (fakeCompleteRegistration blob credJson)
+    CompleteAuthenticationCeremony blob stored credJson ->
+        pure (fakeCompleteAuthentication blob stored credJson)
+
+-- Build a canned begin result with a deterministic, counter-derived challenge.
+mkCannedCeremony :: IORef World -> IO BeginCeremony
+mkCannedCeremony ref = do
+    w <- readIORef ref
+    let n = w.ceremonyCounter
+    writeIORef ref (w & #ceremonyCounter .~ (n + 1))
+    let chal = "ceremony-challenge-" <> Text.pack (show n)
+        optionsJson = object ["challenge" Aeson..= chal]
+    pure BeginCeremony{optionsJson, optionsBlob = LBS.toStrict (encode optionsJson)}
+
+-- The challenge baked into a begin step's options blob.
+blobChallenge :: ByteString -> Maybe Text
+blobChallenge blob = case eitherDecodeStrict' blob of
+    Right v -> parseMaybe (withObject "options" (.: "challenge")) v
+    Left _ -> Nothing
+
+-- Parse the test-crafted credential JSON into (challenge, credentialId, userHandle, publicKey).
+credentialFields :: Value -> Parser (Text, WebAuthnCredentialId, UserHandle, PublicKeyBytes)
+credentialFields = withObject "credential" $ \o ->
+    (,,,) <$> o .: "challenge" <*> o .: "credentialId" <*> o .: "userHandle" <*> o .: "publicKey"
+
+fakeCompleteRegistration :: ByteString -> Value -> Either WebAuthnError VerifiedRegistration
+fakeCompleteRegistration blob credJson =
+    case parseMaybe credentialFields credJson of
+        Nothing -> Left (WebAuthnDecodeError "fake: malformed credential JSON")
+        Just (chal, cid, uh, pk)
+            | blobChallenge blob == Just chal ->
+                Right
+                    VerifiedRegistration
+                        { credentialId = cid
+                        , userHandle = uh
+                        , publicKey = pk
+                        , signCounter = SignatureCounter 0
+                        , transports = []
+                        }
+            | otherwise -> Left WebAuthnChallengeMismatch
+
+fakeCompleteAuthentication
+    :: ByteString -> StoredCredentialForVerify -> Value -> Either WebAuthnError VerifiedAuthentication
+fakeCompleteAuthentication blob StoredCredentialForVerify{credentialId = storedCid, signCounter = SignatureCounter n} credJson =
+    case parseMaybe credentialFields credJson of
+        Nothing -> Left (WebAuthnDecodeError "fake: malformed credential JSON")
+        Just (chal, cid, _uh, _pk)
+            | blobChallenge blob /= Just chal -> Left WebAuthnChallengeMismatch
+            | storedCid /= cid -> Left WebAuthnSignatureInvalid
+            | otherwise ->
+                Right
+                    VerifiedAuthentication
+                        { credentialId = storedCid
+                        , newSignCounter = SignatureCounter (n + 1)
+                        , cloneWarning = False
+                        }
+
 -- | Run an 'Eff' computation that uses every port against a shared in-memory 'World'.
 runInMemory ::
     IORef World ->
@@ -506,6 +614,7 @@ runInMemory ::
         , PasswordResetTokenStore
         , LoginAttemptStore
         , Notifier
+        , WebAuthnCeremony
         , PasswordHasher
         , TokenSigner
         , TokenVerifier
@@ -526,6 +635,7 @@ runInMemory ref =
         . runTokenVerifier
         . runTokenSigner
         . runPasswordHasher ref
+        . runWebAuthnCeremonyFake ref
         . runNotifier ref
         . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref

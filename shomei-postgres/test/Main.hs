@@ -70,7 +70,9 @@ import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById,
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
+import Shomei.Effect.InMemory (emptyWorld, runWebAuthnCeremonyFake)
 import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, markUserEmailVerified)
+import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Effect.VerificationTokenStore (
     VerificationTokenStore,
     createVerificationToken,
@@ -117,6 +119,7 @@ type AppEffects =
      , PasswordResetTokenStore
      , LoginAttemptStore
      , Notifier
+     , WebAuthnCeremony
      , AuthEventPublisher
      , SigningKeyStore
      , TokenSigner
@@ -134,24 +137,28 @@ runApp pool action = do
     runAppWithNotifications ref pool action
 
 runAppWithNotifications :: IORef [Notification] -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
-runAppWithNotifications ref pool =
-    runEff
-        . runErrorNoCallStack
-        . runDatabasePool pool
-        . runClockIO
-        . runTokenGenCrypto
-        . runPasswordHasherCrypto
-        . runTokenSignerFake
-        . runSigningKeyStorePostgres
-        . runAuthEventPublisherPostgres
-        . runNotifierRef ref
-        . runLoginAttemptStorePostgres
-        . runPasswordResetTokenStorePostgres
-        . runVerificationTokenStorePostgres
-        . runRefreshTokenStorePostgres
-        . runSessionStorePostgres
-        . runCredentialStorePostgres
-        . runUserStorePostgres
+runAppWithNotifications ref pool action = do
+    wref <- newIORef (emptyWorld (UTCTime (fromGregorian 2000 1 1) 0))
+    ( runEff
+            . runErrorNoCallStack
+            . runDatabasePool pool
+            . runClockIO
+            . runTokenGenCrypto
+            . runPasswordHasherCrypto
+            . runTokenSignerFake
+            . runSigningKeyStorePostgres
+            . runAuthEventPublisherPostgres
+            . runWebAuthnCeremonyFake wref
+            . runNotifierRef ref
+            . runLoginAttemptStorePostgres
+            . runPasswordResetTokenStorePostgres
+            . runVerificationTokenStorePostgres
+            . runRefreshTokenStorePostgres
+            . runSessionStorePostgres
+            . runCredentialStorePostgres
+            . runUserStorePostgres
+        )
+        action
 
 {- | Run the stack with a FIXED clock (the EP-2 lockout tests need to advance time
 deterministically across calls against the same database). Notifications are discarded.
@@ -159,6 +166,7 @@ deterministically across calls against the same database). Notifications are dis
 runAppAtTime :: UTCTime -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
 runAppAtTime t pool action = do
     ref <- newIORef []
+    wref <- newIORef (emptyWorld t)
     ( runEff
             . runErrorNoCallStack
             . runDatabasePool pool
@@ -168,6 +176,7 @@ runAppAtTime t pool action = do
             . runTokenSignerFake
             . runSigningKeyStorePostgres
             . runAuthEventPublisherPostgres
+            . runWebAuthnCeremonyFake wref
             . runNotifierRef ref
             . runLoginAttemptStorePostgres
             . runPasswordResetTokenStorePostgres

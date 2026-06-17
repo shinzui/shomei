@@ -80,6 +80,7 @@ import Shomei.Effect.InMemory (
     runTokenGen,
     runUserStore,
     runVerificationTokenStore,
+    runWebAuthnCeremonyFake,
  )
 import Shomei.Id (genSessionId, genUserId)
 
@@ -131,6 +132,7 @@ runHybrid ref jwk jwkset cfg =
         . runTokenVerifierJwt jwkset cfg
         . runTokenSignerJwt jwk cfg
         . runPasswordHasher ref
+        . runWebAuthnCeremonyFake ref
         . runNotifier ref
         . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref

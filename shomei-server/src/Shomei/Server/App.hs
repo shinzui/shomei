@@ -44,7 +44,9 @@ import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
+import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 
+import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
@@ -75,6 +77,7 @@ type AppEffects =
      , PasswordResetTokenStore
      , LoginAttemptStore
      , Notifier
+     , WebAuthnCeremony
      , PasswordHasher
      , TokenSigner
      , TokenVerifier
@@ -117,6 +120,7 @@ runAppIO env =
         . runTokenVerifierJwt env.envJwks env.envConfig
         . runTokenSignerJwt env.envKey env.envConfig
         . runPasswordHasherCrypto
+        . runWebAuthnCeremonyStub
         . runNotifierFromConfig env.envConfig
         . runLoginAttemptStorePostgres
         . runPasswordResetTokenStorePostgres
@@ -125,3 +129,12 @@ runAppIO env =
         . runSessionStorePostgres
         . runCredentialStorePostgres
         . runUserStorePostgres
+
+{- | TEMPORARY (EP-1 M1): a placeholder 'WebAuthnCeremony' interpreter. No passkey
+ceremony routes exist yet (they arrive in EP-3/EP-4), so it is never invoked at
+runtime; EP-1 M2 replaces it with the real
+@runWebAuthnCeremonyLibrary env.envConfig.webauthnConfig@ from @shomei-webauthn@.
+-}
+runWebAuthnCeremonyStub :: Eff (WebAuthnCeremony : es) a -> Eff es a
+runWebAuthnCeremonyStub = interpret_ \case
+    _ -> error "WebAuthnCeremony: real interpreter is wired in EP-1 M2 (shomei-webauthn)"

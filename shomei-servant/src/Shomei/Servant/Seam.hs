@@ -47,6 +47,7 @@ import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
+import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 
 {- | The canonical, ordered Shōmei port stack. Its order matches EP-2's
 @Shomei.Effect.InMemory.runInMemory@ so the same workflows run unchanged over the
@@ -61,6 +62,7 @@ type AppEffects =
      , PasswordResetTokenStore
      , LoginAttemptStore
      , Notifier
+     , WebAuthnCeremony
      , PasswordHasher
      , TokenSigner
      , TokenVerifier

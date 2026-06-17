@@ -360,7 +360,7 @@ updated in EP-4 except the client: `Shomei.Servant.Handlers.loginH`, the `LoginR
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
 - [x] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4 (patched fork `shinzui/webauthn-project` @ `a8b5636`, pinned as a source-repository-package; `allow-newer: webauthn:*`); a register→authenticate ceremony verifies (the fork's own emulation test, real ECDSA, 100 cases), and the pending-options WJ-JSON serialization round-trips (100 cases) — 2026-06-17
-- [ ] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`
+- [x] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`; deterministic fake interpreter + core unit test; port slotted into all effect-stack lists (server uses a temporary stub until M2) — `cabal build all`/`test all` green — 2026-06-17
 - [ ] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; `cabal build all`/`cabal test all` green
 - [ ] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grows)
 - [ ] EP-2: PostgreSQL interpreters for both stores; integration test inserts/queries a passkey and consumes a pending ceremony exactly once

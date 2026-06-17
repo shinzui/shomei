@@ -44,6 +44,7 @@ library
     Shomei.Domain.LoginAttempt
     Shomei.Domain.Notification
     Shomei.Domain.OneTimeToken
+    Shomei.Domain.Passkey
     Shomei.Domain.Password
     Shomei.Domain.PasswordResetToken
     Shomei.Domain.RefreshToken
@@ -68,6 +69,7 @@ library
     Shomei.Effect.TokenVerifier
     Shomei.Effect.UserStore
     Shomei.Effect.VerificationTokenStore
+    Shomei.Effect.WebAuthnCeremony
     Shomei.Error
     Shomei.Id
     Shomei.Prelude
@@ -99,10 +101,13 @@ test-suite shomei-core-test
   other-modules:
     Shomei.AccountSpec
     Shomei.LockoutSpec
+    Shomei.WebAuthnCeremonySpec
     Shomei.WorkflowSpec
 
   build-depends:
+    , aeson
     , base
+    , bytestring
     , containers
     , effectful
     , effectful-core

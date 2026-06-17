@@ -22,12 +22,16 @@ module Shomei.Id (
     VerificationTokenId,
     PasswordResetTokenId,
     CredentialId,
+    PasskeyId,
+    CeremonyId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
     genVerificationTokenId,
     genPasswordResetTokenId,
     genCredentialId,
+    genPasskeyId,
+    genCeremonyId,
     idText,
     parseId,
     userIdToUUID,
@@ -42,6 +46,10 @@ module Shomei.Id (
     passwordResetTokenIdFromUUID,
     credentialIdToUUID,
     credentialIdFromUUID,
+    passkeyIdToUUID,
+    passkeyIdFromUUID,
+    ceremonyIdToUUID,
+    ceremonyIdFromUUID,
 ) where
 
 import Shomei.Prelude
@@ -65,6 +73,10 @@ type PasswordResetTokenId = KindID "password_reset_token"
 
 type CredentialId = KindID "credential"
 
+type PasskeyId = KindID "passkey"
+
+type CeremonyId = KindID "webauthn_ceremony"
+
 genUserId :: (MonadIO m) => m UserId
 genUserId = KindID.genKindID @"user"
 
@@ -82,6 +94,12 @@ genPasswordResetTokenId = KindID.genKindID @"password_reset_token"
 
 genCredentialId :: (MonadIO m) => m CredentialId
 genCredentialId = KindID.genKindID @"credential"
+
+genPasskeyId :: (MonadIO m) => m PasskeyId
+genPasskeyId = KindID.genKindID @"passkey"
+
+genCeremonyId :: (MonadIO m) => m CeremonyId
+genCeremonyId = KindID.genKindID @"webauthn_ceremony"
 
 idText :: (ToPrefix p, ValidPrefix (PrefixSymbol p)) => KindID p -> Text
 idText = KindID.toText
@@ -126,6 +144,18 @@ credentialIdToUUID = getUUID
 
 credentialIdFromUUID :: UUID -> CredentialId
 credentialIdFromUUID = decorateKindID
+
+passkeyIdToUUID :: PasskeyId -> UUID
+passkeyIdToUUID = getUUID
+
+passkeyIdFromUUID :: UUID -> PasskeyId
+passkeyIdFromUUID = decorateKindID
+
+ceremonyIdToUUID :: CeremonyId -> UUID
+ceremonyIdToUUID = getUUID
+
+ceremonyIdFromUUID :: UUID -> CeremonyId
+ceremonyIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
     parseUrlPiece = parseId
