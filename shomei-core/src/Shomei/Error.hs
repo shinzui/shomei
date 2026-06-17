@@ -71,6 +71,15 @@ data AuthError
       -- counter, user-not-present, or a credential not owned by the expected user). The
       -- HTTP layer maps this to a generic 401 so nothing about the failure leaks.
       MfaAssertionInvalid
+    | -- | The caller may not start impersonation: they lack the @impersonate:user@ scope
+      -- or their own access token is older than the freshness window. Maps to 403.
+      ImpersonationForbidden
+    | -- | The impersonation target is missing, not active, or is the caller themselves.
+      -- Maps to 400.
+      ImpersonationTargetInvalid
+    | -- | A credential-changing action was attempted under a delegated (impersonation)
+      -- token. Maps to 403.
+      ImpersonationActionBlocked
     | InternalAuthError Text
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

@@ -17,7 +17,9 @@ module Shomei.Config (
     WebAuthnConfig (..),
     UserVerificationPolicy (..),
     AttestationPolicy (..),
+    ImpersonationConfig (..),
     defaultWebAuthnConfig,
+    defaultImpersonationConfig,
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -31,7 +33,7 @@ module Shomei.Config (
 import Shomei.Prelude
 
 import Data.Time (NominalDiffTime)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
+import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
 
 data TokenTransport = BearerToken | HttpOnlyCookie | BearerAndCookie
@@ -148,6 +150,30 @@ data WebAuthnConfig = WebAuthnConfig
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+{- | Impersonation / delegated-token policy (token-exchange plan). Carries the
+scope a caller must hold to start impersonation, the lifetime of the delegated
+session/token, and how recently the caller must have authenticated. Every field
+has a default (see 'defaultImpersonationConfig') so the record stays append-only.
+-}
+data ImpersonationConfig = ImpersonationConfig
+    { impersonateScope :: !Scope
+    -- ^ scope a caller must hold to start impersonation; default @impersonate:user@
+    , impersonationSessionTTL :: !NominalDiffTime
+    -- ^ lifetime of the delegated session/token; default 30 minutes
+    , actorFreshnessWindow :: !NominalDiffTime
+    -- ^ caller's own access token must have been issued within this window; default 5 minutes
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+defaultImpersonationConfig :: ImpersonationConfig
+defaultImpersonationConfig =
+    ImpersonationConfig
+        { impersonateScope = Scope "impersonate:user"
+        , impersonationSessionTTL = 30 * 60
+        , actorFreshnessWindow = 5 * 60
+        }
+
 defaultWebAuthnConfig :: WebAuthnConfig
 defaultWebAuthnConfig =
     WebAuthnConfig
@@ -175,6 +201,7 @@ data ShomeiConfig = ShomeiConfig
     , rateLimitConfig :: !RateLimitConfig
     , observabilityConfig :: !ObservabilityConfig
     , webauthnConfig :: !WebAuthnConfig
+    , impersonationConfig :: !ImpersonationConfig
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
@@ -232,4 +259,5 @@ defaultShomeiConfig iss aud =
         , rateLimitConfig = defaultRateLimitConfig
         , observabilityConfig = defaultObservabilityConfig
         , webauthnConfig = defaultWebAuthnConfig
+        , impersonationConfig = defaultImpersonationConfig
         }

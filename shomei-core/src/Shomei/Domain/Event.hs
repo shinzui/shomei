@@ -32,6 +32,9 @@ module Shomei.Domain.Event (
     MfaChallengedData (..),
     MfaSucceededData (..),
     MfaFailedData (..),
+    ImpersonationStartedData (..),
+    ImpersonationStoppedData (..),
+    ImpersonationActionBlockedData (..),
 ) where
 
 import Shomei.Prelude
@@ -212,6 +215,43 @@ data MfaFailedData = MfaFailedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+-- | An operator started impersonating a subject: a delegated session was minted.
+-- Carries both identities, the required reason, the optional support ticket id, and
+-- the client IP for the audit trail.
+data ImpersonationStartedData = ImpersonationStartedData
+    { actorUserId :: !UserId
+    , subjectUserId :: !UserId
+    , sessionId :: !SessionId
+    , reason :: !Text
+    , ticketId :: !(Maybe Text)
+    , clientIp :: !(Maybe Text)
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | An operator stopped impersonating: the delegated session was revoked.
+data ImpersonationStoppedData = ImpersonationStoppedData
+    { actorUserId :: !UserId
+    , subjectUserId :: !UserId
+    , sessionId :: !SessionId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | A credential-changing action was refused because it arrived on a delegated token.
+data ImpersonationActionBlockedData = ImpersonationActionBlockedData
+    { actorUserId :: !UserId
+    , subjectUserId :: !UserId
+    , sessionId :: !SessionId
+    , action :: !Text
+    -- ^ e.g. @"password_change"@, @"passkey_register"@, @"passkey_remove"@
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
     = UserRegistered UserRegisteredData
     | LoginSucceeded LoginSucceededData
@@ -234,5 +274,8 @@ data AuthEvent
     | MfaChallenged MfaChallengedData
     | MfaSucceeded MfaSucceededData
     | MfaFailed MfaFailedData
+    | ImpersonationStarted ImpersonationStartedData
+    | ImpersonationStopped ImpersonationStoppedData
+    | ImpersonationActionBlocked ImpersonationActionBlockedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
