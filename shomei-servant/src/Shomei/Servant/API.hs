@@ -30,6 +30,9 @@ import Shomei.Servant.DTO (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    MfaCompleteRequest,
+    PasskeyLoginBeginResponse,
+    PasskeyLoginCompleteRequest,
     PasskeyRegisterBeginResponse,
     PasskeyRegisterCompleteRequest,
     PasskeyResponse,
@@ -151,6 +154,35 @@ data ShomeiAPI mode = ShomeiAPI
                 :> Authenticated
                 :> Capture "passkeyId" PasskeyId
                 :> Verb 'DELETE 204 '[JSON] NoContent
+    , -- | Finish a password-then-passkey step-up. Unauthenticated: completing the second
+      -- factor is exactly how the caller obtains a session. (The challenge itself rides in the
+      -- @mfa_required@ arm of @POST \/auth\/login@, so there is no @\/auth\/mfa\/begin@.)
+      mfaComplete ::
+        mode
+            :- "auth"
+                :> "mfa"
+                :> "complete"
+                :> ReqBody '[JSON] MfaCompleteRequest
+                :> Post '[JSON] TokenPairResponse
+    , -- | Begin a passwordless passkey login (no account named; the browser's discoverable
+      -- credential picker chooses one). Unauthenticated.
+      passkeyLoginBegin ::
+        mode
+            :- "auth"
+                :> "login"
+                :> "passkey"
+                :> "begin"
+                :> Post '[JSON] PasskeyLoginBeginResponse
+    , -- | Finish a passwordless passkey login. Unauthenticated: the passkey IS the strong
+      -- factor, so this returns a token pair directly (never an MFA challenge).
+      passkeyLoginComplete ::
+        mode
+            :- "auth"
+                :> "login"
+                :> "passkey"
+                :> "complete"
+                :> ReqBody '[JSON] PasskeyLoginCompleteRequest
+                :> Post '[JSON] TokenPairResponse
     , jwks ::
         mode
             :- ".well-known"

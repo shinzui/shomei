@@ -85,45 +85,58 @@ This section must always reflect the actual current state of the work.
 Milestone 1 — widen `login`, add `completeMfa`, the shared `issueSession` helper, new
 error/event vocabulary (pure, in-memory tests):
 
-- [ ] Confirm EP-1/EP-2/EP-3 are merged and the Consumed-contract section matches their real
-      types; reconcile any drift in the Decision Log.
-- [ ] Add `MfaChallengedData`, `MfaSucceededData`, `MfaFailedData` records and the
-      `MfaChallenged`/`MfaSucceeded`/`MfaFailed` arms to `Shomei.Domain.Event`
-      (`shomei-core/src/Shomei/Domain/Event.hs`); export the records.
-- [ ] Confirm `Shomei.Error.AuthError` already carries `WebAuthnCeremonyError WebAuthnError`,
-      `PasskeyNotFound`, `PendingCeremonyNotFound` (added by EP-3). If EP-3 has not landed,
-      add them here and record it; add `MfaAssertionInvalid` (this plan's own arm).
-- [ ] Factor the session-minting tail of `login` into `issueSession cfg user ts` in
-      `Shomei.Workflow`; rewrite `login`'s success tail to call it.
-- [ ] Add `LoginResult`/`MfaChallenge` and widen `login` to
-      `Eff es (Either AuthError LoginResult)`, branching on `mfaRequired && passkeyCount > 0`.
-- [ ] Create `Shomei.Workflow.Mfa` with `completeMfa`, `beginPasswordlessLogin`,
-      `completePasswordlessLogin`, and `resolveUserFromAssertion`; add to
-      `shomei-core/shomei-core.cabal` `exposed-modules`.
-- [ ] Add `shomei-core/test/Shomei/Workflow/MfaSpec.hs` proving the four M1 behaviors; register
-      it in `shomei-core.cabal` `other-modules` and `shomei-core/test/Main.hs`.
-- [ ] Update the existing `Shomei.WorkflowSpec` callers of `login` (they pattern-match the old
-      `(User, TokenPair)`); they must now match `LoginComplete`.
-- [ ] `nix develop --command cabal build all` and `… cabal test all` green.
+- [x] Confirmed EP-1/EP-2/EP-3 merged; Consumed-contract section matches the real types
+      (verified by reading the real sources, 2026-06-17). Two contract refinements recorded in
+      the Decision Log: `VerifiedAuthentication` field is `cloneWarning`; the fake's assertion
+      uses key `credentialId` (not `rawId`). — 2026-06-17
+- [x] Added `MfaChallengedData`, `MfaSucceededData`, `MfaFailedData` records and the
+      `MfaChallenged`/`MfaSucceeded`/`MfaFailed` arms to `Shomei.Domain.Event` (records
+      exported). — 2026-06-17
+- [x] `AuthError` already had EP-3's `WebAuthnCeremonyError`/`PasskeyNotFound`/
+      `PendingCeremonyNotFound`; added this plan's `MfaAssertionInvalid`. — 2026-06-17
+- [x] Factored the session-minting tail into `issueSession cfg user ts` — placed in a NEW leaf
+      module `Shomei.Workflow.Session` (returns `(SessionId, TokenPair)`), re-exported from
+      `Shomei.Workflow`. (See Decision Log: avoids a module cycle and the OverloadedRecordDot
+      breakage.) `login`'s non-MFA branch calls it. — 2026-06-17
+- [x] Added `LoginResult`/`MfaChallenge` to `Shomei.Workflow` and widened `login` to
+      `Eff es (Either AuthError LoginResult)`, branching on
+      `mfaRequired (webauthnConfig cfg) && passkeyCount > 0`. — 2026-06-17
+- [x] Created `Shomei.Workflow.Mfa` with `prepareMfaChallenge`, `completeMfa`,
+      `beginPasswordlessLogin`, `completePasswordlessLogin`, and private
+      `verifyAssertion`/`failMfa`/`assertionCredentialId`; added it and `Shomei.Workflow.Session`
+      to `exposed-modules`. — 2026-06-17
+- [x] Added `shomei-core/test/Shomei/Workflow/MfaSpec.hs` (6 cases: the 4 required + passwordless
+      + a bad-assertion case); registered in `shomei-core.cabal` and `test/Main.hs`. — 2026-06-17
+- [x] Updated `Shomei.WorkflowSpec`'s success login caller to match `LoginComplete`; the
+      `Left`-comparison callers compile unchanged via `LoginResult`'s derived `Eq`. — 2026-06-17
+- [x] `cabal build shomei-core` + `cabal test shomei-core` green (40 tests, all 6 MfaSpec cases
+      pass). `cabal build all` is intentionally red until M2 updates `loginH` (the login
+      contract change cascades). — 2026-06-17
 
 Milestone 2 — HTTP routes + DTOs + handlers + LoginResponse widening + event publisher wiring,
 in-process HTTP test:
 
-- [ ] Widen `LoginResponse` in `Shomei.Servant.DTO` to a tagged sum; add `MfaCompleteRequest`,
-      `PasskeyLoginBeginResponse`, `PasskeyLoginCompleteRequest`; export them and the mapper
-      `loginResultToResponse`.
-- [ ] Add the `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete` routes to
-      `Shomei.Servant.API.ShomeiAPI` (do NOT add `/auth/mfa/begin` — see Decision Log).
-- [ ] Update `loginH` to map `LoginResult` → the new `LoginResponse`; add `mfaCompleteH`,
-      `passkeyLoginBeginH`, `passkeyLoginCompleteH`; wire them into `shomeiServer`.
-- [ ] Add `MfaAssertionInvalid` to `Shomei.Servant.Error.authErrorToServerError` (401) — the
-      other three error arms (404/404/400) come from EP-3.
-- [ ] Wire `MfaChallenged`/`MfaSucceeded`/`MfaFailed` into
-      `Shomei.Postgres.AuthEventPublisher.projectAuthEvent`.
-- [ ] Extend `shomei-servant/test/Main.hs`: add the EP-1/EP-2/EP-3 interpreters to `runHybrid`,
-      enroll a passkey, log in → `mfa_required`, `/auth/mfa/complete` → tokens, token works on
-      `/auth/me`, and the login body carried no token.
-- [ ] `nix develop --command cabal build all` and `… cabal test all` green.
+- [x] Widened `LoginResponse` in `Shomei.Servant.DTO` to a `status`-tagged sum with hand-written
+      `ToJSON`/`FromJSON`; added `MfaCompleteRequest`, `PasskeyLoginBeginResponse`,
+      `PasskeyLoginCompleteRequest` and the `loginResultToResponse` mapper; all exported. (Note:
+      aeson's `(.=)` is qualified as `Aeson..=` because `Shomei.Prelude` re-exports lens's
+      `.=`.) — 2026-06-17
+- [x] Added the `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete` routes to
+      `Shomei.Servant.API.ShomeiAPI` (all unauthenticated; NO `/auth/mfa/begin`). — 2026-06-17
+- [x] `loginH` now maps `LoginResult` → `LoginResponse` via `loginResultToResponse`; added
+      `mfaCompleteH`, `passkeyLoginBeginH`, `passkeyLoginCompleteH`; wired into `shomeiServer`. —
+      2026-06-17
+- [x] Added `MfaAssertionInvalid -> 401 ("mfa_failed")` to `authErrorToServerError`. — 2026-06-17
+- [x] Wired `MfaChallenged`/`MfaSucceeded`/`MfaFailed` into
+      `Shomei.Postgres.AuthEventPublisher.projectAuthEvent` (`mfa_challenged`/`mfa_succeeded`/
+      `mfa_failed`; the `case` stays exhaustive). — 2026-06-17
+- [x] Extended `shomei-servant/test/Main.hs`: `runHybrid` already had the EP-1/EP-2 interpreters
+      (EP-3 wired them), so the scenario re-enrolls a passkey, logs in → `mfa_required` with NO
+      `token`, `/auth/mfa/complete` → tokens, token works on `/auth/me`, the consumed ceremony is
+      a 404, and a passwordless begin→complete→me round-trips. — 2026-06-17
+- [x] `nix develop --command cabal build all` and `… cabal test all` green — all 11 suites pass
+      (`shomei-core` 40, `shomei-servant` 1, `shomei-postgres` 20, `shomei-jwt` 9,
+      `shomei-webauthn` 3, + server/client/admin/embedded/microservice). — 2026-06-17
 
 
 ## Surprises & Discoveries
@@ -165,7 +178,42 @@ publisher, the servant in-process test). Confirm or correct each as you implemen
   build `StoredCredentialForVerify`), which is exactly the lookup that also resolves the user
   in the passwordless case. The credential id the assertion carries is the key.
 
-(No implementation surprises yet — record compiler/test output here as you implement.)
+Implementation surprises (2026-06-17):
+
+- **Importing the passkey records into `Shomei.Workflow` would have broken its existing dot
+  syntax.** The EP-1/EP-3 `OverloadedRecordDot`/`HasField` discovery applies: co-importing
+  `PendingCeremony`/`PasskeyCredential` (which define `userId`) alongside `User`/`Session`/
+  `Credential` disables `HasField` for the many `user.userId`/`cred.userId`/`s.userId` dot
+  accesses across `login`/`signup`/`refresh`. Resolution: all passkey-record imports live in the
+  new `Shomei.Workflow.Mfa` (read via record patterns); `Shomei.Workflow` imports only the
+  `countPasskeysByUser` function and the `prepareMfaChallenge` function (function imports bring no
+  field selectors), so its dot syntax is untouched. See the Decision Log.
+
+- **`issueSession` could not live in `Shomei.Workflow` without a module cycle.** `Workflow.Mfa`
+  imports `issueSession`, and `Workflow.login` delegates to `Workflow.Mfa.prepareMfaChallenge` —
+  a mutual import. Factored `issueSession`/`buildClaims` into a leaf `Shomei.Workflow.Session`
+  that both import; `Shomei.Workflow` re-exports `issueSession`. (Decision Log.)
+
+- **The fake's assertion key is `credentialId`, not `rawId`.** EP-1's deterministic fake
+  (`credentialFields`) reads the credential id from a `credentialId` field. `assertionCredentialId`
+  therefore tries `credentialId` first (then `rawId`/`id` for a real browser payload). EP-5's demo
+  JS must send a payload whose credential id the core can read — `rawId` is fine (the helper
+  handles it), but the fake-driven tests use `credentialId`. (Decision Log.)
+
+- **aeson's `(.=)` clashes with lens's `(.=)` in `Shomei.Servant.DTO`.** `Shomei.Prelude`
+  re-exports `Control.Lens` (which exports the `.=` state-setter), so the hand-written
+  `ToJSON LoginResponse` must use `Aeson..=` (qualified), exactly as `Shomei.Servant.Error` does.
+
+- **`cabal build all` is red between M1 and M2 by construction.** Widening `login`'s result
+  (M1) breaks `loginH` until M2 rewrites it. M1 was validated with `cabal build/test shomei-core`
+  (green); the full `build all`/`test all` went green only after M2. This is inherent to the
+  breaking-type/additive-behavior change (IP-8) and is expected, not a defect.
+
+- **`LoginResponse`'s record-sum triggers `-Wpartial-fields`.** The two-constructor record sum
+  (`LoginCompleteResponse {user,token}` / `LoginMfaRequiredResponse {ceremonyId,options}`) warns
+  because the field selectors are partial. The selectors are never *called* (we pattern-match in
+  `toJSON` and build via the mapper / `FromJSON`), so this is benign; it is the cost of the
+  documented flat tagged-object wire shape (Decision Log in this plan). Left as a warning.
 
 
 ## Decision Log
@@ -269,6 +317,56 @@ Record every decision made while working on the plan.
   path.
   Date: 2026-06-17
 
+- Decision: **`issueSession` and `buildClaims` live in a NEW leaf module
+  `Shomei.Workflow.Session`, not in `Shomei.Workflow` as the plan sketched.** `Shomei.Workflow`
+  re-exports `issueSession` (so the public name `Shomei.Workflow.issueSession` holds), and the
+  MFA step-up branch of `login` is delegated to a new `prepareMfaChallenge` in
+  `Shomei.Workflow.Mfa`.
+  Rationale: Two forces. (1) **Module cycle.** The plan has `Shomei.Workflow.Mfa` import
+  `issueSession` from `Shomei.Workflow`, while `Shomei.Workflow.login` must call into MFA logic
+  — a mutual import GHC rejects without `.hs-boot`. Putting `issueSession`/`buildClaims` in a
+  leaf both modules import breaks the cycle (`Session ← Mfa ← Workflow`, `Session ← Workflow`).
+  (2) **OverloadedRecordDot breakage (EP-1/EP-2/EP-3 discovery).** Co-importing the passkey
+  records (`PasskeyCredential`/`PendingCeremony`, which define `userId`) into `Shomei.Workflow`
+  would disable `HasField` for the many existing `user.userId`/`cred.userId`/`s.userId` dot
+  accesses across `login`/`signup`/`refresh`. Keeping every passkey-record import inside
+  `Shomei.Workflow.Mfa` (which reads them via record patterns) leaves `Shomei.Workflow`'s dot
+  syntax untouched. `login` only gains `countPasskeysByUser` (returns `Int`) and a call to
+  `prepareMfaChallenge` (a function import brings no field selectors), so its dot accesses
+  survive. Confirmed: `cabal build shomei-core` is clean.
+  Date: 2026-06-17
+
+- Decision: **`LoginResult` and `MfaChallenge` derive `Eq` (and `Show`), not just `Show`/`Generic`
+  as the plan's snippet showed.**
+  Rationale: Existing test callers compare `login`'s result to `Left InvalidCredentials` with
+  `@?=` (`WorkflowSpec` and `shomei-postgres/test/Main.hs`), which needs
+  `Eq (Either AuthError LoginResult)`. `User` and `TokenPair` both already derive `Eq`/`Show`,
+  and `MfaChallenge` is `CeremonyId` + `Value` (both `Eq`), so deriving `Eq` is free and avoids
+  rewriting those comparison sites. Only the one success-path caller in `WorkflowSpec` needed a
+  `LoginComplete` destructure; the `_`-binding callers (`AccountSpec`, `LockoutSpec`, the
+  postgres `expectRight`/`fmap (const ())` sites) compile unchanged.
+  Date: 2026-06-17
+
+- Decision: **`assertionCredentialId` reads the lookup key from the assertion JSON trying
+  `credentialId`, then `rawId`, then `id`** (all base64url text via `WebAuthnCredentialId`'s
+  `FromJSON`).
+  Rationale: The plan suggested `rawId`, but EP-1's deterministic fake emits the credential id
+  under `credentialId` (see its `credentialFields` parser), while a real `webauthn-json`
+  assertion uses `rawId`/`id`. Trying all three makes the same core code drive both the fake
+  (tests) and a real browser payload (EP-5). This is the only place the core peeks into the
+  assertion JSON, and only for a lookup key — the cryptographic verification stays entirely in
+  the ceremony interpreter via `completeAuthenticationCeremony`.
+  Date: 2026-06-17
+
+- Decision: **`genCeremonyId` (the `MonadIO` generator in `Shomei.Id`) mints the ceremony id;
+  `login`, `prepareMfaChallenge`, and `beginPasswordlessLogin` therefore carry an `IOE :> es`
+  constraint** — matching EP-3's `beginPasskeyRegistration`. There is no `generateCeremonyId`
+  port op.
+  Rationale: EP-3 already made exactly this choice; the in-memory and PostgreSQL stacks both end
+  in `IOE`, so the constraint is always satisfiable. (Resolves the open note in Plan-of-Work
+  Step 1.4 / Surprises.)
+  Date: 2026-06-17
+
 - Decision: ...
   Rationale: (reserve for decisions made during implementation.)
   Date: ...
@@ -279,7 +377,45 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Delivered (2026-06-17).** The headline MFA step-up behavior is in place and observable over
+HTTP exactly as the Purpose described:
+
+- `POST /auth/login` for an account with a passkey and `mfaRequired = True` returns
+  `{"status":"mfa_required","ceremonyId":…,"options":…}` and **no token** (asserted by
+  `isNothing (dig ["token"] …)` in the servant HTTP test). A password alone no longer grants a
+  session for such an account.
+- `POST /auth/mfa/complete` with a valid assertion mints the token pair, and that token
+  authenticates `GET /auth/me`. The consumed ceremony then yields a 404.
+- An account with no passkey (or `mfaRequired = False`) still gets `{"status":"complete",…}`
+  with a token — additive behavior, the no-passkey path unchanged (proven by the unchanged
+  `WorkflowSpec`/`LockoutSpec`/postgres login cases).
+- The passwordless path (`POST /auth/login/passkey/{begin,complete}`) round-trips: begin →
+  assert → token → `/auth/me`, resolving the account from the asserted credential id with no
+  password.
+
+**Scope realized vs. plan.** All M1 and M2 acceptance criteria met; `cabal build all` and
+`cabal test all` green (11 suites). Two structural deviations from the plan's sketch, both
+recorded in the Decision Log and forced by real constraints discovered while implementing: (1)
+`issueSession`/`buildClaims` live in a new leaf `Shomei.Workflow.Session` (re-exported from
+`Shomei.Workflow`) and the step-up branch is `Shomei.Workflow.Mfa.prepareMfaChallenge`, to break
+a module cycle and to keep passkey record-field imports out of `Shomei.Workflow` (the
+`OverloadedRecordDot` hazard); (2) `LoginResult`/`MfaChallenge` derive `Eq` so the existing
+`@?= Left …` test comparisons compile unchanged. The audit events `mfa_challenged`/
+`mfa_succeeded`/`mfa_failed` are wired through both the in-memory `World` and the PostgreSQL
+`shomei_auth_events` table.
+
+**Abuse-protection invariant preserved.** The MFA branch runs only after a fully successful
+password check; password success records `LoginSuccess` and clears the lockout *before* the
+branch (Decision Log), so a guesser who cannot pass MFA cannot lock out the legitimate user. A
+failed assertion is the `mfa_failed` audit event, not a `LoginAttemptStore` failure.
+
+**Gaps / follow-ups for EP-5.** The client (`shomei-client`)'s `login` decoder and the demo's
+browser JS are EP-5's job; the widened `LoginResponse` wire shape (`status`-tagged) and the new
+route names (`/auth/mfa/complete`, `/auth/login/passkey/{begin,complete}`) are the contract EP-5
+must match. The one place the core reads the assertion JSON for a lookup key
+(`assertionCredentialId`) accepts `credentialId`/`rawId`/`id`; EP-5's demo payload should carry
+the credential id under one of those keys. No migration was introduced (events reuse
+`shomei_auth_events`).
 
 
 ## Context and Orientation

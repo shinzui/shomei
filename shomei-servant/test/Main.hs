@@ -13,7 +13,7 @@ module Main (main) where
 
 import Data.Foldable (toList)
 import Data.IORef (IORef, newIORef, readIORef)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -194,7 +194,7 @@ tests :: IORef World -> Env -> Text -> TestTree
 tests ref env adminToken =
     testGroup
         "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-        [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey begin/complete/list/delete" $
+        [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless" $
             testWithApplication (pure (app env)) (scenario ref adminToken)
         ]
 
@@ -324,6 +324,67 @@ scenario ref adminToken port = do
     -- (k) a passkey route without a bearer token is a 401
     (unauthStatus, _) <- getJSON mgr port "/auth/passkeys" []
     unauthStatus @?= 401
+
+    -- (l) re-enroll a passkey so the account now requires MFA at the next password login.
+    (rbStatus, rbBody) <- postJSONAuth mgr port "/auth/passkeys/register/begin" (bearer access2) (object [])
+    rbStatus @?= 200
+    rbresp <- must "mfa enroll begin body" rbBody
+    rbCid <- must "mfa enroll ceremonyId" (dig ["ceremonyId"] rbresp >>= asText)
+    rbChal <- must "mfa enroll challenge" (dig ["options", "challenge"] rbresp >>= asText)
+    let credAssertion challengeText =
+            object
+                [ "challenge" .= challengeText
+                , "credentialId" .= WebAuthnCredentialId "passkey-cred-2"
+                , "userHandle" .= UserHandle "passkey-uh-2"
+                , "publicKey" .= PublicKeyBytes "passkey-pk-2"
+                ]
+    (rcStatus, _) <-
+        postJSONAuth
+            mgr
+            port
+            "/auth/passkeys/register/complete"
+            (bearer access2)
+            (object ["ceremonyId" .= rbCid, "credential" .= credAssertion rbChal, "label" .= ("MFA Key" :: Text)])
+    rcStatus @?= 200
+
+    -- (m) the password login now returns an MFA challenge and NO token.
+    (mfaLoginStatus, mfaLoginBody) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
+    mfaLoginStatus @?= 200
+    mfaLoginResp <- must "mfa login body" mfaLoginBody
+    (dig ["status"] mfaLoginResp >>= asText) @?= Just "mfa_required"
+    assertBool "no access token in the mfa_required body" (isNothing (dig ["token"] mfaLoginResp))
+    mfaCeremonyId <- must "mfa login ceremonyId" (dig ["ceremonyId"] mfaLoginResp >>= asText)
+    mfaChallenge <- must "mfa login challenge" (dig ["options", "challenge"] mfaLoginResp >>= asText)
+
+    -- (n) completing MFA with a valid assertion yields a token pair.
+    (mfaCompleteStatus, mfaCompleteBody) <-
+        postJSON mgr port "/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    mfaCompleteStatus @?= 200
+    mfaCompleteResp <- must "mfa complete body" mfaCompleteBody
+    mfaAccess <- must "mfa complete accessToken" (dig ["accessToken"] mfaCompleteResp >>= asText)
+
+    -- (o) the MFA-issued access token authenticates /auth/me.
+    (meMfaStatus, _) <- getJSON mgr port "/auth/me" (bearer mfaAccess)
+    meMfaStatus @?= 200
+
+    -- (p) re-submitting the now-consumed ceremony is a 404.
+    (mfaStaleStatus, _) <-
+        postJSON mgr port "/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    mfaStaleStatus @?= 404
+
+    -- (q) passwordless login: begin → complete → me, no password.
+    (plBeginStatus, plBeginBody) <- postJSON mgr port "/auth/login/passkey/begin" (object [])
+    plBeginStatus @?= 200
+    plBeginResp <- must "passwordless begin body" plBeginBody
+    plCid <- must "passwordless ceremonyId" (dig ["ceremonyId"] plBeginResp >>= asText)
+    plChal <- must "passwordless challenge" (dig ["options", "challenge"] plBeginResp >>= asText)
+    (plCompleteStatus, plCompleteBody) <-
+        postJSON mgr port "/auth/login/passkey/complete" (object ["ceremonyId" .= plCid, "assertion" .= credAssertion plChal])
+    plCompleteStatus @?= 200
+    plResp <- must "passwordless complete body" plCompleteBody
+    plAccess <- must "passwordless accessToken" (dig ["accessToken"] plResp >>= asText)
+    (mePlStatus, _) <- getJSON mgr port "/auth/me" (bearer plAccess)
+    mePlStatus @?= 200
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text

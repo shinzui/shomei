@@ -29,7 +29,7 @@ import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
 import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
-import Shomei.Workflow (login, logout, refresh, signup)
+import Shomei.Workflow (LoginResult (..), login, logout, refresh, signup)
 
 -- Fixtures -------------------------------------------------------------------
 
@@ -82,7 +82,10 @@ testSignupLogin :: TestTree
 testSignupLogin = testCase "signup then login round-trips" do
     ref <- newIORef (emptyWorld fixedTime)
     (user, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
-    (user2, pair2) <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    loginRes <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    (user2, pair2) <- case loginRes of
+        LoginComplete u p -> pure (u, p)
+        MfaRequired _ -> assertFailure "expected LoginComplete (alice has no passkey), got MfaRequired"
     user2.userId @?= user.userId
     assertBool "login issues a different refresh token" (pair2.refreshToken /= pair.refreshToken)
 

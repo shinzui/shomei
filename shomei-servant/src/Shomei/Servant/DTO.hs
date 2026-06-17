@@ -25,15 +25,21 @@ module Shomei.Servant.DTO (
     PasskeyRegisterBeginResponse (..),
     PasskeyRegisterCompleteRequest (..),
     PasskeyResponse (..),
+    MfaCompleteRequest (..),
+    PasskeyLoginBeginResponse (..),
+    PasskeyLoginCompleteRequest (..),
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
     passkeyToResponse,
+    loginResultToResponse,
 ) where
 
 import Shomei.Prelude
 
-import Data.Aeson (Value)
+import Data.Aeson (Value, object, withObject, (.:))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Types (Parser)
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601Show)
 
@@ -44,6 +50,7 @@ import Shomei.Domain.Session (Session (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Id (idText)
+import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 
 -- | @POST /auth/signup@ body.
 data SignupRequest = SignupRequest
@@ -89,10 +96,67 @@ data LoginRequest = LoginRequest
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login@ response (same shape as signup).
-data LoginResponse = LoginResponse
-    { user :: !UserResponse
-    , token :: !TokenPairResponse
+{- | @POST /auth/login@ response. Either a completed login (user + token, the legacy shape
+under a @"complete"@ tag) or an MFA challenge (a ceremony id + WebAuthn @get()@ options, no
+token). The wire JSON is a flat, @status@-tagged object:
+
+@{ "status":"complete",     "user":{…}, "token":{…} }@
+@{ "status":"mfa_required", "ceremonyId":"…", "options":{…} }@
+
+A sum (not a record with nullable token fields) makes the two outcomes mutually exclusive at
+the type level — a caller cannot read a token out of an MFA challenge. The instances are
+hand-written so the wire shape is exactly the documented flat object.
+-}
+data LoginResponse
+    = LoginCompleteResponse
+        { user :: !UserResponse
+        , token :: !TokenPairResponse
+        }
+    | LoginMfaRequiredResponse
+        { ceremonyId :: !Text
+        , options :: !Value
+        }
+    deriving stock (Generic)
+
+instance ToJSON LoginResponse where
+    toJSON = \case
+        LoginCompleteResponse u t ->
+            object ["status" Aeson..= ("complete" :: Text), "user" Aeson..= u, "token" Aeson..= t]
+        LoginMfaRequiredResponse cid opts ->
+            object
+                [ "status" Aeson..= ("mfa_required" :: Text)
+                , "ceremonyId" Aeson..= cid
+                , "options" Aeson..= opts
+                ]
+
+instance FromJSON LoginResponse where
+    parseJSON = withObject "LoginResponse" \o -> do
+        status <- o .: "status" :: Parser Text
+        case status of
+            "complete" -> LoginCompleteResponse <$> o .: "user" <*> o .: "token"
+            "mfa_required" -> LoginMfaRequiredResponse <$> o .: "ceremonyId" <*> o .: "options"
+            other -> fail ("unknown login status: " <> Text.unpack other)
+
+-- | @POST /auth/mfa/complete@ body: the ceremony id from the login challenge + the assertion JSON.
+data MfaCompleteRequest = MfaCompleteRequest
+    { ceremonyId :: !Text
+    , assertion :: !Value
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | @POST /auth/login/passkey/begin@ response: the ceremony id + the @get()@ options.
+data PasskeyLoginBeginResponse = PasskeyLoginBeginResponse
+    { ceremonyId :: !Text
+    , options :: !Value
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | @POST /auth/login/passkey/complete@ body: the ceremony id from begin + the assertion JSON.
+data PasskeyLoginCompleteRequest = PasskeyLoginCompleteRequest
+    { ceremonyId :: !Text
+    , assertion :: !Value
     }
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
@@ -222,6 +286,16 @@ tokenPairToResponse tp =
   where
     unAccess (AccessToken t) = t
     unRefresh (RefreshToken t) = t
+
+{- | Map the core 'LoginResult' to the wire 'LoginResponse'. 'MfaChallenge' is read via a
+record pattern (not @ch.ceremonyId@ dot syntax) for consistency with the rest of the
+passkey-touching code. -}
+loginResultToResponse :: LoginResult -> LoginResponse
+loginResultToResponse = \case
+    LoginComplete user pair ->
+        LoginCompleteResponse{user = userToResponse user, token = tokenPairToResponse pair}
+    MfaRequired (MfaChallenge cid opts) ->
+        LoginMfaRequiredResponse{ceremonyId = idText cid, options = opts}
 
 -- | Render a domain 'Session' to the wire DTO (timestamps as ISO-8601).
 sessionToResponse :: Session -> SessionResponse

@@ -29,13 +29,16 @@ module Shomei.Domain.Event (
     LoginThrottledData (..),
     PasskeyRegisteredData (..),
     PasskeyRemovedData (..),
+    MfaChallengedData (..),
+    MfaSucceededData (..),
+    MfaFailedData (..),
 ) where
 
 import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
-import Shomei.Id (PasskeyId, RefreshTokenId, SessionId, UserId)
+import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
 
 data UserRegisteredData = UserRegisteredData
     { userId :: !UserId
@@ -177,6 +180,38 @@ data PasskeyRemovedData = PasskeyRemovedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+-- | A password login succeeded for an account with a passkey, so a WebAuthn
+-- second factor is now demanded (no session issued yet). 'ceremonyId' is the
+-- consume-once pending-MFA handle the client completes at @\/auth\/mfa\/complete@.
+data MfaChallengedData = MfaChallengedData
+    { userId :: !UserId
+    , ceremonyId :: !CeremonyId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | The WebAuthn second factor (or a passwordless passkey login) verified and a
+-- session was issued.
+data MfaSucceededData = MfaSucceededData
+    { userId :: !UserId
+    , sessionId :: !SessionId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | A WebAuthn assertion failed verification at login/step-up. 'userId' is
+-- 'Nothing' when the user could not be resolved (e.g. a passwordless assertion
+-- naming an unknown credential).
+data MfaFailedData = MfaFailedData
+    { userId :: !(Maybe UserId)
+    , reason :: !Text
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
     = UserRegistered UserRegisteredData
     | LoginSucceeded LoginSucceededData
@@ -196,5 +231,8 @@ data AuthEvent
     | LoginThrottled LoginThrottledData
     | PasskeyRegistered PasskeyRegisteredData
     | PasskeyRemoved PasskeyRemovedData
+    | MfaChallenged MfaChallengedData
+    | MfaSucceeded MfaSucceededData
+    | MfaFailed MfaFailedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

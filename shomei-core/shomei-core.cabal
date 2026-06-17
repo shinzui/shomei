@@ -77,7 +77,9 @@ library
     Shomei.Prelude
     Shomei.Workflow
     Shomei.Workflow.Account
+    Shomei.Workflow.Mfa
     Shomei.Workflow.Passkey
+    Shomei.Workflow.Session
 
   build-depends:
     , aeson
@@ -106,6 +108,7 @@ test-suite shomei-core-test
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec
     Shomei.WebAuthnCeremonySpec
+    Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
     Shomei.WorkflowSpec
 

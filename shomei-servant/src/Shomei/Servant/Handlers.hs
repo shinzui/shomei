@@ -38,6 +38,7 @@ import Shomei.Effect.UserStore (findUserById)
 import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
+import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
 
 import Shomei.Servant.API (ShomeiAPI (..))
@@ -48,7 +49,10 @@ import Shomei.Servant.DTO (
     ConfirmPasswordResetRequest (..),
     HealthResponse (..),
     LoginRequest (..),
-    LoginResponse (..),
+    LoginResponse,
+    MfaCompleteRequest (..),
+    PasskeyLoginBeginResponse (..),
+    PasskeyLoginCompleteRequest (..),
     PasskeyRegisterBeginResponse (..),
     PasskeyRegisterCompleteRequest (..),
     PasskeyResponse,
@@ -61,6 +65,7 @@ import Shomei.Servant.DTO (
     TokenPairResponse,
     UserResponse,
     VerifyEmailRequest (..),
+    loginResultToResponse,
     passkeyToResponse,
     sessionToResponse,
     tokenPairToResponse,
@@ -88,6 +93,9 @@ shomeiServer env =
         , passkeyRegisterComplete = passkeyRegisterCompleteH env
         , passkeyList = passkeysListH env
         , passkeyDelete = passkeyDeleteH env
+        , mfaComplete = mfaCompleteH env
+        , passkeyLoginBegin = passkeyLoginBeginH env
+        , passkeyLoginComplete = passkeyLoginCompleteH env
         , jwks = jwksH env
         , health = healthH
         , ready = readyH env
@@ -114,8 +122,8 @@ loginH env peer req = do
                 { clientIp = ClientIp (clientIpText peer)
                 , accountKey = env.accountKeyOf email
                 }
-    (user, pair) <- runAuth env (Wf.login env.config ctx cmd)
-    pure LoginResponse{user = userToResponse user, token = tokenPairToResponse pair}
+    result <- runAuth env (Wf.login env.config ctx cmd)
+    pure (loginResultToResponse result)
 
 {- | The source IP of the request as text, used as the per-IP throttle key. Behind a reverse
 proxy this is the proxy's address; a trusted @X-Forwarded-For@ policy would be layered in a
@@ -212,6 +220,30 @@ passkeyDeleteH :: Env -> AuthUser -> PasskeyId -> Handler NoContent
 passkeyDeleteH env user pid = do
     runAuth env (Passkey.removePasskey user.authUserId pid)
     pure NoContent
+
+{- | @POST /auth/mfa/complete@: finish a step-up begun by @POST /auth/login@'s
+@mfa_required@ arm. Unauthenticated — completing the second factor is how a session is
+obtained. A malformed ceremony id is a 400 before the workflow runs; a missing/expired/
+consumed ceremony is a 404 and a failed assertion a 401 (via 'authErrorToServerError').
+-}
+mfaCompleteH :: Env -> MfaCompleteRequest -> Handler TokenPairResponse
+mfaCompleteH env req = do
+    cid <- either (\_ -> throwError err400{errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+    (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid req.assertion)
+    pure (tokenPairToResponse pair)
+
+-- | @POST /auth/login/passkey/begin@: start a passwordless passkey login (no password).
+passkeyLoginBeginH :: Env -> Handler PasskeyLoginBeginResponse
+passkeyLoginBeginH env = do
+    (cid, options) <- runAuth env (Mfa.beginPasswordlessLogin env.config)
+    pure PasskeyLoginBeginResponse{ceremonyId = idText cid, options = options}
+
+-- | @POST /auth/login/passkey/complete@: finish a passwordless passkey login → token pair.
+passkeyLoginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler TokenPairResponse
+passkeyLoginCompleteH env req = do
+    cid <- either (\_ -> throwError err400{errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+    (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
+    pure (tokenPairToResponse pair)
 
 jwksH :: Env -> Handler Value
 jwksH env = pure env.jwksJson

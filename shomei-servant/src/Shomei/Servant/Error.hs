@@ -58,6 +58,7 @@ authErrorToServerError = \case
     PasskeyNotFound -> json err404 "passkey_not_found" "Passkey not found"
     PendingCeremonyNotFound -> json err404 "ceremony_not_found" "Registration ceremony not found or expired"
     WebAuthnCeremonyError _ -> json err400 "webauthn_verification_failed" "Passkey registration could not be verified"
+    MfaAssertionInvalid -> json err401 "mfa_failed" "Multi-factor authentication failed"
     InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where
     json base code msg =

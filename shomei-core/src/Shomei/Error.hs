@@ -67,6 +67,10 @@ data AuthError
       PasskeyNotFound
     | -- | The pending ceremony was missing, already consumed, or expired. Maps to 404.
       PendingCeremonyNotFound
+    | -- | A WebAuthn login/step-up assertion failed verification (bad signature, clone
+      -- counter, user-not-present, or a credential not owned by the expected user). The
+      -- HTTP layer maps this to a generic 401 so nothing about the failure leaks.
+      MfaAssertionInvalid
     | InternalAuthError Text
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

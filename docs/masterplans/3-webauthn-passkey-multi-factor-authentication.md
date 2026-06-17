@@ -193,7 +193,7 @@ only intra-MasterPlan-3 dependencies.
 | 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Complete |
 | 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Complete |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Complete |
-| 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
+| 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Complete |
 | 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -366,8 +366,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-2: PostgreSQL interpreters for both stores (`runPasskeyStorePostgres`/`runPendingCeremonyStorePostgres`); integration test inserts/queries a passkey three ways and consumes a pending ceremony exactly once (`DELETE … RETURNING`); `cabal test all` green across all 11 suites — 2026-06-17
 - [x] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests (`Shomei.Workflow.PasskeySpec`, 5 cases); `PasskeyRegistered`/`PasskeyRemoved` events — 2026-06-17
 - [x] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey (begin=200→complete=200→list[1]→delete=204→list[0]→re-complete=404→no-token=401); `cabal test all` green (11 suites) — 2026-06-17
-- [ ] EP-4: `login` widened to `LoginComplete`/`MfaRequired`; pending-MFA token; `mfaRequired` policy; pure step-up tests
-- [ ] EP-4: `POST /auth/mfa/{begin,complete}` and passwordless `POST /auth/login/passkey/{begin,complete}`; `MfaChallenged`/`MfaSucceeded`/`MfaFailed` events; HTTP test proves password-only yields no usable token
+- [x] EP-4: `login` widened to `LoginComplete`/`MfaRequired` (the `CeremonyId` IS the pending-MFA token); `mfaRequired` policy gates on `webauthnConfig.mfaRequired && passkeyCount > 0`; shared `issueSession` (in new leaf `Shomei.Workflow.Session`); `Shomei.Workflow.Mfa` (`prepareMfaChallenge`/`completeMfa`/`beginPasswordlessLogin`/`completePasswordlessLogin`); pure `Shomei.Workflow.MfaSpec` (6 cases) green — 2026-06-17
+- [x] EP-4: `POST /auth/mfa/complete` + passwordless `POST /auth/login/passkey/{begin,complete}` (no `/auth/mfa/begin`; challenge rides in the `mfa_required` login arm); `LoginResponse` is a `status`-tagged JSON sum; `MfaChallenged`/`MfaSucceeded`/`MfaFailed` events wired into the PostgreSQL publisher; servant HTTP test proves a password-only login yields `mfa_required` with NO token, `/auth/mfa/complete` mints tokens that work on `/auth/me`, the consumed ceremony is 404, and passwordless round-trips; `cabal build all`/`cabal test all` green (11 suites) — 2026-06-17
 - [ ] EP-5: typed `shomei-client` passkey functions; embedded-demo passkey flow with browser JS
 - [ ] EP-5: `docs/passkeys.md` + `docs/api.md`/`docs/security.md` additions, grounded in the finished EP-1..EP-4 surface
 
@@ -537,6 +537,36 @@ Discoveries during EP-3 implementation (2026-06-17) that affect EP-4/EP-5:
   `AppAPI` automatically** — no client/embedded code change is needed to keep them compiling,
   but EP-4's `login` response-shape change (IP-8) WILL require updating any client/handler that
   destructures the `LoginResponse`.
+
+Discoveries during EP-4 implementation (2026-06-17) that affect EP-5:
+
+- **`issueSession`/`buildClaims` moved to a new leaf module `Shomei.Workflow.Session` (re-exported
+  from `Shomei.Workflow`), and the step-up branch is `Shomei.Workflow.Mfa.prepareMfaChallenge`.**
+  This was forced by two constraints: a module cycle (`Workflow.Mfa` imports `issueSession`, and
+  `Workflow.login` delegates to `Workflow.Mfa`), and the standing `OverloadedRecordDot`/`HasField`
+  hazard — co-importing the passkey records into `Shomei.Workflow` would break its many
+  `user.userId`/`cred.userId` dot accesses. **EP-5: import `issueSession`/`LoginResult`/
+  `MfaChallenge` from `Shomei.Workflow` (unchanged public name); the MFA workflows from
+  `Shomei.Workflow.Mfa`.**
+- **`LoginResponse` is now a hand-written `status`-tagged JSON sum** (`{"status":"complete",
+  "user":…,"token":…}` or `{"status":"mfa_required","ceremonyId":…,"options":…}`), represented as
+  `data LoginResponse = LoginCompleteResponse{user,token} | LoginMfaRequiredResponse{ceremonyId,
+  options}` with `loginResultToResponse :: LoginResult -> LoginResponse` in `Shomei.Servant.DTO`.
+  **EP-5's `shomei-client` `login` decoder MUST branch on the `status` field** (it can no longer
+  assume a token is present). The two completion endpoints (`/auth/mfa/complete`,
+  `/auth/login/passkey/complete`) return a plain `TokenPairResponse`.
+- **The new routes are `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete`** on `ShomeiAPI`
+  (paths `POST /auth/mfa/complete`, `POST /auth/login/passkey/{begin,complete}`), all
+  unauthenticated. The request DTOs are `MfaCompleteRequest{ceremonyId,assertion}`,
+  `PasskeyLoginCompleteRequest{ceremonyId,assertion}`, and the begin response is
+  `PasskeyLoginBeginResponse{ceremonyId,options}`.
+- **The core reads the assertion's credential id from `credentialId`, then `rawId`, then `id`**
+  (`Shomei.Workflow.Mfa.assertionCredentialId`). EP-5's browser JS may send the standard
+  `webauthn-json` assertion (whose top-level id is `rawId`/`id`); both work. The cryptographic
+  verification is entirely server-side in the ceremony interpreter.
+- **A new `MfaAssertionInvalid` `AuthError` maps to HTTP 401 `{"error":"mfa_failed"}`.** A
+  missing/expired/consumed ceremony is 404 (`ceremony_not_found`); a malformed assertion that
+  fails decoding is 400 (EP-3's `WebAuthnCeremonyError`). The body never leaks why a factor failed.
 
 
 ## Decision Log

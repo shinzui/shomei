@@ -80,6 +80,12 @@ projectAuthEvent = \case
         (Just (userIdToUUID uid), Nothing, "passkey_registered", toJSON d, occ)
     Event.PasskeyRemoved d@(Event.PasskeyRemovedData uid _ occ) ->
         (Just (userIdToUUID uid), Nothing, "passkey_removed", toJSON d, occ)
+    Event.MfaChallenged d@(Event.MfaChallengedData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "mfa_challenged", toJSON d, occ)
+    Event.MfaSucceeded d@(Event.MfaSucceededData uid sid occ) ->
+        (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "mfa_succeeded", toJSON d, occ)
+    Event.MfaFailed d@(Event.MfaFailedData mUid _ occ) ->
+        (fmap userIdToUUID mUid, Nothing, "mfa_failed", toJSON d, occ)
 
 insertAuthEventStmt :: Statement AuthEventRow ()
 insertAuthEventStmt =

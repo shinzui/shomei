@@ -19,17 +19,20 @@ module Shomei.Workflow (
     refresh,
     logout,
     verifyToken,
+    LoginResult (..),
+    MfaChallenge (..),
+    issueSession,
 ) where
 
 import Shomei.Prelude
 
-import Data.Set qualified as Set
+import Data.Aeson (Value)
 import Data.Time (addUTCTime)
 
-import Effectful (Eff, (:>))
+import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 
-import Shomei.Config (RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..))
+import Shomei.Config (RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..), WebAuthnConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -47,7 +50,7 @@ import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (Sess
 import Shomei.Domain.Token (AccessToken, TokenPair (..))
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (UserActive))
 import Shomei.Error (AuthError (..))
-import Shomei.Id (SessionId, UserId)
+import Shomei.Id (CeremonyId)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
@@ -61,7 +64,9 @@ import Shomei.Effect.LoginAttemptStore (
     recordLoginAttempt,
     setAccountLockout,
  )
+import Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
+import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (
     RefreshTokenStore,
     createRefreshToken,
@@ -75,22 +80,30 @@ import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Effect.TokenVerifier (TokenVerifier, verifyAccessToken)
 import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById)
+import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 
-{- | Build the access-token claims for a freshly-authenticated session. The MVP issues no
-scopes or roles.
+import Shomei.Workflow.Mfa (prepareMfaChallenge)
+import Shomei.Workflow.Session (buildClaims, issueSession)
+
+{- | The WebAuthn step-up challenge handed back when an account with a passkey logs in with
+the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once pending-MFA
+handle the client echoes to 'Shomei.Workflow.Mfa.completeMfa'; 'options' is the
+@navigator.credentials.get()@ options the browser runs.
 -}
-buildClaims :: ShomeiConfig -> UserId -> SessionId -> UTCTime -> AuthClaims
-buildClaims cfg uid sid ts =
-    AuthClaims
-        { subject = uid
-        , sessionId = sid
-        , issuer = cfg.issuer
-        , audience = cfg.audience
-        , issuedAt = ts
-        , expiresAt = addUTCTime cfg.accessTokenTTL ts
-        , scopes = Set.empty
-        , roles = Set.empty
-        }
+data MfaChallenge = MfaChallenge
+    { ceremonyId :: !CeremonyId
+    , options :: !Value
+    }
+    deriving stock (Generic, Eq, Show)
+
+{- | The outcome of 'login'. 'LoginComplete' is the legacy success (user + tokens), returned
+unchanged for accounts with no passkey or with @mfaRequired@ off. 'MfaRequired' means the
+password was correct but a second factor is now demanded; NO token is issued yet.
+-}
+data LoginResult
+    = LoginComplete User TokenPair
+    | MfaRequired MfaChallenge
+    deriving stock (Generic, Eq, Show)
 
 signup ::
     ( UserStore :> es
@@ -163,13 +176,17 @@ login ::
     , TokenSigner :> es
     , AuthEventPublisher :> es
     , LoginAttemptStore :> es
+    , PasskeyStore :> es
+    , PendingCeremonyStore :> es
+    , WebAuthnCeremony :> es
     , Clock :> es
     , TokenGen :> es
+    , IOE :> es
     ) =>
     ShomeiConfig ->
     ClientContext ->
     LoginCommand ->
-    Eff es (Either AuthError (User, TokenPair))
+    Eff es (Either AuthError LoginResult)
 login cfg ctx cmd = runErrorNoCallStack do
     ts <- now
     let rl = cfg.rateLimitConfig
@@ -200,31 +217,19 @@ login cfg ctx cmd = runErrorNoCallStack do
             , occurredAt = ts
             }
     clearAccountLockout ctx.accountKey
-    session <-
-        createSession
-            NewSession
-                { userId = user.userId
-                , createdAt = ts
-                , expiresAt = addUTCTime cfg.sessionTTL ts
-                }
-    rawToken <- generateOpaqueToken
-    tokHash <- hashRefreshToken rawToken
-    _ <-
-        createRefreshToken
-            NewRefreshToken
-                { sessionId = session.sessionId
-                , tokenHash = tokHash
-                , parentTokenId = Nothing
-                , createdAt = ts
-                , expiresAt = addUTCTime cfg.refreshTokenTTL ts
-                }
-    access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
-    publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData user.userId session.sessionId ts))
-    publishAuthEvent (Event.SessionStarted (Event.SessionStartedData session.sessionId user.userId ts))
-    pure
-        ( user
-        , TokenPair{accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
-        )
+    -- The password factor succeeded; success is recorded and the lockout cleared above,
+    -- regardless of whether a second factor is then demanded (so an attacker who guesses the
+    -- password but cannot pass MFA cannot lock out the legitimate user). NOW branch: if the
+    -- account has a passkey and MFA is required, return a challenge WITHOUT a token; otherwise
+    -- mint the session inline as before.
+    passkeyCount <- countPasskeysByUser user.userId
+    if mfaRequired (webauthnConfig cfg) && passkeyCount > 0
+        then do
+            (cid, optionsJson) <- prepareMfaChallenge cfg user ts
+            pure (MfaRequired MfaChallenge{ceremonyId = cid, options = optionsJson})
+        else do
+            (_sid, pair) <- issueSession cfg user ts
+            pure (LoginComplete user pair)
 
 {- | The shared failure path for 'login': record the failed attempt, publish 'LoginFailed',
 lock the account if the windowed per-account failure budget is now exhausted, then throw the
