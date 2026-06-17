@@ -20,6 +20,7 @@ import Data.Aeson (Value)
 import Servant.API
 
 import Shomei.Domain.User (User)
+import Shomei.Id (PasskeyId)
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.DTO (
@@ -29,6 +30,9 @@ import Shomei.Servant.DTO (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    PasskeyRegisterBeginResponse,
+    PasskeyRegisterCompleteRequest,
+    PasskeyResponse,
     PasswordResetRequest,
     ReadyResponse,
     RefreshRequest,
@@ -117,6 +121,36 @@ data ShomeiAPI mode = ShomeiAPI
                 :> Authenticated
                 :> "session"
                 :> Get '[JSON] SessionResponse
+    , passkeyRegisterBegin ::
+        mode
+            :- "auth"
+                :> "passkeys"
+                :> "register"
+                :> "begin"
+                :> Authenticated
+                :> Post '[JSON] PasskeyRegisterBeginResponse
+    , passkeyRegisterComplete ::
+        mode
+            :- "auth"
+                :> "passkeys"
+                :> "register"
+                :> "complete"
+                :> Authenticated
+                :> ReqBody '[JSON] PasskeyRegisterCompleteRequest
+                :> Post '[JSON] PasskeyResponse
+    , passkeyList ::
+        mode
+            :- "auth"
+                :> "passkeys"
+                :> Authenticated
+                :> Get '[JSON] [PasskeyResponse]
+    , passkeyDelete ::
+        mode
+            :- "auth"
+                :> "passkeys"
+                :> Authenticated
+                :> Capture "passkeyId" PasskeyId
+                :> Verb 'DELETE 204 '[JSON] NoContent
     , jwks ::
         mode
             :- ".well-known"

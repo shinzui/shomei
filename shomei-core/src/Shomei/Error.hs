@@ -13,6 +13,8 @@ module Shomei.Error (
 
 import Shomei.Prelude
 
+import Shomei.Effect.WebAuthnCeremony (WebAuthnError)
+
 data PasswordPolicyViolation
     = -- | minimum length required
       PasswordTooShort Int
@@ -58,6 +60,13 @@ data AuthError
     | -- | The per-IP failure throttle tripped; the HTTP layer maps it to 429.
       TooManyRequests
     | TokenInvalid TokenError
+    | -- | A WebAuthn registration verification failed (bad attestation, origin/challenge
+      -- mismatch, or malformed credential JSON). The HTTP layer maps this to 400.
+      WebAuthnCeremonyError WebAuthnError
+    | -- | No passkey with the given id is owned by the requesting user. Maps to 404.
+      PasskeyNotFound
+    | -- | The pending ceremony was missing, already consumed, or expired. Maps to 404.
+      PendingCeremonyNotFound
     | InternalAuthError Text
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

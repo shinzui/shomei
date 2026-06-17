@@ -76,6 +76,10 @@ projectAuthEvent = \case
         (Nothing, Nothing, "account_locked", toJSON d, occ)
     Event.LoginThrottled d@(Event.LoginThrottledData _ _ occ) ->
         (Nothing, Nothing, "login_throttled", toJSON d, occ)
+    Event.PasskeyRegistered d@(Event.PasskeyRegisteredData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "passkey_registered", toJSON d, occ)
+    Event.PasskeyRemoved d@(Event.PasskeyRemovedData uid _ occ) ->
+        (Just (userIdToUUID uid), Nothing, "passkey_removed", toJSON d, occ)
 
 insertAuthEventStmt :: Statement AuthEventRow ()
 insertAuthEventStmt =

@@ -192,7 +192,7 @@ only intra-MasterPlan-3 dependencies.
 |---|-------|------|-----------|-----------|--------|
 | 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Complete |
 | 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Complete |
-| 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Not Started |
+| 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Complete |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
 | 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | Not Started |
 
@@ -364,8 +364,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; wired into the server's `runAppIO`; `cabal build all`/`cabal test all` green (11 suites); `mori show --full` lists it — 2026-06-17
 - [x] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grew 12→14); pure `PasskeyStoreSpec` green — 2026-06-17
 - [x] EP-2: PostgreSQL interpreters for both stores (`runPasskeyStorePostgres`/`runPendingCeremonyStorePostgres`); integration test inserts/queries a passkey three ways and consumes a pending ceremony exactly once (`DELETE … RETURNING`); `cabal test all` green across all 11 suites — 2026-06-17
-- [ ] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests; `PasskeyRegistered`/`PasskeyRemoved` events
-- [ ] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey
+- [x] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests (`Shomei.Workflow.PasskeySpec`, 5 cases); `PasskeyRegistered`/`PasskeyRemoved` events — 2026-06-17
+- [x] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey (begin=200→complete=200→list[1]→delete=204→list[0]→re-complete=404→no-token=401); `cabal test all` green (11 suites) — 2026-06-17
 - [ ] EP-4: `login` widened to `LoginComplete`/`MfaRequired`; pending-MFA token; `mfaRequired` policy; pure step-up tests
 - [ ] EP-4: `POST /auth/mfa/{begin,complete}` and passwordless `POST /auth/login/passkey/{begin,complete}`; `MfaChallenged`/`MfaSucceeded`/`MfaFailed` events; HTTP test proves password-only yields no usable token
 - [ ] EP-5: typed `shomei-client` passkey functions; embedded-demo passkey flow with browser JS
@@ -508,6 +508,35 @@ Discoveries during EP-2 implementation (2026-06-17) that affect later plans:
 - **`OverloadedRecordDot` confirmed unreliable for `PasskeyCredential`/`NewPasskeyCredential`/
   `PendingCeremony`** (not just EP-1's config/verify records). EP-2 reads them exclusively via
   record-pattern accessors; EP-3/EP-4 should do the same.
+
+Discoveries during EP-3 implementation (2026-06-17) that affect EP-4/EP-5:
+
+- **The `OverloadedRecordDot` limitation is broader than recorded: it also disables `HasField`
+  for `User` (and any domain record) once a passkey record sharing a field name is co-imported.**
+  In EP-3's core spec, `u.userId` failed `HasField "userId" User UserId` because
+  `PasskeyCredential`/`NewPasskeyCredential`/`PendingCeremony` were imported alongside `User`.
+  EP-4 must read `User`/passkey/ceremony records via record patterns (`User{userId} <- …`,
+  `PasskeyCredential{...}`), not `value.field`, in any module importing several. Plain servant
+  *DTO* records (e.g. `req.ceremonyId`) are unaffected and still use dot.
+- **The ceremony types/effect are in `Shomei.Effect.WebAuthnCeremony`; the stored/pending data
+  types are in `Shomei.Domain.Passkey`.** EP-4 imports `BeginCeremony`,
+  `StoredCredentialForVerify`, `VerifiedAuthentication`, `WebAuthnError`,
+  `beginAuthenticationCeremony`, `completeAuthenticationCeremony` from the effect module, and
+  `PasskeyCredential`/`PendingCeremony`/`CeremonyKind`/byte newtypes from the domain module.
+- **Mint `CeremonyId` with `genCeremonyId` (`Shomei.Id`, `MonadIO`) under an `IOE :> es`
+  constraint** — there is no `generateCeremonyId` port op. EP-4's `/auth/login` (the
+  `mfa_required` arm) and passwordless-begin paths follow this same pattern.
+- **The deterministic fake `WebAuthnCeremony` requires the credential JSON to echo the begin
+  challenge.** `beginAuthenticationCeremony` emits `{"challenge":"ceremony-challenge-N"}`;
+  `completeAuthenticationCeremony` verifies only when the submitted credential JSON carries the
+  same `challenge`, the stored credential's `credentialId`, and (per EP-1) returns
+  `newSignCounter = stored + 1`. EP-4's step-up/passwordless tests must extract the challenge
+  from the begin response and craft a matching assertion JSON (as EP-3's tests do for
+  registration), not pass a static blob.
+- **Adding `NamedRoutes` fields to `ShomeiAPI` propagates to `shomei-client` and the embedded
+  `AppAPI` automatically** — no client/embedded code change is needed to keep them compiling,
+  but EP-4's `login` response-shape change (IP-8) WILL require updating any client/handler that
+  destructures the `LoginResponse`.
 
 
 ## Decision Log

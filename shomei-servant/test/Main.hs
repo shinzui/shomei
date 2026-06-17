@@ -16,6 +16,7 @@ import Data.IORef (IORef, newIORef, readIORef)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as Text
 
 import Data.Aeson (Value (..), decode, encode, object, (.=))
@@ -63,6 +64,7 @@ import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
+import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Effect.InMemory (
     World (..),
@@ -192,7 +194,7 @@ tests :: IORef World -> Env -> Text -> TestTree
 tests ref env adminToken =
     testGroup
         "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-        [ testCase "signup → verify/reset account → login → me(±token) → refresh → jwks → RequireRole(403,200)" $
+        [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey begin/complete/list/delete" $
             testWithApplication (pure (app env)) (scenario ref adminToken)
         ]
 
@@ -267,8 +269,61 @@ scenario ref adminToken port = do
             "/auth/password-reset/confirm"
             (object ["token" .= resetToken, "newPassword" .= changedPassword])
     resetConfirmStatus @?= 202
-    (newLoginStatus, _) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
+    (newLoginStatus, newLoginBody) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
     newLoginStatus @?= 200
+    newLoginResp <- must "new login body" newLoginBody
+    access2 <- must "new login accessToken" (dig ["token", "accessToken"] newLoginResp >>= asText)
+
+    -- (i) passkey: begin → complete → list → delete (authenticated with the fresh token)
+    (beginStatus, beginBody) <- postJSONAuth mgr port "/auth/passkeys/register/begin" (bearer access2) (object [])
+    beginStatus @?= 200
+    bresp <- must "begin body" beginBody
+    cid <- must "ceremonyId" (dig ["ceremonyId"] bresp >>= asText)
+    chal <- must "challenge" (dig ["options", "challenge"] bresp >>= asText)
+    let cred =
+            object
+                [ "challenge" .= chal
+                , "credentialId" .= WebAuthnCredentialId "passkey-cred-1"
+                , "userHandle" .= UserHandle "passkey-uh-1"
+                , "publicKey" .= PublicKeyBytes "passkey-pk-1"
+                ]
+        completeBody = object ["ceremonyId" .= cid, "credential" .= cred, "label" .= ("YubiKey" :: Text)]
+    (compStatus, compBody) <- postJSONAuth mgr port "/auth/passkeys/register/complete" (bearer access2) completeBody
+    compStatus @?= 200
+    cresp <- must "complete body" compBody
+    pkId <- must "passkeyId" (dig ["passkeyId"] cresp >>= asText)
+    (dig ["label"] cresp >>= asText) @?= Just "YubiKey"
+
+    (listStatus, listBody) <- getJSON mgr port "/auth/passkeys" (bearer access2)
+    listStatus @?= 200
+    listResp <- must "list body" listBody
+    case listResp of
+        Array xs -> assertBool "one passkey listed" (length xs == 1)
+        _ -> assertFailure "expected a JSON array of passkeys"
+
+    (delStatus, _) <- deleteAuth mgr port ("/auth/passkeys/" <> T.unpack pkId) (bearer access2)
+    delStatus @?= 204
+
+    (list2Status, list2Body) <- getJSON mgr port "/auth/passkeys" (bearer access2)
+    list2Status @?= 200
+    list2Resp <- must "list2 body" list2Body
+    case list2Resp of
+        Array xs -> assertBool "no passkeys after delete" (null xs)
+        _ -> assertFailure "expected a JSON array after delete"
+
+    -- (j) re-completing the now-consumed ceremony is a 404
+    (badStatus, _) <-
+        postJSONAuth
+            mgr
+            port
+            "/auth/passkeys/register/complete"
+            (bearer access2)
+            (object ["ceremonyId" .= cid, "credential" .= cred])
+    badStatus @?= 404
+
+    -- (k) a passkey route without a bearer token is a 401
+    (unauthStatus, _) <- getJSON mgr port "/auth/passkeys" []
+    unauthStatus @?= 401
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
@@ -308,6 +363,27 @@ getJSON :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
 getJSON mgr port path hdrs = do
     req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
     let req = req0{method = "GET", requestHeaders = hdrs}
+    resp <- httpLbs req mgr
+    pure (statusCode (responseStatus resp), decode (responseBody resp))
+
+-- | POST a JSON body with extra headers (e.g. a Bearer token).
+postJSONAuth :: Manager -> Int -> String -> [Header] -> Value -> IO (Int, Maybe Value)
+postJSONAuth mgr port path hdrs body = do
+    req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+    let req =
+            req0
+                { method = "POST"
+                , requestHeaders = ("Content-Type", "application/json") : hdrs
+                , requestBody = RequestBodyLBS (encode body)
+                }
+    resp <- httpLbs req mgr
+    pure (statusCode (responseStatus resp), decode (responseBody resp))
+
+-- | DELETE with extra headers (e.g. a Bearer token).
+deleteAuth :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
+deleteAuth mgr port path hdrs = do
+    req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+    let req = req0{method = "DELETE", requestHeaders = hdrs}
     resp <- httpLbs req mgr
     pure (statusCode (responseStatus resp), decode (responseBody resp))
 

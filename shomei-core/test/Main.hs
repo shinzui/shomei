@@ -6,6 +6,7 @@ import Shomei.AccountSpec qualified
 import Shomei.LockoutSpec qualified
 import Shomei.PasskeyStoreSpec qualified
 import Shomei.WebAuthnCeremonySpec qualified
+import Shomei.Workflow.PasskeySpec qualified
 import Shomei.WorkflowSpec qualified
 
 main :: IO ()
@@ -18,5 +19,6 @@ main =
             , Shomei.LockoutSpec.tests
             , Shomei.PasskeyStoreSpec.tests
             , Shomei.WebAuthnCeremonySpec.tests
+            , Shomei.Workflow.PasskeySpec.tests
             ]
         )

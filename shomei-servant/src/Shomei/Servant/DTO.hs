@@ -22,17 +22,23 @@ module Shomei.Servant.DTO (
     SessionResponse (..),
     HealthResponse (..),
     ReadyResponse (..),
+    PasskeyRegisterBeginResponse (..),
+    PasskeyRegisterCompleteRequest (..),
+    PasskeyResponse (..),
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
+    passkeyToResponse,
 ) where
 
 import Shomei.Prelude
 
+import Data.Aeson (Value)
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601Show)
 
 import Shomei.Domain.Email (emailText)
+import Shomei.Domain.Passkey (PasskeyCredential (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Domain.Session (Session (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
@@ -145,6 +151,51 @@ data ReadyResponse = ReadyResponse
     }
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
+
+{- | @POST /auth/passkeys/register/begin@ response: the ceremony id (echoed back at
+complete) and the WebAuthn creation options the browser feeds to
+@navigator.credentials.create()@.
+-}
+data PasskeyRegisterBeginResponse = PasskeyRegisterBeginResponse
+    { ceremonyId :: !Text
+    , options :: !Value
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | @POST /auth/passkeys/register/complete@ body: the ceremony id from begin, the
+browser's credential JSON verbatim (the @webauthn-json@ registration response), and an
+optional label.
+-}
+data PasskeyRegisterCompleteRequest = PasskeyRegisterCompleteRequest
+    { ceremonyId :: !Text
+    , credential :: !Value
+    , label :: !(Maybe Text)
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | A stored passkey as wire JSON. Never includes the public-key bytes.
+data PasskeyResponse = PasskeyResponse
+    { passkeyId :: !Text
+    , label :: !(Maybe Text)
+    , transports :: ![Text]
+    , createdAt :: !Text
+    , lastUsedAt :: !(Maybe Text)
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+-- | Render a domain 'PasskeyCredential' to its wire DTO (no public-key bytes).
+passkeyToResponse :: PasskeyCredential -> PasskeyResponse
+passkeyToResponse PasskeyCredential{passkeyId, label, transports, createdAt, lastUsedAt} =
+    PasskeyResponse
+        { passkeyId = idText passkeyId
+        , label = label
+        , transports = transports
+        , createdAt = Text.pack (iso8601Show createdAt)
+        , lastUsedAt = Text.pack . iso8601Show <$> lastUsedAt
+        }
 
 -- | Render a domain 'User' to the wire DTO.
 userToResponse :: User -> UserResponse

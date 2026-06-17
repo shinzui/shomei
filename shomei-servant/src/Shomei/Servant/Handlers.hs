@@ -17,7 +17,7 @@ import Data.Aeson (Value, encode)
 import Network.Socket (SockAddr (..))
 import Data.Text qualified as Text
 
-import Servant (Handler, NoContent (..), ServerError (..), err404, err503, errBody, throwError)
+import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, throwError)
 import Servant.Server.Generic (AsServerT)
 
 import Shomei.Domain.Command (
@@ -35,8 +35,10 @@ import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Effect.SessionStore (findSessionById)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
 import Shomei.Effect.UserStore (findUserById)
+import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
+import Shomei.Workflow.Passkey qualified as Passkey
 
 import Shomei.Servant.API (ShomeiAPI (..))
 import Shomei.Servant.Auth (AuthUser (..))
@@ -47,6 +49,9 @@ import Shomei.Servant.DTO (
     HealthResponse (..),
     LoginRequest (..),
     LoginResponse (..),
+    PasskeyRegisterBeginResponse (..),
+    PasskeyRegisterCompleteRequest (..),
+    PasskeyResponse,
     PasswordResetRequest (..),
     ReadyResponse (..),
     RefreshRequest (..),
@@ -56,6 +61,7 @@ import Shomei.Servant.DTO (
     TokenPairResponse,
     UserResponse,
     VerifyEmailRequest (..),
+    passkeyToResponse,
     sessionToResponse,
     tokenPairToResponse,
     userToResponse,
@@ -78,6 +84,10 @@ shomeiServer env =
         , logout = logoutH env
         , me = meH env
         , session = sessionH env
+        , passkeyRegisterBegin = passkeyRegisterBeginH env
+        , passkeyRegisterComplete = passkeyRegisterCompleteH env
+        , passkeyList = passkeysListH env
+        , passkeyDelete = passkeyDeleteH env
         , jwks = jwksH env
         , health = healthH
         , ready = readyH env
@@ -178,6 +188,30 @@ sessionH env user = do
     case mSession of
         Just s -> pure (sessionToResponse s)
         Nothing -> throwError err404{errBody = "session not found"}
+
+passkeyRegisterBeginH :: Env -> AuthUser -> Handler PasskeyRegisterBeginResponse
+passkeyRegisterBeginH env user = do
+    (cid, options) <- runAuth env (Passkey.beginPasskeyRegistration env.config user.authUserId)
+    pure PasskeyRegisterBeginResponse{ceremonyId = idText cid, options = options}
+
+passkeyRegisterCompleteH :: Env -> AuthUser -> PasskeyRegisterCompleteRequest -> Handler PasskeyResponse
+passkeyRegisterCompleteH env user req = do
+    cid <- either (\_ -> throwError err400{errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+    passkey <-
+        runAuth
+            env
+            (Passkey.completePasskeyRegistration env.config user.authUserId cid req.credential req.label)
+    pure (passkeyToResponse passkey)
+
+passkeysListH :: Env -> AuthUser -> Handler [PasskeyResponse]
+passkeysListH env user = do
+    passkeys <- runPort env (Passkey.listPasskeys user.authUserId)
+    pure (map passkeyToResponse passkeys)
+
+passkeyDeleteH :: Env -> AuthUser -> PasskeyId -> Handler NoContent
+passkeyDeleteH env user pid = do
+    runAuth env (Passkey.removePasskey user.authUserId pid)
+    pure NoContent
 
 jwksH :: Env -> Handler Value
 jwksH env = pure env.jwksJson

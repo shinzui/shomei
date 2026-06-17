@@ -109,6 +109,20 @@ sampleNew uid =
         , createdAt = t0
         }
 
+-- | Like 'sampleNew' but with a distinct credential id (avoids ambiguous record-update syntax).
+sampleNewWithCred :: UserId -> ByteString -> NewPasskeyCredential
+sampleNewWithCred uid cidBytes =
+    NewPasskeyCredential
+        { userId = uid
+        , credentialId = WebAuthnCredentialId cidBytes
+        , userHandle = UserHandle uh1
+        , publicKey = PublicKeyBytes pk1
+        , signCounter = SignatureCounter 0
+        , transports = ["internal", "hybrid"]
+        , label = Just "My YubiKey"
+        , createdAt = t0
+        }
+
 createAndFind :: IO ()
 createAndFind = do
     ref <- newWorld
@@ -149,9 +163,9 @@ countByUser = do
     n <- runInMemory ref do
         _ <- createPasskey (sampleNew uid)
         -- a second passkey for the same user (distinct credential id)
-        _ <- createPasskey (sampleNew uid){credentialId = WebAuthnCredentialId "cred-2"}
+        _ <- createPasskey (sampleNewWithCred uid "cred-2")
         -- a third for a different user
-        _ <- createPasskey (sampleNew otherUid){credentialId = WebAuthnCredentialId "cred-3"}
+        _ <- createPasskey (sampleNewWithCred otherUid "cred-3")
         countPasskeysByUser uid
     n @?= 2
 

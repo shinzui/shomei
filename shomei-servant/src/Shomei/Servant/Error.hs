@@ -55,6 +55,9 @@ authErrorToServerError = \case
     PasswordResetTokenInvalid -> json err400 "password_reset_token_invalid" "Password reset token is invalid"
     EmailAlreadyVerified -> json err409 "email_already_verified" "Email is already verified"
     TokenInvalid _ -> json err401 "token_invalid" "Token is invalid"
+    PasskeyNotFound -> json err404 "passkey_not_found" "Passkey not found"
+    PendingCeremonyNotFound -> json err404 "ceremony_not_found" "Registration ceremony not found or expired"
+    WebAuthnCeremonyError _ -> json err400 "webauthn_verification_failed" "Passkey registration could not be verified"
     InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where
     json base code msg =

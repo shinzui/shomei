@@ -27,13 +27,15 @@ module Shomei.Domain.Event (
     UserDeletedData (..),
     AccountLockedData (..),
     LoginThrottledData (..),
+    PasskeyRegisteredData (..),
+    PasskeyRemovedData (..),
 ) where
 
 import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
-import Shomei.Id (RefreshTokenId, SessionId, UserId)
+import Shomei.Id (PasskeyId, RefreshTokenId, SessionId, UserId)
 
 data UserRegisteredData = UserRegisteredData
     { userId :: !UserId
@@ -159,6 +161,22 @@ data LoginThrottledData = LoginThrottledData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+data PasskeyRegisteredData = PasskeyRegisteredData
+    { userId :: !UserId
+    , passkeyId :: !PasskeyId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+data PasskeyRemovedData = PasskeyRemovedData
+    { userId :: !UserId
+    , passkeyId :: !PasskeyId
+    , occurredAt :: !UTCTime
+    }
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
     = UserRegistered UserRegisteredData
     | LoginSucceeded LoginSucceededData
@@ -176,5 +194,7 @@ data AuthEvent
     | UserDeleted UserDeletedData
     | AccountLocked AccountLockedData
     | LoginThrottled LoginThrottledData
+    | PasskeyRegistered PasskeyRegisteredData
+    | PasskeyRemoved PasskeyRemovedData
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

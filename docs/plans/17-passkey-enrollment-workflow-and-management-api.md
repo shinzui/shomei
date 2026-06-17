@@ -74,24 +74,24 @@ This section must always reflect the actual current state of the work.
 
 Milestone 1 — core enrollment workflow + error/event vocabulary (pure, in-memory tests):
 
-- [ ] Confirm EP-1 and EP-2 are merged and that the Consumed-contract section below matches their real types; reconcile any drift in the Decision Log.
-- [ ] Add `PasskeyRegisteredData` / `PasskeyRemovedData` records and the `PasskeyRegistered` / `PasskeyRemoved` arms to `Shomei.Domain.Event` (`shomei-core/src/Shomei/Domain/Event.hs`).
-- [ ] Add `WebAuthnCeremonyError WebAuthnError`, `PasskeyNotFound`, and `PendingCeremonyNotFound` to `Shomei.Error.AuthError` (`shomei-core/src/Shomei/Error.hs`); import `WebAuthnError` from EP-1's module.
-- [ ] Create `shomei-core/src/Shomei/Workflow/Passkey.hs` with `beginPasskeyRegistration`, `completePasskeyRegistration`, `listPasskeys`, `removePasskey`; add the module to `shomei-core/shomei-core.cabal`.
-- [ ] Derive the stable per-user `UserHandle` helper (`userHandleForUser`) and document the derivation in the Decision Log.
-- [ ] Add `shomei-core/test/Shomei/Workflow/PasskeySpec.hs` proving begin→complete stores a passkey, list returns it, remove deletes it, wrong-user complete is rejected, and an expired/absent ceremony is `PendingCeremonyNotFound`.
-- [ ] `cabal test all` green.
+- [x] Confirm EP-1 and EP-2 are merged and reconcile drift from the Consumed-contract section (see Surprises: ceremony types live in `Shomei.Effect.WebAuthnCeremony` not `Shomei.Domain.Passkey`; no `generateCeremonyId` — `genCeremonyId` in `Shomei.Id`; `transports :: [Text]` already; the fake requires the credential JSON to echo the begin challenge).
+- [x] Add `PasskeyRegisteredData` / `PasskeyRemovedData` records and the `PasskeyRegistered` / `PasskeyRemoved` arms to `Shomei.Domain.Event`.
+- [x] Add `WebAuthnCeremonyError WebAuthnError`, `PasskeyNotFound`, and `PendingCeremonyNotFound` to `Shomei.Error.AuthError`; imported `WebAuthnError` from `Shomei.Effect.WebAuthnCeremony` (no import cycle).
+- [x] Create `shomei-core/src/Shomei/Workflow/Passkey.hs` with the four functions; added to `shomei-core.cabal`.
+- [x] Derive the stable per-user `UserHandle` helper (`userHandleForUser` = the 16 UUID bytes); see Decision Log.
+- [x] Add `shomei-core/test/Shomei/Workflow/PasskeySpec.hs` (5 cases: enroll/list/remove, wrong-user, absent, consumed-twice, rejected-credential).
+- [x] `cabal test shomei-core-test` green (34 tests).
 
 Milestone 2 — HTTP surface (routes + DTOs + handlers), event publisher wiring, in-process HTTP test:
 
-- [ ] Add `PasskeyId` re-export plumbing if needed and the four routes to `Shomei.Servant.API.ShomeiAPI`.
-- [ ] Add `PasskeyRegisterBeginResponse`, `PasskeyRegisterCompleteRequest`, `PasskeyResponse`, and `passkeyToResponse` to `Shomei.Servant.DTO`.
-- [ ] Add `passkeyRegisterBeginH`, `passkeyRegisterCompleteH`, `passkeysListH`, `passkeyDeleteH` to `Shomei.Servant.Handlers` and wire them into the `shomeiServer` record.
-- [ ] Map the three new `AuthError` constructors in `Shomei.Servant.Error.authErrorToServerError`.
-- [ ] Wire `PasskeyRegistered` / `PasskeyRemoved` into `Shomei.Postgres.AuthEventPublisher.projectAuthEvent`.
-- [ ] Extend the `shomei-servant` test harness (`shomei-servant/test/Main.hs`) with the begin→complete→list→delete scenario; the hybrid runner must interpret the new EP-1/EP-2 ports.
-- [ ] Confirm the `AppAPI` embedded example still type-checks.
-- [ ] `cabal build all` and `cabal test all` green.
+- [x] Added the four routes to `Shomei.Servant.API.ShomeiAPI` (`PasskeyId` imported from `Shomei.Id`; delete is `Verb 'DELETE 204 NoContent`).
+- [x] Added `PasskeyRegisterBeginResponse`, `PasskeyRegisterCompleteRequest`, `PasskeyResponse`, and `passkeyToResponse` to `Shomei.Servant.DTO` (transports rendered directly as `[Text]` — no `transportText`).
+- [x] Added `passkeyRegisterBeginH`, `passkeyRegisterCompleteH`, `passkeysListH`, `passkeyDeleteH` and wired them into `shomeiServer`.
+- [x] Mapped the three new `AuthError` constructors in `Shomei.Servant.Error` (404/404/400).
+- [x] Wired `PasskeyRegistered` / `PasskeyRemoved` into `Shomei.Postgres.AuthEventPublisher.projectAuthEvent`.
+- [x] Extended `shomei-servant/test/Main.hs` with the begin→complete→list→delete (+404 re-complete, +401 no-token) scenario. The hybrid runner already interprets the EP-1/EP-2 ports (added by EP-1/EP-2), so no Seam/runHybrid change was needed beyond what EP-2 landed.
+- [x] `AppAPI` embedded example and `shomei-client` still type-check (the grown `NamedRoutes` record auto-propagates).
+- [x] `cabal build all` and `cabal test all` green (all 11 suites).
 
 
 ## Surprises & Discoveries
@@ -99,7 +99,43 @@ Milestone 2 — HTTP surface (routes + DTOs + handlers), event publisher wiring,
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet. Record concrete evidence — compiler output, test transcripts — as you implement.)
+Drift from the Consumed-contract section (EP-1/EP-2 shipped differently than the skeleton
+assumed). Reconciled during implementation (2026-06-17):
+
+- **The ceremony types and effect live in `Shomei.Effect.WebAuthnCeremony`, not
+  `Shomei.Domain.Passkey`.** `CredentialUserInfo`, `BeginCeremony`, `VerifiedRegistration`,
+  `WebAuthnError`, and the `beginRegistrationCeremony`/`completeRegistrationCeremony` smart
+  constructors are all exported from the effect module. `Shomei.Domain.Passkey` owns only the
+  stored/pending data types (`PasskeyCredential`, `NewPasskeyCredential`, `PendingCeremony`,
+  `CeremonyKind`, and the byte newtypes). Imports were split accordingly.
+- **There is no `generateCeremonyId` in the port.** EP-1/EP-2 mint ceremony ids via
+  `genCeremonyId :: MonadIO m => m CeremonyId` in `Shomei.Id`. `beginPasskeyRegistration`
+  therefore carries an `IOE :> es` constraint (instead of the skeleton's `TokenGen`) and calls
+  `genCeremonyId` directly; `IOE` sits at the base of every stack the workflow runs in.
+- **`transports` is already `[Text]`** in both `VerifiedRegistration` and `PasskeyCredential`,
+  so `passkeyToResponse` renders it directly — there is no `transportText` helper.
+- **The fake `completeRegistrationCeremony` requires the credential JSON to echo the begin
+  challenge.** EP-1's deterministic fake bakes a counter-derived challenge into the options
+  blob (`{"challenge":"ceremony-challenge-N"}`) and only verifies when the submitted credential
+  JSON carries the same `challenge` plus base64url `credentialId`/`userHandle`/`publicKey`. The
+  skeleton's "static `acceptedCredentialJson` regardless of options" does not hold, so both the
+  core spec and the HTTP test extract the challenge from the begin response's `options` and
+  craft a matching credential (using the domain newtypes' base64url JSON instances). A
+  wrong-challenge credential is the natural negative case (`WebAuthnChallengeMismatch`).
+- **`OverloadedRecordDot`/`HasField` is broadly unavailable for the EP-1 records — including
+  `User` when a passkey record is also in scope.** In `PasskeySpec`, `u.userId` failed to
+  resolve `HasField "userId" User UserId` because `PasskeyCredential`/`NewPasskeyCredential`/
+  `PendingCeremony` (all carrying `userId`) were imported alongside `User`. The workflow,
+  handlers, and DTO read these records via record patterns / `NamedFieldPuns`; the test reads
+  the created user via `User{userId} <- createUser …`. (`req.field` dot still works for the
+  plain servant DTOs, as it does for the existing `SignupRequest`/`LoginRequest`.)
+- **No Seam/runHybrid change was needed for EP-3.** EP-1 (WebAuthnCeremony) and EP-2
+  (PasskeyStore/PendingCeremonyStore) had already added their ports and interpreters to every
+  stack (servant `AppEffects` + `runHybrid`, server `runAppIO`, in-memory `runInMemory`), so
+  EP-3 only added routes/handlers and relied on the existing wiring.
+- **Adding four `NamedRoutes` fields propagated cleanly to `shomei-client` and the embedded
+  `AppAPI`** — servant-client derives the client functions from the record, and the embedded
+  example mounts `NamedRoutes ShomeiAPI` whole, so neither needed a code change to compile.
 
 
 ## Decision Log
@@ -143,6 +179,17 @@ Record every decision made while working on the plan.
   handlers) so blank input does not store an empty string.
   Date: 2026-06-17
 
+- Decision: Mint the ceremony id in `beginPasskeyRegistration` via `genCeremonyId`
+  (`Shomei.Id`, `MonadIO`) under an `IOE :> es` constraint, rather than the skeleton's
+  assumed `WebAuthnCeremony` `generateCeremonyId` port operation or the `TokenGen` port.
+  Rationale: EP-1 shipped no `generateCeremonyId` on the port (and IP-1 forbids EP-3 changing
+  the port signature), and `TokenGen` only mints opaque refresh tokens, not typed `KindID`s.
+  EP-2's `genCeremonyId` is the established id source; the workflow must mint the id because
+  `PutPendingCeremony` takes a fully-formed `PendingCeremony` and the id is also the response.
+  `IOE` is at the base of every stack the workflow runs in (in-memory, servant seam, server),
+  so the constraint is always satisfiable. This matches the skeleton's own fallback note.
+  Date: 2026-06-17
+
 - Decision: `removePasskey` and `DELETE /auth/passkeys/{passkeyId}` scope the delete by the
   authenticated user and treat "not yours / not found" identically as `PasskeyNotFound` → 404.
   Rationale: A user must not be able to delete another user's passkey, and the response must
@@ -158,7 +205,30 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-17): complete and green.** An already-authenticated user can now enroll,
+list, and remove passkeys over HTTP, the server stores only public keys, and each
+enrollment/removal writes a `passkey_registered`/`passkey_removed` audit event. Both
+milestones landed as scoped:
+
+- M1: `Shomei.Workflow.Passkey` (begin/complete/list/remove), the three new `AuthError`
+  constructors, the two `AuthEvent` arms with their `*Data` records, and a pure
+  `Shomei.Workflow.PasskeySpec` (5 cases) — `shomei-core-test` green (34 tests).
+- M2: four authenticated `ShomeiAPI` routes, three DTOs + `passkeyToResponse`, four handlers,
+  the 404/404/400 error mapping, the PostgreSQL event projection, and an in-process HTTP
+  scenario (begin=200 → complete=200 w/ label → list=200[1] → delete=204 → list=200[0] →
+  re-complete=404 → no-token=401). `cabal build all` / `cabal test all` green (11 suites).
+
+**Gaps / deferred (as planned):** Login/assertion (the *use* of a passkey) is EP-4, not here.
+The real `shomei-webauthn` interpreter path is exercised only via EP-5's browser demo (the
+automated tests use EP-1's deterministic fake). Account-recovery when a user loses their only
+passkey remains the existing password-reset flow (MasterPlan scope).
+
+**Lessons:** (1) The skeleton's Consumed-contract drifted from what EP-1/EP-2 shipped in
+several concrete ways (module placement of ceremony types, id generation, the fake's
+challenge-echo requirement) — reconciling against the real source first, before writing code,
+avoided dead ends. (2) The `OverloadedRecordDot` limitation is broader than EP-1 first
+recorded: it bites `User` too once a passkey record is co-imported. Record patterns are the
+reliable read path for any domain record in a module that imports several.
 
 
 ## Context and Orientation
