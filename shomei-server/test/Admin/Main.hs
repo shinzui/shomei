@@ -14,18 +14,23 @@ import Data.Time (addUTCTime, getCurrentTime)
 
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
-import Hasql.Session qualified as Session
-import Hasql.Statement (preparable)
 import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
+import Hasql.Session qualified as Session
+import Hasql.Statement (preparable)
 
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
+
+import Effectful (Eff, IOE, runEff)
+import Effectful.Error.Static (Error, runErrorNoCallStack)
 
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
+import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Id (genSessionId, genUserId)
@@ -33,6 +38,17 @@ import Shomei.Jwt.Key (fromStoredSigningKey)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
 
+import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
+import Shomei.Effect.AuthEventReader (
+    AuditEventQuery (..),
+    StoredAuthEvent (..),
+    countAuthEvents,
+    emptyAuditQuery,
+    queryAuthEvents,
+ )
+import Shomei.Error (AuthError)
+
+import Shomei.Admin.Audit (runAuditReader)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys (
     keysActivate,
@@ -44,6 +60,8 @@ import Shomei.Admin.Keys (
 import Shomei.Admin.Users (createUserAction)
 
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
+import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.Pool (acquirePool)
 
 cfg :: ShomeiConfig
@@ -64,7 +82,7 @@ scalarInt pool sql = do
     fromI = fromIntegral
 
 main :: IO ()
-main = defaultMain (testGroup "shomei-admin" [testMigrateEmpty, testLifecycleOverlap, testUserCreate])
+main = defaultMain (testGroup "shomei-admin" [testMigrateEmpty, testLifecycleOverlap, testUserCreate, testAuditQuery])
 
 testMigrateEmpty :: TestTree
 testMigrateEmpty = testCase "after migration the keys table exists and is empty" $ withDb \pool _ -> do
@@ -113,6 +131,47 @@ testUserCreate = testCase "users create persists a user + credential whose hash 
     creds <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_credentials"
     users @?= 1
     creds @?= 1
+
+testAuditQuery :: TestTree
+testAuditQuery = testCase "audit reader returns published events; type filter + count work" $ withDb \pool _ -> do
+    t <- getCurrentTime
+    em <- mkEmail' "audit@example.com"
+    uid <- genUserId
+    sid <- genSessionId
+    -- Seed two events through the real PostgreSQL publisher.
+    okR
+        =<< runPublish
+            pool
+            ( do
+                publishAuthEvent (Event.LoginFailed (Event.LoginFailedData em t))
+                publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData uid sid (addUTCTime 1 t)))
+            )
+    -- Read them back through the CLI's reader stack (newest-first).
+    allEvents <- okR =<< runAuditReader pool (queryAuthEvents emptyAuditQuery)
+    map (.storedEventType) allEvents @?= ["login_succeeded", "login_failed"]
+    -- Type filter narrows to the failed login only.
+    failed <- okR =<< runAuditReader pool (queryAuthEvents emptyAuditQuery{queryEventTypes = ["login_failed"]})
+    map (.storedEventType) failed @?= ["login_failed"]
+    -- Count matches the total.
+    n <- okR =<< runAuditReader pool (countAuthEvents emptyAuditQuery)
+    n @?= 2
+
+-- | Run the audit-event publisher over the pool (test-only seeding helper).
+runPublish ::
+    Pool ->
+    Eff '[AuthEventPublisher, Database, Error AuthError, IOE] a ->
+    IO (Either AuthError a)
+runPublish pool =
+    runEff
+        . runErrorNoCallStack
+        . runDatabasePool pool
+        . runAuthEventPublisherPostgres
+
+okR :: (Show e) => Either e a -> IO a
+okR = either (assertFailure . show) pure
+
+mkEmail' :: Text -> IO Email
+mkEmail' t = either (\e -> assertFailure ("bad email: " <> show e)) pure (mkEmail t)
 
 -- Helpers --------------------------------------------------------------------
 

@@ -90,10 +90,10 @@ Milestone 2 — HTTP API (`GET /admin/audit/events`): **DONE (2026-06-17)**
 - [x] Add the `auditEvents` route to `ShomeiAPI` (QueryParam/QueryParams), the admin-gated `auditEventsH` + total `buildQuery` (malformed UUID/timestamp/cursor → 400), and wire `auditEvents = auditEventsH env` into `shomeiServer`.
 - [x] Servant integration tests: admin token → 200 with a non-empty trail; non-admin → 403; no token → 401; `?type=login_succeeded` filters; `?user=not-a-uuid` → 400; `?limit=1` + follow `nextCursor` walks disjoint pages. `shomei-servant-test` passes.
 
-Milestone 3 — CLI (`shomei-admin audit ...`):
+Milestone 3 — CLI (`shomei-admin audit ...`): **DONE (2026-06-17)**
 
-- [ ] Add `Shomei.Admin.Audit` module + the `audit` subcommand group to `app/Admin.hs` and the cabal `other-modules`.
-- [ ] Implement `events`, `user`, `session`, `count` handlers over `runAuthEventReaderPostgres`; default tab-separated output, `--json` for NDJSON.
+- [x] Add `Shomei.Admin.Audit` module (`shomei-server/app/Shomei/Admin/Audit.hs`) + the `audit` subcommand group wired into `app/Admin.hs`; added to the `executable shomei-admin` AND `shomei-admin-test` `other-modules`, with `aeson`+`uuid` added to both stanzas.
+- [x] Implement `events`/`user`/`session`/`count` over `runAuditReader` (the `runAuthEventReaderPostgres` stack); default tab-separated output (`created_at⇥event_type⇥user_id⇥session_id⇥event_id`), `--json` for NDJSON (envelope + raw payload); a bad UUID/timestamp aborts with a clear stderr message. Added `testAuditQuery` to `shomei-admin-test` (seed via the real publisher → read back, type filter, count); all 4 admin tests pass. Live-verified against the dev socket Postgres: `audit count` 31, `audit count --type login_failed` 8, tab + `--json|jq` output, and `--user 501` correctly rejected as an invalid UUID.
 
 Milestone 4 — Docs, runbook, and limitations:
 

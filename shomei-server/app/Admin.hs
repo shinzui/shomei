@@ -11,6 +11,7 @@ import Options.Applicative
 
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
 
+import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysGenerate, keysList, keysRetire, keysRevoke)
 import Shomei.Admin.Users (createUserAction)
@@ -21,6 +22,7 @@ data Command
     = Migrate
     | Keys KeysCommand
     | Users UsersCommand
+    | Audit AuditCommand
 
 data KeysCommand
     = KeysGenerate
@@ -41,6 +43,7 @@ commandParser =
         ( command "migrate" (info (pure Migrate) (progDesc "Apply pending database migrations"))
             <> command "keys" (info (Keys <$> keysParser) (progDesc "Manage signing keys"))
             <> command "users" (info (Users <$> usersParser) (progDesc "Manage user accounts"))
+            <> command "audit" (info (Audit <$> auditParser) (progDesc "Query the audit log / security events"))
         )
 
 keysParser :: Parser KeysCommand
@@ -93,3 +96,6 @@ run = \case
     Users (UsersCreate{email, password, displayName}) -> do
         env <- loadAdminEnv
         createUserAction env email password displayName
+    Audit ac -> do
+        env <- loadAdminEnv
+        runAudit env ac
