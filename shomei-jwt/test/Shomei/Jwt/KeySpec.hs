@@ -3,13 +3,23 @@ without losing its @kid@.
 -}
 module Shomei.Jwt.KeySpec (tests) where
 
+import Data.ByteString.Lazy qualified as BSL
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Data.Time (getCurrentTime)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
-import Shomei.Domain.SigningKey (StoredSigningKey (..))
-import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, keyKid, toStoredSigningKey)
+import Shomei.Domain.SigningKey (SigningAlgorithm (RS256), StoredSigningKey (..))
+import Shomei.Jwt.Jwks (jwksDocument)
+import Shomei.Jwt.Key (
+    fromStoredSigningKey,
+    generateSigningKey,
+    generateSigningKeyFor,
+    keyKid,
+    toStoredSigningKey,
+    toStoredSigningKeyFor,
+ )
 
 tests :: TestTree
 tests =
@@ -23,4 +33,14 @@ tests =
             case fromStoredSigningKey stored of
                 Left err -> assertFailure ("decode failed: " <> Text.unpack err)
                 Right jwk' -> keyKid jwk' @?= stored.keyId
+        , testCase "generates an RS256 key recorded as RS256 with a kid and an RSA JWKS" $ do
+            jwk <- generateSigningKeyFor RS256
+            t <- getCurrentTime
+            let sk = toStoredSigningKeyFor RS256 t jwk
+            sk.algorithm @?= "RS256"
+            assertBool "kid is non-empty" (not (Text.null sk.keyId))
+            let doc = jwksDocument [jwk]
+            assertBool
+                "JWKS contains an RSA key"
+                ("\"kty\":\"RSA\"" `Text.isInfixOf` Text.decodeUtf8 (BSL.toStrict doc))
         ]

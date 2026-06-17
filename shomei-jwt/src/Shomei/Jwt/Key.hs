@@ -9,14 +9,21 @@ in Shōmei that converts between the opaque JWK JSON stored in
 -}
 module Shomei.Jwt.Key (
     generateSigningKey,
+    generateSigningKeyFor,
     toStoredSigningKey,
+    toStoredSigningKeyFor,
     fromStoredSigningKey,
     keyKid,
 ) where
 
 import Shomei.Prelude
 
-import Shomei.Domain.SigningKey (SigningKeyStatus (KeyActive), StoredSigningKey (..))
+import Shomei.Domain.SigningKey (
+    SigningAlgorithm (ES256, RS256),
+    SigningKeyStatus (KeyActive),
+    StoredSigningKey (..),
+    signingAlgorithmToText,
+ )
 
 import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
@@ -28,7 +35,7 @@ import Crypto.Hash.Algorithms (SHA256)
 import Crypto.JOSE.JWA.JWK (Crv (P_256))
 import Crypto.JOSE.JWK (
     JWK,
-    KeyMaterialGenParam (ECGenParam),
+    KeyMaterialGenParam (ECGenParam, RSAGenParam),
     KeyUse (Sig),
     asPublicKey,
     genJWK,
@@ -38,15 +45,26 @@ import Crypto.JOSE.JWK (
  )
 import Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertToBase)
 
-{- | Generate a fresh ES256 (P-256) signing key, marked for signature use, with
-its @kid@ set to its RFC 7638 thumbprint (Base64URL, unpadded).
+{- | Generate a fresh signing key for the requested algorithm, marked for
+signature use, with its @kid@ set to its RFC 7638 thumbprint (Base64URL,
+unpadded). @ES256@ → a P-256 EC key; @RS256@ → a 2048-bit RSA key (256 bytes,
+comfortably above jose's 2040-bit minimum).
 -}
-generateSigningKey :: IO JWK
-generateSigningKey = do
-    k0 <- genJWK (ECGenParam P_256)
+generateSigningKeyFor :: SigningAlgorithm -> IO JWK
+generateSigningKeyFor alg = do
+    k0 <- genJWK (genParam alg)
     let tp = view thumbprint k0 :: Digest SHA256
         kid = Text.decodeUtf8 (convertToBase Base64URLUnpadded tp :: ByteString)
     pure (k0 & jwkUse ?~ Sig & jwkKid ?~ kid)
+  where
+    genParam ES256 = ECGenParam P_256
+    genParam RS256 = RSAGenParam 256 -- 256 bytes == 2048-bit modulus
+
+{- | Generate a fresh ES256 (P-256) signing key. Back-compat alias defined in
+terms of 'generateSigningKeyFor'.
+-}
+generateSigningKey :: IO JWK
+generateSigningKey = generateSigningKeyFor ES256
 
 -- | The @kid@ stored on a key (empty if absent — 'generateSigningKey' always sets it).
 keyKid :: JWK -> Text
@@ -70,6 +88,14 @@ toStoredSigningKey t k =
             , activatedAt = Just t
             , retiredAt = Nothing
             }
+
+{- | Like 'toStoredSigningKey' but records the actual algorithm of the key. New
+code that generates RS256 keys uses this; 'toStoredSigningKey' stays the ES256
+convenience so existing callers are unaffected.
+-}
+toStoredSigningKeyFor :: SigningAlgorithm -> UTCTime -> JWK -> StoredSigningKey
+toStoredSigningKeyFor alg t k =
+    (toStoredSigningKey t k){algorithm = signingAlgorithmToText alg}
 
 -- | Parse a stored key's full (private) JWK JSON back into a live 'JWK'.
 fromStoredSigningKey :: StoredSigningKey -> Either Text JWK

@@ -7,14 +7,42 @@ converts a 'StoredSigningKey' to/from a @jose@ @JWK@.
 -}
 module Shomei.Domain.SigningKey (
     SigningKeyStatus (..),
+    SigningAlgorithm (..),
+    signingAlgorithmToText,
+    signingAlgorithmFromText,
     StoredSigningKey (..),
 ) where
 
 import Shomei.Prelude
 
+import Data.Text qualified as Text
+
 data SigningKeyStatus = KeyPending | KeyActive | KeyRetired | KeyRevoked
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
+
+{- | The JWT signing algorithm a key uses. A closed enum kept in @shomei-core@ so
+the in-memory decision is type-safe; the storage representation
+('StoredSigningKey.algorithm') and the config stay 'Text', and only @shomei-jwt@
+maps this enum to a @jose@ @Alg@. @ES256@ is ECDSA over P-256/SHA-256 (the
+default); @RS256@ is RSASSA-PKCS1-v1_5 with SHA-256.
+-}
+data SigningAlgorithm = ES256 | RS256
+    deriving stock (Generic, Eq, Show)
+    deriving anyclass (FromJSON, ToJSON)
+
+signingAlgorithmToText :: SigningAlgorithm -> Text
+signingAlgorithmToText ES256 = "ES256"
+signingAlgorithmToText RS256 = "RS256"
+
+{- | Parse the stored algorithm text. Unknown values are an error rather than a
+silent default, so a corrupt/forward-incompatible key is caught loudly.
+-}
+signingAlgorithmFromText :: Text -> Either Text SigningAlgorithm
+signingAlgorithmFromText t = case Text.strip t of
+    "ES256" -> Right ES256
+    "RS256" -> Right RS256
+    other -> Left ("unknown signing algorithm: " <> other)
 
 data StoredSigningKey = StoredSigningKey
     { keyId :: !Text
