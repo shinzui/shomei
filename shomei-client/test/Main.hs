@@ -27,6 +27,7 @@ import Shomei.Servant.DTO (
  )
 
 import Shomei.Client qualified as C
+import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (bootstrapKeys)
@@ -41,7 +42,7 @@ tests =
         [ testCase "signup → login → me → refresh" $
             withShomeiMigratedDatabase \connStr -> do
                 pool <- acquirePool 4 connStr
-                (key, jwks) <- bootstrapKeys pool
+                (key, jwks) <- bootstrapKeys ES256 pool
                 envMgr <- newManager defaultManagerSettings
                 let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
                     env = Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}

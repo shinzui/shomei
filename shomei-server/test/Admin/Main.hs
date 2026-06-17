@@ -31,7 +31,7 @@ import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
+import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Id (genSessionId, genUserId)
 import Shomei.Jwt.Key (fromStoredSigningKey)
@@ -94,11 +94,11 @@ testMigrateEmpty = testCase "after migration the keys table exists and is empty"
 testLifecycleOverlap :: TestTree
 testLifecycleOverlap = testCase "generate→activate→(generate→activate auto-retires)→overlap verifies→revoke breaks it" $ withDb \pool _ -> do
     -- First key: generate then activate.
-    keysGenerate pool
+    keysGenerate ES256 pool
     kid1 <- onlyPendingKid pool
     keysActivate pool kid1
     -- Second key: generate then activate; this auto-retires kid1.
-    keysGenerate pool
+    keysGenerate ES256 pool
     kid2 <- onlyPendingKid pool
     keysActivate pool kid2
 
