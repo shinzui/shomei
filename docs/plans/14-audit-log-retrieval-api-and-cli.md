@@ -95,10 +95,10 @@ Milestone 3 — CLI (`shomei-admin audit ...`): **DONE (2026-06-17)**
 - [x] Add `Shomei.Admin.Audit` module (`shomei-server/app/Shomei/Admin/Audit.hs`) + the `audit` subcommand group wired into `app/Admin.hs`; added to the `executable shomei-admin` AND `shomei-admin-test` `other-modules`, with `aeson`+`uuid` added to both stanzas.
 - [x] Implement `events`/`user`/`session`/`count` over `runAuditReader` (the `runAuthEventReaderPostgres` stack); default tab-separated output (`created_at⇥event_type⇥user_id⇥session_id⇥event_id`), `--json` for NDJSON (envelope + raw payload); a bad UUID/timestamp aborts with a clear stderr message. Added `testAuditQuery` to `shomei-admin-test` (seed via the real publisher → read back, type filter, count); all 4 admin tests pass. Live-verified against the dev socket Postgres: `audit count` 31, `audit count --type login_failed` 8, tab + `--json|jq` output, and `--user 501` correctly rejected as an invalid UUID.
 
-Milestone 4 — Docs, runbook, and limitations:
+Milestone 4 — Docs, runbook, and limitations: **DONE (2026-06-17)**
 
-- [ ] Document the retrieval surfaces in `docs/security.md` and the observability plan doc; add an operator runbook transcript and record the admin-role limitation.
-- [ ] Update MasterPlan 2's Exec-Plan Registry / Progress / Decision Log to reflect EP-7.
+- [x] `docs/security.md` gained a "Reading the audit trail (EP-7)" section (CLI + HTTP surfaces, keyset semantics, the admin-role limitation, and an operator runbook transcript for investigating a brute-force attempt). `docs/api.md` gained a "Audit log (EP-7)" section documenting `GET /admin/audit/events`. EP-3's plan doc (`docs/plans/10-…`) gained a forward note pointing to EP-7 as the read counterpart.
+- [x] Updated MasterPlan 2's Exec-Plan Registry (EP-7 → Complete), Progress (four EP-7 items ticked), Surprises & Discoveries (24-constructor vocabulary; projection hoist), and Outcomes & Retrospective.
 
 
 ## Surprises & Discoveries
@@ -216,7 +216,43 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+### 2026-06-17 — EP-7 complete
+
+Against the original purpose (read the audit trail back out without hand-written SQL), the plan
+is **fully delivered**. The trail is now readable through one shared query layer with two thin
+surfaces on top:
+
+- **Query layer (M1).** `Shomei.Effect.AuthEventReader` (port) + `runAuthEventReaderPostgres`
+  (filtered, keyset-paginated `SELECT`/`COUNT`, read-only) + `Shomei.Domain.EventCodec`
+  (`reconstructAuthEvent` and the hoisted `projectAuthEvent`). A pure round-trip spec pins all
+  **24** `AuthEvent` constructors and a PostgreSQL interpreter test proves filters, ordering,
+  count, and a disjoint+complete keyset walk.
+- **HTTP (M2).** Admin-gated `GET /admin/audit/events` with filters + opaque cursor pagination;
+  integration-tested for admin→200, non-admin→403, no-token→401, type filter, bad-UUID→400, and
+  a two-page cursor walk. An in-memory `AuthEventReader` was added to `Shomei.Effect.InMemory`
+  so the hybrid servant test interprets the new port.
+- **CLI (M3).** `shomei-admin audit events|user|session|count` with tab-separated + `--json`
+  output; integration-tested over real PostgreSQL and live-verified against the dev socket DB.
+- **Docs (M4).** `docs/security.md` (runbook + limitation), `docs/api.md`, and a forward note in
+  EP-3's plan.
+
+**Engineering verification.** `cabal build all` and `cabal test all` green: `shomei-core-test`
+(104 — +1 EventCodec round-trip group), `shomei-postgres-test` (22 — +1 reader test),
+`shomei-servant-test` (audit assertions added to the e2e scenario), `shomei-admin-test`
+(4 — +1 audit query). fourmolu clean. No schema migration (read-only). No new external
+dependency (only `aeson`/`uuid`, already in the workspace, added to a couple of stanzas).
+
+**Deviations from the plan, each recorded in the Decision Log.** (1) The `AuthEvent` vocabulary
+had grown 16→24 constructors since the plan was authored; all 24 are handled. (2) `hasql`'s
+`Decoders.Row` is `Applicative`-only in the installed version, so the row decoder is positional
+rather than `do`-notation. (3) The event→envelope projection was hoisted into `shomei-core` as a
+single source of truth shared by the writer, the in-memory reader, and the round-trip test
+(rather than duplicated). (4) `runAuthEventReaderPostgres` needs no `IOE` constraint.
+
+**Known limitation (by design).** The HTTP endpoint's `admin` role has no production grant path
+yet (login/signup issue no roles), so the CLI is the working operator path and the endpoint is
+verified via out-of-band-minted admin tokens. A role-granting mechanism is the natural
+follow-up.
 
 
 ## Context and Orientation

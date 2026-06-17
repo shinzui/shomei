@@ -140,6 +140,12 @@ What already exists today and is stable (so this plan can rely on it):
   effect with one operation `PublishAuthEvent :: AuthEvent -> AuthEventPublisher m ()` and a
   `publishAuthEvent` smart constructor. EP-3 (MasterPlan 1) already persists these to
   `shomei_auth_events`; this plan additionally **observes** them to feed domain metric counters.
+
+  > **Read side (EP-7).** This plan only *writes* and *observes* the audit-event stream. The
+  > *read* counterpart — querying `shomei_auth_events` back out via the `AuthEventReader` port,
+  > the admin-gated `GET /admin/audit/events` endpoint, and the `shomei-admin audit` CLI — is
+  > delivered by **EP-7** (`docs/plans/14-audit-log-retrieval-api-and-cli.md`). A reader of this
+  > write side looking for "how do I get the events back out" should go there.
 - The PostgreSQL layer: `shomei-postgres/src/Shomei/Postgres/Database.hs` defines the
   `Database` effect (`RunSession`, `RunTransaction`) and `runDatabasePool :: Pool -> …`;
   `shomei-postgres/src/Shomei/Postgres/Pool.hs` defines

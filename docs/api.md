@@ -111,6 +111,21 @@ Credential-changing endpoints (`POST /auth/password/change`, `POST /auth/passkey
 bearing a delegated token with `403 impersonation_action_blocked` and write an audit record. An
 operator can look but cannot change the customer's credentials.
 
+## Audit log (EP-7)
+
+### `GET /admin/audit/events` *(admin role required)*
+Read the append-only security audit trail (`shomei_auth_events`), newest first. Query params,
+all optional: `user` (UUID), `session` (UUID), `type` (repeatable — `?type=login_failed&type=account_locked`),
+`since` (ISO-8601, inclusive), `until` (ISO-8601, exclusive), `limit` (default 50, clamped to
+1000), and `before` (an opaque cursor from a previous page's `nextCursor`). → `200`
+`{"events":[{"eventId","eventType","userId","sessionId","createdAt","payload"},…],"nextCursor":"…|null"}`;
+page by passing `nextCursor` back as `?before=`. → `400` on a malformed UUID/timestamp/cursor.
+Gated by `requireRole (Role "admin")`: → `403` for a non-admin token, `401` with no token.
+
+> **Admin-role limitation.** Signup/login do not issue roles, so no production flow yields an
+> admin token yet; this endpoint is exercised by tests and out-of-band-minted tokens. The
+> supported operator path today is the `shomei-admin audit …` CLI (see `docs/security.md`).
+
 ## Operational endpoints
 
 ### `GET /.well-known/jwks.json`

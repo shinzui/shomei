@@ -167,7 +167,7 @@ intra-MasterPlan-2 dependencies.
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | In Progress |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Complete |
-| 7 | Audit log retrieval API and CLI | docs/plans/14-audit-log-retrieval-api-and-cli.md | None | EP-2, EP-3, EP-4 | In Progress |
+| 7 | Audit log retrieval API and CLI | docs/plans/14-audit-log-retrieval-api-and-cli.md | None | EP-2, EP-3, EP-4 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -353,10 +353,10 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
 - [~] EP-5: production OCI image (`flake.module.nix`) + CI workflow authored; image build NOT run in the dev sandbox (deferred to CI/deploy host). Local dev/test stack is `process-compose up --no-server` (Unix-socket PostgreSQL + schema + key bootstrap + server) — `docker compose` was dropped 2026-06-17 (see Decision Log). **Verified live end-to-end 2026-06-17**: clean `process-compose up --no-server` brings the stack to `/ready` 200 (`database:true, signingKey:true`), JWKS serves the active key, signup→login returns an ES256 token, `/metrics` exports counters, and SIGINT drains gracefully. Three regressions in the committed `process-compose.yaml` were found and fixed during this verification (see Surprises & Discoveries, 2026-06-17).
 - [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
-- [ ] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `reconstructAuthEvent`
-- [ ] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403)
-- [ ] EP-7: `shomei-admin audit` subcommand group (`events`/`user`/`session`/`count`, tab-separated + `--json`)
-- [ ] EP-7: docs + runbook for the retrieval surfaces and the admin-role limitation
+- [x] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `Shomei.Domain.EventCodec.reconstructAuthEvent`/`projectAuthEvent` (round-trip spec pins all 24 constructors; interpreter test green, 2026-06-17)
+- [x] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403, no token → 401, bad UUID → 400); in-memory `AuthEventReader` added so the servant e2e test interprets the port
+- [x] EP-7: `shomei-admin audit` subcommand group (`events`/`user`/`session`/`count`, tab-separated + `--json` NDJSON); integration-tested + live-verified against the dev socket Postgres (2026-06-17)
+- [x] EP-7: docs + runbook — `docs/security.md` (runbook + admin-role limitation), `docs/api.md`, and a forward note in EP-3's plan. **EP-7 is Complete.**
 
 
 ## Surprises & Discoveries
@@ -390,6 +390,19 @@ implementation. Provide concise evidence.
      in `README.md` and `docs/deployment.md` and was corrected.
   All three fixes are config/doc-only (no Haskell changed); the stack now boots cleanly and was
   verified live (`/ready`, JWKS, signup→login ES256 token, `/metrics`, graceful SIGINT shutdown).
+
+- **2026-06-17 — EP-7: the `AuthEvent` vocabulary grew 16 → 24, and the event→envelope
+  projection is now shared.** EP-7 was authored against a 16-constructor `AuthEvent`, but
+  MasterPlan-3 work (passkeys, MFA, impersonation) had since added 8 more
+  (`passkey_registered`/`removed`, `mfa_challenged`/`succeeded`/`failed`,
+  `impersonation_started`/`stopped`/`action_blocked`). EP-7's `reconstructAuthEvent` handles all
+  24, guarded by a count assertion in the round-trip spec. To avoid duplicating the
+  constructor→`event_type` mapping between the writer and EP-7's in-memory reader, the projection
+  was **hoisted** from `Shomei.Postgres.AuthEventPublisher` into
+  `Shomei.Domain.EventCodec.projectAuthEvent` (core) as the single source of truth; the writer now
+  delegates to it. Anyone touching the audit-event write path should change `projectAuthEvent` in
+  `shomei-core`, not the postgres writer. Additive, no migration, `event_type` strings unchanged;
+  `cabal test all` green.
 
 The following were surfaced while authoring the child plans (2026-06-04), before any
 implementation, by reading the real `shomei-core`/`shomei-postgres` source. They are
@@ -602,6 +615,21 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare
 the result against the original vision.
 
+### 2026-06-17 — EP-7 (audit log retrieval) Complete
+
+EP-7 is delivered and **Complete**. The append-only audit trail (`shomei_auth_events`) is now
+readable through one shared query layer — `Shomei.Effect.AuthEventReader` + its PostgreSQL
+interpreter (filtered, keyset-paginated, read-only) — with two thin surfaces: the admin-gated
+`GET /admin/audit/events` HTTP endpoint and the `shomei-admin audit events|user|session|count`
+CLI (tab-separated + `--json`). A pure round-trip spec pins all 24 `AuthEvent` constructors;
+the event→envelope projection was hoisted to `Shomei.Domain.EventCodec` as a single source of
+truth (writer + in-memory reader + test share it). Read-only: no schema migration. `cabal build
+all` / `cabal test all` green (core, postgres, servant, admin suites), fourmolu clean.
+Known limitation (documented): the HTTP endpoint's `admin` role has no production grant path yet,
+so the CLI is the working operator path; a role-granting mechanism is the natural follow-up. With
+EP-7 done, the **only** item left to fully close MasterPlan 2 is EP-5's live container
+build/verification on a Nix+Docker host.
+
 ### 2026-06-17 — Email-sending descoped; EP-1 Complete
 
 The user decided Shōmei should not be responsible for sending email. EP-1's only outstanding
@@ -610,9 +638,9 @@ was **descoped** rather than implemented: the `Notifier` effect is the integrati
 operators wire delivery to their own provider (a future `shomei-email` package may add in-tree
 senders). The vestigial `SmtpNotifier`/`runNotifierSmtp` code was removed; `cabal build all`,
 `cabal test all` (incl. PostgreSQL integration + live client round-trip) are green and fourmolu
-is clean. **EP-1 is now Complete.** The only remaining item to fully close MasterPlan 2 is
-EP-5's live container build/verification (and the newly-added EP-7, Not Started). See the
-Decision Log entry of the same date.
+is clean. **EP-1 is now Complete.** (At the time this was written, EP-5's live container
+build/verification and the newly-added EP-7 remained; EP-7 was completed later the same day —
+see the entry above.) See the Decision Log entry of the same date.
 
 ### 2026-06-10 — MasterPlan 2 implementation retrospective
 
@@ -770,6 +798,18 @@ entry superseded), the Decision Log (original notifier decision annotated + a ne
 decision), and Outcomes & Retrospective. Code impact: removed the `SmtpNotifier` transport and
 `runNotifierSmtp`; `cabal build all` / `cabal test all` green, fourmolu clean. EP-1's child plan
 (`docs/plans/8-…`) is updated in lockstep.
+
+2026-06-17: **Implemented EP-7 (audit log retrieval API and CLI) end-to-end; marked it Complete.**
+Delivered across four milestones: the shared `Shomei.Effect.AuthEventReader` query layer +
+`runAuthEventReaderPostgres` interpreter + `Shomei.Domain.EventCodec`
+(`reconstructAuthEvent`/`projectAuthEvent`); the admin-gated `GET /admin/audit/events` endpoint;
+the `shomei-admin audit` subcommand group; and docs (`docs/security.md` runbook + limitation,
+`docs/api.md`, a forward note in EP-3's plan). The update ticks the Exec-Plan Registry (EP-7 →
+Complete), all four EP-7 Progress items, adds a Surprises entry (the `AuthEvent` vocabulary grew
+16 → 24 and the event→envelope projection was hoisted to `shomei-core` as a single source of
+truth), and adds an Outcomes entry. Read-only — no schema migration. `cabal build all` /
+`cabal test all` green, fourmolu clean. The child plan
+(`docs/plans/14-audit-log-retrieval-api-and-cli.md`) records the full per-milestone detail.
 
 2026-06-17: **Dropped `docker compose`; local development/testing now uses `process-compose` +
 a Unix-socket PostgreSQL.** Per the user's decision, the local dev/test stack matches the

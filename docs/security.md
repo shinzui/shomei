@@ -123,3 +123,64 @@ without shedding their own identity.
 The structured request logger reads only the method, path, response status, duration, and peer
 IP — never request/response bodies or the `Authorization`/`Cookie` headers — so no password,
 token, or cookie can appear in a log line.
+
+## Reading the audit trail (EP-7)
+
+Every security-significant action is written as one row in the append-only
+`shomei_auth_events` table (`event_id`, denormalized `user_id`/`session_id`, an `event_type`
+string, a JSONB `payload`, and `created_at`). There are two ways to read it back; both sit on
+the same query layer (`Shomei.Effect.AuthEventReader`), so filtering, ordering, and pagination
+behave identically.
+
+- **CLI — the supported operator path.** `shomei-admin audit …` queries the trail directly
+  (no HTTP, no token), reading the same `DATABASE_URL`/`PG_CONNECTION_STRING` the other admin
+  subcommands use:
+
+  ```text
+  shomei-admin audit events  [--user UUID] [--session UUID] [--type T ...] [--since TS] [--until TS] [--limit N] [--json]
+  shomei-admin audit user    <UUID>    # shortcut for --user
+  shomei-admin audit session <UUID>    # shortcut for --session
+  shomei-admin audit count   [filters]
+  ```
+
+  Default output is one tab-separated line per event
+  (`created_at⇥event_type⇥user_id⇥session_id⇥event_id`), newest first; `--json` emits one JSON
+  object per line (NDJSON) including the raw payload. Results are keyset-ordered on
+  `(created_at, event_id)`; `--limit` defaults to 50 and is clamped to 1000.
+
+- **HTTP — `GET /admin/audit/events`.** The same filters as query parameters
+  (`?user=&session=&type=&type=&since=&until=&limit=&before=`), returning
+  `{ "events": [ … ], "nextCursor": … }`; pass `nextCursor` back as `?before=` to page. The
+  endpoint is gated by `requireRole (Role "admin")`: a non-admin token gets `403`, no token
+  `401`.
+
+**Known limitation — the `admin` role.** Shōmei's signup/login workflows do **not** issue roles
+in tokens, so there is currently no production flow that mints an `admin`-roled token. The HTTP
+endpoint is therefore exercised today only by tests (and by deployments that mint admin tokens
+out of band); the **CLI is the working operator retrieval path**. The endpoint is gated
+correctly now so it is safe and immediately usable the moment a role-granting mechanism exists —
+a natural follow-up (e.g. a `shomei-admin users grant-role` command and a claim source), not
+implemented here.
+
+### Operator runbook: investigate a suspected brute-force attempt
+
+```text
+# How many failed logins in total, and recently?
+$ shomei-admin audit count --type login_failed
+42
+$ shomei-admin audit count --type login_failed --since 2026-06-17T00:00:00Z
+8
+
+# List the most recent failures (tab-separated: created_at, type, user_id, session_id, event_id)
+$ shomei-admin audit events --type login_failed --limit 5
+2026-06-17T10:00:00Z    login_failed    -    -    26629df2-1479-4867-8c5e-cca398277cb0
+...
+
+# Did the account ultimately get locked or throttled? Pull its whole timeline.
+$ shomei-admin audit user 019eb2eb-ac04-747e-9e70-ea4db1bd446e
+2026-06-17T10:05:00Z    account_locked     019eb2eb-…  -           …
+2026-06-17T10:01:00Z    login_succeeded    019eb2eb-…  019eb2ec-…  …
+
+# Feed structured rows into jq / a SIEM:
+$ shomei-admin audit events --type account_locked --json | jq -c '{at: .createdAt, user: .userId, payload}'
+```
