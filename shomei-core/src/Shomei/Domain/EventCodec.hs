@@ -76,7 +76,7 @@ random @event_id@; that is not part of the projection.)
 -}
 projectAuthEvent :: AuthEvent -> (Maybe UUID, Maybe UUID, Text, Value, UTCTime)
 projectAuthEvent = \case
-    UserRegistered d@(UserRegisteredData uid _ occ) ->
+    UserRegistered d@(UserRegisteredData uid _ _ occ) ->
         (Just (userIdToUUID uid), Nothing, "user_registered", toJSON d, occ)
     LoginSucceeded d@(LoginSucceededData uid sid occ) ->
         (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "login_succeeded", toJSON d, occ)

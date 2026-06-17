@@ -23,6 +23,7 @@ import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
+import Shomei.Domain.LoginId (LoginId, loginIdFromEmail)
 import Shomei.Id (
     CeremonyId,
     PasskeyId,
@@ -67,6 +68,9 @@ aliceEmail = case mkEmail "alice@example.com" of
     Right e -> e
     Left err -> error ("bad test email: " <> show err)
 
+aliceLogin :: LoginId
+aliceLogin = loginIdFromEmail aliceEmail
+
 -- | Assert that the event survives @project → toJSON → reconstruct@.
 check :: (ToJSON a) => Text -> a -> AuthEvent -> TestTree
 check ty dataRecord expected =
@@ -88,9 +92,9 @@ tests =
 -}
 roundTrips :: [TestTree]
 roundTrips =
-    [ let d = UserRegisteredData uid aliceEmail t0 in check "user_registered" d (UserRegistered d)
+    [ let d = UserRegisteredData uid aliceLogin (Just aliceEmail) t0 in check "user_registered" d (UserRegistered d)
     , let d = LoginSucceededData uid sid t0 in check "login_succeeded" d (LoginSucceeded d)
-    , let d = LoginFailedData aliceEmail t0 in check "login_failed" d (LoginFailed d)
+    , let d = LoginFailedData aliceLogin t0 in check "login_failed" d (LoginFailed d)
     , let d = SessionStartedData sid uid t0 in check "session_started" d (SessionStarted d)
     , let d = SessionRevokedData sid t0 in check "session_revoked" d (SessionRevoked d)
     , let d = RefreshTokenRotatedData sid rtid t0 in check "refresh_token_rotated" d (RefreshTokenRotated d)

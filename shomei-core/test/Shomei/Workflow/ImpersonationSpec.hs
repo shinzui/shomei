@@ -24,6 +24,7 @@ import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope 
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
@@ -80,7 +81,7 @@ callerClaims uid sid scs iat =
 -- | Sign up the customer and return their (active) user id.
 seedCustomer :: IORef World -> IO UserId
 seedCustomer ref = do
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand customerEmail strongPw (Just "Customer")))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand{loginId = loginIdFromEmail customerEmail, email = Just customerEmail, password = strongPw, displayName = Just "Customer"}))
     pure user.userId
 
 -- | A fresh operator (caller) holding the impersonation scope, issued now.

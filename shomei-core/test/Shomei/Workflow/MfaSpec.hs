@@ -23,6 +23,7 @@ import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
+import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.Passkey (
     NewPasskeyCredential (..),
     PublicKeyBytes (..),
@@ -77,7 +78,7 @@ expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show 
 -- | Sign a user up and seed one passkey for them (directly through 'createPasskey').
 seedUserWithPasskey :: IORef World -> IO ()
 seedUserWithPasskey ref = do
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand{loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
     let User{userId = uid} = user
     _ <-
         runInMemory
@@ -132,8 +133,8 @@ tests =
 testNoPasskeyComplete :: TestTree
 testNoPasskeyComplete = testCase "no-passkey login yields LoginComplete with a token" do
     ref <- newIORef (emptyWorld fixedTime)
-    _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
-    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand{loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
+    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
     case res of
         LoginComplete u pair -> assertTokenPresent (u, pair)
         MfaRequired _ -> assertFailure "expected LoginComplete (no passkey enrolled)"
@@ -142,7 +143,7 @@ testMfaRequired :: TestTree
 testMfaRequired = testCase "passkey + mfaRequired login yields MfaRequired, no token" do
     ref <- newIORef (emptyWorld fixedTime)
     seedUserWithPasskey ref
-    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
     case res of
         MfaRequired (MfaChallenge _cid opts) ->
             assertBool "a challenge is present in the options" (challengeOf opts /= Nothing)
@@ -201,7 +202,7 @@ testPasswordless = testCase "passwordless login resolves the user and mints toke
 -- ceremony id and options.
 loginExpectingChallenge :: IORef World -> IO (CeremonyId, Value)
 loginExpectingChallenge ref = do
-    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
     case res of
         MfaRequired (MfaChallenge cid opts) -> pure (cid, opts)
         LoginComplete _ _ -> assertFailure "expected MfaRequired"

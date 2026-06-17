@@ -31,6 +31,7 @@ import Shomei.Domain.Passkey (
     UserHandle (..),
     WebAuthnCredentialId (..),
  )
+import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.User (NewUser (..), User (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Effect.InMemory (World, emptyWorld, runInMemory)
@@ -71,7 +72,7 @@ newWorld = newIORef (emptyWorld t0)
 
 seedUser :: IORef World -> IO UserId
 seedUser ref = runInMemory ref do
-    User{userId} <- createUser NewUser{email = aliceEmail, displayName = Just "Ada"}
+    User{userId} <- createUser NewUser{loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, displayName = Just "Ada"}
     pure userId
 
 -- Field accessors (OverloadedRecordDot is unreliable for these EP-1 records).

@@ -19,9 +19,10 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
+import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
+import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.Password (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
@@ -59,9 +60,29 @@ mkEmail' t = case mkEmail t of
     Right e -> e
     Left err -> error ("bad test email: " <> show err)
 
--- | A fixed client context per email: a constant test IP and the email text as the account key.
+mkLoginId' :: Text -> LoginId
+mkLoginId' t = case mkLoginId t of
+    Right l -> l
+    Left err -> error ("bad test login id: " <> show err)
+
+-- | An email-first signup command: the principal login id defaults to the email text
+-- (the compatibility rule), and the optional email is carried through.
+signupEmail :: Email -> PlainPassword -> Maybe Text -> SignupCommand
+signupEmail e pw dn =
+    SignupCommand{loginId = loginIdFromEmail e, email = Just e, password = pw, displayName = dn}
+
+-- | An email-first login command keyed on the email-derived login id.
+loginEmail :: Email -> PlainPassword -> LoginCommand
+loginEmail e pw = LoginCommand{loginId = loginIdFromEmail e, password = pw}
+
+-- | A fixed client context per login id: a constant test IP and the login-id text as the
+-- account key (mirroring how the HTTP layer derives the abuse key from the principal).
+ctxForLogin :: LoginId -> ClientContext
+ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))
+
+-- | The email-keyed convenience: derive the login id from the email, then the context.
 ctxFor :: Email -> ClientContext
-ctxFor e = ClientContext (ClientIp "test-ip") (AccountKey (emailText e))
+ctxFor = ctxForLogin . loginIdFromEmail
 
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
@@ -73,6 +94,7 @@ tests =
     testGroup
         "Shomei.Workflow"
         [ testSignupLogin
+        , testSignupLoginByIdentifierNoEmail
         , testRefreshRotates
         , testReuseDetected
         , testReuseRevokesSession
@@ -92,30 +114,45 @@ testSignupRejectsCommon :: TestTree
 testSignupRejectsCommon = testCase "signup rejects a common password" do
     ref <- newIORef (emptyWorld fixedTime)
     -- "passwordpassword" is in the bundled dictionary and is long enough to pass minLength.
-    res <- runInMemory ref (signup cfg (SignupCommand aliceEmail (PlainPassword "passwordpassword") Nothing))
+    res <- runInMemory ref (signup cfg (signupEmail aliceEmail (PlainPassword "passwordpassword") Nothing))
     res @?= Left (WeakPassword PasswordTooCommon)
 
 testSignupRejectsIdentity :: TestTree
 testSignupRejectsIdentity = testCase "signup rejects the email local-part as password" do
     ref <- newIORef (emptyWorld fixedTime)
-    res <- runInMemory ref (signup smallMinCfg (SignupCommand aliceEmail (PlainPassword "alice") Nothing))
+    res <- runInMemory ref (signup smallMinCfg (signupEmail aliceEmail (PlainPassword "alice") Nothing))
     res @?= Left (WeakPassword PasswordResemblesIdentity)
 
 testSignupLogin :: TestTree
 testSignupLogin = testCase "signup then login round-trips" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw (Just "Alice")))
-    loginRes <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail strongPw))
+    (user, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw (Just "Alice")))
+    loginRes <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail strongPw))
     (user2, pair2) <- case loginRes of
         LoginComplete u p -> pure (u, p)
         MfaRequired _ -> assertFailure "expected LoginComplete (alice has no passkey), got MfaRequired"
     user2.userId @?= user.userId
     assertBool "login issues a different refresh token" (pair2.refreshToken /= pair.refreshToken)
 
+testSignupLoginByIdentifierNoEmail :: TestTree
+testSignupLoginByIdentifierNoEmail = testCase "signup+login by identifier with no email" do
+    ref <- newIORef (emptyWorld fixedTime)
+    let agentLogin = mkLoginId' "agent-4815162342"
+        signupCmd =
+            SignupCommand{loginId = agentLogin, email = Nothing, password = strongPw, displayName = Nothing}
+    (user, _pair) <- expectRight =<< runInMemory ref (signup cfg signupCmd)
+    user.email @?= Nothing
+    user.loginId @?= agentLogin
+    loginRes <-
+        expectRight =<< runInMemory ref (login cfg (ctxForLogin agentLogin) (LoginCommand agentLogin strongPw))
+    case loginRes of
+        LoginComplete u _ -> u.userId @?= user.userId
+        MfaRequired _ -> assertFailure "expected LoginComplete (agent has no passkey), got MfaRequired"
+
 testRefreshRotates :: TestTree
 testRefreshRotates = testCase "refresh rotates token and old token becomes Used" do
     ref <- newIORef (emptyWorld fixedTime)
-    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     pair2 <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
     assertBool "rotated token differs from the original" (pair2.refreshToken /= pair.refreshToken)
     w <- readIORef ref
@@ -126,7 +163,7 @@ testRefreshRotates = testCase "refresh rotates token and old token becomes Used"
 testReuseDetected :: TestTree
 testReuseDetected = testCase "presenting an already-used refresh token detects reuse" do
     ref <- newIORef (emptyWorld fixedTime)
-    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     _ <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
     reused <- runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
     reused @?= Left RefreshTokenReuseDetected
@@ -134,7 +171,7 @@ testReuseDetected = testCase "presenting an already-used refresh token detects r
 testReuseRevokesSession :: TestTree
 testReuseRevokesSession = testCase "reuse detection revokes the session and family" do
     ref <- newIORef (emptyWorld fixedTime)
-    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     _ <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
     _ <- runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
     w <- readIORef ref
@@ -148,7 +185,7 @@ testReuseRevokesSession = testCase "reuse detection revokes the session and fami
 testLogoutRevokes :: TestTree
 testLogoutRevokes = testCase "logout revokes the session" do
     ref <- newIORef (emptyWorld fixedTime)
-    _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     w0 <- readIORef ref
     sid <- case Map.keys w0.sessions of
         (s : _) -> pure s
@@ -166,8 +203,8 @@ testLogoutRevokes = testCase "logout revokes the session" do
 testFailClosed :: TestTree
 testFailClosed = testCase "password verification fails closed on wrong password" do
     ref <- newIORef (emptyWorld fixedTime)
-    _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    result <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail wrongPw))
+    _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+    result <- runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail wrongPw))
     result @?= Left InvalidCredentials
     w <- readIORef ref
     assertBool "a login-failed event was published" (any isFailed w.publishedEvents)
@@ -178,8 +215,8 @@ testFailClosed = testCase "password verification fails closed on wrong password"
 testNoAccountLeak :: TestTree
 testNoAccountLeak = testCase "unknown email yields the same generic error as a wrong password" do
     ref <- newIORef (emptyWorld fixedTime)
-    _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    wrong <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand aliceEmail wrongPw))
-    unknown <- runInMemory ref (login cfg (ctxFor unknownEmail) (LoginCommand unknownEmail strongPw))
+    _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+    wrong <- runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail wrongPw))
+    unknown <- runInMemory ref (login cfg (ctxFor unknownEmail) (loginEmail unknownEmail strongPw))
     wrong @?= unknown
     unknown @?= Left InvalidCredentials

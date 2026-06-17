@@ -41,11 +41,13 @@ import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
+import Shomei.Domain.LoginId (LoginId)
 import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
 
 data UserRegisteredData = UserRegisteredData
     { userId :: !UserId
-    , email :: !Email
+    , loginId :: !LoginId
+    , email :: !(Maybe Email)
     , occurredAt :: !UTCTime
     }
     deriving stock (Generic, Eq, Show)
@@ -60,7 +62,7 @@ data LoginSucceededData = LoginSucceededData
     deriving anyclass (FromJSON, ToJSON)
 
 data LoginFailedData = LoginFailedData
-    { email :: !Email
+    { loginId :: !LoginId
     , occurredAt :: !UTCTime
     }
     deriving stock (Generic, Eq, Show)

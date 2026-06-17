@@ -1,4 +1,4 @@
--- | The password credential entity: the binding of an email + password hash to a user.
+-- | The password credential entity: the binding of a login id + password hash to a user.
 module Shomei.Domain.Credential (
     Credential (..),
 ) where
@@ -6,13 +6,15 @@ module Shomei.Domain.Credential (
 import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
+import Shomei.Domain.LoginId (LoginId)
 import Shomei.Domain.Password (PasswordHash)
 import Shomei.Id (CredentialId, UserId)
 
 data Credential = PasswordCredential
     { credentialId :: !CredentialId
     , userId :: !UserId
-    , email :: !Email
+    , loginId :: !LoginId
+    , email :: !(Maybe Email)
     , passwordHash :: !PasswordHash
     , createdAt :: !UTCTime
     , updatedAt :: !UTCTime

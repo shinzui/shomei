@@ -47,6 +47,7 @@ library
     Shomei.Domain.Event
     Shomei.Domain.EventCodec
     Shomei.Domain.LoginAttempt
+    Shomei.Domain.LoginId
     Shomei.Domain.Notification
     Shomei.Domain.OneTimeToken
     Shomei.Domain.Passkey

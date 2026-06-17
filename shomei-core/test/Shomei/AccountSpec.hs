@@ -15,6 +15,7 @@ import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
+import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PasswordHash (..), PasswordPolicy (..), PlainPassword (..))
@@ -68,6 +69,15 @@ mkEmail' t = case mkEmail t of
     Right e -> e
     Left err -> error ("bad test email: " <> show err)
 
+-- | An email-first signup command: login id defaults to the email text, email carried through.
+signupEmail :: Email -> PlainPassword -> Maybe Text -> SignupCommand
+signupEmail e pw dn =
+    SignupCommand{loginId = loginIdFromEmail e, email = Just e, password = pw, displayName = dn}
+
+-- | An email-first login command keyed on the email-derived login id.
+loginEmail :: Email -> PlainPassword -> LoginCommand
+loginEmail e pw = LoginCommand{loginId = loginIdFromEmail e, password = pw}
+
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
 
@@ -80,6 +90,7 @@ tests =
         , testRejectConsumedVerification
         , testUnknownPasswordResetSuccess
         , testUnknownPasswordResetNoNotification
+        , testPasswordResetDeliversToEmail
         , testConfirmPasswordReset
         , testRejectConsumedReset
         , testChangePasswordWrongCurrent
@@ -119,20 +130,20 @@ testSignupRejectsBreached :: TestTree
 testSignupRejectsBreached = testCase "signup rejects a breached password when the check is enabled" do
     ref <- newIORef (emptyWorld fixedTime)
     seedBreached ref strongPw
-    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (signup breachCfg (signupEmail aliceEmail strongPw Nothing))
     fmap fst result @?= Left (WeakPassword PasswordBreached)
 
 testSignupAcceptsCleanWhenEnabled :: TestTree
 testSignupAcceptsCleanWhenEnabled = testCase "signup accepts a clean password when the check is enabled" do
     ref <- newIORef (emptyWorld fixedTime)
-    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (signup breachCfg (signupEmail aliceEmail strongPw Nothing))
     assertBool "expected Right" (isRightResult result)
 
 testSignupAllowsBreachedWhenDisabled :: TestTree
 testSignupAllowsBreachedWhenDisabled = testCase "signup allows a breached password when the check is disabled (default)" do
     ref <- newIORef (emptyWorld fixedTime)
     seedBreached ref strongPw
-    result <- runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     assertBool "expected Right" (isRightResult result)
 
 testSignupFailOpen :: TestTree
@@ -140,20 +151,20 @@ testSignupFailOpen = testCase "fail-open: an unreachable checker allows the pass
     ref <- newIORef (emptyWorld fixedTime)
     seedBreached ref strongPw
     markBreachCheckUnavailable ref
-    result <- runInMemory ref (signup breachCfg (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (signup breachCfg (signupEmail aliceEmail strongPw Nothing))
     assertBool "expected Right" (isRightResult result)
 
 testSignupFailClosed :: TestTree
 testSignupFailClosed = testCase "fail-closed: an unreachable checker rejects the password" do
     ref <- newIORef (emptyWorld fixedTime)
     markBreachCheckUnavailable ref
-    result <- runInMemory ref (signup breachCfgFailClosed (SignupCommand aliceEmail strongPw Nothing))
+    result <- runInMemory ref (signup breachCfgFailClosed (signupEmail aliceEmail strongPw Nothing))
     fmap fst result @?= Left (WeakPassword PasswordBreached)
 
 testChangePasswordRejectsBreached :: TestTree
 testChangePasswordRejectsBreached = testCase "change password rejects a breached new password" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     seedBreached ref newPw
     result <- runInMemory ref (changePassword breachCfg (ChangePassword user.userId strongPw newPw))
     result @?= Left (WeakPassword PasswordBreached)
@@ -179,14 +190,14 @@ commonPw = PlainPassword "passwordpassword" -- in the bundled dictionary, length
 testChangePasswordRejectsCommon :: TestTree
 testChangePasswordRejectsCommon = testCase "change password rejects a common new password" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     result <- runInMemory ref (changePassword cfg (ChangePassword user.userId strongPw commonPw))
     result @?= Left (WeakPassword PasswordTooCommon)
 
 testChangePasswordRejectsIdentity :: TestTree
 testChangePasswordRejectsIdentity = testCase "change password rejects an identity-derived new password" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup smallMinCfg (SignupCommand aliceEmail strongPw Nothing))
+    (user, _) <- expectRight =<< runInMemory ref (signup smallMinCfg (signupEmail aliceEmail strongPw Nothing))
     result <- runInMemory ref (changePassword smallMinCfg (ChangePassword user.userId strongPw (PlainPassword "alice")))
     result @?= Left (WeakPassword PasswordResemblesIdentity)
 
@@ -199,8 +210,8 @@ testConfirmResetRejectsCommon = testCase "confirm password reset rejects a commo
 testRequestEmailVerification :: TestTree
 testRequestEmailVerification = testCase "request email verification emits a notification with a token" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    result <- runInMemory ref (requestEmailVerification cfg (RequestEmailVerification user.email))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+    result <- runInMemory ref (requestEmailVerification cfg (RequestEmailVerification aliceEmail))
     result @?= Right ()
     w <- readIORef ref
     case w.sentNotifications of
@@ -240,13 +251,21 @@ testUnknownPasswordResetNoNotification = testCase "request password reset for un
     w.sentNotifications @?= []
     Map.size w.passwordResetTokens @?= 0
 
+testPasswordResetDeliversToEmail :: TestTree
+testPasswordResetDeliversToEmail = testCase "password reset delivers to the email when present" do
+    (ref, _, _) <- passwordResetRequestedWorld
+    w <- readIORef ref
+    case w.sentNotifications of
+        PasswordResetRequested{email} : _ -> email @?= aliceEmail
+        _ -> assertFailure "expected a password-reset notification addressed to the email"
+
 testConfirmPasswordReset :: TestTree
 testConfirmPasswordReset = testCase "confirm password reset changes password and revokes all sessions" do
     (ref, user, raw) <- passwordResetRequestedWorld
     result <- runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset raw newPw))
     result @?= Right ()
     w <- readIORef ref
-    assertBool "password hash was updated" (any newHash (Map.elems w.credsByEmail))
+    assertBool "password hash was updated" (any newHash (Map.elems w.credsByLoginId))
     assertBool "sessions are revoked" (all (\s -> s.userId /= user.userId || s.status == SessionRevoked) (Map.elems w.sessions))
     assertBool "refresh tokens are revoked" (all (\t -> t.status == RefreshTokenRevoked) (Map.elems w.refreshTokens))
     assertBool "reset token is consumed" (all (\t -> t.status == OneTimeTokenConsumed) (Map.elems w.passwordResetTokens))
@@ -266,28 +285,28 @@ testRejectConsumedReset = testCase "confirming an already-consumed reset token i
 testChangePasswordWrongCurrent :: TestTree
 testChangePasswordWrongCurrent = testCase "change password with wrong current password is rejected" do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
     result <- runInMemory ref (changePassword cfg (ChangePassword user.userId wrongPw newPw))
     result @?= Left InvalidCredentials
     w <- readIORef ref
-    assertBool "password hash is unchanged" (all oldHash (Map.elems w.credsByEmail))
+    assertBool "password hash is unchanged" (all oldHash (Map.elems w.credsByLoginId))
   where
     oldHash c = c.passwordHash == PasswordHash "argon2-fake:correct horse battery staple"
 
 verificationRequestedWorld :: IO (IORef World, OneTimeToken)
 verificationRequestedWorld = do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    _ <- expectRight =<< runInMemory ref (requestEmailVerification cfg (RequestEmailVerification user.email))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+    _ <- expectRight =<< runInMemory ref (requestEmailVerification cfg (RequestEmailVerification aliceEmail))
     raw <- latestVerificationToken =<< readIORef ref
     pure (ref, raw)
 
 passwordResetRequestedWorld :: IO (IORef World, User, OneTimeToken)
 passwordResetRequestedWorld = do
     ref <- newIORef (emptyWorld fixedTime)
-    (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand aliceEmail strongPw Nothing))
-    _ <- expectRight =<< runInMemory ref (login cfg (ClientContext (ClientIp "test-ip") (AccountKey "alice")) (LoginCommand aliceEmail strongPw))
-    _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset user.email))
+    (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+    _ <- expectRight =<< runInMemory ref (login cfg (ClientContext (ClientIp "test-ip") (AccountKey "alice")) (loginEmail aliceEmail strongPw))
+    _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
     raw <- latestResetToken =<< readIORef ref
     pure (ref, user, raw)
 

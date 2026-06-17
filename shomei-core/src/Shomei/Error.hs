@@ -43,8 +43,13 @@ data TokenError
 
 data AuthError
     = InvalidEmail
+    | -- | The supplied login identifier was empty or contained internal whitespace.
+      InvalidLoginId
     | WeakPassword PasswordPolicyViolation
     | EmailAlreadyRegistered
+    | -- | A user already exists with the requested login identifier (the principal
+      -- collision check; the generic counterpart to 'EmailAlreadyRegistered').
+      LoginIdAlreadyRegistered
     | InvalidCredentials
     | UserNotActive
     | SessionNotFound

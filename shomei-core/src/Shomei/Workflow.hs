@@ -36,7 +36,8 @@ import Shomei.Config (RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig 
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
+import Shomei.Domain.Email (emailText)
+import Shomei.Domain.LoginId (LoginId)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (
     AccountLockout (..),
@@ -54,7 +55,7 @@ import Shomei.Id (CeremonyId)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail)
+import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByLoginId)
 import Shomei.Effect.LoginAttemptStore (
     LoginAttemptStore,
     clearAccountLockout,
@@ -80,7 +81,7 @@ import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById,
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Effect.TokenVerifier (TokenVerifier, verifyAccessToken)
-import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById)
+import Shomei.Effect.UserStore (UserStore, createUser, findUserByLoginId, findUserById)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 
 import Shomei.Workflow.Breach (enforceBreachPolicy)
@@ -123,20 +124,19 @@ signup ::
     SignupCommand ->
     Eff es (Either AuthError (User, TokenPair))
 signup cfg cmd = runErrorNoCallStack do
-    email <- either throwError pure (mkEmail (emailText cmd.email))
     let pwContext =
             PasswordContext
-                { contextEmail = Just (emailText email)
+                { contextEmail = emailText <$> cmd.email
                 , contextDisplayName = cmd.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.password)
     enforceBreachPolicy cfg.passwordPolicy cmd.password
-    existing <- findUserByEmail email
-    when (isJust existing) (throwError EmailAlreadyRegistered)
+    existing <- findUserByLoginId cmd.loginId
+    when (isJust existing) (throwError LoginIdAlreadyRegistered)
     pwHash <- hashPassword cmd.password
     ts <- now
-    user <- createUser NewUser{email = email, displayName = cmd.displayName}
-    _ <- createPasswordCredential user.userId email pwHash
+    user <- createUser NewUser{loginId = cmd.loginId, email = cmd.email, displayName = cmd.displayName}
+    _ <- createPasswordCredential user.userId cmd.loginId cmd.email pwHash
     session <-
         createSession
             NewSession
@@ -157,14 +157,14 @@ signup cfg cmd = runErrorNoCallStack do
                 , expiresAt = addUTCTime cfg.refreshTokenTTL ts
                 }
     access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
-    publishAuthEvent (Event.UserRegistered (Event.UserRegisteredData user.userId email ts))
+    publishAuthEvent (Event.UserRegistered (Event.UserRegisteredData user.userId cmd.loginId cmd.email ts))
     publishAuthEvent (Event.SessionStarted (Event.SessionStartedData session.sessionId user.userId ts))
     pure
         ( user
         , TokenPair{accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
         )
 
-{- | Authenticate an email/password pair, with EP-2 abuse protection layered on the
+{- | Authenticate a login-id/password pair, with EP-2 abuse protection layered on the
 existing generic-error contract. Before verifying the password the workflow consults the
 per-IP failure budget and the per-account lockout state; every failure path records an
 attempt and, once the per-account budget is exhausted within the window, locks the account
@@ -174,8 +174,8 @@ per-IP throttle returns the IP-keyed 'TooManyRequests' (which discloses nothing 
 accounts exist). A successful login records a success and clears the lockout.
 
 The caller supplies a 'ClientContext' carrying the request's source IP and the precomputed
-hashed account key for the presented email, so the core needs no crypto dependency and the
-abuse store never holds a plaintext address.
+hashed account key for the presented login identifier, so the core needs no crypto dependency
+and the abuse store never holds a plaintext principal.
 -}
 login ::
     ( UserStore :> es
@@ -212,13 +212,13 @@ login cfg ctx cmd = runErrorNoCallStack do
         -- password (never 'AccountLocked'), so a locked account is indistinguishable.
         mLock <- getAccountLockout ctx.accountKey
         when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) mLock) (throwError InvalidCredentials)
-    mCred <- findPasswordCredentialByEmail cmd.email
-    cred <- maybe (failLogin rl ctx cmd.email ts) pure mCred
+    mCred <- findPasswordCredentialByLoginId cmd.loginId
+    cred <- maybe (failLogin rl ctx cmd.loginId ts) pure mCred
     mUser <- findUserById cred.userId
-    user <- maybe (failLogin rl ctx cmd.email ts) pure mUser
+    user <- maybe (failLogin rl ctx cmd.loginId ts) pure mUser
     when (user.status /= UserActive) (throwError UserNotActive)
     ok <- verifyPassword cmd.password cred.passwordHash
-    unless ok (failLogin rl ctx cmd.email ts)
+    unless ok (failLogin rl ctx cmd.loginId ts)
     recordLoginAttempt
         NewLoginAttempt
             { accountKey = ctx.accountKey
@@ -253,10 +253,10 @@ failLogin ::
     ) =>
     RateLimitConfig ->
     ClientContext ->
-    Email ->
+    LoginId ->
     UTCTime ->
     Eff es a
-failLogin rl ctx email ts = do
+failLogin rl ctx loginId ts = do
     recordLoginAttempt
         NewLoginAttempt
             { accountKey = ctx.accountKey
@@ -264,7 +264,7 @@ failLogin rl ctx email ts = do
             , outcome = LoginFailure
             , occurredAt = ts
             }
-    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData email ts))
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData loginId ts))
     when rl.rateLimitEnabled do
         let cutoff = addUTCTime (negate rl.lockoutWindow) ts
         acctFails <- countRecentFailuresByAccount ctx.accountKey cutoff

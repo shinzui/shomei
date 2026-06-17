@@ -8,6 +8,7 @@ module Shomei.Domain.User (
 import Shomei.Prelude
 
 import Shomei.Domain.Email (Email)
+import Shomei.Domain.LoginId (LoginId)
 import Shomei.Id (UserId)
 
 data UserStatus = UserActive | UserSuspended | UserDeleted
@@ -16,7 +17,8 @@ data UserStatus = UserActive | UserSuspended | UserDeleted
 
 data User = User
     { userId :: !UserId
-    , email :: !Email
+    , loginId :: !LoginId
+    , email :: !(Maybe Email)
     , displayName :: !(Maybe Text)
     , status :: !UserStatus
     , emailVerifiedAt :: !(Maybe UTCTime)
@@ -27,7 +29,8 @@ data User = User
     deriving anyclass (FromJSON, ToJSON)
 
 data NewUser = NewUser
-    { email :: !Email
+    { loginId :: !LoginId
+    , email :: !(Maybe Email)
     , displayName :: !(Maybe Text)
     }
     deriving stock (Generic, Eq, Show)

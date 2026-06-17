@@ -32,6 +32,7 @@ import Effectful.Error.Static (runErrorNoCallStack, throwError)
 
 import Shomei.Config (ShomeiConfig (..), WebAuthnConfig (..))
 import Shomei.Domain.Email (emailText)
+import Shomei.Domain.LoginId (loginIdText)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.Passkey (
     CeremonyKind (RegistrationCeremony),
@@ -87,11 +88,15 @@ beginPasskeyRegistration cfg uid = runErrorNoCallStack do
     ts <- now
     user <- maybe (throwError InvalidCredentials) pure =<< findUserById uid
     existing <- findPasskeysByUser uid
-    let info =
+    -- The human-readable label shown in the browser's passkey UI: prefer the email when
+    -- present, otherwise fall back to the login identifier (the user handle itself is
+    -- always derived from the user id, so it is unaffected by a missing email).
+    let accountLabel = maybe (loginIdText user.loginId) emailText user.email
+        info =
             CredentialUserInfo
                 { userHandle = userHandleForUser uid
-                , accountName = emailText user.email
-                , displayName = fromMaybe (emailText user.email) user.displayName
+                , accountName = accountLabel
+                , displayName = fromMaybe accountLabel user.displayName
                 }
         excludeIds = map (\PasskeyCredential{credentialId} -> credentialId) existing
     BeginCeremony{optionsJson, optionsBlob} <- beginRegistrationCeremony info excludeIds

@@ -71,7 +71,7 @@ import Effectful.Dispatch.Dynamic (interpret_)
 
 import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email)
+import Shomei.Domain.LoginId (LoginId)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (
     AccountKey,
@@ -161,7 +161,7 @@ import Shomei.Effect.WebAuthnCeremony (
 -- | The whole mutable test world.
 data World = World
     { users :: !(Map UserId User)
-    , credsByEmail :: !(Map Email Credential)
+    , credsByLoginId :: !(Map LoginId Credential)
     , sessions :: !(Map SessionId Session)
     , refreshTokens :: !(Map RefreshTokenId PersistedRefreshToken)
     , refreshByHash :: !(Map RefreshTokenHash RefreshTokenId)
@@ -196,7 +196,7 @@ emptyWorld :: UTCTime -> World
 emptyWorld t =
     World
         { users = Map.empty
-        , credsByEmail = Map.empty
+        , credsByLoginId = Map.empty
         , sessions = Map.empty
         , refreshTokens = Map.empty
         , refreshByHash = Map.empty
@@ -242,6 +242,7 @@ runUserStore ref = interpret_ \case
         let u =
                 User
                     { userId = uid
+                    , loginId = nu.loginId
                     , email = nu.email
                     , displayName = nu.displayName
                     , status = UserActive
@@ -252,37 +253,44 @@ runUserStore ref = interpret_ \case
         liftIO (modifyIORef' ref (#users %~ Map.insert uid u))
         pure u
     FindUserById uid -> liftIO ((Map.lookup uid . (.users)) <$> readIORef ref)
+    FindUserByLoginId lid -> liftIO (findByLoginId lid <$> readIORef ref)
     FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
     UpdateUserStatus uid st ->
         liftIO (modifyIORef' ref (#users %~ Map.adjust (#status .~ st) uid))
     MarkUserEmailVerified uid t ->
         liftIO (modifyIORef' ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
   where
-    findByEmail e w = listToMaybe [u | u <- Map.elems w.users, u.email == e]
+    findByLoginId lid w = listToMaybe [u | u <- Map.elems w.users, u.loginId == lid]
+    findByEmail e w = listToMaybe [u | u <- Map.elems w.users, u.email == Just e]
 
 runCredentialStore :: (IOE :> es) => IORef World -> Eff (CredentialStore : es) a -> Eff es a
 runCredentialStore ref = interpret_ \case
-    CreatePasswordCredential uid e h -> do
+    CreatePasswordCredential uid lid mEmail h -> do
         cid <- genCredentialId
         w <- liftIO (readIORef ref)
         let c =
                 PasswordCredential
                     { credentialId = cid
                     , userId = uid
-                    , email = e
+                    , loginId = lid
+                    , email = mEmail
                     , passwordHash = h
                     , createdAt = w.clock
                     , updatedAt = w.clock
                     }
-        liftIO (modifyIORef' ref (#credsByEmail %~ Map.insert e c))
+        liftIO (modifyIORef' ref (#credsByLoginId %~ Map.insert lid c))
         pure c
+    FindPasswordCredentialByLoginId lid ->
+        liftIO ((Map.lookup lid . (.credsByLoginId)) <$> readIORef ref)
+    -- Retained reset-by-email path: a scan over the credential values (mirrors the user
+    -- 'findByEmail' scan), matching the optional email metadata.
     FindPasswordCredentialByEmail e ->
-        liftIO ((Map.lookup e . (.credsByEmail)) <$> readIORef ref)
+        liftIO ((\w -> listToMaybe [c | c <- Map.elems w.credsByLoginId, c.email == Just e]) <$> readIORef ref)
     UpdatePasswordHash uid h ->
         liftIO
             ( modifyIORef'
                 ref
-                (#credsByEmail %~ Map.map (\c -> if c.userId == uid then c & #passwordHash .~ h else c))
+                (#credsByLoginId %~ Map.map (\c -> if c.userId == uid then c & #passwordHash .~ h else c))
             )
 
 runSessionStore :: (IOE :> es) => IORef World -> Eff (SessionStore : es) a -> Eff es a

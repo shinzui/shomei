@@ -34,7 +34,7 @@ import Shomei.Id (UserId)
 
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.CredentialStore (CredentialStore, findPasswordCredentialByEmail, updatePasswordHash)
+import Shomei.Effect.CredentialStore (CredentialStore, findPasswordCredentialByLoginId, updatePasswordHash)
 import Shomei.Effect.Notifier (Notifier, sendNotification)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
@@ -93,19 +93,21 @@ requestEmailVerification ::
 requestEmailVerification cfg cmd = do
     ts <- now
     mUser <- findUserByEmail cmd.email
-    forM_ mUser \user -> when (user.status == UserActive && isNothing user.emailVerifiedAt) do
-        let expires = addUTCTime cfg.notifierConfig.verificationTokenTTL ts
-        (raw, h) <- generateOneTimeToken
-        _ <-
-            createVerificationToken
-                NewVerificationToken
-                    { userId = user.userId
-                    , tokenHash = h
-                    , createdAt = ts
-                    , expiresAt = expires
-                    }
-        sendNotification (EmailVerificationRequested user.email raw expires)
-        publishAuthEvent (Event.EmailVerificationRequested (Event.EmailVerificationRequestedData user.userId user.email ts))
+    forM_ mUser \user ->
+        forM_ user.email \email ->
+            when (user.status == UserActive && isNothing user.emailVerifiedAt) do
+                let expires = addUTCTime cfg.notifierConfig.verificationTokenTTL ts
+                (raw, h) <- generateOneTimeToken
+                _ <-
+                    createVerificationToken
+                        NewVerificationToken
+                            { userId = user.userId
+                            , tokenHash = h
+                            , createdAt = ts
+                            , expiresAt = expires
+                            }
+                sendNotification (EmailVerificationRequested email raw expires)
+                publishAuthEvent (Event.EmailVerificationRequested (Event.EmailVerificationRequestedData user.userId email ts))
     pure (Right ())
 
 confirmEmailVerification ::
@@ -124,10 +126,13 @@ confirmEmailVerification _cfg cmd = runErrorNoCallStack do
     tok <- maybe (throwError VerificationTokenInvalid) pure =<< findVerificationTokenByHash h
     either throwError pure (ensureUsableVerification tok ts)
     user <- maybe (throwError VerificationTokenInvalid) pure =<< findUserById tok.userId
+    -- A verification token only ever exists for an account that had an email; a missing
+    -- email here means the token cannot belong to a verifiable account.
+    email <- maybe (throwError VerificationTokenInvalid) pure user.email
     when (isJust user.emailVerifiedAt) (throwError EmailAlreadyVerified)
     markVerificationTokenConsumed tok.verificationTokenId ts
     markUserEmailVerified user.userId ts
-    publishAuthEvent (Event.EmailVerified (Event.EmailVerifiedData user.userId user.email ts))
+    publishAuthEvent (Event.EmailVerified (Event.EmailVerifiedData user.userId email ts))
 
 requestPasswordReset ::
     ( UserStore :> es
@@ -143,19 +148,21 @@ requestPasswordReset ::
 requestPasswordReset cfg cmd = do
     ts <- now
     mUser <- findUserByEmail cmd.email
-    forM_ mUser \user -> when (user.status == UserActive) do
-        let expires = addUTCTime cfg.notifierConfig.passwordResetTokenTTL ts
-        (raw, h) <- generateOneTimeToken
-        _ <-
-            createPasswordResetToken
-                NewPasswordResetToken
-                    { userId = user.userId
-                    , tokenHash = h
-                    , createdAt = ts
-                    , expiresAt = expires
-                    }
-        sendNotification (PasswordResetRequested user.email raw expires)
-        publishAuthEvent (Event.PasswordResetRequested (Event.PasswordResetRequestedData user.userId user.email ts))
+    forM_ mUser \user ->
+        forM_ user.email \email ->
+            when (user.status == UserActive) do
+                let expires = addUTCTime cfg.notifierConfig.passwordResetTokenTTL ts
+                (raw, h) <- generateOneTimeToken
+                _ <-
+                    createPasswordResetToken
+                        NewPasswordResetToken
+                            { userId = user.userId
+                            , tokenHash = h
+                            , createdAt = ts
+                            , expiresAt = expires
+                            }
+                sendNotification (PasswordResetRequested email raw expires)
+                publishAuthEvent (Event.PasswordResetRequested (Event.PasswordResetRequestedData user.userId email ts))
     pure (Right ())
 
 confirmPasswordReset ::
@@ -181,7 +188,7 @@ confirmPasswordReset cfg cmd = runErrorNoCallStack do
     user <- maybe (throwError PasswordResetTokenInvalid) pure =<< findUserById tok.userId
     let pwContext =
             PasswordContext
-                { contextEmail = Just (emailText user.email)
+                { contextEmail = emailText <$> user.email
                 , contextDisplayName = user.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
@@ -210,12 +217,12 @@ changePassword cfg cmd = runErrorNoCallStack do
     user <- maybe (throwError InvalidCredentials) pure =<< findUserById cmd.userId
     let pwContext =
             PasswordContext
-                { contextEmail = Just (emailText user.email)
+                { contextEmail = emailText <$> user.email
                 , contextDisplayName = user.displayName
                 }
     either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
     enforceBreachPolicy cfg.passwordPolicy cmd.newPassword
-    cred <- maybe (throwError InvalidCredentials) pure =<< findPasswordCredentialByEmail user.email
+    cred <- maybe (throwError InvalidCredentials) pure =<< findPasswordCredentialByLoginId user.loginId
     ok <- verifyPassword cmd.currentPassword cred.passwordHash
     unless ok (throwError InvalidCredentials)
     ts <- now
