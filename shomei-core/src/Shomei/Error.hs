@@ -20,8 +20,12 @@ data PasswordPolicyViolation
       PasswordTooShort Int
     | -- | maximum length allowed
       PasswordTooLong Int
-    | PasswordTooCommon
+    | -- | the password appears in the bundled common-password dictionary
+      PasswordTooCommon
     | PasswordMissingRequiredClass Text
+    | -- | the password is essentially the user's own identity (email local-part,
+      -- full email, or display name)
+      PasswordResemblesIdentity
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
