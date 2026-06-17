@@ -13,3 +13,4 @@ result-*
 db/
 CLAUDE.local.md
 config/shomei.dhall
+.mina/
