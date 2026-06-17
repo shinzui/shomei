@@ -51,7 +51,7 @@ import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 
-import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..))
+import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
@@ -114,7 +114,7 @@ buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
     _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
     pool <- acquirePool 10 settings.serverConnStr
-    (key, jwks) <- bootstrapKeys pool
+    (key, jwks) <- bootstrapKeys (configSigningAlgorithm cfg) pool
     mgr <- newTlsManager
     pure Env{envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = mgr}
 

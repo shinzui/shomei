@@ -8,12 +8,14 @@ verifying until they expire (zero-downtime rotation).
 -}
 module Shomei.Jwt.Rotation (
     rotateSigningKey,
+    rotateSigningKeyFor,
     currentJwks,
 ) where
 
 import Shomei.Prelude
 
 import Shomei.Domain.SigningKey (
+    SigningAlgorithm (ES256),
     SigningKeyStatus (KeyRetired, KeyRevoked),
     StoredSigningKey (..),
  )
@@ -25,7 +27,7 @@ import Shomei.Effect.SigningKeyStore (
     updateSigningKeyStatus,
  )
 import Shomei.Jwt.Jwks (jwksDocument)
-import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigningKey)
+import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKeyFor, toStoredSigningKeyFor)
 
 import Data.ByteString.Lazy qualified as BSL
 import Data.Either (rights)
@@ -38,11 +40,21 @@ live 'JWK' (so the caller can sign with it immediately).
 rotateSigningKey ::
     (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
     Eff es JWK
-rotateSigningKey = do
+rotateSigningKey = rotateSigningKeyFor ES256
+
+{- | Like 'rotateSigningKey' but generates a key for the requested algorithm, so an
+operator can rotate onto RS256 (or back to ES256). 'rotateSigningKey' is the ES256
+alias kept for back-compat.
+-}
+rotateSigningKeyFor ::
+    (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
+    SigningAlgorithm ->
+    Eff es JWK
+rotateSigningKeyFor alg = do
     t <- now
     priorActive <- listActiveSigningKeys
-    newJwk <- liftIO generateSigningKey
-    insertSigningKey (toStoredSigningKey t newJwk)
+    newJwk <- liftIO (generateSigningKeyFor alg)
+    insertSigningKey (toStoredSigningKeyFor alg t newJwk)
     forM_ priorActive \k -> updateSigningKeyStatus k.keyId KeyRetired t
     pure newJwk
 

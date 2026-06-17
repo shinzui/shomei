@@ -35,18 +35,18 @@ import Hasql.Statement (Statement, preparable)
 import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 
-import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
-import Shomei.Jwt.Key (generateSigningKey, toStoredSigningKey)
+import Shomei.Domain.SigningKey (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
+import Shomei.Jwt.Key (generateSigningKeyFor, toStoredSigningKeyFor)
 import Shomei.Postgres.Codec (signingKeyStatusFromText, signingKeyStatusToText, tshow)
 
 -- Public actions -------------------------------------------------------------
 
--- | Mint a new ES256 key in @pending@ status and print its @kid@.
-keysGenerate :: Pool -> IO ()
-keysGenerate pool = do
+-- | Mint a new key for @alg@ in @pending@ status and print its @kid@.
+keysGenerate :: SigningAlgorithm -> Pool -> IO ()
+keysGenerate alg pool = do
     now <- getCurrentTime
-    jwk <- generateSigningKey
-    let stored = toStoredSigningKey now jwk
+    jwk <- generateSigningKeyFor alg
+    let stored = toStoredSigningKeyFor alg now jwk
         pending =
             stored
                 { status = KeyPending
@@ -54,7 +54,7 @@ keysGenerate pool = do
                 , retiredAt = Nothing
                 }
     runSess pool (Session.statement (keyRow pending) insertKeyStmt)
-    putStrLn ("generated pending key: " <> Text.unpack pending.keyId)
+    putStrLn ("generated pending " <> Text.unpack (signingAlgorithmToText alg) <> " key: " <> Text.unpack pending.keyId)
 
 {- | Promote a @pending@ key to @active@ and demote every prior @active@ key to @retired@,
 atomically at one timestamp. Refuses if the key is not @pending@.

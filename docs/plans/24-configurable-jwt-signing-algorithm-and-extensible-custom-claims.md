@@ -152,6 +152,22 @@ implementation. Provide concise evidence.
   jose, so their protection relies on Shōmei's `addExtra`-first ordering (above) plus
   `mkExtraClaims` dropping them at construction.
 
+- **M4: a concurrent agent is implementing plan 25 in the SAME working tree, in a
+  non-compiling intermediate state.** Partway through M4, `cabal build all` began failing
+  in `shomei-core` files this plan never touches (`Workflow/Account.hs`, `Workflow/Passkey.hs`,
+  `Workflow.hs`). Cause: uncommitted plan-25 edits (`docs/plans/25-...`) changed
+  `User.email`/`Credential.email` from `Email` to `Maybe Email`, added a `loginId :: LoginId`
+  field + a new `Shomei.Domain.LoginId` module, and added `InvalidLoginId`/
+  `LoginIdAlreadyRegistered` to `Shomei.Error` — and the dependent workflows had not yet been
+  updated, so the tree does not compile. These are NOT this plan's changes. Verified the file
+  sets are disjoint: SH-24's M4 files (`Shomei/Config.hs`, `Server/Config.hs`, `Server/Keys.hs`,
+  `Server/Boot.hs`, `app/Admin.hs`, `app/Shomei/Admin/Keys.hs`, `Jwt/Rotation.hs`) contain no
+  plan-25 content, and SH-24's M1–M3 commits never included a plan-25 code file. **Decision:**
+  do not touch any plan-25 file; commit only SH-24 files; validate M4/M5 in an isolated
+  `git worktree` checked out at the SH-24 commit (which excludes plan-25's uncommitted breakage),
+  so the build there compiles against the committed baseline `User`/`Credential` shape this plan
+  was written against.
+
 - (Add further discoveries here as work proceeds.)
 
 

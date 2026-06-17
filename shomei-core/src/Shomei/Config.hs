@@ -28,6 +28,7 @@ module Shomei.Config (
     defaultPasswordResetTokenTTL,
     defaultRateLimitConfig,
     defaultObservabilityConfig,
+    configSigningAlgorithm,
 ) where
 
 import Shomei.Prelude
@@ -35,6 +36,7 @@ import Shomei.Prelude
 import Data.Time (NominalDiffTime)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
+import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
 
 data TokenTransport = BearerToken | HttpOnlyCookie | BearerAndCookie
     deriving stock (Generic, Eq, Show)
@@ -235,6 +237,14 @@ defaultObservabilityConfig =
         , metricsEnabled = True
         , gracefulShutdownTimeoutSeconds = 30
         }
+
+{- | The signing algorithm a config selects, parsed from
+@signingKeyConfig.algorithm@. Defaults to 'ES256' on absent/invalid text so a
+misconfigured deployment stays on the safe default rather than failing to boot.
+-}
+configSigningAlgorithm :: ShomeiConfig -> SigningAlgorithm
+configSigningAlgorithm cfg =
+    either (const ES256) id (signingAlgorithmFromText cfg.signingKeyConfig.algorithm)
 
 defaultShomeiConfig :: Issuer -> Audience -> ShomeiConfig
 defaultShomeiConfig iss aud =

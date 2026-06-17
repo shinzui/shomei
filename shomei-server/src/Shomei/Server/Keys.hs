@@ -22,43 +22,45 @@ import Effectful.Error.Static (runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Crypto.JOSE.JWK (JWK, JWKSet)
 
-import Shomei.Domain.SigningKey (StoredSigningKey)
+import Shomei.Domain.SigningKey (SigningAlgorithm, StoredSigningKey)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, insertSigningKey, listActiveSigningKeys)
 import Shomei.Error (AuthError)
 
 import Shomei.Jwt.Jwks (KeySet (..), keySetPublicJwks)
-import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKey, toStoredSigningKey)
+import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKeyFor, toStoredSigningKeyFor)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 
 {- | Return the active /private/ signing key and the public 'JWKSet' (built from the
-active key). Generates+persists an ES256 key on first boot; otherwise loads the
-existing active key.
+active key). Generates+persists a key for the requested 'SigningAlgorithm' on first
+boot; otherwise loads the existing active key (regardless of @alg@, since generation
+is guarded on "no active key" — changing the configured algorithm after a key exists
+has no effect until you rotate).
 -}
-bootstrapKeys :: Pool -> IO (JWK, JWKSet)
-bootstrapKeys pool = do
+bootstrapKeys :: SigningAlgorithm -> Pool -> IO (JWK, JWKSet)
+bootstrapKeys alg pool = do
     result :: Either AuthError StoredSigningKey <-
         runEff
             . runErrorNoCallStack
             . runDatabasePool pool
             . runClockIO
             . runSigningKeyStorePostgres
-            $ ensureActiveKey
+            $ ensureActiveKey alg
     stored <- either (ioError . userError . show) pure result
     jwk <- either (ioError . userError . Text.unpack) pure (fromStoredSigningKey stored)
     pure (jwk, keySetPublicJwks (KeySet jwk []))
 
--- | List the active keys; if none, generate one ES256 key and insert it Active.
-ensureActiveKey :: (SigningKeyStore :> es, Clock :> es, IOE :> es) => Eff es StoredSigningKey
-ensureActiveKey = do
+-- | List the active keys; if none, generate one key for @alg@ and insert it Active.
+ensureActiveKey :: (SigningKeyStore :> es, Clock :> es, IOE :> es) => SigningAlgorithm -> Eff es StoredSigningKey
+ensureActiveKey alg = do
     active <- listActiveSigningKeys
     case active of
         (k : _) -> pure k
         [] -> do
             t <- now
-            jwk <- liftIO generateSigningKey
-            let sk = toStoredSigningKey t jwk
+            jwk <- liftIO (generateSigningKeyFor alg)
+            let sk = toStoredSigningKeyFor alg t jwk
             insertSigningKey sk
             pure sk

@@ -37,6 +37,7 @@ import Shomei.Config (
     RateLimitConfig (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
+    SigningKeyConfig (..),
     TokenTransport (..),
     UserVerificationPolicy (..),
     WebAuthnConfig (..),
@@ -89,6 +90,8 @@ data FileConfig = FileConfig
     , webauthnCeremonyTimeoutSeconds :: !(Maybe Int)
     , webauthnPendingCeremonyTtlSeconds :: !(Maybe Int)
     , webauthnMfaRequired :: !(Maybe Bool)
+    , signingAlgorithm :: !(Maybe Text)
+    -- ^ @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     }
     deriving stock (Show, Generic)
     deriving anyclass (FromJSON)
@@ -131,6 +134,7 @@ baseDefaults =
 baseFromFile :: Maybe FileConfig -> IO (ShomeiConfig, ServerSettings)
 baseFromFile Nothing = baseDefaults
 baseFromFile (Just fc) = do
+    algFile <- traverse (normalizeSigningAlg "signingAlgorithm (config file)") fc.signingAlgorithm
     let iss = fromMaybe "shomei" fc.issuer
         aud = fromMaybe "shomei-clients" fc.audience
         cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
@@ -167,6 +171,10 @@ baseFromFile (Just fc) = do
                         , gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                         }
                 , webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc
+                , signingKeyConfig =
+                    cfg0.signingKeyConfig
+                        { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile
+                        }
                 }
         settings = ServerSettings{serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
     pure (cfg, settings)
@@ -201,9 +209,11 @@ overlayCoreFromEnv base = do
     pwBreach <- boolEnv "SHOMEI_PASSWORD_BREACH_CHECK"
     pwBreachFC <- boolEnv "SHOMEI_PASSWORD_BREACH_FAIL_CLOSED"
     pwBreachTo <- intEnvMaybe "SHOMEI_PASSWORD_BREACH_TIMEOUT_MS"
+    alg <- signingAlgEnv
     pure
         base
             { accessTokenTTL = fromMaybe base.accessTokenTTL acc
+            , signingKeyConfig = base.signingKeyConfig{algorithm = fromMaybe base.signingKeyConfig.algorithm alg}
             , refreshTokenTTL = fromMaybe base.refreshTokenTTL ref
             , sessionTTL = fromMaybe base.sessionTTL ses
             , tokenTransport = fromMaybe base.tokenTransport tr
@@ -388,6 +398,25 @@ transportEnv = do
         Just "cookie" -> pure (Just HttpOnlyCookie)
         Just "both" -> pure (Just BearerAndCookie)
         Just other -> ioError (userError ("SHOMEI_TOKEN_TRANSPORT must be bearer|cookie|both, got " <> other))
+
+-- | Read and validate @SHOMEI_SIGNING_ALG@ (@ES256@|@RS256@); absent/empty → Nothing.
+signingAlgEnv :: IO (Maybe Text)
+signingAlgEnv = do
+    m <- lookupEnv "SHOMEI_SIGNING_ALG"
+    case m of
+        Nothing -> pure Nothing
+        Just "" -> pure Nothing
+        Just s -> Just <$> normalizeSigningAlg "SHOMEI_SIGNING_ALG" (Text.pack s)
+
+{- | Validate a signing-algorithm string from config (file or env), erroring on
+anything other than @ES256@/@RS256@ so a typo fails the boot loudly. @label@ names
+the source for the error message.
+-}
+normalizeSigningAlg :: Text -> Text -> IO Text
+normalizeSigningAlg label t = case Text.strip t of
+    "ES256" -> pure "ES256"
+    "RS256" -> pure "RS256"
+    other -> ioError (userError (Text.unpack label <> " must be ES256|RS256, got " <> Text.unpack other))
 
 sessionCheckEnv :: IO (Maybe SessionCheckMode)
 sessionCheckEnv = do

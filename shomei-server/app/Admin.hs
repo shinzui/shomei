@@ -15,6 +15,7 @@ import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysGenerate, keysList, keysRetire, keysRevoke)
 import Shomei.Admin.Users (createUserAction)
+import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
 
 -- The command tree -----------------------------------------------------------
 
@@ -25,7 +26,7 @@ data Command
     | Audit AuditCommand
 
 data KeysCommand
-    = KeysGenerate
+    = KeysGenerate SigningAlgorithm
     | KeysActivate Text
     | KeysRetire Text
     | KeysRevoke Text
@@ -49,7 +50,7 @@ commandParser =
 keysParser :: Parser KeysCommand
 keysParser =
     hsubparser
-        ( command "generate" (info (pure KeysGenerate) (progDesc "Mint a new ES256 key in pending status"))
+        ( command "generate" (info (KeysGenerate <$> algOpt) (progDesc "Mint a new signing key in pending status"))
             <> command "activate" (info (KeysActivate <$> kidArg) (progDesc "Promote a pending key to active (old one auto-retires)"))
             <> command "retire" (info (KeysRetire <$> kidArg) (progDesc "Demote an active key to retired (still trusted)"))
             <> command "revoke" (info (KeysRevoke <$> kidArg) (progDesc "Mark a key revoked (immediately untrusted)"))
@@ -57,6 +58,10 @@ keysParser =
         )
   where
     kidArg = Text.pack <$> argument str (metavar "KID")
+    algOpt =
+        option
+            (eitherReader (either (Left . Text.unpack) Right . signingAlgorithmFromText . Text.pack))
+            (long "alg" <> metavar "ES256|RS256" <> value ES256 <> showDefaultWith (const "ES256") <> help "Signing algorithm for the new key")
 
 usersParser :: Parser UsersCommand
 usersParser =
@@ -88,7 +93,7 @@ run = \case
     Keys kc -> do
         env <- loadAdminEnv
         case kc of
-            KeysGenerate -> keysGenerate env.pool
+            KeysGenerate alg -> keysGenerate alg env.pool
             KeysActivate kid -> keysActivate env.pool kid
             KeysRetire kid -> keysRetire env.pool kid
             KeysRevoke kid -> keysRevoke env.pool kid
