@@ -107,7 +107,7 @@ Points) and a recommended ordering (EP-2 before EP-3) captured as a soft depende
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | EP-1 | Configurable Password Policy End-to-End | docs/plans/20-configurable-password-policy-end-to-end.md | None | None | Complete |
-| EP-2 | Common and Context-Specific Weak Password Rejection | docs/plans/21-common-and-context-specific-weak-password-rejection.md | EP-1 | None | In Progress |
+| EP-2 | Common and Context-Specific Weak Password Rejection | docs/plans/21-common-and-context-specific-weak-password-rejection.md | EP-1 | None | Complete |
 | EP-3 | Compromised Password Breach Checking via HIBP k-Anonymity | docs/plans/22-compromised-password-breach-checking-via-hibp-k-anonymity.md | EP-1 | EP-2 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -221,9 +221,9 @@ and the milestone. This section provides an at-a-glance view of the entire initi
 - [x] EP-1 (2026-06-17): Extend `PasswordPolicy` record + `defaultPasswordPolicy` with the seven fields (IP-1).
 - [x] EP-1 (2026-06-17): Wire fields through `FileConfig`, Dhall schema + example, and `baseFromFile` merge.
 - [x] EP-1 (2026-06-17): Add `SHOMEI_PASSWORD_*` env overrides (reused existing `boolEnv`, added `intEnvMaybe`) and config tests proving precedence.
-- [ ] EP-2: Embed common-password dictionary and implement the dictionary check (`PasswordTooCommon`).
-- [ ] EP-2: Implement context-aware validation (`PasswordResemblesIdentity`) and thread context through the three workflows (IP-3).
-- [ ] EP-2: Servant error mapping for new violation + tests (signup/change/reset reject common & identity-derived passwords).
+- [x] EP-2 (2026-06-17): Embed common-password dictionary and implement the dictionary check (`PasswordTooCommon`).
+- [x] EP-2 (2026-06-17): Implement context-aware validation (`PasswordResemblesIdentity`) and thread context through the three workflows (IP-3).
+- [x] EP-2 (2026-06-17): Confirmed Servant wildcard covers the new violation (no edit needed) + tests (signup/change/reset reject common & identity-derived passwords).
 - [ ] EP-3: Add `PasswordBreachChecker` effect + in-memory fake wired into `runInMemory` (IP-5).
 - [ ] EP-3: Implement HIBP k-anonymity production interpreter (SHA-1 prefix range query, fail-open/closed, timeout).
 - [ ] EP-3: Add effectful breach guard to the three workflows (IP-3), Servant mapping for `PasswordBreached`, and tests.
@@ -254,6 +254,26 @@ interactions between child plans. Provide concise evidence.
   `intEnvMaybe` and reused the existing `boolEnv`; the plan's instruction to add `boolEnv` was
   correctly skipped (a duplicate definition would not compile). No effect on EP-2/EP-3, which add
   no env helpers, but noted so future config-plumbing work does not re-add it.
+
+- EP-2 implementation (2026-06-17) reshaped the three workflow call sites (IP-3) as planned, which
+  affects EP-3's rebase. After EP-2, each call site now reads (in order): build a `PasswordContext`,
+  then `either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext <pw>)`.
+  EP-3 appends its effectful breach guard immediately AFTER that pure-validation line at each site.
+  Concretely the three sites are: `signup` in `shomei-core/src/Shomei/Workflow.hs` (after the
+  `pwContext`/validate block, before `existing <- findUserByEmail`); `changePassword` in
+  `Shomei/Workflow/Account.hs` (after validate, before `cred <- ...findPasswordCredentialByEmail`);
+  and `confirmPasswordReset` (after validate, before `newHash <- hashPassword`). Note EP-2 ALREADY
+  added the `UserStore :> es` constraint and a `findUserById tok.userId` lookup to
+  `confirmPasswordReset` and reordered `changePassword` to load the user first — so EP-3 does not
+  need to re-add those; the `user` binding is already in scope at the reset/change sites if EP-3
+  wants identity data.
+
+- EP-2 implementation (2026-06-17) confirmed IP-4 is a no-op for new violations: the Servant
+  mapping in `shomei-servant/src/Shomei/Servant/Error.hs:43` is the wildcard
+  `WeakPassword _ -> json err400 "weak_password" ...`, and a repo-wide grep found no per-constructor
+  match anywhere. EP-3's `PasswordBreached` will fall through the same branch — but note EP-3 maps
+  `PasswordBreached` as its OWN `AuthError`-level concern only if it chooses a distinct HTTP code;
+  if it reuses `WeakPassword PasswordBreached`, no Servant edit is needed either.
 
 - EP-2 authoring flagged a test-design trap from the chosen defaults: `defaultPasswordPolicy`
   sets `minLength = 12`, so a would-be "common password" fixture shorter than 12 characters
