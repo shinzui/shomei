@@ -3,9 +3,11 @@
 Shōmei is a Haskell authentication toolkit for building **embedded Servant auth** and
 **standalone auth services** from the same transport-agnostic core. It issues and verifies
 ES256 JSON Web Tokens, manages the full account lifecycle (signup, login, refresh, email
-verification, password reset/change), and ships production hardening (brute-force lockout,
-rate limiting), observability (structured logs, Prometheus metrics, health/readiness probes),
-and operations tooling (a `shomei-admin` CLI with zero-downtime signing-key rotation).
+verification, password reset/change), supports **passkey enrollment and WebAuthn multi-factor
+login** (password-then-passkey step-up and passwordless), and ships production hardening
+(brute-force lockout, rate limiting), observability (structured logs, Prometheus metrics,
+health/readiness probes), and operations tooling (a `shomei-admin` CLI with zero-downtime
+signing-key rotation).
 
 ## Two deployment modes
 
@@ -62,6 +64,7 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 
 - [docs/architecture.md](docs/architecture.md) — design, package layering, the ports & workflows pattern.
 - [docs/api.md](docs/api.md) — every HTTP endpoint with request/response shapes and status codes.
+- [docs/passkeys.md](docs/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
 - [docs/security.md](docs/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
 - [docs/notifications.md](docs/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.
 - [docs/deployment.md](docs/deployment.md) — configuration reference, the local `process-compose` stack, the production container image, and the operator runbook.

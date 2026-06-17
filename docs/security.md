@@ -68,6 +68,28 @@ while the request-rate buckets are in-memory and reset on restart.
 A successful password reset or change revokes **all** of the user's sessions and refresh tokens,
 so a stolen session is immediately useless after the legitimate owner recovers the account.
 
+## Passkeys & MFA (MasterPlan 3)
+
+- **Phishing-resistant second factor.** A passkey signs a server challenge bound to the page
+  origin and the configured `rpId`; the signature cannot be replayed against another origin, so a
+  phished password alone never yields a session. Accounts that have a passkey are challenged for
+  it at login when `webauthnConfig.mfaRequired` is set (the default).
+- **Consume-once challenge.** The pending-ceremony state (the challenge/options blob) is
+  **PostgreSQL-backed** and consumed exactly once: a completion deletes the row, so a replayed or
+  duplicated completion finds nothing and is rejected (`404 ceremony_not_found`). Ceremonies
+  expire via a TTL (`webauthnConfig.pendingCeremonyTTL`).
+- **Signature-counter clone check.** Each stored credential keeps a signature counter; a
+  verification whose counter does not advance past the stored value signals a cloned authenticator
+  and fails closed (`401 mfa_failed`).
+- **Public keys only.** Shōmei stores only the credential's public key and metadata — never a
+  private key or any reusable secret. A database leak cannot impersonate a user.
+- **No factor-failure leak.** A failed assertion returns a generic `401 mfa_failed`; the response
+  never discloses why a factor failed.
+- **MFA enforcement policy.** Enforcement is gated on per-account enrollment *and*
+  `webauthnConfig.mfaRequired`: an account with no passkey (or with `mfaRequired = False`) logs in
+  exactly as before. The password remains the first factor, so the existing password-reset flow
+  still recovers an account whose passkey was lost. See [passkeys.md](passkeys.md).
+
 ## Logging hygiene
 
 The structured request logger reads only the method, path, response status, duration, and peer

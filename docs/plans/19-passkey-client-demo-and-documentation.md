@@ -106,13 +106,19 @@ This section must always reflect the actual current state of the work.
 
 **Milestone 2 — documentation:**
 
-- [ ] Write `docs/passkeys.md` (the complete guide).
-- [ ] Add the passkey/MFA endpoints to `docs/api.md` with request/response JSON and statuses.
-- [ ] Add the passkey threat model to `docs/security.md`.
-- [ ] Link `docs/passkeys.md` from `README.md`'s docs list and mention passkeys/MFA in the
-      README intro and feature list.
-- [ ] Cross-check every endpoint, field name, status code, and config field in the docs
-      against EP-1..EP-4 as merged; fix any drift.
+- [x] Write `docs/passkeys.md` (the complete guide): concepts, the three ceremonies, the
+      `webauthnConfig` table (Dhall keys + env vars + defaults), the rpId/origins operator
+      caveat, security properties, recovery, browser glue, and the demo walkthrough. — 2026-06-17
+- [x] Add the passkey/MFA endpoints to `docs/api.md` with request/response JSON and statuses,
+      and update the `POST /auth/login` entry for the tagged response. — 2026-06-17
+- [x] Add the passkey threat model to `docs/security.md`. — 2026-06-17
+- [x] Link `docs/passkeys.md` from `README.md`'s docs list and mention passkeys/MFA in the
+      README intro/feature list. Also added the `SHOMEI_WEBAUTHN_*` env vars and Dhall keys to
+      `docs/deployment.md` (since EP-5 wired them). — 2026-06-17
+- [x] Cross-check every endpoint, field name, status code, and config field in the docs
+      against the merged code — all route fields, `webauthn*` Dhall keys, `SHOMEI_WEBAUTHN_*`
+      env vars, and error codes (`ceremony_not_found`, `webauthn_verification_failed`,
+      `passkey_not_found`, `mfa_failed`) report OK. — 2026-06-17
 
 **Milestone 3 — demo enroll/login page:**
 

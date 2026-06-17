@@ -21,6 +21,13 @@ twelve-factor — env always wins):
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both` | `bearer` |
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
+| `SHOMEI_WEBAUTHN_RP_ID` | passkey relying-party domain (no scheme/port) | `localhost` |
+| `SHOMEI_WEBAUTHN_RP_NAME` | human RP name shown by the authenticator | `Shōmei` |
+| `SHOMEI_WEBAUTHN_ORIGINS` | allowed page origins (comma-separated) | `http://localhost:8080` |
+| `SHOMEI_WEBAUTHN_USER_VERIFICATION` | `required` \| `preferred` \| `discouraged` | `preferred` |
+| `SHOMEI_WEBAUTHN_ATTESTATION` | `none` \| `direct` | `none` |
+| `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` / `SHOMEI_WEBAUTHN_PENDING_TTL` | ceremony timeout / pending-ceremony TTL (seconds) | `300` |
+| `SHOMEI_WEBAUTHN_MFA_REQUIRED` | require MFA for accounts that have a passkey | `true` |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
 
 ### Dhall config file
@@ -36,7 +43,10 @@ Every field is optional; an absent field falls back to the default, and any `SHO
 overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `accessTokenTtlSeconds`,
 `refreshTokenTtlSeconds`, `sessionTtlSeconds`, `publicBaseUrl`, `emailVerificationRequired`,
 `rateLimitEnabled`, `maxFailedLoginsPerAccount`, `perIpRequestsPerMinute`, `metricsEnabled`,
-`requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`.
+`requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`, and the WebAuthn keys `webauthnRpId`,
+`webauthnRpName`, `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
+`webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`, `webauthnMfaRequired`
+(see [passkeys.md](passkeys.md) for the WebAuthn settings).
 
 ## The `shomei-admin` CLI
 
