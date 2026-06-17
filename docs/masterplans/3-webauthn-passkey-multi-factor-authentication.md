@@ -191,7 +191,7 @@ only intra-MasterPlan-3 dependencies.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Complete |
-| 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Not Started |
+| 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | In Progress |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Not Started |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
 | 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | Not Started |

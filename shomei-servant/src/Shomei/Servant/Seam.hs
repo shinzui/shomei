@@ -37,8 +37,10 @@ import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
 import Shomei.Effect.Notifier (Notifier)
+import Shomei.Effect.PasskeyStore (PasskeyStore)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
+import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
@@ -61,6 +63,8 @@ type AppEffects =
      , VerificationTokenStore
      , PasswordResetTokenStore
      , LoginAttemptStore
+     , PasskeyStore
+     , PendingCeremonyStore
      , Notifier
      , WebAuthnCeremony
      , PasswordHasher

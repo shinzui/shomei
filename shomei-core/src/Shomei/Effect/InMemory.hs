@@ -32,6 +32,8 @@ module Shomei.Effect.InMemory (
     runVerificationTokenStore,
     runPasswordResetTokenStore,
     runLoginAttemptStore,
+    runPasskeyStore,
+    runPendingCeremonyStore,
     runNotifier,
     runPasswordHasher,
     runAuthEventPublisher,
@@ -63,6 +65,9 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Passkey (
+    NewPasskeyCredential (..),
+    PasskeyCredential (..),
+    PendingCeremony (..),
     PublicKeyBytes,
     SignatureCounter (..),
     UserHandle,
@@ -95,12 +100,15 @@ import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (
+    CeremonyId,
+    PasskeyId,
     PasswordResetTokenId,
     RefreshTokenId,
     SessionId,
     UserId,
     VerificationTokenId,
     genCredentialId,
+    genPasskeyId,
     genPasswordResetTokenId,
     genRefreshTokenId,
     genSessionId,
@@ -113,8 +121,10 @@ import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Effect.Notifier (Notifier (..))
+import Shomei.Effect.PasskeyStore (PasskeyStore (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
+import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore (..))
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
@@ -147,6 +157,8 @@ data World = World
     , loginAttempts :: ![LoginAttempt]
     -- ^ newest-first append-only attempt log (EP-2 brute-force protection)
     , accountLockouts :: !(Map AccountKey AccountLockout)
+    , passkeys :: !(Map PasskeyId PasskeyCredential)
+    , pendingCeremonies :: !(Map CeremonyId PendingCeremony)
     , publishedEvents :: ![Event.AuthEvent]
     -- ^ newest-first
     , sentNotifications :: ![Notification]
@@ -175,6 +187,8 @@ emptyWorld t =
         , signingKeys = Map.empty
         , loginAttempts = []
         , accountLockouts = Map.empty
+        , passkeys = Map.empty
+        , pendingCeremonies = Map.empty
         , publishedEvents = []
         , sentNotifications = []
         , clock = t
@@ -469,6 +483,73 @@ runLoginAttemptStore ref = interpret_ \case
                 , afterSuccess a
                 ]
 
+{- | Field accessors for the EP-1 passkey records. 'OverloadedRecordDot' is unreliable
+for these @DuplicateRecordFields@ records (MasterPlan 3 discovery), so read them with
+plain record-pattern matching instead of @value.field@.
+-}
+pkUserId :: PasskeyCredential -> UserId
+pkUserId PasskeyCredential{userId} = userId
+
+pkCredentialId :: PasskeyCredential -> WebAuthnCredentialId
+pkCredentialId PasskeyCredential{credentialId} = credentialId
+
+pkUserHandle :: PasskeyCredential -> UserHandle
+pkUserHandle PasskeyCredential{userHandle} = userHandle
+
+pcCeremonyId :: PendingCeremony -> CeremonyId
+pcCeremonyId PendingCeremony{ceremonyId} = ceremonyId
+
+pcExpiresAt :: PendingCeremony -> UTCTime
+pcExpiresAt PendingCeremony{expiresAt} = expiresAt
+
+runPasskeyStore :: (IOE :> es) => IORef World -> Eff (PasskeyStore : es) a -> Eff es a
+runPasskeyStore ref = interpret_ \case
+    CreatePasskey NewPasskeyCredential{userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
+        pid <- genPasskeyId
+        let pc =
+                PasskeyCredential
+                    { passkeyId = pid
+                    , userId
+                    , credentialId
+                    , userHandle
+                    , publicKey
+                    , signCounter
+                    , transports
+                    , label
+                    , createdAt
+                    , lastUsedAt = Nothing
+                    }
+        liftIO (modifyIORef' ref (#passkeys %~ Map.insert pid pc))
+        pure pc
+    FindPasskeysByUser uid ->
+        liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
+    FindPasskeyByCredentialId cid ->
+        liftIO ((\w -> listToMaybe [p | p <- Map.elems w.passkeys, pkCredentialId p == cid]) <$> readIORef ref)
+    FindPasskeysByUserHandle uh ->
+        liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserHandle p == uh]) <$> readIORef ref)
+    UpdatePasskeySignCounter pid c t ->
+        liftIO (modifyIORef' ref (#passkeys %~ Map.adjust (\p -> p & #signCounter .~ c & #lastUsedAt .~ Just t) pid))
+    DeletePasskey uid pid ->
+        liftIO (modifyIORef' ref (#passkeys %~ Map.update (\p -> if pkUserId p == uid then Nothing else Just p) pid))
+    CountPasskeysByUser uid ->
+        liftIO ((\w -> length [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
+
+runPendingCeremonyStore :: (IOE :> es) => IORef World -> Eff (PendingCeremonyStore : es) a -> Eff es a
+runPendingCeremonyStore ref = interpret_ \case
+    PutPendingCeremony pc ->
+        liftIO (modifyIORef' ref (#pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc))
+    TakePendingCeremony cid now' -> liftIO do
+        w <- readIORef ref
+        case Map.lookup cid w.pendingCeremonies of
+            Nothing -> pure Nothing
+            Just pc -> do
+                -- Consume-once: remove the row regardless, so an expired take also
+                -- clears the stale row; return it only if it is still live.
+                modifyIORef' ref (#pendingCeremonies %~ Map.delete cid)
+                pure (if pcExpiresAt pc > now' then Just pc else Nothing)
+    DeleteExpiredCeremonies now' ->
+        liftIO (modifyIORef' ref (#pendingCeremonies %~ Map.filter (\pc -> pcExpiresAt pc > now')))
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
     HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -613,6 +694,8 @@ runInMemory ::
         , VerificationTokenStore
         , PasswordResetTokenStore
         , LoginAttemptStore
+        , PasskeyStore
+        , PendingCeremonyStore
         , Notifier
         , WebAuthnCeremony
         , PasswordHasher
@@ -637,6 +720,8 @@ runInMemory ref =
         . runPasswordHasher ref
         . runWebAuthnCeremonyFake ref
         . runNotifier ref
+        . runPendingCeremonyStore ref
+        . runPasskeyStore ref
         . runLoginAttemptStore ref
         . runPasswordResetTokenStore ref
         . runVerificationTokenStore ref

@@ -59,8 +59,10 @@ library
     Shomei.Effect.InMemory
     Shomei.Effect.LoginAttemptStore
     Shomei.Effect.Notifier
+    Shomei.Effect.PasskeyStore
     Shomei.Effect.PasswordHasher
     Shomei.Effect.PasswordResetTokenStore
+    Shomei.Effect.PendingCeremonyStore
     Shomei.Effect.RefreshTokenStore
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
@@ -101,6 +103,7 @@ test-suite shomei-core-test
   other-modules:
     Shomei.AccountSpec
     Shomei.LockoutSpec
+    Shomei.PasskeyStoreSpec
     Shomei.WebAuthnCeremonySpec
     Shomei.WorkflowSpec
 

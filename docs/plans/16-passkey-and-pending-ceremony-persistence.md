@@ -72,28 +72,31 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone 1 — core ports + in-memory interpreters + non-DB stack wiring
 
-- [ ] Confirm EP-1's `Shomei.Domain.Passkey` module exists and exports the domain types and
-      ids listed in "Context and Orientation". If it does not yet exist, STOP and coordinate
-      (this plan must not redefine those types).
-- [ ] Add `PasskeyId` / `CeremonyId` to `Shomei.Id` IF EP-1 has not already (see the note in
-      "Context and Orientation" about where the ids live).
-- [ ] Create `shomei-core/src/Shomei/Effect/PasskeyStore.hs` (the port + smart constructors).
-- [ ] Create `shomei-core/src/Shomei/Effect/PendingCeremonyStore.hs` (the port + smart
+- [x] Confirm EP-1's `Shomei.Domain.Passkey` module exists and exports the domain types and
+      ids listed in "Context and Orientation". (Verified: module + `Shomei.Id` ids/codecs all
+      present — EP-1 is Complete.)
+- [x] Add `PasskeyId` / `CeremonyId` to `Shomei.Id` IF EP-1 has not already. (Not needed —
+      EP-1 already defined both ids and their gen/UUID helpers.)
+- [x] Create `shomei-core/src/Shomei/Effect/PasskeyStore.hs` (the port + smart constructors).
+- [x] Create `shomei-core/src/Shomei/Effect/PendingCeremonyStore.hs` (the port + smart
       constructors).
-- [ ] Add both modules to `shomei-core.cabal` `exposed-modules`.
-- [ ] Extend `Shomei.Effect.InMemory.World` with `passkeys` and `pendingCeremonies` fields;
+- [x] Add both modules to `shomei-core.cabal` `exposed-modules`.
+- [x] Extend `Shomei.Effect.InMemory.World` with `passkeys` and `pendingCeremonies` fields;
       extend `emptyWorld`.
-- [ ] Add `runPasskeyStore` and `runPendingCeremonyStore` to `Shomei.Effect.InMemory`;
+- [x] Add `runPasskeyStore` and `runPendingCeremonyStore` to `Shomei.Effect.InMemory`;
       export them; add both to `runInMemory`'s inline type list AND its composition, right
       after `runLoginAttemptStore`.
-- [ ] Insert `PasskeyStore, PendingCeremonyStore` after `LoginAttemptStore`, before
+- [x] Insert `PasskeyStore, PendingCeremonyStore` after `LoginAttemptStore`, before
       `Notifier`, in `Shomei.Servant.Seam.AppEffects`.
-- [ ] Insert the same two entries in the same position in `Shomei.Server.App.AppEffects`
+- [x] Insert the same two entries in the same position in `Shomei.Server.App.AppEffects`
       (the runAppIO chain is M2's job since it needs the PostgreSQL interpreters).
-- [ ] Add `shomei-core/test/Shomei/PasskeyStoreSpec.hs`; register it in
+- [x] Add `shomei-core/test/Shomei/PasskeyStoreSpec.hs`; register it in
       `shomei-core.cabal` `other-modules` and in `shomei-core/test/Main.hs`.
-- [ ] `nix develop --command cabal build all` green.
-- [ ] `nix develop --command cabal test shomei-core-test` green; the new spec passes.
+- [x] `nix develop --command cabal build shomei-core` green (the full `cabal build all` is
+      the M2 gate, per the Plan-of-Work cut — `shomei-servant`/`shomei-server` need M2's
+      PostgreSQL interpreters to type-check).
+- [x] `nix develop --command cabal test shomei-core-test` green; the new spec passes (29
+      tests, including the 6 new PasskeyStore/PendingCeremony cases).
 
 ### Milestone 2 — migrations + PostgreSQL interpreters + DB stack wiring
 
