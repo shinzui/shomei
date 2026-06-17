@@ -34,6 +34,15 @@ in  Schema.Project::{
         , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
         }
       , Schema.Package::{
+        , name = "shomei-webauthn"
+        , type = Schema.PackageType.Library
+        , language = Schema.Language.Haskell
+        , path = Some "shomei-webauthn"
+        , description = Some
+            "WebAuthn (passkey) ceremony interpreter over tweag/webauthn"
+        , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
+        }
+      , Schema.Package::{
         , name = "shomei-migrations"
         , type = Schema.PackageType.Library
         , language = Schema.Language.Haskell
@@ -77,6 +86,7 @@ in  Schema.Project::{
         , dependencies =
           [ Schema.Dependency.ByName "shomei-core"
           , Schema.Dependency.ByName "shomei-jwt"
+          , Schema.Dependency.ByName "shomei-webauthn"
           , Schema.Dependency.ByName "shomei-postgres"
           , Schema.Dependency.ByName "shomei-migrations"
           , Schema.Dependency.ByName "shomei-servant"
@@ -132,5 +142,6 @@ in  Schema.Project::{
       , "MMZK1526/mmzk-typeid"
       , "frasertweedale/hs-jose"
       , "jappeace/ram"
+      , "tweag/webauthn"
       ]
     }

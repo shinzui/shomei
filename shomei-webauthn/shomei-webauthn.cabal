@@ -1,0 +1,62 @@
+cabal-version: 3.0
+name:          shomei-webauthn
+version:       0.1.0.0
+synopsis:      WebAuthn (passkey) registration/authentication ceremony interpreter
+license:       MIT
+author:        Nadeem Bitar
+maintainer:    nadeem@gmail.com
+category:      Web, Security
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+common shared
+  default-language:   GHC2024
+  default-extensions:
+    BlockArguments
+    DataKinds
+    DeriveAnyClass
+    DuplicateRecordFields
+    LambdaCase
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
+
+library
+  import:          warnings, shared
+  hs-source-dirs:  src
+  exposed-modules: Shomei.WebAuthn.Ceremony
+  build-depends:
+    , aeson
+    , base            >=4.18 && <5
+    , bytestring
+    , crypton         >=1.1.0
+    , effectful
+    , effectful-core
+    , mtl
+    , shomei-core
+    , text
+    , time
+    , time-hourglass
+    , validation
+    , webauthn
+
+test-suite shomei-webauthn-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  other-modules:  Shomei.WebAuthn.CeremonySpec
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , effectful
+    , shomei-core
+    , shomei-webauthn
+    , tasty
+    , tasty-hunit
+    , text
+    , webauthn

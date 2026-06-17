@@ -61,6 +61,7 @@ library
     , shomei-migrations
     , shomei-postgres
     , shomei-servant
+    , shomei-webauthn
     , stm
     , text
     , time

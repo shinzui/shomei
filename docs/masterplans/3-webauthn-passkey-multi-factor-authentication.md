@@ -190,7 +190,7 @@ only intra-MasterPlan-3 dependencies.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | In Progress |
+| 1 | WebAuthn ceremony port and `shomei-webauthn` interpreter package | docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md | None | None | Complete |
 | 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Not Started |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Not Started |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Not Started |
@@ -361,7 +361,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 
 - [x] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4 (patched fork `shinzui/webauthn-project` @ `a8b5636`, pinned as a source-repository-package; `allow-newer: webauthn:*`); a register→authenticate ceremony verifies (the fork's own emulation test, real ECDSA, 100 cases), and the pending-options WJ-JSON serialization round-trips (100 cases) — 2026-06-17
 - [x] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`; deterministic fake interpreter + core unit test; port slotted into all effect-stack lists (server uses a temporary stub until M2) — `cabal build all`/`test all` green — 2026-06-17
-- [ ] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; `cabal build all`/`cabal test all` green
+- [x] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; wired into the server's `runAppIO`; `cabal build all`/`cabal test all` green (11 suites); `mori show --full` lists it — 2026-06-17
 - [ ] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grows)
 - [ ] EP-2: PostgreSQL interpreters for both stores; integration test inserts/queries a passkey and consumes a pending ceremony exactly once
 - [ ] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests; `PasskeyRegistered`/`PasskeyRemoved` events
@@ -460,6 +460,33 @@ decisions that cross plan boundaries:
   `/auth/login/passkey/{begin,complete}`) and the `status:"complete"|"mfa_required"` response
   shape match between EP-4 and EP-5; the implementer of EP-5 should still re-verify field names
   against EP-4 as merged.
+
+
+Discoveries during EP-1 implementation (2026-06-17) that affect later plans:
+
+- **The `webauthn` dependency builds on GHC 9.12.4 via a patched fork.** EP-1 pinned
+  `shinzui/webauthn-project` @ `a8b56361dc9c359186c88daec065e91a409b39f3` (subdir `webauthn`) in
+  `cabal.project` with `allow-newer: webauthn:*`, after four patches (`memory`→`ram`; jose 0.13
+  `RequiredProtection` header param; `SignedJWT` annotation; `validation` `toEither`), all in
+  deferred MDS/SafetyNet code. EP-2..EP-5 inherit this pin unchanged; the M0 risk flagged above is
+  retired.
+
+- **`OverloadedRecordDot`/`HasField` is unreliable for the new records under
+  `DuplicateRecordFields`.** `cfg.rpId` (on `WebAuthnConfig`) and `stored.credentialId` (on
+  `StoredCredentialForVerify`) fail to resolve `HasField`, even for unique fields, while the plain
+  field selectors are generated and importable. **EP-2/EP-3/EP-4 should read the new passkey/config
+  records via plain selectors or positional/record destructuring, not `value.field` dot syntax.**
+
+- **base64url helpers live in `Shomei.Domain.Passkey`.** `b64urlEncode :: ByteString -> Text` and
+  `b64urlDecode :: Text -> Either String ByteString` (over the `base64` package — note: core uses
+  `base64`, NOT `base64-bytestring`) are exported for reuse by EP-2's stores and EP-3/EP-4 DTOs.
+
+- **The port stack is one coupled type; `WebAuthnCeremony` sits immediately after `Notifier`.** It
+  is present (in that fixed position) in `Shomei.Effect.InMemory.runInMemory`,
+  `Shomei.Servant.Seam.AppEffects` (+ the servant test `runHybrid`), `Shomei.Server.App.AppEffects`
+  (+ `runAppIO`, now using the real `runWebAuthnCeremonyLibrary`), and the `shomei-postgres` test
+  stack. Per IP-6, **EP-2 inserts `PasskeyStore`/`PendingCeremonyStore` right after
+  `LoginAttemptStore` (before `Notifier`/`WebAuthnCeremony`)** so this position is not disturbed.
 
 
 ## Decision Log

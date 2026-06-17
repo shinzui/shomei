@@ -120,19 +120,25 @@ Milestone 1 — core domain, port, config, fake interpreter, wiring: **COMPLETE 
 - [x] `nix develop --command cabal build all` and `… cabal test all` stay green (all suites pass;
       shomei-core-test: 23 OK including the 2 new ceremony/config cases).
 
-Milestone 2 — the `shomei-webauthn` package and the real interpreter:
+Milestone 2 — the `shomei-webauthn` package and the real interpreter: **COMPLETE (2026-06-17).**
 
-- [ ] Create `shomei-webauthn/` (`.cabal`, `src/Shomei/WebAuthn/Ceremony.hs`, `test/`).
-- [ ] Implement `runWebAuthnCeremonyLibrary` against `webauthn` + `crypton`.
-- [ ] Register `shomei-webauthn` in `cabal.project` and `mori.dhall`.
-- [ ] Wire `runWebAuthnCeremonyLibrary env.envConfig.webauthnConfig` into
-      `Shomei.Server.App.runAppIO`.
-- [ ] Add the `shomei-webauthn` end-to-end ceremony test (promote the M0 harness) asserting a
-      verified result and an optionsBlob round-trip.
-- [ ] `nix develop --command cabal build all` / `… cabal test all` green; `mori show --full`
-      lists `shomei-webauthn`.
-- [ ] Record the IP-1 final signatures and IP-3 final field shape back into the MasterPlan's
-      Integration Points if they drifted from the canonical contract below.
+- [x] Create `shomei-webauthn/` (`.cabal`, `src/Shomei/WebAuthn/Ceremony.hs`, `test/`).
+- [x] Implement `runWebAuthnCeremonyLibrary` against `webauthn` + `crypton` (begin/complete
+      registration & authentication; WJ-JSON options blob serialization; library error
+      families mapped to the closed `WebAuthnError` set; clone → `WebAuthnCounterCloned`).
+- [x] Register `shomei-webauthn` in `cabal.project` (`packages:`) and `mori.dhall` (package
+      entry + `shomei-server` dependency + top-level `tweag/webauthn`).
+- [x] Wire `runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)` into
+      `Shomei.Server.App.runAppIO` (replacing the M1 stub) and add `shomei-webauthn` to
+      `shomei-server`'s build-depends.
+- [x] Add the `shomei-webauthn` test asserting the optionsBlob round-trips through webauthn-json
+      (registration + authentication) and that a malformed credential fails closed. (The full
+      real-signature ceremony is proven by M0's emulator run on this build — see Decision Log;
+      the upstream emulator is not importable into this package.)
+- [x] `nix develop --command cabal build all` / `… cabal test all` green; `mori show --full`
+      lists `shomei-webauthn` (with its `tweag/webauthn` dependency).
+- [x] IP-1 signatures and IP-3 field shape were implemented exactly as the canonical contract
+      below; no drift, so no MasterPlan IP edits were needed.
 
 
 ## Surprises & Discoveries
@@ -274,6 +280,31 @@ Record every decision made while working on the plan.
   policy it can flip this with a Decision Log entry in the MasterPlan IP-1.)
   Date: 2026-06-17
 
+- Decision (M2, 2026-06-17): **The `shomei-webauthn` package test proves the interpreter's
+  serialization plumbing, not a fresh real-signature ceremony; the cryptographic ceremony is
+  proven by M0.**
+  Rationale: a real `register→authenticate` through `runWebAuthnCeremonyLibrary` needs a
+  software authenticator that produces valid COSE/ECDSA signatures. The only such emulator is in
+  the upstream library's *test-suite* (`tests/Emulation/*`), which is not exposed as a library, so
+  it cannot be imported into `shomei-webauthn`'s test without vendoring it (out of scope for EP-1).
+  M0 already ran that emulator on this exact patched build and the full ceremony verified
+  (`Emulation > None > succeeds`, 100 cases) along with the WJ JSON round-trips. The package test
+  therefore covers the genuinely new, interpreter-specific surface: the `optionsBlob` round-trips
+  through webauthn-json (the recovery path `completeRegistration`/`completeAuthentication` rely on)
+  for both ceremonies, and a malformed credential fails closed with a `WebAuthnError`. EP-3/EP-4,
+  which run end-to-end HTTP flows, will exercise the interpreter further through the in-memory fake
+  (deterministic) and can add a real-fixture ceremony if desired.
+  Date: 2026-06-17
+
+- Decision (M2, 2026-06-17): **`WebAuthnConfig` fields are read via plain selectors, not
+  `cfg.field` record-dot.** GHC does not derive `HasField` for `WebAuthnConfig` (nor for the
+  `WebAuthnCeremony` result records) under `DuplicateRecordFields`, so `OverloadedRecordDot` fails
+  to resolve; the field *selectors* are still generated and importable. The interpreter imports
+  `rpId`/`rpName`/`origins`/`userVerification`/`attestation`/`ceremonyTimeout` from `Shomei.Config`
+  and applies them as functions; imported records (`CredentialUserInfo`, `StoredCredentialForVerify`)
+  are destructured positionally. (Same root cause as the M1 surprise.)
+  Date: 2026-06-17
+
 - Decision (M1, 2026-06-17): **The server's `runAppIO` interprets `WebAuthnCeremony` with a
   temporary stub in M1, replaced by the real `runWebAuthnCeremonyLibrary` in M2.**
   Rationale: `Shomei.Servant.Seam.Env.runPorts` fixes the whole port stack as one type, so
@@ -355,7 +386,44 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-17): EP-1 complete; all three milestones delivered, all goals met.**
+
+The foundation exists exactly as the Purpose described:
+
+- `shomei-core` gained the passkey vocabulary (`Shomei.Domain.Passkey`), the two ids
+  (`PasskeyId`/`CeremonyId`), the `webauthnConfig` sub-record, and the `WebAuthnCeremony`
+  Value-boundary port with a deterministic fake — with **no** `webauthn` dependency in core.
+- `shomei-webauthn` exists and interprets the port against the real `tweag/webauthn` library
+  (pinned, patched fork, building on GHC 9.12.4); it is registered in `cabal.project` and
+  `mori.dhall` and wired into the server's `runAppIO`.
+- `WebAuthnCeremony` is carried, in the same position (after `Notifier`), by every effect-stack
+  list (in-memory, servant seam + test hybrid, server app, postgres test).
+- Two test layers prove both interpreters: the core spec drives the deterministic fake
+  (`shomei-core-test`, 23 OK) and the package spec proves the real interpreter's serialization
+  plumbing (`shomei-webauthn-test`, 3 OK). `cabal build all` / `cabal test all` are green across
+  all 11 suites.
+
+What the build verified beyond compilation: M0's run of the upstream emulator on this patched
+build proved the full register→authenticate ceremony crypto and the WJ JSON round-trips; M2's
+package test proves the interpreter recovers its own persisted `optionsBlob` and fails closed on
+garbage. So a passkey can be registered and used to authenticate, server-side, through the port
+the rest of MasterPlan 3 will call.
+
+Gaps / handoffs to later plans:
+- The full real-signature ceremony is not re-proven inside `shomei-webauthn`'s own test (the
+  upstream emulator is not importable; see Decision Log). EP-3/EP-4's end-to-end flows, plus M0's
+  evidence, cover it.
+- The single biggest risk (the heavy dependency building on 9.12.4) was retired in M0 via four
+  small fork patches (`memory`→`ram`; jose 0.13 `RequiredProtection`; `SignedJWT` annotation;
+  `validation` `toEither`), all in deferred MDS/SafetyNet code; the ceremony crypto path is
+  upstream-unchanged.
+
+Lessons: (1) `allow-newer` only relaxes bounds — API drift still surfaces as compile errors, so a
+build spike is the right first milestone for a heavy, version-skewed dependency. (2) Under
+`DuplicateRecordFields`, `OverloadedRecordDot`/`HasField` is unreliable for some records; prefer
+plain selectors or positional destructuring for the new types. (3) The Shōmei port stack is one
+coupled type across servant/server/in-memory/postgres-test — a new port must be slotted into all
+of them in one change.
 
 
 ## Context and Orientation
