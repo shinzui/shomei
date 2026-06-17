@@ -29,7 +29,7 @@ The schema is `config/shomei-types.dhall`; a worked example is `config/shomei.ex
 Copy it to `config/shomei.dhall` (gitignored, holds secrets), edit, and point the server at it:
 
 ```bash
-SHOMEI_CONFIG=config/shomei.dhall PG_CONNECTION_STRING=… cabal run shomei-server
+SHOMEI_CONFIG=config/shomei.dhall PG_CONNECTION_STRING=… cabal run exe:shomei-server
 ```
 
 Every field is optional; an absent field falls back to the default, and any `SHOMEI_*` env var
@@ -62,11 +62,16 @@ socket** (no TCP port, so it never conflicts with any other Postgres on the mach
 the same pattern every service in the project uses.
 
 ```bash
-nix develop            # or rely on direnv (.envrc runs `use flake`)
-process-compose up     # starts the whole local stack
+nix develop                      # or rely on direnv (.envrc runs `use flake`)
+process-compose up --no-server   # starts the whole local stack
 ```
 
-`process-compose up` runs the processes in `process-compose.yaml`, in order:
+The `--no-server` flag is required: process-compose's own REST API also defaults to TCP 8080
+and would grab the port before `shomei-server` can bind it (process-compose aborts rather than
+relocating). Disabling its API frees 8080 for the server; you drive the stack from the
+foreground TUI (press `q`/Ctrl-C to stop).
+
+`process-compose up --no-server` runs the processes in `process-compose.yaml`, in order:
 
 1. `postgres` — a local PostgreSQL started with `pg_ctl … -o "--unix_socket_directories='$PGHOST'"
    -o "-c listen_addresses=''"`, i.e. socket-only. The dev shell (`nix/haskell.nix`) exports
@@ -75,9 +80,11 @@ process-compose up     # starts the whole local stack
 2. `create_schema` — `just create-database`: creates the `shomei` database (over the socket) and
    applies all migrations. Idempotent.
 3. `bootstrap_keys` — ensures an active ES256 signing key exists (via `shomei-admin keys
-   list`/`generate`/`activate`).
-4. `shomei-server` — `cabal run shomei-server`, reachable at `http://localhost:8080`; its
-   readiness probe hits `/ready`.
+   list`/`generate`/`activate`). `shomei-admin` reads `DATABASE_URL`, which this step bridges
+   from the dev shell's `PG_CONNECTION_STRING`.
+4. `shomei-server` — `cabal run exe:shomei-server` (`exe:` disambiguates from the `shomei-admin`
+   executable in the same package), reachable at `http://localhost:8080`; its readiness probe
+   hits `/ready`.
 
 The server reaches the database over `PG_CONNECTION_STRING` (the Unix socket), so there is no
 host/port to configure and nothing to clash with. Then, from another shell:
@@ -87,8 +94,9 @@ curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
   -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
 ```
 
-To reset to a pristine database: stop the stack (`process-compose down`), `dropdb shomei`, then
-`process-compose up` again — `create_schema` recreates and re-migrates it.
+To reset to a pristine database: stop the stack (press `q`/Ctrl-C in the process-compose TUI —
+with `--no-server` there is no API for `process-compose down`), `dropdb shomei`, then
+`process-compose up --no-server` again — `create_schema` recreates and re-migrates it.
 
 ## Production container image
 

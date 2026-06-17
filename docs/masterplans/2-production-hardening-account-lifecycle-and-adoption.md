@@ -351,7 +351,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user (live runbook, 2026-06-10)
 - [x] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation (integration test proves retired-key tokens still verify, revoked ones don't)
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
-- [~] EP-5: production OCI image (`flake.module.nix`) + CI workflow authored; image build NOT run in the dev sandbox (deferred to CI/deploy host). Local dev/test stack is `process-compose up` (Unix-socket PostgreSQL + schema + key bootstrap + server) — `docker compose` was dropped 2026-06-17 (see Decision Log).
+- [~] EP-5: production OCI image (`flake.module.nix`) + CI workflow authored; image build NOT run in the dev sandbox (deferred to CI/deploy host). Local dev/test stack is `process-compose up --no-server` (Unix-socket PostgreSQL + schema + key bootstrap + server) — `docker compose` was dropped 2026-06-17 (see Decision Log). **Verified live end-to-end 2026-06-17**: clean `process-compose up --no-server` brings the stack to `/ready` 200 (`database:true, signingKey:true`), JWKS serves the active key, signup→login returns an ES256 token, `/metrics` exports counters, and SIGINT drains gracefully. Three regressions in the committed `process-compose.yaml` were found and fixed during this verification (see Surprises & Discoveries, 2026-06-17).
 - [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
 - [ ] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `reconstructAuthEvent`
 - [ ] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403)
@@ -363,6 +363,33 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 
 Cross-plan insights, dependency changes, and scope adjustments discovered during
 implementation. Provide concise evidence.
+
+- **2026-06-17 — live verification of the `process-compose` local stack surfaced three
+  regressions in the committed `process-compose.yaml` (commit `1224ca7`), now fixed.** When the
+  stack was first run end-to-end it did not boot; each failure was a distinct bug:
+  1. **Port 8080 collision.** The new `shomei-server` process binds `SHOMEI_PORT=8080`, but
+     process-compose's *own* REST API also defaults to TCP 8080 and **aborts** (`FTL start http
+     server on localhost:8080 failed … address already in use`) rather than relocating. In a clean
+     environment process-compose grabs 8080 first, so the server can never bind it. Fix (per user
+     decision): document/launch the stack as `process-compose up --no-server`, which frees 8080
+     (control via the foreground TUI; `process-compose down` from another shell is unavailable
+     with `--no-server`).
+  2. **`bootstrap_keys` env-var mismatch.** `shomei-admin` requires `DATABASE_URL`
+     (`Shomei.Admin.Env.loadAdminEnv`), but the Nix dev shell exports only `PG_CONNECTION_STRING`
+     (which `shomei-server` reads directly, `Shomei.Server.Config`). The key-bootstrap step died
+     with `user error (DATABASE_URL is not set)`, so `shomei-server` (gated on it) never started.
+     Fix (in-scope, local stack only): the `bootstrap_keys` step now bridges
+     `export DATABASE_URL="$PG_CONNECTION_STRING"`. **Root-cause follow-up recommended** (not done
+     here, out of the process-compose scope): make `shomei-admin` read `PG_CONNECTION_STRING`
+     (falling back to `DATABASE_URL`) so the admin CLI and server share one DB var — this would
+     also let the production container (`deploy/entrypoint.sh`) and `docs/deployment.md` stop
+     requiring operators to set both vars to the same value.
+  3. **Ambiguous `cabal run shomei-server`.** Since EP-4 added the `shomei-admin` executable to the
+     `shomei-server` package, `cabal run shomei-server` resolves to the *package* (two exes) and
+     fails with `Cabal-7070`. Fix: `cabal run exe:shomei-server`. The same stale invocation existed
+     in `README.md` and `docs/deployment.md` and was corrected.
+  All three fixes are config/doc-only (no Haskell changed); the stack now boots cleanly and was
+  verified live (`/ready`, JWKS, signup→login ES256 token, `/metrics`, graceful SIGINT shutdown).
 
 The following were surfaced while authoring the child plans (2026-06-04), before any
 implementation, by reading the real `shomei-core`/`shomei-postgres` source. They are

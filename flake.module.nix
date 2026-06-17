@@ -7,8 +7,8 @@
 #   docker load < result             # loads shomei-server:latest
 #
 # Local development/testing does NOT use this image or docker compose — it runs the stack
-# from the Nix dev shell with a local PostgreSQL on a Unix socket: `process-compose up`
-# (see process-compose.yaml).
+# from the Nix dev shell with a local PostgreSQL on a Unix socket: `process-compose up
+# --no-server` (the --no-server flag frees TCP 8080 for shomei-server; see process-compose.yaml).
 #
 # NOTE: authored for the deployment story; not built in the development sandbox where this
 # landed. Verify with `nix build .#dockerImage` in an environment with the flake's substituters.

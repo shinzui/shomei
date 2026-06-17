@@ -2,16 +2,21 @@
 
 # One-command local development/test stack (run from inside the Nix dev shell):
 #
-#   process-compose up
+#   process-compose up --no-server
+#
+# The `--no-server` flag is required: process-compose's own REST API also defaults to TCP
+# 8080 and would otherwise grab the port before shomei-server can bind it (process-compose
+# aborts rather than relocating). Disabling its API frees 8080 for the server; control the
+# stack via the foreground TUI (Ctrl-C to stop).
 #
 # Starts a local PostgreSQL on a Unix-domain socket (no TCP port, so it never conflicts
 # with any other Postgres on the machine), creates and migrates the `shomei` database,
 # ensures an active ES256 signing key, then runs `shomei-server` on http://localhost:8080.
 #
 # PGHOST/PGDATA/PGDATABASE/PG_CONNECTION_STRING are exported by the dev shell
-# (nix/haskell.nix); the server and the admin CLI reach the database over the socket via
-# PG_CONNECTION_STRING. This is the LOCAL stack — production is the OCI image
-# (`nix build .#dockerImage`) / plain Dockerfile, not anything here.
+# (nix/haskell.nix); shomei-server reads PG_CONNECTION_STRING directly, and the bootstrap_keys
+# step bridges it to DATABASE_URL for the admin CLI. This is the LOCAL stack — production is
+# the OCI image (`nix build .#dockerImage`) / plain Dockerfile, not anything here.
 version: "0.5"
 log_level: debug
 log_location: ./.dev/process-compose.log
@@ -51,8 +56,10 @@ processes:
   bootstrap_keys:
     # Ensure an active ES256 signing key exists so the server can issue tokens. Mirrors
     # deploy/entrypoint.sh's key-ensure step, but for local dev via the admin CLI.
+    # shomei-admin reads DATABASE_URL; bridge it from the dev shell's PG_CONNECTION_STRING.
     command: >
-      sh -c 'if cabal run -v0 shomei-admin -- keys list | grep -q KeyActive; then
+      sh -c 'export DATABASE_URL="$PG_CONNECTION_STRING";
+        if cabal run -v0 shomei-admin -- keys list | grep -q KeyActive; then
         echo "[bootstrap_keys] active signing key already present";
       else
         echo "[bootstrap_keys] no active key; generating and activating one";
@@ -68,7 +75,8 @@ processes:
   shomei-server:
     # The auth server. Connects to the local PostgreSQL over the Unix socket via the
     # PG_CONNECTION_STRING exported by the dev shell; reachable at http://localhost:8080.
-    command: "cabal run shomei-server"
+    # `exe:` disambiguates: the shomei-server package also ships the shomei-admin executable.
+    command: "cabal run exe:shomei-server"
     environment:
       - "SHOMEI_PORT=8080"
     readiness_probe:
