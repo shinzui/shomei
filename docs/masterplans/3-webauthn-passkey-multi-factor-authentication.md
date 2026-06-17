@@ -194,7 +194,7 @@ only intra-MasterPlan-3 dependencies.
 | 2 | Passkey and pending-ceremony persistence | docs/plans/16-passkey-and-pending-ceremony-persistence.md | EP-1 | None | Complete |
 | 3 | Passkey enrollment workflow and management API | docs/plans/17-passkey-enrollment-workflow-and-management-api.md | EP-1, EP-2 | None | Complete |
 | 4 | Passkey login: MFA step-up and passwordless | docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md | EP-1, EP-2 | EP-3 | Complete |
-| 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | In Progress |
+| 5 | Client, demo, and documentation | docs/plans/19-passkey-client-demo-and-documentation.md | None | EP-1, EP-2, EP-3, EP-4 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -368,8 +368,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey (begin=200→complete=200→list[1]→delete=204→list[0]→re-complete=404→no-token=401); `cabal test all` green (11 suites) — 2026-06-17
 - [x] EP-4: `login` widened to `LoginComplete`/`MfaRequired` (the `CeremonyId` IS the pending-MFA token); `mfaRequired` policy gates on `webauthnConfig.mfaRequired && passkeyCount > 0`; shared `issueSession` (in new leaf `Shomei.Workflow.Session`); `Shomei.Workflow.Mfa` (`prepareMfaChallenge`/`completeMfa`/`beginPasswordlessLogin`/`completePasswordlessLogin`); pure `Shomei.Workflow.MfaSpec` (6 cases) green — 2026-06-17
 - [x] EP-4: `POST /auth/mfa/complete` + passwordless `POST /auth/login/passkey/{begin,complete}` (no `/auth/mfa/begin`; challenge rides in the `mfa_required` login arm); `LoginResponse` is a `status`-tagged JSON sum; `MfaChallenged`/`MfaSucceeded`/`MfaFailed` events wired into the PostgreSQL publisher; servant HTTP test proves a password-only login yields `mfa_required` with NO token, `/auth/mfa/complete` mints tokens that work on `/auth/me`, the consumed ceremony is 404, and passwordless round-trips; `cabal build all`/`cabal test all` green (11 suites) — 2026-06-17
-- [ ] EP-5: typed `shomei-client` passkey functions; embedded-demo passkey flow with browser JS
-- [ ] EP-5: `docs/passkeys.md` + `docs/api.md`/`docs/security.md` additions, grounded in the finished EP-1..EP-4 surface
+- [x] EP-5: typed `shomei-client` passkey functions (seven derived wrappers + widened-meaning `login`); embedded-demo passkey flow with browser JS (`www/` served via a `Raw` route; demo test asserts `GET /index.html` → 200); **also wired `webauthnConfig` into the server Dhall/env config loader** (a gap left by EP-1), validated by an extended `shomei-server-config-test` — 2026-06-17
+- [x] EP-5: `docs/passkeys.md` + `docs/api.md`/`docs/security.md`/`docs/deployment.md` additions + README link, every name grep-checked against the merged EP-1..EP-4 surface; `cabal build all` + `cabal test all` (11 suites) green — 2026-06-17
 
 
 ## Surprises & Discoveries
@@ -647,4 +647,37 @@ Discoveries during EP-5 implementation (2026-06-17):
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare
 the result against the original vision.
 
-(To be filled during and after implementation.)
+**Initiative complete (2026-06-17). All five ExecPlans are Complete; `cabal build all` and
+`cabal test all` (11 suites) are green.** The original vision is met end to end:
+
+- A user can **enroll, list, and remove passkeys** (`POST /auth/passkeys/register/{begin,complete}`,
+  `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}`) — EP-3.
+- A password login for an account that has a passkey returns an **MFA challenge** instead of
+  tokens; completing the WebAuthn assertion at `POST /auth/mfa/complete` issues the token pair,
+  and possession of the password alone grants no session — EP-4. A **passwordless** path
+  (`POST /auth/login/passkey/{begin,complete}`) also lands.
+- The ceremony verification lives in the new `shomei-webauthn` package against `tweag/webauthn`
+  (a patched fork pinned for GHC 9.12.4), behind a `Value`-boundary `WebAuthnCeremony` port so
+  the core takes no `webauthn` dependency — EP-1. Passkeys and consume-once pending ceremonies
+  are PostgreSQL-backed — EP-2.
+- An operator can **configure the Relying Party identity and MFA policy** through `webauthnConfig`
+  via Dhall *and* `SHOMEI_WEBAUTHN_*` env vars (the loader wiring was completed in EP-5 — see the
+  Surprises entry; EP-1 had shipped only the type + default).
+- A developer has a **typed client** (`shomei-client`), a **runnable browser demo**, and a
+  **documentation set** (`docs/passkeys.md` + api/security/deployment additions + README) — EP-5.
+
+**Gaps / deferred (as scoped):** TOTP, SMS/email OTP, and recovery/backup codes remain future
+work (the password stays the first factor, so password-reset still recovers a lost-passkey
+account); the FIDO Metadata Service trust pipeline is stubbed (empty registry, permissive
+consumer-passkey attestation); pending-ceremony state is single-instance (PostgreSQL-backed, no
+distributed story); no admin UI. An automated end-to-end *browser* ceremony test is out of scope
+(a real/virtual authenticator is required) — the demo is human-validated, while EP-3/EP-4's
+in-process HTTP tests and EP-1's fake-interpreter tests cover the server side.
+
+**Lessons across the initiative:** (1) The `Value`-boundary port (IP-1) successfully kept the
+heavy `webauthn` closure out of the core — the central design bet paid off. (2) The
+`OverloadedRecordDot`/`HasField` unreliability for the new records under `DuplicateRecordFields`
+was a recurring tax; record destructuring is the standing workaround. (3) A late "adoption-only"
+plan must still verify the upstream surface is actually wired (the `webauthnConfig` loader gap),
+and must reconcile against the *merged* code, not the authoring-time assumptions (two drifts in
+EP-5).

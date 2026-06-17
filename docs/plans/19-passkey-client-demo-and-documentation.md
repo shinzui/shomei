@@ -308,7 +308,37 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-06-17): all three milestones delivered; `cabal build all` and `cabal test all`
+(11 suites) green.** The adoption layer is complete and matches the original purpose:
+
+- **M1 — typed client.** `Shomei.Client` exports seven new derived wrappers
+  (`passkeyRegisterBegin`, `passkeyRegisterComplete`, `listPasskeys`, `deletePasskey`,
+  `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete`) plus a re-documented `login` whose
+  `LoginResponse` is now a tagged sum. A developer can drive every passkey route from Haskell.
+- **M2 — documentation.** `docs/passkeys.md` (concepts → three ceremonies → config → caveat →
+  security → recovery → demo), the passkey/MFA section of `docs/api.md`, the threat model in
+  `docs/security.md`, the env/Dhall reference in `docs/deployment.md`, and the README link/feature
+  mention. Every endpoint, DTO field, status code, env var, and config key was grep-checked
+  against the merged code.
+- **M3 — demo.** A static enroll + step-up-login page (`examples/embedded-servant-app/www/`)
+  served by the demo via a `Raw` `serveDirectoryWebApp` route, with a human walkthrough. The
+  demo test asserts `GET /index.html` → `200`.
+
+**Gaps / deviations from the original plan:**
+
+- The plan declared "EP-5 adds no server behavior," but EP-1 had never wired `webauthnConfig`
+  into the server config loader, so the documented config would have been non-functional. With
+  the user's go-ahead, EP-5 closed that gap (FileConfig + Dhall schema + `SHOMEI_WEBAUTHN_*` env
+  overlay), validated by an extended `shomei-server-config-test`. See the Decision Log.
+- Two reconciliations against EP-4 as merged: `passkeyLoginComplete` returns `TokenPairResponse`
+  (not `LoginResponse`), and `serveDirectoryWebApp "www"` needed a CWD-independent path
+  (`SHOMEI_DEMO_WWW`). Both are recorded in the Decision Log / Surprises.
+
+**Lessons:** (1) Reconcile a wrapper plan against the *merged* upstream surface before writing —
+two assumptions had drifted. (2) `serveDirectoryWebApp` with a bare relative path is a footgun
+for a demo launched from an arbitrary directory; make the path explicit. (3) A plan that only
+"documents" a feature still has to verify the feature is actually wired end to end — the config
+gap would have shipped as misleading docs otherwise.
 
 
 ## Context and Orientation
