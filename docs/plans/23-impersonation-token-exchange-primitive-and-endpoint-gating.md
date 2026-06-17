@@ -63,7 +63,7 @@ This section must always reflect the actual current state of the work.
 - [x] M1: Add `actor :: Maybe UserId` to `AuthClaims`; encode/decode the `act` JWT claim; round-trip test passes. (done 2026-06-17)
 - [x] M2: Add `actor :: Maybe UserId` to `Session`/`NewSession`; add `actor_user_id` column migration; update Postgres + in-memory session stores; store/load test passes. (done 2026-06-17)
 - [x] M3: Add `ImpersonationConfig` to `ShomeiConfig`; add `AuthError` constructors; add `AuthEvent` constructors; implement `Shomei.Workflow.Impersonation` (`startImpersonation`, `stopImpersonation`); core spec passes. (done 2026-06-17)
-- [ ] M4: Add Servant DTOs, the `impersonate` + `stopImpersonate` routes, handlers, error mappings, and the `denyUnderImpersonation` gate on password-change + passkey handlers; project new events in the Postgres publisher; servant/integration tests pass.
+- [x] M4: Add Servant DTOs, the `impersonate` + `stopImpersonate` routes, handlers, error mappings, and the `denyUnderImpersonation` gate on password-change + passkey handlers; project new events in the Postgres publisher; servant/integration tests pass. (done 2026-06-17)
 - [ ] M5: End-to-end HTTP validation transcript captured; `docs/security.md` and `docs/api.md` updated.
 
 

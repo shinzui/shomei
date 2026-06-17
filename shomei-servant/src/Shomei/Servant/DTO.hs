@@ -28,11 +28,14 @@ module Shomei.Servant.DTO (
     MfaCompleteRequest (..),
     PasskeyLoginBeginResponse (..),
     PasskeyLoginCompleteRequest (..),
+    ImpersonateRequest (..),
+    ImpersonateResponse (..),
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
     passkeyToResponse,
     loginResultToResponse,
+    impersonateToResponse,
 ) where
 
 import Shomei.Prelude
@@ -296,6 +299,42 @@ loginResultToResponse = \case
         LoginCompleteResponse{user = userToResponse user, token = tokenPairToResponse pair}
     MfaRequired (MfaChallenge cid opts) ->
         LoginMfaRequiredResponse{ceremonyId = idText cid, options = opts}
+
+{- | @POST /auth/impersonate@ body: the target user id, a required reason, and an
+optional support ticket id.
+-}
+data ImpersonateRequest = ImpersonateRequest
+    { userId :: !Text
+    , reason :: !Text
+    , ticketId :: !(Maybe Text)
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | @POST /auth/impersonate@ response: the delegated access token, the subject
+(customer) and actor (operator) ids, and the token expiry as ISO-8601.
+-}
+data ImpersonateResponse = ImpersonateResponse
+    { accessToken :: !Text
+    , subjectUserId :: !Text
+    , actorUserId :: !Text
+    , expiresAt :: !Text
+    }
+    deriving stock (Generic)
+    deriving anyclass (FromJSON, ToJSON)
+
+{- | Render the @(Session, AccessToken)@ a successful impersonation returns into the
+wire DTO. The session's @actor@ is always 'Just' for a delegated session; an empty
+string is a defensive fallback that should never occur.
+-}
+impersonateToResponse :: Session -> AccessToken -> ImpersonateResponse
+impersonateToResponse s (AccessToken tok) =
+    ImpersonateResponse
+        { accessToken = tok
+        , subjectUserId = idText s.userId
+        , actorUserId = maybe "" idText s.actor
+        , expiresAt = Text.pack (iso8601Show s.expiresAt)
+        }
 
 -- | Render a domain 'Session' to the wire DTO (timestamps as ISO-8601).
 sessionToResponse :: Session -> SessionResponse

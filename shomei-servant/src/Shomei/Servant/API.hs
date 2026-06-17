@@ -28,6 +28,8 @@ import Shomei.Servant.DTO (
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
     HealthResponse,
+    ImpersonateRequest,
+    ImpersonateResponse,
     LoginRequest,
     LoginResponse,
     MfaCompleteRequest,
@@ -183,6 +185,25 @@ data ShomeiAPI mode = ShomeiAPI
                 :> "complete"
                 :> ReqBody '[JSON] PasskeyLoginCompleteRequest
                 :> Post '[JSON] TokenPairResponse
+    , -- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
+      -- token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
+      -- client IP for the audit record.
+      impersonate ::
+        mode
+            :- "auth"
+                :> "impersonate"
+                :> Authenticated
+                :> RemoteHost
+                :> ReqBody '[JSON] ImpersonateRequest
+                :> Post '[JSON] ImpersonateResponse
+    , -- | @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session
+      -- named by the presented token. Authenticated.
+      stopImpersonate ::
+        mode
+            :- "auth"
+                :> "impersonate"
+                :> Authenticated
+                :> DeleteNoContent
     , jwks ::
         mode
             :- ".well-known"

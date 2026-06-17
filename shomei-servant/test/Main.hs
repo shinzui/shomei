@@ -23,7 +23,7 @@ import Data.Aeson (Value (..), decode, encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 
-import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 
 import Effectful (Eff, runEff)
 
@@ -58,9 +58,12 @@ import Servant (
  )
 import Servant.Server.Experimental.Auth (AuthHandler)
 
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Data.Map.Strict qualified as Map
+
+import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
 import Shomei.Domain.Email (emailText)
+import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
@@ -173,6 +176,31 @@ mkAdminToken jwk cfg = do
         Right (AccessToken tok) -> pure tok
         Left e -> assertFailure ("admin token signing failed: " <> show e)
 
+{- | Mint a fresh access token carrying the impersonation scope (the workflows issue no
+scopes, so a token holding @impersonate:user@ must be signed directly). Issued at the
+world clock @t0@, so the freshness check passes against the in-memory 'Clock'.
+-}
+mkImpersonatorToken :: JWK -> ShomeiConfig -> UTCTime -> IO Text
+mkImpersonatorToken jwk cfg t = do
+    uid <- genUserId
+    sid <- genSessionId
+    let claims =
+            AuthClaims
+                { subject = uid
+                , sessionId = sid
+                , issuer = cfg.issuer
+                , audience = cfg.audience
+                , issuedAt = t
+                , expiresAt = addUTCTime 900 t
+                , scopes = Set.fromList [cfg.impersonationConfig.impersonateScope]
+                , roles = Set.empty
+                , actor = Nothing
+                }
+    r <- signAccessToken jwk claims
+    case r of
+        Right (AccessToken tok) -> pure tok
+        Left e -> assertFailure ("impersonator token signing failed: " <> show e)
+
 main :: IO ()
 main = do
     jwk <- generateSigningKey
@@ -189,18 +217,19 @@ main = do
                 , accountKeyOf = AccountKey . emailText
                 }
     adminToken <- mkAdminToken jwk cfg
-    defaultMain (tests ref env adminToken)
+    impToken <- mkImpersonatorToken jwk cfg t0
+    defaultMain (tests ref env adminToken impToken)
 
-tests :: IORef World -> Env -> Text -> TestTree
-tests ref env adminToken =
+tests :: IORef World -> Env -> Text -> Text -> TestTree
+tests ref env adminToken impToken =
     testGroup
         "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-        [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless" $
-            testWithApplication (pure (app env)) (scenario ref adminToken)
+        [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
+            testWithApplication (pure (app env)) (scenario ref adminToken impToken)
         ]
 
-scenario :: IORef World -> Text -> Int -> IO ()
-scenario ref adminToken port = do
+scenario :: IORef World -> Text -> Text -> Int -> IO ()
+scenario ref adminToken impToken port = do
     mgr <- newManager defaultManagerSettings
 
     -- (a) signup
@@ -209,6 +238,7 @@ scenario ref adminToken port = do
     sresp <- must "signup body" sBody
     (dig ["user", "email"] sresp >>= asText) @?= Just email
     (dig ["user", "status"] sresp >>= asText) @?= Just "active"
+    adaUserId <- must "signup userId" (dig ["user", "userId"] sresp >>= asText)
     assertBool "signup access token present" (isJust (dig ["token", "accessToken"] sresp >>= asText))
     assertBool "signup refresh token present" (isJust (dig ["token", "refreshToken"] sresp >>= asText))
 
@@ -386,6 +416,53 @@ scenario ref adminToken port = do
     plAccess <- must "passwordless accessToken" (dig ["accessToken"] plResp >>= asText)
     (mePlStatus, _) <- getJSON mgr port "/auth/me" (bearer plAccess)
     mePlStatus @?= 200
+
+    -- (r) impersonation: an operator holding the impersonate scope exchanges for a
+    -- delegated token, sees the customer via /auth/me, is refused a credential change,
+    -- and can stop.
+    let impBody = object ["userId" .= adaUserId, "reason" .= ("Debugging support issue" :: Text), "ticketId" .= ("SUP-1234" :: Text)]
+    (impStatus, impRespBody) <- postJSONAuth mgr port "/auth/impersonate" (bearer impToken) impBody
+    impStatus @?= 200
+    impResp <- must "impersonate body" impRespBody
+    (dig ["subjectUserId"] impResp >>= asText) @?= Just adaUserId
+    assertBool "actorUserId present" (isJust (dig ["actorUserId"] impResp >>= asText))
+    impAccess <- must "delegated accessToken" (dig ["accessToken"] impResp >>= asText)
+
+    -- the delegated token resolves the *customer's* identity on /auth/me
+    (meImpStatus, meImpBody) <- getJSON mgr port "/auth/me" (bearer impAccess)
+    meImpStatus @?= 200
+    meImpResp <- must "me (delegated) body" meImpBody
+    (dig ["email"] meImpResp >>= asText) @?= Just email
+
+    -- a credential change under the delegated token is refused with 403
+    (impPwStatus, _) <-
+        postJSONAuth
+            mgr
+            port
+            "/auth/password/change"
+            (bearer impAccess)
+            (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
+    impPwStatus @?= 403
+
+    -- the operator's OWN token is not impersonation-blocked: it reaches the normal
+    -- credential path (and fails there as invalid credentials, NOT 403).
+    (opPwStatus, _) <-
+        postJSONAuth
+            mgr
+            port
+            "/auth/password/change"
+            (bearer impToken)
+            (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
+    assertBool "operator's own token is not impersonation-blocked" (opPwStatus /= 403)
+
+    -- stop impersonating revokes the delegated session
+    (stopStatus, _) <- deleteAuth mgr port "/auth/impersonate" (bearer impAccess)
+    stopStatus @?= 204
+    world <- readIORef ref
+    let delegated = filter (\s -> isJust s.actor) (Map.elems world.sessions)
+    case delegated of
+        [s] -> s.status @?= SessionRevoked
+        _ -> assertFailure ("expected exactly one delegated session, got " <> show (length delegated))
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text

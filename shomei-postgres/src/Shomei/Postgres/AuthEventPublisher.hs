@@ -86,6 +86,14 @@ projectAuthEvent = \case
         (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "mfa_succeeded", toJSON d, occ)
     Event.MfaFailed d@(Event.MfaFailedData mUid _ occ) ->
         (fmap userIdToUUID mUid, Nothing, "mfa_failed", toJSON d, occ)
+    -- For impersonation events the subject (customer) is the row's user_id; the actor
+    -- (operator) and reason/ticket live inside the JSONB payload.
+    Event.ImpersonationStarted d ->
+        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_started", toJSON d, d.occurredAt)
+    Event.ImpersonationStopped d ->
+        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_stopped", toJSON d, d.occurredAt)
+    Event.ImpersonationActionBlocked d ->
+        (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_action_blocked", toJSON d, d.occurredAt)
 
 insertAuthEventStmt :: Statement AuthEventRow ()
 insertAuthEventStmt =

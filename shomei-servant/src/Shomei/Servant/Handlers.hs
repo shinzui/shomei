@@ -27,17 +27,23 @@ import Shomei.Domain.Command (
     RefreshCommand (..),
     SignupCommand (..),
  )
+import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (ClientIp (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
+import Shomei.Effect.AuthEventPublisher (publishAuthEvent)
+import Shomei.Effect.Clock (now)
 import Shomei.Effect.SessionStore (findSessionById)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
 import Shomei.Effect.UserStore (findUserById)
+import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid))
 import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
+import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
 
@@ -48,6 +54,8 @@ import Shomei.Servant.DTO (
     ConfirmEmailVerificationRequest (..),
     ConfirmPasswordResetRequest (..),
     HealthResponse (..),
+    ImpersonateRequest (..),
+    ImpersonateResponse,
     LoginRequest (..),
     LoginResponse,
     MfaCompleteRequest (..),
@@ -70,6 +78,7 @@ import Shomei.Servant.DTO (
     sessionToResponse,
     tokenPairToResponse,
     userToResponse,
+    impersonateToResponse,
  )
 import Shomei.Servant.Error (authErrorToServerError)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
@@ -96,6 +105,8 @@ shomeiServer env =
         , mfaComplete = mfaCompleteH env
         , passkeyLoginBegin = passkeyLoginBeginH env
         , passkeyLoginComplete = passkeyLoginCompleteH env
+        , impersonate = impersonateH env
+        , stopImpersonate = stopImpersonateH env
         , jwks = jwksH env
         , health = healthH
         , ready = readyH env
@@ -170,6 +181,7 @@ passwordResetConfirmH env req = do
 
 passwordChangeH :: Env -> AuthUser -> ChangePasswordRequest -> Handler NoContent
 passwordChangeH env user req = do
+    denyUnderImpersonation env "password_change" user
     runAuth
         env
         ( Account.changePassword
@@ -177,6 +189,31 @@ passwordChangeH env user req = do
             (Account.ChangePassword user.authUserId (PlainPassword req.currentPassword) (PlainPassword req.newPassword))
         )
     pure NoContent
+
+{- | Refuse a request that arrives on a delegated (impersonation) token: any token whose
+claims carry an @act@ actor is acting on behalf of someone and must not change credentials.
+A blocked attempt is audited (with both ids and the action name) and returns HTTP 403.
+
+TODO: when Shōmei grows further credential-changing endpoints (email change, account
+deletion, TOTP enrollment), call this guard at the top of each of them too.
+-}
+denyUnderImpersonation :: Env -> Text -> AuthUser -> Handler ()
+denyUnderImpersonation env action user =
+    case user.authClaims.actor of
+        Nothing -> pure ()
+        Just actorId -> do
+            ts <- runPort env now
+            runPort env $
+                publishAuthEvent $
+                    Event.ImpersonationActionBlocked
+                        Event.ImpersonationActionBlockedData
+                            { actorUserId = actorId
+                            , subjectUserId = user.authUserId
+                            , sessionId = user.authSessionId
+                            , action = action
+                            , occurredAt = ts
+                            }
+            throwError (authErrorToServerError ImpersonationActionBlocked)
 
 logoutH :: Env -> AuthUser -> Handler NoContent
 logoutH env user = do
@@ -199,11 +236,13 @@ sessionH env user = do
 
 passkeyRegisterBeginH :: Env -> AuthUser -> Handler PasskeyRegisterBeginResponse
 passkeyRegisterBeginH env user = do
+    denyUnderImpersonation env "passkey_register" user
     (cid, options) <- runAuth env (Passkey.beginPasskeyRegistration env.config user.authUserId)
     pure PasskeyRegisterBeginResponse{ceremonyId = idText cid, options = options}
 
 passkeyRegisterCompleteH :: Env -> AuthUser -> PasskeyRegisterCompleteRequest -> Handler PasskeyResponse
 passkeyRegisterCompleteH env user req = do
+    denyUnderImpersonation env "passkey_register" user
     cid <- either (\_ -> throwError err400{errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
     passkey <-
         runAuth
@@ -218,6 +257,7 @@ passkeysListH env user = do
 
 passkeyDeleteH :: Env -> AuthUser -> PasskeyId -> Handler NoContent
 passkeyDeleteH env user pid = do
+    denyUnderImpersonation env "passkey_remove" user
     runAuth env (Passkey.removePasskey user.authUserId pid)
     pure NoContent
 
@@ -244,6 +284,35 @@ passkeyLoginCompleteH env req = do
     cid <- either (\_ -> throwError err400{errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
     (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
     pure (tokenPairToResponse pair)
+
+{- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
+token acting on behalf of 'req.userId'. A malformed target id is a 400 before the workflow
+runs; the workflow enforces scope/freshness/target checks and audits the start.
+-}
+impersonateH :: Env -> AuthUser -> SockAddr -> ImpersonateRequest -> Handler ImpersonateResponse
+impersonateH env caller peer req = do
+    target <-
+        either (\_ -> throwError (authErrorToServerError ImpersonationTargetInvalid)) pure (parseId req.userId)
+    (session, access) <-
+        runAuth env $
+            Imp.startImpersonation
+                env.config
+                Imp.StartImpersonation
+                    { actorClaims = caller.authClaims
+                    , targetUserId = target
+                    , reason = req.reason
+                    , ticketId = req.ticketId
+                    , clientIp = Just (clientIpText peer)
+                    }
+    pure (impersonateToResponse session access)
+
+{- | @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session named
+by the presented token. A non-delegated token (no @act@ claim) is rejected by the workflow.
+-}
+stopImpersonateH :: Env -> AuthUser -> Handler NoContent
+stopImpersonateH env caller = do
+    runAuth env (Imp.stopImpersonation caller.authClaims)
+    pure NoContent
 
 jwksH :: Env -> Handler Value
 jwksH env = pure env.jwksJson

@@ -17,6 +17,7 @@ import Servant (
     ServerError (..),
     err400,
     err401,
+    err403,
     err404,
     err409,
     err500,
@@ -59,6 +60,9 @@ authErrorToServerError = \case
     PendingCeremonyNotFound -> json err404 "ceremony_not_found" "Registration ceremony not found or expired"
     WebAuthnCeremonyError _ -> json err400 "webauthn_verification_failed" "Passkey registration could not be verified"
     MfaAssertionInvalid -> json err401 "mfa_failed" "Multi-factor authentication failed"
+    ImpersonationForbidden -> json err403 "impersonation_forbidden" "Not allowed to impersonate"
+    ImpersonationTargetInvalid -> json err400 "impersonation_target_invalid" "Invalid impersonation target"
+    ImpersonationActionBlocked -> json err403 "impersonation_action_blocked" "This action is not permitted while impersonating"
     InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where
     json base code msg =
