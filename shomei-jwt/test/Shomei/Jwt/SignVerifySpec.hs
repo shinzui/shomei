@@ -4,8 +4,14 @@ tokens, plus key selection out of a multi-key JWKSet.
 -}
 module Shomei.Jwt.SignVerifySpec (tests) where
 
+import Data.Aeson (Object, Value (String))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertFromBase)
+import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertFailure, testCase, (@?=))
@@ -14,10 +20,11 @@ import Crypto.JOSE.JWK (JWK)
 
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
+import Shomei.Domain.SigningKey (SigningAlgorithm (RS256))
 import Shomei.Domain.Token (AccessToken (AccessToken))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (genUserId)
-import Shomei.Jwt.Key (generateSigningKey)
+import Shomei.Jwt.Key (generateSigningKey, generateSigningKeyFor, keyKid)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
 
@@ -92,7 +99,40 @@ tests =
             case res of
                 Right ac' -> ac'.actor @?= Nothing
                 Left e -> assertFailure ("verify failed: " <> show e)
+        , testCase "an RS256 key signs a token whose header alg is RS256" $ do
+            jwk <- generateSigningKeyFor RS256
+            t <- getCurrentTime
+            ac <- mkClaims testConfig t
+            wire <- signOrFail jwk ac
+            hdr <- decodeHeader wire
+            KeyMap.lookup "alg" hdr @?= Just (String "RS256")
+            KeyMap.lookup "kid" hdr @?= Just (String (keyKid jwk))
+        , testCase "an RS256 token verifies via the RSA public JWKS" $ do
+            jwk <- generateSigningKeyFor RS256
+            t <- getCurrentTime
+            ac <- mkClaims testConfig t
+            wire <- signOrFail jwk ac
+            res <- verifyToken (publicJwks jwk []) testConfig wire
+            assertClaims ac res
+        , testCase "an ES256 key still signs with header alg ES256" $ do
+            jwk <- generateSigningKey
+            t <- getCurrentTime
+            ac <- mkClaims testConfig t
+            wire <- signOrFail jwk ac
+            hdr <- decodeHeader wire
+            KeyMap.lookup "alg" hdr @?= Just (String "ES256")
         ]
+
+{- | Decode the protected-header segment of a compact JWS (the part before the
+first @.@): base64url-decode it (unpadded) and parse the JSON object.
+-}
+decodeHeader :: Text -> IO Object
+decodeHeader wire = do
+    let seg = Text.encodeUtf8 (Text.takeWhile (/= '.') wire)
+    raw <-
+        either (assertFailure . ("header base64url decode failed: " <>)) pure $
+            (convertFromBase Base64URLUnpadded seg :: Either String ByteString)
+    maybe (assertFailure "header is not a JSON object") pure (Aeson.decodeStrict raw)
 
 -- | Sign claims, failing the test if signing errors; returns the compact token text.
 signOrFail :: JWK -> AuthClaims -> IO Text

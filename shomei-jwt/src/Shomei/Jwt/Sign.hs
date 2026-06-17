@@ -8,8 +8,8 @@
 
 The standard claims map directly (@iss@, @sub@, @aud@, @iat@, @exp@); the session
 id, scopes, and roles travel as the custom claims @sid@, @scopes@, @roles@. The
-signing key's @kid@ is copied into the protected JWS header by 'makeJWSHeader' so
-a verifier can tell which key to use.
+protected JWS header's @alg@ is chosen from the key material ('algForKey') and the
+signing key's @kid@ is copied in by hand so a verifier can tell which key to use.
 -}
 module Shomei.Jwt.Sign (
     claimsFromAuth,
@@ -35,10 +35,16 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
+import Shomei.Jwt.Key (keyKid)
+
 import Crypto.JOSE.Compact (encodeCompact)
 import Crypto.JOSE.Error (runJOSE)
-import Crypto.JOSE.JWK (JWK)
-import Crypto.JOSE.JWS (makeJWSHeader)
+import Crypto.JOSE.Header (newHeaderParamProtected)
+import Crypto.JOSE.JWA.JWK (KeyMaterial (ECKeyMaterial, RSAKeyMaterial))
+import Crypto.JOSE.JWA.JWS (Alg (ES256, RS256))
+import Crypto.JOSE.JWK (JWK, jwkMaterial)
+import Crypto.JOSE.JWS (newJWSHeaderProtected)
+import Crypto.JOSE.JWS qualified as JWS
 import Crypto.JWT (
     Audience (Audience),
     ClaimsSet,
@@ -97,14 +103,29 @@ claimsFromAuth ac =
         Just uid -> cs & addClaim "act" (Aeson.String (idText uid))
         Nothing -> cs
 
+{- | The JWS algorithm to sign with for a given key, chosen directly from the key
+material so the header can never disagree with the key. Crucially we pick 'RS256'
+(RSASSA-PKCS1-v1_5) for RSA keys — NOT the RSASSA-PSS variant @jose@'s
+@bestJWSAlg@/@makeJWSHeader@ would prefer (PS512), which the legacy gateway and
+downstream verifiers reject. Our generators only ever produce EC or RSA keys.
+-}
+algForKey :: JWK -> Alg
+algForKey jwk = case view jwkMaterial jwk of
+    RSAKeyMaterial _ -> RS256
+    ECKeyMaterial _ -> ES256
+    _ -> ES256
+
 {- | Sign an 'AuthClaims' into an 'AccessToken' using the given (active, private)
-key. 'makeJWSHeader' selects the algorithm via @bestJWSAlg@ and copies the key's
-@kid@ into the protected header.
+key. The protected header's @alg@ is pinned by 'algForKey' (RS256 for RSA, ES256
+for EC) rather than negotiated by @makeJWSHeader@, and the key's @kid@ is copied
+into the header by hand so a verifier can select the right key.
 -}
 signAccessToken :: JWK -> AuthClaims -> IO (Either JWTError AccessToken)
 signAccessToken jwk ac = do
+    let hdr =
+            newJWSHeaderProtected (algForKey jwk)
+                & JWS.kid ?~ newHeaderParamProtected (keyKid jwk)
     result <- runJOSE @JWTError $ do
-        hdr <- makeJWSHeader jwk
         signed <- signClaims jwk hdr (claimsFromAuth ac)
         pure (encodeCompact (signed :: SignedJWT))
     pure $ case result of

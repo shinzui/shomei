@@ -73,6 +73,7 @@ test-suite shomei-jwt-test
     , effectful
     , jose
     , lens
+    , ram
     , shomei-core
     , shomei-jwt
     , tasty

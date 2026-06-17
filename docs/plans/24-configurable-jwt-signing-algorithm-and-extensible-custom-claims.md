@@ -61,7 +61,7 @@ This section must always reflect the actual current state of the work.
 
 - [x] M0 — Read the affected modules and confirm the current behavior with a baseline build/test. (2026-06-17: `cabal build all` exit 0; `cabal test shomei-jwt` → all 11 tests PASS.)
 - [x] M1 — Add the `SigningAlgorithm` type and thread it through key generation, storage, and the JWKS. (2026-06-17: `SigningAlgorithm`/`signingAlgorithmToText`/`signingAlgorithmFromText` in `shomei-core`; `generateSigningKeyFor`/`toStoredSigningKeyFor` in `shomei-jwt`; new `KeySpec` RS256 case PASS — 12 tests.)
-- [ ] M2 — Make signing honor the configured algorithm (fix the `bestJWSAlg` PSS pitfall for RSA).
+- [x] M2 — Make signing honor the configured algorithm (fix the `bestJWSAlg` PSS pitfall for RSA). (2026-06-17: `algForKey` picks RS256 for RSA / ES256 for EC; header built with `newJWSHeaderProtected`; 3 new SignVerify cases PASS, ES256 header unchanged — 15 tests.)
 - [ ] M3 — Add the extensible custom-claims bag to `AuthClaims`, serialize and recover it.
 - [ ] M4 — Wire algorithm + custom claims through `Config`, the server bootstrap, and `shomei-admin`.
 - [ ] M5 — Acceptance: RS256 token carrying a custom claim round-trips through the JWKS verify path.
@@ -117,6 +117,24 @@ implementation. Provide concise evidence.
   (which the new test modules already import), **not** in `Shomei.Jwt.Jwks`. The production JWKS
   surface in `Shomei.Jwt.Jwks` is `jwksDocument`, the `KeySet` type, and `keySetPublicJwks`. Tests
   may keep using the `TestSupport.publicJwks` helper unchanged.
+
+- **M2 implementation: `signClaims` requires `JWSHeader RequiredProtection`, not
+  `OptionalProtection`.** The plan's M2 snippet built the header with
+  `newJWSHeader (Protected, alg)`, which yields a `JWSHeader OptionalProtection`;
+  `Crypto.JWT.signClaims` expects `JWSHeader RequiredProtection`, so that form fails
+  to compile with `Couldn't match type 'OptionalProtection' with 'RequiredProtection'`.
+  The clean fix is to use jose's protection-polymorphic constructors:
+  `newJWSHeaderProtected :: ProtectionSupport p => Alg -> JWSHeader p` for the header and
+  `newHeaderParamProtected :: ProtectionIndicator p => a -> HeaderParam p a` for the `kid`
+  param. `signClaims` then fixes `p ~ RequiredProtection` by inference — no explicit
+  `Protected`/`OptionalProtection`/`HeaderParam` imports needed. Implemented in
+  `shomei-jwt/src/Shomei/Jwt/Sign.hs`. Evidence: the three M2 SignVerify cases pass and
+  the decoded header reads exactly `"alg":"RS256"` (RSA) / `"alg":"ES256"` (EC).
+
+- **Test base64url decoding uses the `ram` package (a `memory` fork), not `memory`.**
+  `Data.ByteArray.Encoding` is provided to `shomei-jwt` by `ram` (see `mori registry show
+  ram`); the M2/M5 header-decoding tests therefore add `ram` (not `memory`) to the
+  `shomei-jwt-test` `build-depends`.
 
 - (Add further discoveries here as work proceeds.)
 
