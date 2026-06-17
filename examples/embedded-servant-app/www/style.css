@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+section { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
+input { display: block; margin: 0.25rem 0; padding: 0.4rem; width: 100%; box-sizing: border-box; }
+button { padding: 0.5rem 1rem; }
+#log { background: #111; color: #0f0; padding: 1rem; border-radius: 6px; min-height: 4rem; white-space: pre-wrap; }

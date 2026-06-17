@@ -67,6 +67,11 @@ tests =
                     -- /projects with the Bearer token → 200.
                     withTok <- getProjects mgr port (Just lr.token.accessToken)
                     withTok @?= 200
+
+                    -- The Raw static route serves the passkey-demo page (resolved from www/,
+                    -- the package's CWD during `cabal test`).
+                    indexStatus <- getStatus mgr port "/index.html"
+                    indexStatus @?= 200
         ]
   where
     email = "dev@example.com" :: Text
@@ -77,6 +82,12 @@ getProjects mgr port mtok = do
     req0 <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
     let hdrs = maybe [] (\t -> [("Authorization", "Bearer " <> Text.encodeUtf8 t)]) mtok
         req = req0{requestHeaders = hdrs}
+    resp <- httpLbs req mgr
+    pure (statusCode (responseStatus resp))
+
+getStatus :: Manager -> Int -> String -> IO Int
+getStatus mgr port path = do
+    req <- parseRequest ("http://127.0.0.1:" <> show port <> path)
     resp <- httpLbs req mgr
     pure (statusCode (responseStatus resp))
 

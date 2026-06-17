@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shōmei Passkey Demo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Shōmei passkey demo</h1>
+
+  <section>
+    <h2>1. Log in (password)</h2>
+    <input id="email" placeholder="email" autocomplete="username">
+    <input id="password" type="password" placeholder="password" autocomplete="current-password">
+    <button id="loginBtn">Log in</button>
+  </section>
+
+  <section>
+    <h2>2. Enroll a passkey (needs a logged-in token)</h2>
+    <input id="label" placeholder="label (optional), e.g. My YubiKey">
+    <button id="enrollBtn" disabled>Enroll passkey</button>
+  </section>
+
+  <section>
+    <h2>3. Step-up login (password → passkey)</h2>
+    <p>Logging in above for an account that has a passkey returns <code>mfa_required</code>;
+       this page then runs the assertion automatically.</p>
+  </section>
+
+  <pre id="log"></pre>
+  <script type="module" src="passkeys.js"></script>
+</body>
+</html>

@@ -11,6 +11,7 @@ module Embedded.App (
     AppAPI,
     Project (..),
     embeddedApplication,
+    embeddedApplicationWith,
 ) where
 
 import Shomei.Prelude
@@ -23,11 +24,13 @@ import Servant (
     JSON,
     NamedRoutes,
     Proxy (Proxy),
+    Raw,
     serveWithContext,
     type (:<|>) ((:<|>)),
     type (:>),
  )
 import Servant.Server (Handler)
+import Servant.Server.StaticFiles (serveDirectoryWebApp)
 
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated)
@@ -51,11 +54,21 @@ an app-owned @\/projects@ route guarded by the same 'Authenticated' combinator.
 type AppAPI =
     NamedRoutes ShomeiAPI
         :<|> Authenticated :> "projects" :> Get '[JSON] [Project]
+        :<|> Raw -- static passkey-demo assets from ./www, served last so it cannot shadow the typed routes
 
--- | Serve 'AppAPI' reusing @shomei-server@'s assembly and auth 'Context'.
+-- | Serve 'AppAPI' reusing @shomei-server@'s assembly and auth 'Context', serving the static
+-- passkey-demo assets from the default @www@ directory (resolved relative to the process CWD).
 embeddedApplication :: Env -> Application
-embeddedApplication env =
-    serveWithContext (Proxy @AppAPI) (authContext senv) (shomeiServer senv :<|> projectsHandler)
+embeddedApplication = embeddedApplicationWith "www"
+
+-- | As 'embeddedApplication', but with the static-assets directory given explicitly (the
+-- executable reads it from @SHOMEI_DEMO_WWW@ so the demo can be launched from any directory).
+embeddedApplicationWith :: FilePath -> Env -> Application
+embeddedApplicationWith wwwDir env =
+    serveWithContext
+        (Proxy @AppAPI)
+        (authContext senv)
+        (shomeiServer senv :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
   where
     senv = seamEnv env
 

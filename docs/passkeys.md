@@ -151,11 +151,17 @@ served from the same warp process as `/auth`, so its origin matches the default
 ### Demo walkthrough (real browser + authenticator)
 
 1. Start the demo against your dev database (it reuses the real `shomei-server` assembly, so
-   every `/auth` route — including passkeys — is live):
+   every `/auth` route — including passkeys — is live). The demo serves its static assets from
+   a `www/` directory resolved relative to the current directory, so launch it **from the demo
+   package directory** (or point `SHOMEI_DEMO_WWW` at an absolute path):
 
    ```bash
+   cd examples/embedded-servant-app
    PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
      cabal run embedded-servant-app
+   # …or, from the repository root:
+   # SHOMEI_DEMO_WWW=examples/embedded-servant-app/www \
+   #   PG_CONNECTION_STRING="…" cabal run embedded-servant-app
    ```
 
    The default `webauthnConfig` has `rpId="localhost"` and `origins=["http://localhost:8080"]`,

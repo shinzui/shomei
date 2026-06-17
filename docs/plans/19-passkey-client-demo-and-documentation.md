@@ -122,15 +122,17 @@ This section must always reflect the actual current state of the work.
 
 **Milestone 3 — demo enroll/login page:**
 
-- [ ] Decide and create the static-assets directory under the demo
-      (`examples/embedded-servant-app/www/`).
-- [ ] Write `index.html`, `passkeys.js`, and `style.css` driving enroll + step-up login
-      against the demo's `/auth` routes.
-- [ ] Serve the static directory from the demo (extend `Embedded.App.AppAPI` with a
-      `Raw`/`serveDirectoryWebApp` route, or document running a static file server alongside).
-- [ ] Write the manual end-to-end walkthrough into `docs/passkeys.md` and the demo so a human
-      can follow it with a real authenticator.
-- [ ] `cabal build all` green; confirm the demo still serves and the page loads.
+- [x] Created `examples/embedded-servant-app/www/` with `index.html`, `passkeys.js`,
+      `style.css`, and a pointer `README.md`. — 2026-06-17
+- [x] `passkeys.js` drives enroll + step-up login against the demo's `/auth` routes via
+      `@github/webauthn-json` (CDN); `/auth/mfa/complete` returns a token pair directly. — 2026-06-17
+- [x] Served the static directory from the demo: `Embedded.App.AppAPI` gains a trailing `Raw`
+      route via `serveDirectoryWebApp`; the directory is `embeddedApplicationWith`'s parameter,
+      read from `SHOMEI_DEMO_WWW` (default `www`) by the executable. — 2026-06-17
+- [x] Wrote the manual end-to-end walkthrough into `docs/passkeys.md` (and a pointer in
+      `www/README.md`). — 2026-06-17
+- [x] `cabal build all` green; the demo test now also asserts `GET /index.html` → `200`,
+      proving the `Raw` static route serves the page (and that the typed routes still work). — 2026-06-17
 
 
 ## Surprises & Discoveries
@@ -178,6 +180,17 @@ implementation. Provide concise evidence.
   Verified by an extended `shomei-server-config-test` (loads `rpId`/`origins`/`mfaRequired` from
   a Dhall file and proves a `SHOMEI_WEBAUTHN_*` env var overrides it). This is recorded as a
   cross-plan discovery in the MasterPlan too.
+
+- **`serveDirectoryWebApp "www"` resolves relative to the process CWD, which the plan's
+  walkthrough got wrong.** The plan hard-coded `serveDirectoryWebApp "www"` and a walkthrough
+  that runs `cabal run embedded-servant-app` from the repository root — but `cabal run` launches
+  the executable with CWD = the directory it was invoked from, so `./www` would resolve to
+  `<repo-root>/www` (which does not exist) rather than `examples/embedded-servant-app/www`.
+  Resolution: the www directory is now a parameter (`embeddedApplicationWith`), the executable
+  reads it from `SHOMEI_DEMO_WWW` (default `www`), and the walkthrough instructs running from the
+  package directory (or setting the env var to an absolute path). The `cabal test` harness runs
+  with CWD = the package directory, so the default `www` resolves there — confirmed by the new
+  `GET /index.html` → `200` assertion in `embedded-servant-app-test`.
 
 - (Record further concrete evidence — compiler output, browser console transcripts — as you
   implement.)
