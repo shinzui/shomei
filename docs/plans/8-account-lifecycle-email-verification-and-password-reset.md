@@ -52,8 +52,13 @@ After this change, the following becomes possible, and is provable from a termin
   sessions are revoked.
 
 These flows are delivered behind a **notification effect** (`Shomei.Effect.Notifier`) so the
-toolkit bakes in no particular email provider: it ships a development log-only sender out of
-the box and a production SMTP sender, selected by configuration.
+toolkit bakes in no particular email provider. **Shōmei does not send email itself:** it
+*emits* a `Notification` (recipient, one-time link/token, expiry) and ships a development
+log-only sender that writes the link to the server log. An operator delivers it by supplying
+their own `Notifier` interpreter that forwards the notification to their existing provider
+(SendGrid, Resend, SES, an SMTP relay, …); a future `shomei-email` package may add in-tree
+senders. (Email *sending* was originally planned as a production SMTP sender; it was descoped
+on 2026-06-17 — see the Decision Log.)
 
 The user-visible outcome is therefore: a complete, secure account lifecycle that an operator
 can demonstrate with a sequence of `curl` calls (signup → verify-email request shows a link
@@ -188,21 +193,19 @@ This section must always reflect the actual current state of the work.
       established a handler test harness) green. Completed 2026-06-04 with the in-process
       servant end-to-end account lifecycle test.
 
-### Milestone M4 — server wiring + dev-log and SMTP senders + curl walkthrough
+### Milestone M4 — server wiring + dev-log sender + curl walkthrough
 
 - [x] M4.1a Create `shomei-server/src/Shomei/Notify.hs` with config-selected log-backed
       `Notifier` interpreters. Completed 2026-06-04.
-- [ ] M4.1b Add a real SMTP sender once a vetted SMTP dependency is registered/resolved via
-      `mori`. **Blocked (2026-06-10):** no SMTP/email package is registered in the local `mori`
-      registry (`mori registry search smtp|mail|HaskellNet` all return nothing), so per the
-      project's dependency-lookup rule the real sender cannot be implemented without guessing at
-      an unaudited library's API. The `SmtpNotifier` transport remains log-backed until a vetted
-      dependency is registered. This does not affect any other deliverable: the dev log-only
-      notifier is the default and drives the full acceptance below.
+- [-] M4.1b ~~Add a real SMTP sender~~ **DESCOPED 2026-06-17.** Shōmei is no longer responsible
+      for sending email: the `Notifier` effect is the integration seam, the shipped server emits
+      the notification and logs the link, and operators deliver it via their own interpreter (a
+      future `shomei-email` package may add in-tree senders). The vestigial `SmtpNotifier`
+      transport and `runNotifierSmtp` stub were removed from the code. See the Decision Log.
 - [x] M4.2 Wire the two new store interpreters + the selected `Notifier` interpreter into the
       server assembly in `shomei-server`. Completed 2026-06-04.
-- [ ] M4.3 Add the SMTP/email library block to `cabal.project` (IP-8). **Blocked (2026-06-10)**
-      on the same unregistered-dependency reason as M4.1b.
+- [-] M4.3 ~~Add the SMTP/email library block to `cabal.project` (IP-8).~~ **DESCOPED
+      2026-06-17** with M4.1b — no email transport ships, so no new dependency is added.
 - [x] M4.4 Acceptance: full `curl` walkthrough against the running server. Completed 2026-06-10
       — verified live against the dev PostgreSQL with the default log-only notifier. See the
       transcript and the 202-status note in Surprises & Discoveries.
@@ -231,6 +234,15 @@ implementation. Provide concise evidence.
 - 2026-06-10: Re-checked the SMTP blocker before the live walkthrough — `mori registry search`
   for `smtp`, `mail`, and `HaskellNet` still return nothing. M4.1b/M4.3 remain blocked for the
   documented reason; the rest of EP-1 is acceptance-complete via the log-only notifier.
+- 2026-06-17: **The SMTP blocker was resolved by removing the requirement, not by adding a
+  dependency.** The user decided Shōmei should not send email at all — the `Notifier` effect is
+  the integration seam and operators forward the emitted `Notification` to their own provider.
+  The vestigial `SmtpNotifier` constructor (`Shomei.Config.NotifierTransport`) and the
+  `runNotifierSmtp` stub (`shomei-server/src/Shomei/Notify.hs`) were deleted; `NotifierTransport
+  = LogNotifier` is now the only built-in and `Shomei.Notify` exposes only `runNotifierLog`. The
+  Dhall/env loader never wired SMTP fields, so no config change was needed. `cabal build all` /
+  `cabal test all` are green (incl. the PostgreSQL account-workflow integration tests and the
+  live client round-trip) and fourmolu is clean. EP-1 is now Complete.
 - 2026-06-10: **All four account-lifecycle endpoints return HTTP `202 Accepted` with a
   `NoContent` body, including the two *confirm* endpoints** — not `200` as the original
   Validation transcript prose stated. This is intentional in the implementation
@@ -267,17 +279,38 @@ implementation. Provide concise evidence.
 
 Record every decision made while working on the plan.
 
-- Decision: The production SMTP `Notifier` interpreter lives in a new module
+- Decision: The `Notifier` interpreters live in a module
   `shomei-server/src/Shomei/Notify.hs` inside the existing `shomei-server` package,
   **not** in a new `shomei-notify` package.
   Rationale: MasterPlan 2's IP-1 names this as the default ("a `Shomei.Notify` module inside
-  `shomei-server` to avoid a new package"). SMTP is an infrastructure concern that must stay
-  out of the transport-agnostic `shomei-core` (the core only defines the `Notifier` *effect*).
-  The server is the natural assembly point: it already constructs every other interpreter and
-  reads `ShomeiConfig`, so it can pick the dev-log vs. SMTP sender there. Avoiding an eighth
-  package keeps `mori.dhall` unchanged. If a downstream consumer ever needs the SMTP sender
-  without the server, it can be promoted to its own package then, recorded here.
+  `shomei-server` to avoid a new package"). A notification sender is an infrastructure concern
+  that must stay out of the transport-agnostic `shomei-core` (the core only defines the
+  `Notifier` *effect*). The server is the natural assembly point: it already constructs every
+  other interpreter and reads `ShomeiConfig`. Avoiding an eighth package keeps `mori.dhall`
+  unchanged. (This decision originally also defined a production *SMTP* interpreter here;
+  **superseded 2026-06-17** — see the next entry. `Shomei.Notify` now ships only the log
+  sender.)
   Date: 2026-06-04
+
+- Decision: **Shōmei does not send email. The production SMTP sender is descoped entirely.**
+  The `Shomei.Effect.Notifier` effect is the sole integration seam: the toolkit emits a
+  `Notification` (recipient, one-time link/token, expiry) and `shomei-server` ships exactly one
+  built-in interpreter — `runNotifierLog`, which writes the link to the server log
+  (`Shomei.Config.NotifierTransport` collapses to the single constructor `LogNotifier`).
+  Delivering the message is the operator's responsibility: they supply their own `Notifier`
+  interpreter that forwards the `Notification` to their existing provider (SendGrid, Resend,
+  SES, an SMTP relay, …). In-tree senders, if ever wanted, belong in a separate `shomei-email`
+  package — not in `shomei-core`/`shomei-server`.
+  Rationale: Sending email is an operator concern — virtually every deployment already has a
+  provider. Baking a transport into the toolkit adds an unaudited dependency, a TLS/secrets
+  surface, and ongoing maintenance for no real benefit, and it conflicted with the repo's
+  dependency-lookup rule (no vetted SMTP package is registered in `mori`, which is exactly why
+  M4.1b/M4.3 had been stuck). Shōmei's responsibility ends at emitting the notification. Code
+  impact (verified `cabal build all` + `cabal test all` green, fourmolu clean): removed the
+  `SmtpNotifier` constructor and `runNotifierSmtp`; the Dhall/env loader never wired SMTP
+  fields, so no config change was needed. This removes EP-1's only remaining task, so EP-1 is
+  now Complete.
+  Date: 2026-06-17
 
 - Decision: A user's verified status is represented by a **nullable `email_verified_at
   timestamptz` column on `shomei_users`** (and `emailVerifiedAt :: Maybe UTCTime` on the
@@ -367,10 +400,20 @@ Compare the result against the original purpose.
   email, link logged only for the real one) → confirm (changes the password, revokes all
   sessions) → the pre-reset refresh token is rejected (401) → login with the new password
   succeeds, old password fails. `cabal build all` is green and the embedded migrations are
-  applied. The only remaining work is M4.1b/M4.3, the *real* SMTP sender, blocked on a vetted
-  SMTP dependency being registered in `mori` (see Surprises & Discoveries); the `SmtpNotifier`
-  transport is wired and log-backed in the meantime. EP-1's user-visible behaviour is fully
-  delivered and proven; the SMTP transport is the sole externally-blocked gap.
+  applied. (At the time, the only remaining work was M4.1b/M4.3, the *real* SMTP sender,
+  blocked on a vetted SMTP dependency — see the 2026-06-17 entry below.)
+
+- 2026-06-17: **EP-1 is Complete.** Email sending was descoped (Decision Log, same date):
+  Shōmei is not responsible for delivering email — it emits notifications through the
+  `Notifier` effect and ships only the log sender, and operators deliver them. The vestigial
+  `SmtpNotifier`/`runNotifierSmtp` code was removed (`NotifierTransport = LogNotifier` is the
+  sole built-in; `Shomei.Notify` exposes only `runNotifierLog`). With M4.1b/M4.3 descoped and
+  all user-visible behaviour delivered and proven (pure in-memory tests, PostgreSQL integration
+  tests, and the live `curl` walkthrough), every milestone of EP-1 is satisfied. `cabal build
+  all` / `cabal test all` are green and fourmolu is clean. Against the original Purpose, the
+  outcome matches it exactly except that the account-lifecycle notifications are *emitted* for
+  the operator to deliver rather than sent by Shōmei over SMTP — a deliberate scope narrowing,
+  not a gap.
 
 
 ## Context and Orientation
@@ -518,10 +561,13 @@ reader needs only this file.
 > (e.g. an `EmailVerificationRequested`/`PasswordResetRequested` sum carrying the recipient
 > `Email`, a one-time link/token, and an expiry). Owner: **EP-1** (defines the effect, a
 > `Notification` domain type, an in-memory/list interpreter for tests mirroring
-> `Shomei.Effect.InMemory`, a development "log only" interpreter, and an SMTP interpreter in a
-> new `Shomei.Notify.*` module — decide in EP-1 whether SMTP lives in `shomei-server` or a new
-> `shomei-notify` package; default: a `Shomei.Notify` module inside `shomei-server` to avoid a
-> new package, recorded in EP-1's Decision Log).
+> `Shomei.Effect.InMemory`, and a development "log only" interpreter in a `Shomei.Notify`
+> module inside `shomei-server`).
+
+(Updated 2026-06-17: MasterPlan 2's IP-1 originally also asked for an SMTP interpreter; email
+sending was descoped — Shōmei ships no email-sending interpreter. The `Notifier` effect is the
+seam an operator implements against, or a future `shomei-email` package provides. See the
+Decision Log.)
 
 **IP-2 (owned by this plan) —**
 > Email-verification and password-reset tokens are opaque random tokens of which only the
@@ -602,12 +648,12 @@ This milestone **cannot start until MasterPlan 1 EP-5 has created `shomei-servan
 `ShomeiAPI` record and handler module.** The concrete steps name the files to extend by path
 and describe what each addition looks like relative to the existing signup/login routes.
 
-### Milestone M4 — server wiring, dev-log and SMTP senders, curl walkthrough
+### Milestone M4 — server wiring, dev-log sender, curl walkthrough
 
-Scope: `shomei-server` (created by MasterPlan 1 EP-6) and `cabal.project`. At the end
-of M4, the server assembles the two new store interpreters and a `Notifier` interpreter chosen
-by config (dev log-only by default, SMTP when configured), and the full account lifecycle is
-demonstrable with `curl`. Acceptance: the `curl` transcript in Validation and Acceptance runs
+Scope: `shomei-server` (created by MasterPlan 1 EP-6). At the end
+of M4, the server assembles the two new store interpreters and the log-only `Notifier`
+interpreter (the only built-in sender — Shōmei does not deliver email; see the Decision Log),
+and the full account lifecycle is demonstrable with `curl`. Acceptance: the `curl` transcript in Validation and Acceptance runs
 against the live server with the shown outputs — signup, verify-email request prints a link in
 the logs, confirm marks the account verified, password-reset request prints a link, confirm
 changes the password and revokes sessions, and the old refresh token is rejected.
@@ -783,12 +829,14 @@ Expected: exits 0. M3 acceptance.
 
 ### M4 steps (after MasterPlan 1 EP-6 lands)
 
-**Step M4-a — senders.** Create `shomei-server/src/Shomei/Notify.hs` with two
-`Notifier` interpreters: `runNotifierLog` (renders the notification to a one-line log message
-including the one-time link, via the server's logger) and `runNotifierSmtp` (sends a real email
-via the SMTP library added in Step M4-c). Provide
-`runNotifierFromConfig :: ShomeiConfig -> … -> Eff (Notifier : es) a -> Eff es a` that selects
-the interpreter from `cfg.notifierConfig.notifierTransport`.
+**Step M4-a — sender.** Create `shomei-server/src/Shomei/Notify.hs` with the log-only
+`Notifier` interpreter `runNotifierLog` (renders the notification to a one-line log message
+including the one-time link). Provide
+`runNotifierFromConfig :: ShomeiConfig -> Eff (Notifier : es) a -> Eff es a` that selects the
+interpreter from `cfg.notifierConfig.notifierTransport` (only `LogNotifier` ships).
+**No SMTP sender** — Shōmei does not deliver email; operators forward the emitted
+`Notification` to their own provider via their own interpreter (descoped 2026-06-17, see the
+Decision Log).
 
 **Step M4-b — wiring.** In the `shomei-server` assembly (the module that stacks the PostgreSQL
 interpreters behind the Servant app — find it via `rg -n "runDatabasePool|runUserStorePostgres"
@@ -796,11 +844,11 @@ shomei-server`), add `runVerificationTokenStorePostgres`,
 `runPasswordResetTokenStorePostgres`, and the selected `Notifier` interpreter to the stack, in
 the same position as the other store interpreters.
 
-**Step M4-c — cabal.project (IP-8).** Append a new block under the existing "each plan appends
-its own block; none rewrites another's" comment in `cabal.project` for the SMTP/email library
-(candidate: `smtp-mail` or `HaskellNet` + `HaskellNet-SSL`; verify it builds on GHC 9.12.4 in
-`nix develop` and add any `allow-newer` in this block). Add the library to
-`shomei-server/shomei-server.cabal`'s `build-depends`.
+**Step M4-c — cabal.project (IP-8).** ~~Append an SMTP/email library block.~~ **DESCOPED
+2026-06-17.** No email transport ships, so EP-1 adds **no** new dependency to `cabal.project`
+or `shomei-server.cabal`. (An operator who implements their own `Notifier` interpreter adds
+whatever client library they choose in *their* project; a future in-tree `shomei-email` package
+would add its own.)
 
 **Step M4-d — curl walkthrough.** Start the server (the command EP-6 documents, e.g.
 `cabal run shomei-server`) and run the transcript in Validation and Acceptance. M4 acceptance.
@@ -997,9 +1045,8 @@ and tested, and the HTTP layer is purely additive on top.
 
 ## Interfaces and Dependencies
 
-This section is the contract. New libraries: M4 adds one SMTP/email library to `cabal.project`
-(IP-8; default `smtp-mail`, verified to build on GHC 9.12.4 in `nix develop`); everything else
-reuses dependencies the packages already declare (`mmzk-typeid`, `uuid`, `effectful`,
+This section is the contract. New libraries: **none** — email sending was descoped (2026-06-17),
+so EP-1 adds no SMTP/email library; everything reuses dependencies the packages already declare (`mmzk-typeid`, `uuid`, `effectful`,
 `containers`, `aeson`, `time`, `text`, `hasql`, `contravariant-extras`, `crypton`, `ram`,
 `tasty`, `tasty-hunit`). No Shōmei package may depend on the deprecated `memory` package.
 
@@ -1156,8 +1203,10 @@ data NewPasswordResetToken = NewPasswordResetToken
 ```haskell
 {- | A notification the system asks the outside world to deliver. Each variant carries the
 recipient 'Email', the RAW one-time token (so the sender can build a link), and the
-token's expiry. The core defines the shape; the @Shomei.Effect.Notifier@ effect delivers it
-(a dev log-only sender or an SMTP sender, in @shomei-server@).
+token's expiry. The core defines the shape; the @Shomei.Effect.Notifier@ effect carries it to
+a sender. The shipped server's only built-in sender is the dev log-only one in
+@shomei-server@'s @Shomei.Notify@; an operator forwards it to their own provider via their own
+interpreter (Shōmei does not send email).
 -}
 module Shomei.Domain.Notification (
     Notification (..),
@@ -1194,10 +1243,12 @@ for the DTO layer, but the `Notification` wrapper does not.)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-{- | The notification/mailer effect (IP-1): deliver a 'Notification' (an email-verification
-or password-reset link) to its recipient. The core defines only the shape; the dev
-log-only and production SMTP senders live in @shomei-server@'s @Shomei.Notify@. A
-list-capturing interpreter for tests lives in @Shomei.Effect.InMemory@.
+{- | The notification effect (IP-1): hand a 'Notification' (an email-verification or
+password-reset link) to a sender. The core defines only the shape; the one built-in sender —
+the dev log-only interpreter — lives in @shomei-server@'s @Shomei.Notify@, and a
+list-capturing interpreter for tests lives in @Shomei.Effect.InMemory@. Shōmei does not deliver
+email: an operator forwards the 'Notification' to their own provider by supplying their own
+interpreter of this effect.
 -}
 module Shomei.Effect.Notifier (
     Notifier (..),
@@ -1300,7 +1351,11 @@ Add a new sub-record and a `notifierConfig` field; extend `defaultShomeiConfig`.
 rule, this is *additive* and defaulted so older config files still parse.
 
 ```haskell
-data NotifierTransport = LogOnlyNotifier | SmtpNotifier
+-- Email sending is descoped (2026-06-17): the log sender is the only built-in, so this enum
+-- has a single constructor. It stays an enum (not a bare flag) so a future built-in — e.g. a
+-- `shomei-email` provider — can be added without reshaping NotifierConfig. The implemented
+-- name is `LogNotifier` (this listing predates that rename).
+data NotifierTransport = LogNotifier
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
@@ -1328,7 +1383,7 @@ defaultNotifierConfig = NotifierConfig
     { emailVerificationRequired = False
     , verificationTokenTTL = defaultVerificationTokenTTL
     , passwordResetTokenTTL = defaultPasswordResetTokenTTL
-    , notifierTransport = LogOnlyNotifier
+    , notifierTransport = LogNotifier
     , linkBaseUrl = "http://localhost:8080"
     }
 
@@ -1582,21 +1637,24 @@ type) and `password/change` is wrapped in EP-5's auth combinator (the one guardi
 `GET /auth/me`), receiving the authenticated `UserId` from the access-token claims so the
 handler builds `ChangePassword claims.subject …`.
 
-### The `Notifier` senders (`shomei-server/src/Shomei/Notify.hs`, after EP-6)
+### The `Notifier` sender (`shomei-server/src/Shomei/Notify.hs`, after EP-6)
 
 ```haskell
-runNotifierLog  :: (IOE :> es) => ShomeiConfig -> Logger -> Eff (Notifier : es) a -> Eff es a
-runNotifierSmtp :: (IOE :> es) => ShomeiConfig -> SmtpSettings -> Eff (Notifier : es) a -> Eff es a
-runNotifierFromConfig :: (IOE :> es) => ShomeiConfig -> … -> Eff (Notifier : es) a -> Eff es a
+runNotifierLog        :: (IOE :> es) => NotifierConfig -> Eff (Notifier : es) a -> Eff es a
+runNotifierFromConfig :: (IOE :> es) => ShomeiConfig  -> Eff (Notifier : es) a -> Eff es a
 ```
 
 `runNotifierLog` renders each `Notification` to one log line that includes the full link
-(`cfg.notifierConfig.linkBaseUrl <> "/verify-email?token=" <> rawToken` for verification,
-`"/password-reset?token=" <> rawToken` for reset) and the expiry — this is what the curl
-walkthrough greps for. `runNotifierSmtp` builds and sends the same link in an email body via the
-SMTP library. `runNotifierFromConfig` dispatches on `cfg.notifierConfig.notifierTransport`
-(`LogOnlyNotifier` → log; `SmtpNotifier` → SMTP). Wire the chosen interpreter into the server
-stack next to the store interpreters.
+(`cfg.publicBaseUrl <> "/auth/verify-email/confirm?token=" <> rawToken` for verification,
+`"/auth/password-reset/confirm?token=" <> rawToken` for reset) and the expiry — this is what
+the curl walkthrough greps for. `runNotifierFromConfig` dispatches on
+`cfg.notifierConfig.notifierTransport`, which has the single value `LogNotifier`.
+
+**There is no SMTP sender** (email sending descoped 2026-06-17). Shōmei does not deliver email:
+an operator who wants real delivery writes their own `Notifier` interpreter that forwards the
+`Notification` to their provider (SendGrid, Resend, SES, an SMTP relay, …) and wires it into
+their own server assembly in place of `runNotifierLog`; a future `shomei-email` package may
+package such senders in-tree.
 
 
 ## Revision Notes
@@ -1604,3 +1662,16 @@ stack next to the store interpreters.
 2026-06-04: Updated after the package-layout refactor and MasterPlan audit. Package paths now
 refer to top-level directories, effect modules use `Shomei.Effect.*`, and the precondition
 reflects that MasterPlan 1's JWT, Servant, server, client, and demo packages are implemented.
+
+2026-06-17: **Descoped email sending; EP-1 marked Complete.** Per the user's decision, Shōmei is
+not responsible for delivering email — the `Shomei.Effect.Notifier` effect is the integration
+seam, the shipped server emits the notification and logs the link, and operators forward it to
+their own provider; a future `shomei-email` package may add in-tree senders. Removed the
+`SmtpNotifier` constructor and `runNotifierSmtp` stub from the code (`NotifierTransport =
+LogNotifier` is the sole built-in; `Shomei.Notify` exposes only `runNotifierLog`). Updated
+Purpose, Milestone M4 (M4.1b/M4.3 marked descoped), Progress, Surprises, the Decision Log
+(original SMTP-module decision annotated + a new descoping decision), Outcomes & Retrospective,
+the IP-1 quote, the Plan-of-Work/Concrete-Steps M4 prose, and the Interfaces contract
+(`Notification`/`Notifier` doc comments, `NotifierTransport`, the sender signatures). `cabal
+build all` / `cabal test all` are green and fourmolu is clean. This plan's parent MasterPlan
+(`docs/masterplans/2-…`) was updated in lockstep.

@@ -43,7 +43,7 @@ downstream team."
 
 After this initiative is complete, an operator can: deploy `shomei-server` as a single
 container image alongside PostgreSQL with one `docker compose up`; load all runtime
-settings (issuer, audience, TTLs, password policy, rate limits, SMTP, log level) from a
+settings (issuer, audience, TTLs, password policy, rate limits, notifier, log level) from a
 single typed Dhall configuration file or environment variables; run database migrations and
 generate/rotate signing keys through a dedicated `shomei-admin` command-line tool rather
 than ad-hoc SQL; watch structured JSON logs with per-request correlation IDs, scrape a
@@ -55,9 +55,12 @@ A new end user of a Shōmei-protected application can, for the first time, compl
 **account lifecycle** the bootstrap omitted: verify their email address after signup via a
 single-use tokenized link, and reset a forgotten password through a request/confirm flow
 that revokes all existing sessions on success. An authenticated user can change their
-password. These flows are delivered behind a pluggable notification effect so the toolkit
-ships a development log-only sender out of the box and an SMTP sender for production,
-without baking any particular email provider into the core.
+password. These flows are delivered behind a pluggable notification effect
+(`Shomei.Effect.Notifier`): the toolkit *emits* each notification — recipient, one-time
+link/token, and expiry — and ships a development log-only sender that writes the link to the
+server log. **Shōmei does not send email itself.** An operator wires delivery to their
+existing email provider (SendGrid, Resend, SES, an SMTP relay, …) by supplying their own
+`Notifier` interpreter, so no particular email transport is baked into the toolkit.
 
 Finally, a developer evaluating Shōmei can read the documentation the spec's repo layout
 promised but the bootstrap never wrote — `docs/architecture.md`, `docs/api.md`,
@@ -65,7 +68,8 @@ promised but the bootstrap never wrote — `docs/architecture.md`, `docs/api.md`
 stand up the toolkit in either deployment mode by following them.
 
 **In scope.** Email verification and password-reset/change workflows with a notification
-(mailer) effect; a development log sender and a production SMTP sender; brute-force and
+effect; a development log-only sender that emits the one-time link (Shōmei does not deliver
+email — operators forward the emitted notification to their own provider); brute-force and
 rate-limit protection (per-IP and per-account login throttling, account lockout, and
 generic responses that do not leak account existence); structured logging, Prometheus
 metrics, readiness/liveness probes, request correlation IDs, and graceful shutdown; an
@@ -77,7 +81,11 @@ and the four `docs/*.md` files plus a getting-started README.
 **Explicitly out of scope (still deferred, consistent with MasterPlan 1 and the spec).**
 OAuth, OIDC, social login, magic links, passkeys/WebAuthn, MFA, device management, an admin
 UI, organization/team management, a full authorization policy engine, risk scoring, and
-anomaly detection. Event-sourcing the audit log (MessageDB) remains deferred. This plan
+anomaly detection. **Sending email** is out of scope: Shōmei emits a notification through
+the `Notifier` effect and ships only the dev log-only sender; delivering it (SMTP, SendGrid,
+Resend, SES, …) is the operator's concern, wired by their own `Notifier` interpreter. A
+future `shomei-email` package may add in-tree provider senders if the need arises.
+Event-sourcing the audit log (MessageDB) remains deferred. This plan
 does **not** change the existing signup/login/refresh/logout/verify workflows' semantics; it
 *adds* account-lifecycle flows and *wraps* the existing surface with hardening and
 operability. It also does not introduce horizontal-scaling concerns beyond what a single
@@ -100,8 +108,8 @@ Six child plans are grouped into four implementation phases:
 
 - **Phase 1 — Account Lifecycle.** EP-1 (plan 8) adds the email-verification and
   password-reset/change flows end-to-end: new single-use tokenized domain types and their
-  effect interfaces, new codd migrations, a `Shomei.Effect.Notifier` mailer effect with a dev log sender and
-  an SMTP sender, new core workflows, new `ShomeiAPI` routes and handlers, and server wiring.
+  effect interfaces, new codd migrations, a `Shomei.Effect.Notifier` notification effect with a
+  dev log-only sender (no email transport), new core workflows, new `ShomeiAPI` routes and handlers, and server wiring.
   It is first because it introduces the `Notifier` effect and the `ShomeiConfig`/migration
   extension patterns that later plans reuse, and because it is the largest user-visible
   feature gap.
@@ -148,12 +156,13 @@ intra-MasterPlan-2 dependencies.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | In Progress |
+| 1 | Account lifecycle: email verification and password reset | docs/plans/8-account-lifecycle-email-verification-and-password-reset.md | None | None | Complete |
 | 2 | Abuse protection: rate limiting and brute-force lockout | docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md | None | EP-1 | Complete |
 | 3 | Observability: structured logging, metrics, and health probes | docs/plans/10-observability-structured-logging-metrics-and-health-probes.md | None | None | Complete |
 | 4 | Operational CLI and signing-key rotation tooling | docs/plans/11-operational-cli-and-signing-key-rotation-tooling.md | None | None | Complete |
 | 5 | Packaging, configuration, and deployment | docs/plans/12-packaging-configuration-and-deployment.md | EP-4 | EP-1, EP-2, EP-3 | In Progress |
 | 6 | Documentation and adoption guides | docs/plans/13-documentation-and-adoption-guides.md | None | EP-1, EP-2, EP-3, EP-4, EP-5 | Complete |
+| 7 | Audit log retrieval API and CLI | docs/plans/14-audit-log-retrieval-api-and-cli.md | None | EP-2, EP-3, EP-4 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -193,9 +202,19 @@ It carries no hard dependency so a first draft can begin early, but it should be
 last so `docs/api.md` lists the real endpoints, `docs/deployment.md` describes the real
 image and CLI, and `docs/security.md` describes the real lockout/rate-limit defaults.
 
+EP-7 (plan 14, audit log retrieval API and CLI) is a late addition (Phase 4). It carries no
+intra-MasterPlan *hard* dependency — it builds on the audit-event table and vocabulary that
+already exist — but it *soft*-depends on EP-2, EP-3, and EP-4: EP-3 introduced the audit-event
+write stream and the `shomei_auth_events` table EP-7 reads, EP-2 added the abuse-protection
+events (`account_locked`, `login_throttled`) that EP-7's filters surface, and EP-4 built the
+`shomei-admin` CLI that EP-7 extends with an `audit` subcommand group. Because those three are
+already Complete, EP-7 can begin immediately. It also reuses the `ShomeiAPI`/authz seam from
+MasterPlan 1's EP-5.
+
 Parallelism summary: after MasterPlan 1 completes, EP-1 and EP-4 can start immediately and
 in parallel. Once EP-1 lands, EP-2 and EP-3 run in parallel. EP-5 starts once EP-4 is done
-(and is most efficient once EP-1/EP-2/EP-3 are done). EP-6 is finalized last.
+(and is most efficient once EP-1/EP-2/EP-3 are done). EP-6 is finalized last. EP-7 can start
+any time after EP-2/EP-3/EP-4 are done (all Complete as of this addition).
 
 
 ## Integration Points
@@ -206,10 +225,11 @@ as `sendNotification :: Notification -> Eff es ()`, where `Notification` is a co
 type (e.g. an `EmailVerificationRequested`/`PasswordResetRequested` sum carrying the
 recipient `Email`, a one-time link/token, and an expiry). Owner: **EP-1** (defines the
 effect, a `Notification` domain type, an in-memory/list interpreter for tests mirroring
-`Shomei.Effect.InMemory`, a development "log only" interpreter, and an SMTP interpreter in a
-new `Shomei.Notify.*` module — decide in EP-1 whether SMTP lives in `shomei-server` or a new
-`shomei-notify` package; default: a `Shomei.Notify` module inside `shomei-server` to avoid a
-new package, recorded in EP-1's Decision Log). Consumers: **EP-2** may publish an
+`Shomei.Effect.InMemory`, and a development "log only" interpreter in a `Shomei.Notify`
+module inside `shomei-server`). **Shōmei ships no email-sending interpreter:** the effect
+*is* the integration seam — an operator forwards the emitted `Notification` to their own
+provider (SendGrid, Resend, SES, an SMTP relay, …) by supplying their own interpreter, and a
+future `shomei-email` package may package in-tree senders. Consumers: **EP-2** may publish an
 account-lockout notification through the same effect. Rule: the effect signature is owned by
 EP-1; EP-2 must not change it without a Decision Log entry here.
 
@@ -280,7 +300,8 @@ MasterPlan 1's IP-7. EP-2 should choose timestamps later than EP-1's if both lan
 **IP-8 — `cabal.project` and new package dependencies.** The workspace manifest at
 `cabal.project` (MasterPlan 1's IP-8) gains new dependencies, each plan appending its own
 block under the existing "each plan appends its own block; none rewrites another's" comment:
-**EP-1** an SMTP/email library; **EP-2** a rate-limiter or token-bucket library (or none, if
+**EP-1** none (no email/SMTP transport — the `Notifier` effect is the seam; see Decision Log);
+**EP-2** a rate-limiter or token-bucket library (or none, if
 implemented in-process); **EP-3** a Prometheus client and structured-logging libraries;
 **EP-4** `optparse-applicative` for the CLI; **EP-5** typically none new. Rule:
 no Shōmei package may depend on the deprecated `memory` package (use `ram`), consistent with
@@ -291,12 +312,30 @@ existing `shomei-server` package, avoiding a new mori.dhall package registration
 see Decision Log); if a new `shomei-cli`/`shomei-notify` package is introduced instead,
 register it in `mori.dhall` as MasterPlan 1 EP-3 did for `shomei-migrations`.
 
+**IP-9 — Audit-event read layer over the shared effect stacks.** **EP-7** adds the *read*
+counterpart to EP-3's write-only audit-event stream: a new `effectful` port
+`Shomei.Effect.AuthEventReader` in `shomei-core` and its PostgreSQL interpreter
+`Shomei.Postgres.AuthEventReader.runAuthEventReaderPostgres`, both consuming the
+`shomei_auth_events` table and the `AuthEvent` vocabulary (`shomei-core/src/Shomei/Domain/Event.hs`)
+that EP-3 (write path) and EP-2 (lockout/throttle events) populate. No schema change and no new
+migration: EP-7 is read-only (`SELECT`/`COUNT` only) and the table is append-only. The concrete
+integration surface is the set of shared effect-stack lists that already enumerate
+`AuthEventPublisher`: `Shomei.Servant.Seam.AppEffects`, the server's `runAppIO` interpreter
+chain in `Shomei.Server.App`, and the `shomei-postgres` test `AppEffects`. **Rule: EP-7 adds
+exactly one entry (`AuthEventReader`) plus its interpreter to each such list/chain, mirroring
+`AuthEventPublisher`; it must not reorder or remove existing entries.** EP-7 also extends two
+MasterPlan-1 surfaces: the `ShomeiAPI` NamedRoutes record (IP-5 convention) with an admin-gated
+`GET /admin/audit/events` route, and the EP-4 `shomei-admin` CLI with an `audit` subcommand
+group. Known limitation recorded in EP-7's Decision Log: the HTTP route is gated by
+`requireRole (Role "admin")`, but no production flow yet issues the `admin` role, so the CLI is
+the working operator retrieval path and the API is verified via tokens minted in tests.
+
 
 ## Progress
 
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
-- [~] EP-1: `Notifier` effect + dev-log sender done; verification/reset token types, stores, and migrations done. **Production SMTP sender remains blocked** on a vetted SMTP dependency being registered in `mori` (re-checked 2026-06-10).
+- [x] EP-1: `Notifier` effect + dev-log sender done; verification/reset token types, stores, and migrations done. **Email sending descoped (2026-06-17)** — Shōmei emits notifications via the `Notifier` effect and ships only the log sender; delivery is the operator's concern. EP-1 is Complete.
 - [x] EP-1: email-verification and password-reset/change workflows pass pure in-memory tests
 - [x] EP-1: new `ShomeiAPI` routes + handlers pass in-process lifecycle HTTP tests
 - [x] EP-1: new `ShomeiAPI` routes + handlers; `curl` walkthrough of verify-email and password-reset against the live server (2026-06-10, log-only notifier)
@@ -309,6 +348,10 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
 - [~] EP-5: OCI image (`flake.module.nix`) + `docker-compose.yaml` + CI workflow authored; image build + live `docker compose up` NOT run in the dev sandbox (deferred to CI/deploy host)
 - [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
+- [ ] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `reconstructAuthEvent`
+- [ ] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403)
+- [ ] EP-7: `shomei-admin audit` subcommand group (`events`/`user`/`session`/`count`, tab-separated + `--json`)
+- [ ] EP-7: docs + runbook for the retrieval surfaces and the admin-role limitation
 
 
 ## Surprises & Discoveries
@@ -380,12 +423,16 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   migrations and applied the three `2026-06-04-*` files. Later plans that append migrations
   should make sure this module actually recompiles before trusting tests or `just migrate`.
 
-- **2026-06-04 EP-1 SMTP dependency remains unresolved.** `mori registry search smtp`,
-  `mori registry search HaskellNet`, and `mori registry search mime-mail` did not return a
-  registered SMTP/email package source to audit. EP-1 therefore added the `Shomei.Notify`
-  assembly module and explicit `SmtpNotifier` config path, but kept it log-backed until a
-  vetted dependency is registered/resolved. The MasterPlan should not treat EP-1's production
-  SMTP sender or live curl acceptance as complete yet.
+- **2026-06-04 EP-1 SMTP dependency was unresolved — SUPERSEDED 2026-06-17 by descoping email
+  sending entirely.** `mori registry search smtp`, `mori registry search HaskellNet`, and
+  `mori registry search mime-mail` returned no registered SMTP/email package to audit, so EP-1
+  kept the SMTP path log-backed. On 2026-06-17 the user decided Shōmei should **not** be
+  responsible for sending email at all: the `Notifier` effect is the integration seam,
+  operators forward the emitted `Notification` to their own provider, and a future
+  `shomei-email` package may add in-tree senders. The vestigial `SmtpNotifier` transport and
+  `runNotifierSmtp` stub were removed from the code (`Shomei.Config.NotifierTransport =
+  LogNotifier` is the sole built-in; `Shomei.Notify` exposes only `runNotifierLog`). This
+  removes the block — EP-1 is now Complete. See the Decision Log.
 
 
 ## Decision Log
@@ -411,12 +458,32 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   Date: 2026-06-04
 
 - Decision: Account-lifecycle notifications go through a new `Shomei.Effect.Notifier` effect
-  with a development log-only sender and a production SMTP sender; the toolkit bakes in no
-  specific email provider.
+  with a development log-only sender; the toolkit bakes in no specific email provider.
+  (Originally this decision also called for a production SMTP sender — **superseded
+  2026-06-17**, see the next entry.)
   Rationale: Preserves the transport-agnostic-core principle (the core defines the effect; only
-  the sender adapter knows SMTP), mirrors the existing store-effect pattern, and keeps the dev
-  experience friction-free (logs the link instead of sending mail).
+  a sender adapter knows a transport), mirrors the existing store-effect pattern, and keeps the
+  dev experience friction-free (logs the link instead of sending mail).
   Date: 2026-06-04
+
+- Decision: **Shōmei does not send email. Descope the production SMTP sender entirely.** The
+  `Shomei.Effect.Notifier` effect is the sole integration seam: the toolkit emits a
+  `Notification` (recipient, one-time link/token, expiry) and ships exactly one built-in
+  interpreter — `runNotifierLog`, which writes the link to the server log
+  (`NotifierTransport = LogNotifier` is now the only constructor). Delivering the message is
+  the operator's responsibility, satisfied by supplying their own `Notifier` interpreter that
+  forwards the `Notification` to their existing provider. If in-tree senders are ever wanted,
+  they belong in a separate `shomei-email` package, not in `shomei-core`/`shomei-server`.
+  Rationale: Sending email is an operator concern — virtually every deployment already has a
+  provider (SendGrid, Resend, SES, an SMTP relay). Baking a transport into the toolkit adds an
+  unaudited dependency, a TLS/secrets surface, and ongoing maintenance for no real benefit,
+  and it conflicts with the dependency-lookup rule (no vetted SMTP package is registered in
+  `mori`). Shōmei's responsibility ends at emitting the notification. This change removes
+  EP-1's only remaining (externally blocked) task, so **EP-1 is now Complete**. Code impact
+  (verified `cabal build all` + `cabal test all` green, fourmolu clean): dropped `SmtpNotifier`
+  and `runNotifierSmtp`; the Dhall/env loader never wired SMTP fields, so no config change was
+  needed.
+  Date: 2026-06-17
 
 - Decision: Default the operational CLI to a `shomei-admin` executable stanza inside the
   existing `shomei-server` package rather than a new package.
@@ -451,13 +518,50 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   directory and a `mori.dhall` package entry.
   Date: 2026-06-04
 
+- Decision: Add **EP-7 (Audit log retrieval API and CLI)** as a seventh child plan (Phase 4),
+  delivered as a single ExecPlan rather than a new MasterPlan or a multi-plan decomposition.
+  Rationale: The user asked for a retrieval surface (CLI + API) over the existing audit-event
+  trail. The work is one shared read/query layer (`AuthEventReader` port + PostgreSQL
+  interpreter) with two thin surfaces on top; coordination is trivially linear (foundation,
+  then two independent leaves), which the MasterPlan spec identifies as the signature of a
+  single ExecPlan, not a MasterPlan ("a MasterPlan adds value only when coordination across
+  plans is the hard problem"). It slots under MasterPlan 2 because it extends the same
+  operator/production theme and reuses EP-3's audit-event stream (IP-9), EP-4's `shomei-admin`
+  CLI, and EP-5/MasterPlan-1's `ShomeiAPI` seam. It soft-depends on EP-2/EP-3/EP-4 (all
+  Complete), so it can begin immediately and is read-only (no migration).
+  Date: 2026-06-17
+
+- Decision: EP-7's HTTP endpoint is gated by the existing `requireRole (Role "admin")` guard,
+  and EP-7 does NOT add a flow to grant the `admin` role; the CLI is the working operator
+  retrieval path.
+  Rationale: Shōmei's login/signup workflows do not issue roles in tokens, so no production
+  path yields an admin token today. Gating the endpoint correctly now keeps it safe and ready
+  the moment a role-granting mechanism exists (a natural follow-up); meanwhile the trusted-CLI
+  path (direct pool access) fully serves operators. The limitation is documented for operators
+  in EP-7 M4 and recorded in IP-9.
+  Date: 2026-06-17
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion. Compare
 the result against the original vision.
 
+### 2026-06-17 — Email-sending descoped; EP-1 Complete
+
+The user decided Shōmei should not be responsible for sending email. EP-1's only outstanding
+item — a production SMTP sender, externally blocked on a vetted `mori`-registered dependency —
+was **descoped** rather than implemented: the `Notifier` effect is the integration seam and
+operators wire delivery to their own provider (a future `shomei-email` package may add in-tree
+senders). The vestigial `SmtpNotifier`/`runNotifierSmtp` code was removed; `cabal build all`,
+`cabal test all` (incl. PostgreSQL integration + live client round-trip) are green and fourmolu
+is clean. **EP-1 is now Complete.** The only remaining item to fully close MasterPlan 2 is
+EP-5's live container build/verification (and the newly-added EP-7, Not Started). See the
+Decision Log entry of the same date.
+
 ### 2026-06-10 — MasterPlan 2 implementation retrospective
+
+> Note (2026-06-17): superseded in part — EP-1 is now Complete (email sending descoped, above).
 
 Against the original Vision & Scope, the initiative is **substantially delivered**: five of six
 child plans are Complete and the sixth (EP-5 packaging) is Complete except for live container
@@ -465,9 +569,8 @@ verification.
 
 - **EP-1 — Account lifecycle.** Functionally complete and live-`curl`-verified (signup →
   verify-email → password-reset with generic non-leaking 202s → session revocation → old refresh
-  rejected). The only gap is the *production SMTP sender*, externally blocked: no SMTP package is
-  registered in `mori`, so per the dependency-lookup rule it was left log-backed rather than
-  guessed at. EP-1 stays **In Progress** in the registry solely for that.
+  rejected). The original gap was the *production SMTP sender*; on 2026-06-17 email sending was
+  descoped (Shōmei emits notifications; operators deliver them), so EP-1 is now **Complete**.
 - **EP-2 — Abuse protection.** Complete: per-account lockout, per-IP failure throttle, and a
   per-IP request-rate WAI token bucket, all proven live (6-login lockout returns a generic 401;
   a 120-request burst yields ~58 429s).
@@ -491,9 +594,10 @@ ExecPlan's Decision Log: metrics and the Dhall loader were hand-rolled / CLI-bri
 pulling unregistered heavy Hackage libraries (`prometheus-client`, `dhall`); per-account vs
 per-IP failure counting is asymmetric (success resets the account counter, not the IP one).
 
-**Outstanding work** to call MasterPlan 2 fully closed: (1) register a vetted SMTP dependency and
-implement EP-1's production sender; (2) build and run the EP-5 container image / compose stack on
-a Nix+Docker host and capture the transcript.
+**Outstanding work** to call MasterPlan 2 fully closed: (1) build and run the EP-5 container
+image / compose stack on a Nix+Docker host and capture the transcript; (2) deliver EP-7 (audit
+log retrieval API and CLI), Not Started. (EP-1's former SMTP item was descoped on 2026-06-17 —
+Shōmei does not send email; see the Decision Log.)
 
 - 2026-06-04: EP-1 M3 is complete and M4 is partially complete. The servant API now exposes
   the verify-email, password-reset, and password-change routes, and the server assembly wires
@@ -567,13 +671,12 @@ a Nix+Docker host and capture the transcript.
   fails. Discovery worth propagating to EP-3/EP-6: all four lifecycle endpoints (request **and**
   confirm) return `202 Accepted` with a `NoContent` body — a uniform "accepted" status, not the
   `200` the EP-1 prose originally implied; `docs/api.md` (EP-6) must document `202` for these
-  routes. EP-1 stays **In Progress** in the registry solely because the *production SMTP
-  sender* (M4.1b/M4.3) is blocked: `mori registry search` for `smtp`/`mail`/`HaskellNet`
-  returns nothing, so per the repo's dependency-lookup rule the real sender cannot be written
-  without guessing at an unaudited library. The `SmtpNotifier` transport is wired and
-  log-backed until such a dependency is registered. All EP-1 user-visible behaviour is
-  delivered; only the SMTP transport remains, and it blocks nothing downstream (EP-2 only needs
-  the `Notifier` effect, which exists).
+  routes. (Historical: EP-1 stayed **In Progress** at the time solely because the *production
+  SMTP sender* (M4.1b/M4.3) was blocked on a vetted `mori`-registered dependency. **Superseded
+  2026-06-17:** email sending was descoped — Shōmei emits notifications via the `Notifier`
+  effect and operators deliver them — and the `SmtpNotifier` path was removed. All EP-1
+  user-visible behaviour was already delivered, so EP-1 is now **Complete**. The descoping
+  blocked nothing downstream; EP-2 only needs the `Notifier` effect, which exists.)
 
 
 ## Revision Notes
@@ -582,3 +685,28 @@ a Nix+Docker host and capture the transcript.
 refer to top-level directories, the effect interfaces now use
 the `Shomei.Effect.*` namespace, and the global precondition now reflects that MasterPlan 1's
 vertical slice is implemented and passing `cabal build all` / `cabal test all`.
+
+2026-06-17: Added **EP-7 (Audit log retrieval API and CLI)**, `docs/plans/14-audit-log-retrieval-api-and-cli.md`,
+as a seventh child plan (Phase 4, status Not Started). It delivers the read counterpart to
+EP-3's write-only audit-event stream: a shared `AuthEventReader` query layer over
+`shomei_auth_events`, an admin-gated `GET /admin/audit/events` HTTP endpoint, and a
+`shomei-admin audit` CLI subcommand group. Why: the user requested a retrieval surface (CLI +
+API) for major-event audit logs, which until now could only be read with hand-written SQL.
+The addition updates the Exec-Plan Registry (new row 7), the Dependency Graph (EP-7
+soft-depends on the already-Complete EP-2/EP-3/EP-4), Integration Points (new **IP-9** for the
+read layer over the shared effect stacks), Progress (four new EP-7 items), and the Decision
+Log (single-ExecPlan decomposition rationale and the admin-role gating limitation). EP-7 is
+read-only and requires no schema migration.
+
+2026-06-17: **Descoped email sending from EP-1 and marked EP-1 Complete.** Per the user's
+decision, Shōmei is no longer responsible for delivering email — the `Shomei.Effect.Notifier`
+effect is the integration seam, the toolkit ships only the dev log-only sender, and operators
+forward the emitted `Notification` to their own provider (SendGrid, Resend, SES, an SMTP relay,
+…); a future `shomei-email` package may add in-tree senders. This removed EP-1's only remaining
+(externally blocked) task. The change updates Vision & Scope (account-lifecycle paragraph,
+in/out-of-scope), Decomposition Phase 1, the Exec-Plan Registry (EP-1 → Complete), IP-1
+(no SMTP interpreter), IP-8 (EP-1 adds no email library), Progress, Surprises (the SMTP-blocker
+entry superseded), the Decision Log (original notifier decision annotated + a new descoping
+decision), and Outcomes & Retrospective. Code impact: removed the `SmtpNotifier` transport and
+`runNotifierSmtp`; `cabal build all` / `cabal test all` green, fourmolu clean. EP-1's child plan
+(`docs/plans/8-…`) is updated in lockstep.

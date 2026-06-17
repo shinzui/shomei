@@ -10,7 +10,10 @@ tagged release.
 ### Added — MasterPlan 2 (Production Hardening, Account Lifecycle, and Adoption)
 
 - **Account lifecycle (EP-1):** email verification and password reset/change behind a pluggable
-  `Notifier` effect (dev log sender; SMTP transport stubbed pending a vetted dependency).
+  `Notifier` effect. Shōmei emits each notification (recipient, one-time link/token, expiry) and
+  ships a development log-only sender; it does not deliver email — operators forward the
+  notification to their own provider (SendGrid, Resend, SES, an SMTP relay, …) via their own
+  `Notifier` interpreter. A future `shomei-email` package may add in-tree senders.
 - **Abuse protection (EP-2):** per-account brute-force lockout, per-IP failure throttle, and a
   per-IP request-rate WAI token bucket; all responses generic (no account-existence leak).
 - **Observability (EP-3):** structured JSON request logs with correlation ids, a hand-rolled

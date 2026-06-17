@@ -42,7 +42,19 @@ newtype SigningKeyConfig = SigningKeyConfig {algorithm :: Text}
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 
-data NotifierTransport = LogNotifier | SmtpNotifier
+{- | Which built-in 'Shomei.Effect.Notifier.Notifier' interpreter the standalone
+server uses.
+
+Shōmei does __not__ send email itself. It emits a 'Shomei.Domain.Notification.Notification'
+(recipient, one-time link/token, expiry) through the 'Notifier' effect; delivering that to a
+user is the operator's responsibility, wired to their existing provider (SendGrid, Resend, …)
+by supplying their own 'Notifier' interpreter. The toolkit ships one built-in interpreter —
+'LogNotifier', which writes the link to the server log (ideal for development and for
+operators who scrape logs) — plus an in-memory interpreter for tests. A dedicated
+@shomei-email@ package may add provider-backed senders in the future; until then the effect
+itself is the integration seam.
+-}
+data NotifierTransport = LogNotifier
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)
 

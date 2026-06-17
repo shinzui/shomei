@@ -92,7 +92,8 @@ Definitions used throughout (so a reader new to the codebase is not lost):
 - **Effect interface** — an abstract capability the transport-agnostic core needs from the
   outside world (store a user, hash a password, sign a token, send an email), expressed as an
   `effectful` effect under `Shomei.Effect.*`. Concrete behavior is supplied by an
-  **interpreter** (in-memory for tests; real PostgreSQL/JWT/SMTP for production).
+  **interpreter** (in-memory for tests; real PostgreSQL/JWT for production; the `Notifier`
+  effect's only built-in interpreter logs the notification — Shōmei does not send email).
 - **`effectful`** — the Haskell effect-system library Shōmei uses to express effects and wire
   interpreters; "an effect" here means one of those abstract capabilities.
 - **codd** — the migration tool that applies the SQL files in `shomei-migrations`
@@ -236,8 +237,9 @@ Complete. Concretely, by the time this plan executes:
 - EP-1 (`docs/plans/8-account-lifecycle-email-verification-and-password-reset.md`) added
   `POST /auth/verify-email/request`, `POST /auth/verify-email/confirm`,
   `POST /auth/password-reset/request`, `POST /auth/password-reset/confirm`, and an
-  authenticated `POST /auth/password/change`, plus the `Shomei.Effect.Notifier` mailer effect
-  (dev log sender + SMTP sender) and the single-use token machinery.
+  authenticated `POST /auth/password/change`, plus the `Shomei.Effect.Notifier` notification
+  effect (dev log sender only — Shōmei emits notifications, operators deliver them) and the
+  single-use token machinery.
 - EP-2 (`docs/plans/9-abuse-protection-rate-limiting-and-brute-force-lockout.md`) added
   per-IP and per-account login throttling, account lockout after repeated failures, and
   generic responses that do not leak account existence; rejected/locked requests return
@@ -538,7 +540,7 @@ Create `docs/architecture.md` with these sections:
    and the EP-1 notifier/one-time-token stores), and explain the two interpreter families: an
    **in-memory** interpreter (`Shomei.Effect.InMemory`) used by the pure test suite, and the
    **real** interpreters (`shomei-postgres` for stores, `shomei-jwt` for signing/verifying,
-   the SMTP/log notifier from EP-1). Then describe the workflows in `Shomei.Workflow` — signup,
+   the log-only notifier from EP-1 — Shōmei does not send email). Then describe the workflows in `Shomei.Workflow` — signup,
    login, refresh (with rotation + reuse detection), logout, token verification — and the
    account-lifecycle workflows EP-1 added (email verification, password reset, password
    change). Emphasize that the workflows are written purely against effects, so swapping
@@ -746,7 +748,7 @@ Create `docs/deployment.md` as the operator's guide. Cover:
    meaning. Cover the base fields (issuer, audience, access/refresh/session TTLs, password
    policy, token transport, signing-key config, session-check mode) **and** the MasterPlan 2
    extensions: EP-1's notifier/verification settings (email-verification-required toggle,
-   verification/reset token TTLs, SMTP/notifier config), EP-2's rate-limit/lockout sub-record,
+   verification/reset token TTLs, notifier config — log sender only, no SMTP), EP-2's rate-limit/lockout sub-record,
    and EP-3's observability sub-record (log level/format, metrics toggle). Include
    deployment-only settings the loader adds (database URL, bind host/port, signing-key source).
    Show a minimal example Dhall config:
@@ -971,3 +973,10 @@ document in the same change.
 2026-06-04: Updated after the package-layout refactor and MasterPlan audit. Documentation
 requirements now describe top-level package directories and the `Shomei.Effect.*`
 effect-interface namespace instead of the old nested package tree and the old Port namespace modules.
+
+2026-06-17: Corrected the notifier descriptions to reflect that email sending was descoped from
+EP-1 (`docs/plans/8-…` and MasterPlan 2's Decision Log): Shōmei emits notifications via the
+`Notifier` effect and ships only the dev log-only sender; operators deliver them. Removed the
+"SMTP sender" / "real PostgreSQL/JWT/SMTP" phrasings from the adoption-doc requirements. The
+shipped docs (`docs/{architecture,api}.md`) already describe the log sender, so this is a
+plan-prose correction only.

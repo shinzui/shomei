@@ -34,7 +34,7 @@ After this plan, an operator gains four concrete, demonstrable abilities:
    language — think "JSON with types, functions, and imports") at `config/shomei.dhall`
    describes *every* runtime setting: the database connection, the address and effect the
    server listens on, the JWT issuer/audience, all the token lifetimes, the password
-   policy, the rate-limit and account-lockout policy, the email/SMTP settings, and the
+   policy, the rate-limit and account-lockout policy, the notifier settings, and the
    log level. Environment variables override any value in that file, so the same image
    can be reconfigured at deploy time without rebuilding. Both `shomei-server` and
    `shomei-admin` read configuration through *the same loader*, so they can never
@@ -142,7 +142,7 @@ Record every decision made while working on the plan.
   toolchain (it carries `git.repoName`, `nix.postgresql`, etc.) and is unrelated to runtime
   application configuration; co-opting it would conflate build-tooling config with runtime
   config. We commit `*.example.dhall` so the schema is discoverable and version-controlled,
-  but gitignore the live `config/shomei.dhall` so an operator's real secrets (SMTP password,
+  but gitignore the live `config/shomei.dhall` so an operator's real secrets (e.g. the
   signing-key passphrase) never land in git.
   Date: 2026-06-04
 
@@ -351,7 +351,7 @@ Do not begin it until all of the following hold:
    "The `shomei-admin` CLI contract" below; if EP-4 ships different command spellings, update
    the entrypoint and that section and record it in the Decision Log.
 3. **EP-1 / EP-2 / EP-3 (plans 8 / 9 / 10) are Complete** — these are **soft** dependencies.
-   They extend `ShomeiConfig` (IP-3) with the notifier/SMTP, rate-limit/lockout, and
+   They extend `ShomeiConfig` (IP-3) with the notifier, rate-limit/lockout, and
    observability sub-records that the loader must populate. The loader is written to populate
    whatever fields exist; if any of EP-1/EP-2/EP-3 has *not* landed, the loader simply omits
    that sub-record's wiring (and the example Dhall file omits that section), and a follow-up
@@ -409,7 +409,8 @@ file must mirror the record *as it exists when this plan runs*. Concretely:
 - The loader builds `ShomeiConfig` starting from `defaultShomeiConfig issuer audience` and
   overrides each field present in the Dhall file / env. For sub-records that EP-1/EP-2/EP-3
   added, it reads a corresponding nested Dhall record and an env-var family
-  (`SHOMEI_RATELIMIT_*`, `SHOMEI_SMTP_*`, `SHOMEI_LOG_LEVEL`, …).
+  (`SHOMEI_RATELIMIT_*`, `SHOMEI_LOG_LEVEL`, …). (There is no `SHOMEI_SMTP_*` family — email
+  sending was descoped 2026-06-17; the notifier sub-record only configures the log sender.)
 - If, when this plan executes, one of EP-1/EP-2/EP-3 has not yet landed, simply do not wire
   its sub-record (the field will not exist), omit its section from `config/shomei.example.dhall`,
   and add a Progress sub-item to wire it later. This keeps the plan honest and buildable
@@ -524,9 +525,10 @@ green, including an env-override case. Both `shomei-server` and `shomei-admin` c
      (`Optional`), matching `FileConfig`.
    - `config/shomei.example.dhall` — a committed, fully-populated example using non-secret
      placeholder values (issuer `https://auth.example.com`, audience `example-api`, database
-     URL `postgresql://shomei:shomei@localhost:5432/shomei`, effect `8080`, etc.). Secrets (SMTP
-     password, signing-key passphrase) are shown as `env:SHOMEI_SMTP_PASSWORD as Text`
-     comments or left `None Text`, never as literals.
+     URL `postgresql://shomei:shomei@localhost:5432/shomei`, effect `8080`, etc.). Secrets (e.g.
+     the signing-key passphrase) are shown as `env:SHOMEI_SIGNING_KEY_PASSPHRASE as Text`
+     comments or left `None Text`, never as literals. (Email sending was descoped 2026-06-17, so
+     there is no SMTP password secret.)
    - `config/shomei.dhall` — the live operator copy; **gitignored** (add `config/shomei.dhall`
      to `.gitignore`). The example doubles as the starting point: `cp config/shomei.example.dhall
      config/shomei.dhall`.
@@ -624,7 +626,7 @@ ensuring a key, and logging the listen address.
        packages.dockerImage = pkgs.dockerTools.buildLayeredImage {
          name = "shomei-server";
          tag = "latest";
-         contents = [ shomeiBins entrypoint pkgs.cacert ];  # cacert: TLS roots for SMTP
+         contents = [ shomeiBins entrypoint pkgs.cacert ];  # cacert: TLS root certificates
          config = {
            Entrypoint = [ "${entrypoint}/bin/shomei-entrypoint" ];
            ExposedPorts = { "8080/tcp" = { }; };
@@ -1110,8 +1112,8 @@ output to observe.
   (Maybe a)` (all confirmed present in the on-disk source).
 - **`pkgs.dockerTools.buildLayeredImage`** (nixpkgs, via the flake) — reproducible OCI image
   build with no Docker daemon. `pkgs.writeShellApplication` — wraps `deploy/entrypoint.sh`
-  with its `runtimeInputs` on `PATH`. `pkgs.cacert` — TLS root certificates (for the SMTP
-  sender). Optionally `pkgs.curl` for the container healthcheck.
+  with its `runtimeInputs` on `PATH`. `pkgs.cacert` — TLS root certificates (for any outbound
+  TLS, e.g. a TLS database connection). Optionally `pkgs.curl` for the container healthcheck.
 - **`docker` / `docker compose`** — runtime; only needed to *run* the image and stack, not to
   build the Nix image.
 - **GitHub Actions** + `cachix/install-nix-action` — CI host and Nix installer.
@@ -1185,3 +1187,8 @@ output to observe.
   now refer to top-level directories, package descriptions use effect-interface terminology,
   and the configuration milestone now extends the existing `Shomei.Server.Config` module
   instead of authoring it from scratch.
+- 2026-06-17 — Removed SMTP references from the config-schema prose (email/SMTP settings →
+  notifier settings; `SHOMEI_SMTP_*` and the SMTP-password secret dropped; `cacert` comments
+  retargeted to general TLS). Email sending was descoped from EP-1 (see
+  `docs/plans/8-…` and MasterPlan 2's Decision Log); the loader never wired SMTP fields, so the
+  implemented EP-5 behaviour is unchanged — only the illustrative wording is corrected.
