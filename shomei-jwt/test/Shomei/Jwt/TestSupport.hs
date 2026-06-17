@@ -50,6 +50,7 @@ mkClaimsWith cfg iat expd = do
             , expiresAt = expd
             , scopes = Set.fromList [Scope "read", Scope "write"]
             , roles = Set.fromList [Role "user"]
+            , actor = Nothing
             }
 
 -- | The public 'JWKSet' for an active key plus any additional keys.

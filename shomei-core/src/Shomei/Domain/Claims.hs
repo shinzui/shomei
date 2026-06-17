@@ -39,6 +39,10 @@ data AuthClaims = AuthClaims
     , expiresAt :: !UTCTime
     , scopes :: !(Set Scope)
     , roles :: !(Set Role)
+    , actor :: !(Maybe UserId)
+    -- ^ when this token is a delegated (impersonation) token, the real operator
+    -- acting on behalf of 'subject'; serialised as the @act@ JWT claim. 'Nothing'
+    -- for every ordinary login token.
     }
     deriving stock (Generic, Eq, Show)
     deriving anyclass (FromJSON, ToJSON)

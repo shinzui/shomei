@@ -137,6 +137,11 @@ claimsToAuth cs = do
     expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
     let scs = Set.fromList (map Domain.Scope (lookupStringList "scopes"))
         rls = Set.fromList (map Domain.Role (lookupStringList "roles"))
+    -- The @act@ claim is present only on delegated (impersonation) tokens. Absent
+    -- → 'Nothing'; present but unparseable → a malformed token.
+    actor' <- case lookupString "act" of
+        Nothing -> Right Nothing
+        Just actTxt -> Just <$> mapLeft (const TokenMalformed) (parseId actTxt)
     pure
         AuthClaims
             { subject = subj
@@ -147,6 +152,7 @@ claimsToAuth cs = do
             , expiresAt = expiresAt'
             , scopes = scs
             , roles = rls
+            , actor = actor'
             }
   where
     note msg = maybe (Left (TokenOtherError msg)) Right

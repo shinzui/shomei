@@ -151,6 +151,7 @@ signWith jwk = do
                 , expiresAt = addUTCTime 900 t
                 , scopes = Set.empty
                 , roles = Set.empty
+                , actor = Nothing
                 }
     r <- signAccessToken jwk claims
     case r of

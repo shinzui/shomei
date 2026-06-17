@@ -60,7 +60,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: Add `actor :: Maybe UserId` to `AuthClaims`; encode/decode the `act` JWT claim; round-trip test passes.
+- [x] M1: Add `actor :: Maybe UserId` to `AuthClaims`; encode/decode the `act` JWT claim; round-trip test passes. (done 2026-06-17)
 - [ ] M2: Add `actor :: Maybe UserId` to `Session`/`NewSession`; add `actor_user_id` column migration; update Postgres + in-memory session stores; store/load test passes.
 - [ ] M3: Add `ImpersonationConfig` to `ShomeiConfig`; add `AuthError` constructors; add `AuthEvent` constructors; implement `Shomei.Workflow.Impersonation` (`startImpersonation`, `stopImpersonation`); core spec passes.
 - [ ] M4: Add Servant DTOs, the `impersonate` + `stopImpersonate` routes, handlers, error mappings, and the `denyUnderImpersonation` gate on password-change + passkey handlers; project new events in the Postgres publisher; servant/integration tests pass.

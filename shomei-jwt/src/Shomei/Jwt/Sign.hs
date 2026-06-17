@@ -75,20 +75,27 @@ directly; session id, scopes, and roles travel as the custom claims @sid@,
 -}
 claimsFromAuth :: AuthClaims -> ClaimsSet
 claimsFromAuth ac =
-    emptyClaimsSet
-        & claimIss
-        ?~ sou (issuerText ac.issuer)
-        & claimSub
-        ?~ sou (idText ac.subject)
-        & claimAud
-        ?~ Audience [sou (audienceText ac.audience)]
-        & claimIat
-        ?~ NumericDate ac.issuedAt
-        & claimExp
-        ?~ NumericDate ac.expiresAt
-        & addClaim "sid" (Aeson.String (idText ac.sessionId))
-        & addClaim "scopes" (Aeson.toJSON (Set.toList ac.scopes))
-        & addClaim "roles" (Aeson.toJSON (Set.toList ac.roles))
+    withActor $
+        emptyClaimsSet
+            & claimIss
+            ?~ sou (issuerText ac.issuer)
+            & claimSub
+            ?~ sou (idText ac.subject)
+            & claimAud
+            ?~ Audience [sou (audienceText ac.audience)]
+            & claimIat
+            ?~ NumericDate ac.issuedAt
+            & claimExp
+            ?~ NumericDate ac.expiresAt
+            & addClaim "sid" (Aeson.String (idText ac.sessionId))
+            & addClaim "scopes" (Aeson.toJSON (Set.toList ac.scopes))
+            & addClaim "roles" (Aeson.toJSON (Set.toList ac.roles))
+  where
+    -- Add the @act@ claim only for delegated tokens, leaving ordinary tokens
+    -- byte-identical to before this field existed.
+    withActor cs = case ac.actor of
+        Just uid -> cs & addClaim "act" (Aeson.String (idText uid))
+        Nothing -> cs
 
 {- | Sign an 'AuthClaims' into an 'AccessToken' using the given (active, private)
 key. 'makeJWSHeader' selects the algorithm via @bestJWSAlg@ and copies the key's

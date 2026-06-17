@@ -54,6 +54,7 @@ buildClaims cfg uid sid ts =
         , expiresAt = addUTCTime cfg.accessTokenTTL ts
         , scopes = Set.empty
         , roles = Set.empty
+        , actor = Nothing
         }
 
 {- | Mint a fresh session + refresh token + signed access token for an authenticated user,

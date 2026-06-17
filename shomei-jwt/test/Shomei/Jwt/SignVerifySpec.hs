@@ -13,9 +13,10 @@ import Test.Tasty.HUnit (Assertion, assertFailure, testCase, (@?=))
 import Crypto.JOSE.JWK (JWK)
 
 import Shomei.Config (defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), AuthClaims, Issuer (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
 import Shomei.Domain.Token (AccessToken (AccessToken))
 import Shomei.Error (TokenError (..))
+import Shomei.Id (genUserId)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
@@ -71,6 +72,26 @@ tests =
             wire <- signOrFail a ac
             res <- verifyToken (publicJwks a [b]) testConfig wire
             assertClaims ac res
+        , testCase "round-trips the act (actor) claim on a delegated token" $ do
+            jwk <- generateSigningKey
+            t <- getCurrentTime
+            op <- genUserId
+            base <- mkClaims testConfig t
+            let ac = base{actor = Just op}
+            wire <- signOrFail jwk ac
+            res <- verifyToken (publicJwks jwk []) testConfig wire
+            case res of
+                Right ac' -> ac'.actor @?= Just op
+                Left e -> assertFailure ("verify failed: " <> show e)
+        , testCase "omits the act claim when actor is Nothing" $ do
+            jwk <- generateSigningKey
+            t <- getCurrentTime
+            ac <- mkClaims testConfig t
+            wire <- signOrFail jwk ac
+            res <- verifyToken (publicJwks jwk []) testConfig wire
+            case res of
+                Right ac' -> ac'.actor @?= Nothing
+                Left e -> assertFailure ("verify failed: " <> show e)
         ]
 
 -- | Sign claims, failing the test if signing errors; returns the compact token text.
