@@ -42,7 +42,10 @@ slice runs on my laptop" and "I can deploy this, operate it safely, and hand it 
 downstream team."
 
 After this initiative is complete, an operator can: deploy `shomei-server` as a single
-container image alongside PostgreSQL with one `docker compose up`; load all runtime
+reproducible OCI container image against a managed PostgreSQL, and — for local development
+and testing — bring up the whole stack with one `process-compose up` against a local
+PostgreSQL bound to a Unix-domain socket (no TCP port, so it never conflicts with another
+local Postgres); load all runtime
 settings (issuer, audience, TTLs, password policy, rate limits, notifier, log level) from a
 single typed Dhall configuration file or environment variables; run database migrations and
 generate/rotate signing keys through a dedicated `shomei-admin` command-line tool rather
@@ -74,8 +77,9 @@ rate-limit protection (per-IP and per-account login throttling, account lockout,
 generic responses that do not leak account existence); structured logging, Prometheus
 metrics, readiness/liveness probes, request correlation IDs, and graceful shutdown; an
 operational CLI (`shomei-admin`) for migrations, signing-key generation/rotation/retirement,
-and bootstrap user creation; a typed Dhall + environment configuration layer; an
-OCI/Docker image and a `docker compose` stack; a CI pipeline (build, test, format check);
+and bootstrap user creation; a typed Dhall + environment configuration layer; a production
+OCI/Docker image; a local development/test stack run with `process-compose` against a
+Unix-socket PostgreSQL (no `docker compose`); a CI pipeline (build, test, format check);
 and the four `docs/*.md` files plus a getting-started README.
 
 **Explicitly out of scope (still deferred, consistent with MasterPlan 1 and the spec).**
@@ -122,10 +126,11 @@ Six child plans are grouped into four implementation phases:
 
 - **Phase 3 — Operations.** EP-4 (plan 11) delivers the `shomei-admin` CLI and the
   signing-key rotation lifecycle (pending → active → retired → revoked, with JWKS reflecting
-  overlapping keys during rotation). EP-5 (plan 12) packages everything: the OCI image, the
-  `docker compose` stack, the typed Dhall/env configuration loader that assembles the
-  fully-extended `ShomeiConfig`, and CI. EP-5 hard-depends on EP-4 because the container
-  entrypoint runs migrations and ensures an active signing key *through the CLI*.
+  overlapping keys during rotation). EP-5 (plan 12) packages everything: the production OCI
+  image, the local `process-compose` development/test stack (Unix-socket PostgreSQL + server,
+  replacing the earlier `docker compose` design), the typed Dhall/env configuration loader
+  that assembles the fully-extended `ShomeiConfig`, and CI. EP-5 hard-depends on EP-4 because
+  the container entrypoint runs migrations and ensures an active signing key *through the CLI*.
 
 - **Phase 4 — Adoption.** EP-6 (plan 13) writes `docs/architecture.md`, `docs/api.md`,
   `docs/security.md`, `docs/deployment.md`, and the getting-started `README.md`. It is last
@@ -170,11 +175,11 @@ Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3
 
 ## Dependency Graph
 
-The single hard ordering inside this MasterPlan is **EP-5 → EP-4**: the container image and
-`docker compose` stack from EP-5 (plan 12) run database migrations and ensure an active
-signing key exists at startup by invoking the `shomei-admin` CLI that EP-4 (plan 11)
-builds, so EP-5 cannot ship a working entrypoint until the CLI exists. Everything else is
-soft.
+The single hard ordering inside this MasterPlan is **EP-5 → EP-4**: the production container
+image's entrypoint and the local `process-compose` stack from EP-5 (plan 12) run database
+migrations and ensure an active signing key exists at startup by invoking the `shomei-admin`
+CLI that EP-4 (plan 11) builds, so EP-5 cannot ship a working entrypoint until the CLI exists.
+Everything else is soft.
 
 EP-1 (plan 8) has no intra-plan dependency but is sequenced first because it *introduces*
 three things later plans build on: the `Shomei.Effect.Notifier` mailer effect (reused by EP-2's
@@ -346,7 +351,7 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-4: `shomei-admin` CLI runs migrations and creates a bootstrap user (live runbook, 2026-06-10)
 - [x] EP-4: signing-key generate → activate → retire → revoke lifecycle; JWKS reflects overlapping keys during rotation (integration test proves retired-key tokens still verify, revoked ones don't)
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
-- [~] EP-5: OCI image (`flake.module.nix`) + `docker-compose.yaml` + CI workflow authored; image build + live `docker compose up` NOT run in the dev sandbox (deferred to CI/deploy host)
+- [~] EP-5: production OCI image (`flake.module.nix`) + CI workflow authored; image build NOT run in the dev sandbox (deferred to CI/deploy host). Local dev/test stack is `process-compose up` (Unix-socket PostgreSQL + schema + key bootstrap + server) — `docker compose` was dropped 2026-06-17 (see Decision Log).
 - [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
 - [ ] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `reconstructAuthEvent`
 - [ ] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403)
@@ -541,6 +546,29 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
   in EP-7 M4 and recorded in IP-9.
   Date: 2026-06-17
 
+- Decision: **Local development and testing use `process-compose` + a Unix-socket PostgreSQL,
+  not `docker compose`.** EP-5's earlier `docker-compose.yaml` "one-command local stack" was
+  removed; the local stack is now `process-compose up` from inside the Nix dev shell, bringing
+  up a socket-only PostgreSQL (`pg_ctl … --unix_socket_directories='$PGHOST'`,
+  `listen_addresses=''`), then `just create-database` (createdb + migrate), then an
+  active-signing-key bootstrap, then `cabal run shomei-server` on `http://localhost:8080`. The
+  **production** OCI image (`nix build .#dockerImage` via `flake.module.nix`) and the plain
+  `Dockerfile` are **retained unchanged** as the deployment artifact; only `docker compose` is
+  gone.
+  Rationale: Every other service in the project already runs locally this way — the Nix dev
+  shell (`nix/haskell.nix`) provisions the socket Postgres and exports
+  `PGHOST`/`PGDATA`/`PGDATABASE`/`PG_CONNECTION_STRING`, `.seihou/config.dhall` sets
+  `nix.process-compose = "true"`, and both `process-compose.yaml` and
+  `examples/microservice-auth-stack/process-compose.yaml` use it. `docker compose` was the odd
+  one out. A Unix socket binds no TCP port, so the local database never conflicts with another
+  Postgres on the machine; and local dev/test needs no built container image, shortening the
+  loop. This is a change to EP-5's M3 design only; it touches no auth semantics. The change
+  cascades to EP-5 (`docs/plans/12-…`, M3 rewritten) and EP-6 (`docs/plans/13-…`, quickstart/
+  runbook retargeted), plus the committed setup (`process-compose.yaml` extended; `docs/
+  deployment.md`, `README.md`, `CHANGELOG.md`, `flake.module.nix` updated; `docker-compose.yaml`
+  deleted).
+  Date: 2026-06-17
+
 
 ## Outcomes & Retrospective
 
@@ -581,9 +609,11 @@ verification.
   zero-downtime `pending → active → retired → revoked` lifecycle proven by a JWKS-overlap
   integration test.
 - **EP-5 — Packaging/config/deployment.** Config loader (typed Dhall + env, IP-6) done and
-  verified; CI workflow, OCI image (`flake.module.nix`), `docker-compose.yaml`, entrypoint, and
-  `Dockerfile` authored and syntax-validated. **Remaining:** a live `nix build .#dockerImage` +
-  `docker compose up` was not run in the development sandbox (needs a Nix+Docker build host).
+  verified; CI workflow, production OCI image (`flake.module.nix`), entrypoint, and `Dockerfile`
+  authored and syntax-validated; the local dev/test stack is `process-compose up` (Unix-socket
+  PostgreSQL + schema + key bootstrap + server), replacing the dropped `docker compose` design.
+  **Remaining:** a live `nix build .#dockerImage` was not run in the development sandbox (needs a
+  Nix+Docker build host).
 - **EP-6 — Docs.** Complete: `README.md` and `docs/{architecture,api,security,deployment}.md`
   written against the finished surface.
 
@@ -594,10 +624,11 @@ ExecPlan's Decision Log: metrics and the Dhall loader were hand-rolled / CLI-bri
 pulling unregistered heavy Hackage libraries (`prometheus-client`, `dhall`); per-account vs
 per-IP failure counting is asymmetric (success resets the account counter, not the IP one).
 
-**Outstanding work** to call MasterPlan 2 fully closed: (1) build and run the EP-5 container
-image / compose stack on a Nix+Docker host and capture the transcript; (2) deliver EP-7 (audit
-log retrieval API and CLI), Not Started. (EP-1's former SMTP item was descoped on 2026-06-17 —
-Shōmei does not send email; see the Decision Log.)
+**Outstanding work** to call MasterPlan 2 fully closed: (1) build the EP-5 production OCI image
+(`nix build .#dockerImage`) on a Nix+Docker host and capture the transcript (the local dev/test
+stack now runs via `process-compose` + a Unix-socket PostgreSQL and needs no image); (2) deliver
+EP-7 (audit log retrieval API and CLI), Not Started. (EP-1's former SMTP item was descoped on
+2026-06-17 — Shōmei does not send email; see the Decision Log.)
 
 - 2026-06-04: EP-1 M3 is complete and M4 is partially complete. The servant API now exposes
   the verify-email, password-reset, and password-change routes, and the server assembly wires
@@ -611,13 +642,15 @@ Shōmei does not send email; see the Decision Log.)
   Dhall file with the `dhall-to-json` CLI and decodes it with aeson into the fully-extended
   `ShomeiConfig` (a deliberate deviation from the heavy `dhall` Haskell library — see EP-5's
   Decision Log), with env vars overriding file values; a test proves it. M4 (CI workflow) and the
-  deployment artifacts (OCI image in `flake.module.nix`, `docker-compose.yaml`, `entrypoint.sh`,
-  `Dockerfile`, `CHANGELOG.md`) are **authored and syntax-validated** but the OCI image build and
-  a live `docker compose up` were **not run in the development sandbox** (they need a Nix+Docker
-  build host; documented honestly rather than claimed). The flake still evaluates and
-  `nix develop` works. **Handoff to EP-6:** `docs/deployment.md` should document the Dhall config
-  schema, the `SHOMEI_CONFIG`/`PG_CONNECTION_STRING` precedence, the `nix build .#dockerImage` +
-  `docker compose up` flow, and that the live container verification is pending.
+  production deployment artifacts (OCI image in `flake.module.nix`, `entrypoint.sh`, `Dockerfile`,
+  `CHANGELOG.md`) are **authored and syntax-validated** but the OCI image build was **not run in
+  the development sandbox** (it needs a Nix+Docker build host; documented honestly rather than
+  claimed). The local dev/test stack is `process-compose up` (Unix-socket PostgreSQL + schema +
+  key bootstrap + server); the original `docker-compose.yaml` was dropped 2026-06-17 (see the
+  Decision Log). The flake still evaluates and `nix develop` works. **Handoff to EP-6:**
+  `docs/deployment.md` should document the Dhall config schema, the
+  `SHOMEI_CONFIG`/`PG_CONNECTION_STRING` precedence, the `process-compose up` local stack, the
+  `nix build .#dockerImage` production flow, and that the live container verification is pending.
 
 - 2026-06-10: **EP-4 (operational CLI + key rotation) is Complete.** The `shomei-admin` binary
   (a second executable in `shomei-server`, per the default decision — no new `mori.dhall`
@@ -710,3 +743,19 @@ entry superseded), the Decision Log (original notifier decision annotated + a ne
 decision), and Outcomes & Retrospective. Code impact: removed the `SmtpNotifier` transport and
 `runNotifierSmtp`; `cabal build all` / `cabal test all` green, fourmolu clean. EP-1's child plan
 (`docs/plans/8-…`) is updated in lockstep.
+
+2026-06-17: **Dropped `docker compose`; local development/testing now uses `process-compose` +
+a Unix-socket PostgreSQL.** Per the user's decision, the local dev/test stack matches the
+project-wide pattern (the Nix dev shell provisions a socket-only PostgreSQL and exports
+`PGHOST`/`PGDATA`/`PGDATABASE`/`PG_CONNECTION_STRING`; `process-compose.yaml` and the example
+service already use it). A Unix-domain socket binds no TCP port, so the local database never
+conflicts with another Postgres on the machine. EP-5's earlier `docker-compose.yaml` "one-command
+local stack" was removed; the local stack is now `process-compose up` (socket Postgres →
+`just create-database` → active-key bootstrap → `shomei-server` on `:8080`). The **production**
+OCI image (`nix build .#dockerImage`) and the plain `Dockerfile` are retained unchanged as the
+deployment artifact. This change updates Vision & Scope, Decomposition Phase 3, Progress, the
+Decision Log (new entry), Outcomes & Retrospective, and cascades to EP-5 (`docs/plans/12-…`, M3
+rewritten) and EP-6 (`docs/plans/13-…`, quickstart/runbook retargeted). Committed setup updated
+in lockstep: `process-compose.yaml` extended with `bootstrap_keys` + `shomei-server`;
+`docs/deployment.md`, `README.md`, `CHANGELOG.md`, and `flake.module.nix` corrected;
+`docker-compose.yaml` deleted.

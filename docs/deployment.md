@@ -54,9 +54,45 @@ A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <ki
 `users create`. The container entrypoint (`deploy/entrypoint.sh`) does the first three
 automatically.
 
-## Container image
+## Local development/test stack (`process-compose`)
 
-The reproducible image is built from the Nix flake:
+Locally — for development and testing — Shōmei does **not** use Docker or `docker compose`.
+Everything runs inside the Nix dev shell against a local PostgreSQL bound to a **Unix-domain
+socket** (no TCP port, so it never conflicts with any other Postgres on the machine). This is
+the same pattern every service in the project uses.
+
+```bash
+nix develop            # or rely on direnv (.envrc runs `use flake`)
+process-compose up     # starts the whole local stack
+```
+
+`process-compose up` runs the processes in `process-compose.yaml`, in order:
+
+1. `postgres` — a local PostgreSQL started with `pg_ctl … -o "--unix_socket_directories='$PGHOST'"
+   -o "-c listen_addresses=''"`, i.e. socket-only. The dev shell (`nix/haskell.nix`) exports
+   `PGHOST=$PWD/db`, `PGDATA`, `PGDATABASE=shomei`, and `PG_CONNECTION_STRING` (a `postgresql://`
+   URI pointing at the socket directory).
+2. `create_schema` — `just create-database`: creates the `shomei` database (over the socket) and
+   applies all migrations. Idempotent.
+3. `bootstrap_keys` — ensures an active ES256 signing key exists (via `shomei-admin keys
+   list`/`generate`/`activate`).
+4. `shomei-server` — `cabal run shomei-server`, reachable at `http://localhost:8080`; its
+   readiness probe hits `/ready`.
+
+The server reaches the database over `PG_CONNECTION_STRING` (the Unix socket), so there is no
+host/port to configure and nothing to clash with. Then, from another shell:
+
+```bash
+curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+  -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
+```
+
+To reset to a pristine database: stop the stack (`process-compose down`), `dropdb shomei`, then
+`process-compose up` again — `create_schema` recreates and re-migrates it.
+
+## Production container image
+
+For deployment (a registry / Kubernetes), the reproducible image is built from the Nix flake:
 
 ```bash
 nix build .#dockerImage          # produces ./result, a loadable image tarball
@@ -64,27 +100,14 @@ docker load < result             # loads shomei-server:latest
 ```
 
 `flake.module.nix` defines it with `dockerTools.buildLayeredImage` (the server, the admin CLI,
-and `dhall-to-json`). A plain `Dockerfile` is provided as the documented, non-reproducible
-secondary path.
+and `dhall-to-json`). Its `deploy/entrypoint.sh` runs migrations, ensures an active signing key,
+then `exec`s the server so SIGTERM (e.g. on pod termination) reaches it; the server drains
+in-flight requests (up to `gracefulShutdownTimeoutSeconds`), closes the connection pool, and
+exits 0. A plain `Dockerfile` is provided as the documented, non-reproducible secondary path.
+Point the container at your own managed PostgreSQL with `PG_CONNECTION_STRING`.
 
-> Verification status: the OCI image build and a live `docker compose up` were authored but not
-> executed in the development sandbox; run them on a Nix+Docker build host or in CI to validate.
-
-## `docker compose`
-
-`docker-compose.yaml` brings up PostgreSQL plus the server. The server only starts once
-PostgreSQL is healthy, and its own healthcheck hits `/ready` (DB reachable + active key):
-
-```bash
-nix build .#dockerImage && docker load < result
-docker compose up
-# then:
-curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
-```
-
-`docker stop` sends SIGTERM; the server drains in-flight requests (up to
-`gracefulShutdownTimeoutSeconds`), closes the connection pool, and exits 0.
+> Verification status: the OCI image build was authored but not executed in the development
+> sandbox; run `nix build .#dockerImage` on a Nix+Docker build host or in CI to validate.
 
 ## Operations
 

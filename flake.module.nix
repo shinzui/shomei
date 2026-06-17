@@ -1,10 +1,14 @@
 # Project-specific flake customizations (seihou never touches this file).
 # EP-5: a reproducible OCI image built from the same pinned dependency closure as the dev
-# shell, via dockerTools.buildLayeredImage (no Docker daemon needed to build).
+# shell, via dockerTools.buildLayeredImage (no Docker daemon needed to build). This is the
+# PRODUCTION deployment artifact (push to a registry / run on k8s).
 #
 #   nix build .#dockerImage          # produces ./result, a loadable image tarball
 #   docker load < result             # loads shomei-server:latest
-#   docker compose up                # see docker-compose.yaml
+#
+# Local development/testing does NOT use this image or docker compose — it runs the stack
+# from the Nix dev shell with a local PostgreSQL on a Unix socket: `process-compose up`
+# (see process-compose.yaml).
 #
 # NOTE: authored for the deployment story; not built in the development sandbox where this
 # landed. Verify with `nix build .#dockerImage` in an environment with the flake's substituters.

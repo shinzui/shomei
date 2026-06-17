@@ -43,19 +43,24 @@ After this plan, an operator gains four concrete, demonstrable abilities:
    server, and running it with no config file at all still boots using built-in defaults
    plus whatever environment variables are set.
 
-2. **A reproducible container image.** `nix build .#dockerImage` produces an OCI image (OCI
-   = Open Container Initiative, the standard format that Docker and Podman both run)
-   containing the `shomei-server` and `shomei-admin` binaries. When that image starts, its
-   entrypoint script *first* applies any pending database migrations and *ensures an active
-   signing key exists* (generating and activating one if the database has none), and *then*
-   starts the server. This is exactly why this plan depends on the `shomei-admin` CLI: the
-   entrypoint calls it.
+2. **A reproducible production container image.** `nix build .#dockerImage` produces an OCI
+   image (OCI = Open Container Initiative, the standard format that Docker and Podman both
+   run) containing the `shomei-server` and `shomei-admin` binaries. This image is the
+   **production deployment artifact** (the thing pushed to a registry and run in k8s). When
+   that image starts, its entrypoint script *first* applies any pending database migrations
+   and *ensures an active signing key exists* (generating and activating one if the database
+   has none), and *then* starts the server. This is exactly why this plan depends on the
+   `shomei-admin` CLI: the entrypoint calls it.
 
-3. **A one-command local stack.** `docker compose up` brings up PostgreSQL and
-   `shomei-server` together, wired by configuration, with health checks so the server only
-   starts serving once the database is ready and only reports "ready" once it can answer
-   requests. After `docker compose up`, you can `curl` a real signup and login against
-   `http://localhost:8080` and get back tokens.
+3. **A one-command local development/test stack.** From inside the Nix dev shell
+   (`nix develop`), `process-compose up` brings up a local PostgreSQL on a Unix-domain socket
+   (no TCP port, so no conflicts with any other local Postgres), creates the schema and runs
+   migrations, ensures an active ES256 signing key, and starts `shomei-server` — all wired by
+   the dev shell's `PG_CONNECTION_STRING` (the socket). A `/ready` readiness probe gates the
+   server so it only reports ready once it can answer requests. After `process-compose up`,
+   you can `curl` a real signup and login against `http://localhost:8080` and get back tokens.
+   This local stack needs no built container image; the production OCI image of (2) is a
+   separate path.
 
 4. **A green CI pipeline.** A GitHub Actions workflow builds every package, runs the full
    test suite (including the integration tests that spin up a throwaway PostgreSQL), and
@@ -85,18 +90,25 @@ This section must always reflect the actual current state of the work.
         and gitignored `config/shomei.dhall`.
   - [x] `test-suite shomei-server-config-test` proves a Dhall file is loaded and an env var
         overrides it. Green.
-- [~] **M2 — Reproducible OCI image via the Nix flake. AUTHORED, NOT BUILT IN THIS SANDBOX.**
+- [~] **M2 — Reproducible OCI image via the Nix flake (the PRODUCTION deployment artifact).
+      AUTHORED, NOT BUILT IN THIS SANDBOX.**
   - [x] Added `packages.dockerImage` (`dockerTools.buildLayeredImage` with `shomei-server` +
         `shomei-admin` + `dhall-to-json`) and the entrypoint to `flake.module.nix`; the flake
-        still evaluates and `nix develop` works.
+        still evaluates and `nix develop` works. This image is the production/registry/k8s path;
+        local dev/test does NOT use it (see M3).
   - [ ] `nix build .#dockerImage` / `docker load` / `docker run` not executed here (needs a
         Nix+Docker build environment; heavy). Verify in CI or a deploy host.
-  - [x] Provided the plain `Dockerfile` as the documented secondary (non-reproducible) path.
-- [~] **M3 — `docker compose` stack. AUTHORED & SYNTAX-VALIDATED, NOT RUN LIVE.**
-  - [x] `docker-compose.yaml` (postgres + shomei-server) with a `/ready` healthcheck and
-        `depends_on … condition: service_healthy`; `docker compose config` validates it.
-        `deploy/entrypoint.sh` (migrate → ensure active key → exec server) passes `sh -n`.
-  - [ ] `docker compose up` + a live `curl` transcript not run here (no built image in sandbox).
+  - [x] Provided the plain `Dockerfile` as the documented secondary (non-reproducible) production
+        path.
+- [x] **M3 — Local development/test stack via `process-compose`. DONE.**
+  - [x] `process-compose.yaml` (repo root) is the one-command local stack. The existing
+        `postgres` (socket-only PostgreSQL via `pg_ctl … --unix_socket_directories='$PGHOST'`,
+        no TCP) and `create_schema` (`just create-database` → createdb + `just migrate`)
+        processes already ran the socket Postgres + migrations.
+  - [x] Extended `process-compose.yaml` with `bootstrap_keys` (ensure an active ES256 key via
+        `shomei-admin keys list`/`generate`/`activate`) and `shomei-server` (`cabal run
+        shomei-server` on http://localhost:8080, `readiness_probe` http_get on `/ready`). DONE —
+        the file exists.
 - [x] **M4 — CI pipeline. AUTHORED (2026-06-10).**
   - [x] `.github/workflows/ci.yaml`: Nix install + cache, `cabal build all`, `cabal test all`,
         `nix fmt -- --fail-on-change`. (Runs on GitHub Actions; not executed in this sandbox.)
@@ -118,13 +130,23 @@ implementation. Provide concise evidence.
   scalar shape also sidesteps Dhall-union vs `NominalDiffTime` JSON-encoding mismatches. Evidence:
   `dhall-to-json --file config/shomei.example.dhall` renders clean JSON and
   `shomei-server-config-test` passes (file load + env override).
-- 2026-06-10: **The OCI image and `docker compose` stack are authored but were not built/run in
-  the development sandbox.** Docker is present (28.4.0) but a reproducible `nix build .#dockerImage`
-  (or a from-scratch Haskell Dockerfile reproducing the pinned `source-repository-package`s) is a
+- 2026-06-10: **The production OCI image is authored but was not built/run in the development
+  sandbox.** Docker is present (28.4.0) but a reproducible `nix build .#dockerImage` (or a
+  from-scratch Haskell Dockerfile reproducing the pinned `source-repository-package`s) is a
   heavy build not run here. The `flake.module.nix` addition keeps the flake evaluating and
-  `nix develop` working; `docker compose config` validates the compose file and `sh -n` validates
-  the entrypoint. Full verification (`nix build .#dockerImage` → `docker compose up` → `curl`
-  signup/login) is deferred to CI or a deploy host.
+  `nix develop` working; `sh -n` validates the entrypoint. Full image verification
+  (`nix build .#dockerImage` → `docker load` → `docker run`) is deferred to CI or a deploy host.
+  The local development/test stack, by contrast, runs natively in the dev shell via
+  `process-compose` and needs no built image (see the 2026-06-17 note), so the signup/login
+  acceptance is exercisable on a laptop without Docker.
+- 2026-06-17: **Switched the local dev/test stack from `docker compose` to `process-compose`.**
+  Every other service in the repo already runs local dev/test as a Nix dev shell + `process-compose`
+  + a local PostgreSQL on a Unix-domain socket; `docker compose` was the odd one out. The reasons:
+  the dev shell already provisions a socket-only Postgres (`PGHOST=$PWD/db`, `PG_CONNECTION_STRING`),
+  so a Unix socket avoids TCP port conflicts with any other local Postgres; and local dev needs no
+  built container image, shortening the loop. `docker-compose.yaml` was removed; `process-compose.yaml`
+  was extended with `bootstrap_keys` + `shomei-server`. The production OCI image (`nix build
+  .#dockerImage`) and plain `Dockerfile` are retained unchanged as the deployment artifact.
 
 
 ## Decision Log
@@ -186,9 +208,11 @@ Record every decision made while working on the plan.
   signing key (`shomei-admin keys list-active`; if empty, `shomei-admin keys generate &&
   shomei-admin keys activate <kid>`), and only then `exec`s `shomei-server`.
   Rationale: MasterPlan 2's Dependency Graph states the hard dependency EP-5 → EP-4 exists
-  *precisely* because "the container image and `docker compose` stack run database migrations
-  and ensure an active signing key exists at startup by invoking the `shomei-admin` CLI."
-  Doing this in the entrypoint (rather than baking it into the server's own boot sequence)
+  *precisely* because the container image runs database migrations and ensures an active
+  signing key exists at startup by invoking the `shomei-admin` CLI. (The local stack performs
+  the same migrate + key-ensure steps as separate `process-compose` processes; see the
+  2026-06-17 decision below.) Doing this in the entrypoint (rather than baking it into the
+  server's own boot sequence)
   keeps migration/key-management an explicit, observable, operator-controllable step and
   matches the standard "init then serve" container pattern. `exec` replaces the shell with
   the server process so signals (SIGTERM on `docker stop`) reach the server for graceful
@@ -212,6 +236,21 @@ Record every decision made while working on the plan.
   image (the flake pins all dependencies).
   Date: 2026-06-04
 
+
+- Decision: Local development/test uses `process-compose` + a Unix-socket PostgreSQL, not
+  `docker compose`.
+  Rationale: This matches the project-wide pattern — the dev shell already provisions a
+  socket-only Postgres (`nix/haskell.nix` exports `PGHOST=$PWD/db`, `PGDATA`,
+  `PGDATABASE=shomei`, and `PG_CONNECTION_STRING`), and `process-compose.yaml`,
+  `examples/microservice-auth-stack/process-compose.yaml`, and `.seihou/config.dhall`'s
+  `nix.process-compose=true` all use `process-compose`. A Unix-domain socket avoids TCP port
+  conflicts with any other local Postgres (the `postgres` process starts with
+  `-o "--unix_socket_directories='$PGHOST'" -o "-c listen_addresses=''"`, so it has no TCP
+  port). And local dev needs no built container image, shortening the loop. `docker-compose.yaml`
+  was removed; `process-compose.yaml` was extended with `bootstrap_keys` + `shomei-server`. The
+  production OCI image (`nix build .#dockerImage`) and the plain `Dockerfile` are retained
+  unchanged as the deployment artifact.
+  Date: 2026-06-17
 
 - Decision: Update this ExecPlan for the 2026-06-04 package-layout and effect-namespace refactor.
   Rationale: The packages now live as top-level directories rather than under the old nested packages directory, and the core effect interfaces now live under `Shomei.Effect.*` rather than the old Port namespace. This revision also removes stale bootstrap-placeholder assumptions and points implementation steps at the current real modules.
@@ -291,12 +330,16 @@ wiring, is `flake.module.nix` at the repo root. This plan adds the container-ima
   with `nixpkgs-fmt`, `fourmolu`, `cabal-fmt`) and adds `cabal-install`/`fourmolu`/`cabal-fmt`
   to the dev shell. **This plan adds the `dockerImage` package and the entrypoint here.**
 - `Justfile`: a `just` task runner file with `build`, `create-database`, `migrate`, and
-  `new-migration` recipes. This plan adds a few convenience recipes (`docker-build`,
-  `compose-up`).
-- `process-compose.yaml`: a *local-development* process orchestrator (starts a local
-  PostgreSQL on a Unix socket and runs `just create-database`). It is **not** the deployment
-  mechanism; this plan's `docker-compose.yaml` is the deployment mechanism. They serve
-  different audiences (laptop dev vs. container deployment) and coexist.
+  `new-migration` recipes. This plan may add a `docker-build` convenience recipe for the
+  production image; the local stack is driven by `process-compose up`, not `just`.
+- `process-compose.yaml`: the repo-root *local-development/test* process orchestrator and
+  **this plan's local dev/test stack**. It starts a local PostgreSQL on a Unix-domain socket
+  (no TCP), creates the schema and runs migrations (`just create-database`), and — extended by
+  this plan — bootstraps an active signing key and runs `shomei-server`. It is **not** the
+  deployment mechanism; the deployment mechanism is the production OCI image
+  (`nix build .#dockerImage`) / the plain `Dockerfile`. There is no `docker-compose.yaml`
+  (it was removed). The local stack and the production image serve different audiences (laptop
+  dev/test vs. container deployment) and coexist.
 
 ### Terms of art used in this plan (each defined once, in plain language)
 
@@ -321,14 +364,18 @@ wiring, is `flake.module.nix` at the repo root. This plan adds the container-ima
   result`.
 - **entrypoint** — the program a container runs on start. Ours is a shell script that
   migrates, ensures a signing key, then `exec`s the server.
-- **`docker compose`** — a tool that reads a `docker-compose.yaml` describing several
-  containers (here PostgreSQL + the server) and their wiring, and starts them together with
-  `docker compose up`.
-- **healthcheck / `/health` / `/ready`** — `/health` is a *liveness* probe (the process is
-  up) and `/ready` is a *readiness* probe (the process can actually serve requests, e.g. its
-  database is reachable). MasterPlan 2's EP-3 (observability) adds `/ready` distinct from the
-  existing `/health`. A Docker *healthcheck* periodically curls one of these; `depends_on …
-  condition: service_healthy` makes one container wait until another is healthy.
+- **`process-compose`** — a tool that reads a `process-compose.yaml` describing several
+  *processes* (here a socket PostgreSQL, schema/migrations, key bootstrap, and the server) and
+  their wiring (ordering via `depends_on`, readiness via `readiness_probe`), and starts them
+  together with `process-compose up` from inside the Nix dev shell. Unlike `docker compose`, it
+  runs the processes natively (no containers, no built image). This is the project-wide local
+  dev/test pattern; `docker compose` is no longer used in this repo.
+- **healthcheck / readiness probe / `/health` / `/ready`** — `/health` is a *liveness* probe
+  (the process is up) and `/ready` is a *readiness* probe (the process can actually serve
+  requests, e.g. its database is reachable). MasterPlan 2's EP-3 (observability) adds `/ready`
+  distinct from the existing `/health`. In the local stack, `process-compose`'s
+  `readiness_probe` (an `http_get` on `/ready`) gates the `shomei-server` process; in the
+  production image, a container *healthcheck* periodically curls one of these.
 - **CI (continuous integration)** — an automated pipeline (here GitHub Actions) that builds
   and tests every push so regressions are caught early.
 - **`ephemeral-pg`** — a Haskell test helper (already a dependency of `shomei-postgres`'s
@@ -706,93 +753,72 @@ Expected (order matters — migrate, then key, then serve):
 Re-running the same `docker run` is idempotent: the second time it prints
 `[entrypoint] active signing key already present` and migrations are a no-op.
 
-### Milestone 3 — `docker compose` stack with health/readiness gating
+### Milestone 3 — Local development/test stack via `process-compose`
 
-**Scope.** A `docker-compose.yaml` bringing up PostgreSQL + `shomei-server`, wired by env/
-config, with healthchecks on `/health` (liveness) and `/ready` (readiness) and
-`depends_on … condition: service_healthy` so the server waits for a healthy database. Prove a
-real signup + login over `curl`.
+**Scope.** Extend the repo-root `process-compose.yaml` so that `process-compose up` (inside the
+Nix dev shell) brings up the whole local stack: the socket PostgreSQL, schema + migrations, an
+active signing key, and `shomei-server`, with a `/ready` readiness probe gating the server.
+Prove a real signup + login over `curl`. This is the local dev/test path; the production OCI
+image (M2) is a separate, unchanged path.
 
-**End state.** `docker compose up` yields a server reachable at `http://localhost:8080`;
-`curl` of signup and login returns tokens.
+**End state.** `process-compose up` (from `nix develop`) yields a server reachable at
+`http://localhost:8080`; `curl` of signup and login returns tokens.
 
-**Work.** Create `docker-compose.yaml` at the repo root:
+**Work.** The repo-root `process-compose.yaml` already defines two processes:
+
+- `postgres` — starts a local PostgreSQL on a Unix-domain socket only (started by
+  `pg_ctl … -o "--unix_socket_directories='$PGHOST'" -o "-c listen_addresses=''"`, so there is
+  no TCP port and no port-conflict risk). The dev shell (`nix/haskell.nix`) exports
+  `PGHOST=$PWD/db`, `PGDATA`, `PGDATABASE=shomei`, and `PG_CONNECTION_STRING` (a `postgresql://`
+  URI for the socket directory).
+- `create_schema` — runs `just create-database` (createdb + `just migrate`) once Postgres is up.
+
+Extend it with two more processes — `bootstrap_keys` and `shomei-server`:
 
 ```yaml
-# docker-compose.yaml — local/production-like stack: PostgreSQL + shomei-server.
-# Brings the server up only after the database is healthy; reports the server healthy
-# only once /ready answers (its DB is reachable and an active key is loaded).
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: shomei
-      POSTGRES_PASSWORD: shomei
-      POSTGRES_DB: shomei
-    ports:
-      - "5432:5432"
-    healthcheck:
-      # pg_isready exits 0 once PostgreSQL accepts connections.
-      test: ["CMD-SHELL", "pg_isready -U shomei -d shomei"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    volumes:
-      - shomei-pgdata:/var/lib/postgresql/data
+# process-compose.yaml (additions) — local dev/test stack. The `postgres` and
+# `create_schema` processes above already run the socket Postgres + migrations.
+# The server and admin reach the DB over $PG_CONNECTION_STRING (the Unix socket).
+  bootstrap_keys:
+    # Ensure an active ES256 signing key exists before the server starts.
+    command: |
+      if [ -z "$(shomei-admin keys list)" ]; then
+        kid="$(shomei-admin keys generate)"
+        shomei-admin keys activate "$kid"
+      fi
+    depends_on:
+      create_schema:
+        condition: process_completed_successfully
 
   shomei-server:
-    image: shomei-server:latest        # produced by `nix build .#dockerImage` + `docker load`
+    command: cabal run shomei-server
     depends_on:
-      postgres:
-        condition: service_healthy      # wait for a healthy DB before the entrypoint runs
-    environment:
-      SHOMEI_DATABASE_URL: postgresql://shomei:shomei@postgres:5432/shomei
-      SHOMEI_BIND_HOST: 0.0.0.0
-      SHOMEI_PORT: "8080"
-      SHOMEI_ISSUER: https://auth.example.com
-      SHOMEI_AUDIENCE: example-api
-    ports:
-      - "8080:8080"
-    healthcheck:
+      bootstrap_keys:
+        condition: process_completed_successfully
+    readiness_probe:
       # /ready is the readiness probe (EP-3): 200 only when the server can serve.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/ready || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 20s                 # allow time for migrate + key bootstrap
-
-volumes:
-  shomei-pgdata:
+      http_get:
+        host: localhost
+        port: 8080
+        path: /ready
+      initial_delay_seconds: 2
+      period_seconds: 3
 ```
 
-Notes: the server image must contain `curl` for its own healthcheck — if the Nix image is
-minimal, add `pkgs.curl` to `contents` in `flake.module.nix`, or use a healthcheck that
-shells out to the server binary instead. The `start_period` gives the entrypoint time to run
-migrations and bootstrap the key before failing health checks count against the container.
-`/health` is used as the liveness signal (the process is up); `/ready` (EP-3) gates traffic.
+Notes: the processes run natively in the dev shell — no containers, no built image, and no
+`curl` baked into an image (`process-compose`'s `http_get` readiness probe handles the check).
+`/health` is the liveness signal (the process is up); `/ready` (EP-3) gates traffic. The
+server and `shomei-admin` reach the database over the dev shell's `PG_CONNECTION_STRING` (the
+Unix socket), so there is no TCP port to configure.
 
-Add convenience recipes to the `Justfile`:
+The local stack's documented entry point is simply `nix develop` then `process-compose up`, so
+no extra `Justfile` recipes are required. (A `docker-build` recipe for the *production* image
+may live in the `Justfile`; the local stack does not use it.)
 
-```text
-# Build the OCI image via Nix and load it into the local Docker daemon.
-docker-build:
-    nix build .#dockerImage
-    docker load < result
-
-# Bring up the full stack (PostgreSQL + shomei-server).
-compose-up:
-    docker compose up
-
-# Tear it down and remove the database volume.
-compose-down:
-    docker compose down -v
-```
-
-**Acceptance (M3).** From the repo root:
+**Acceptance (M3).** From the repo root, inside the Nix dev shell:
 
 ```bash
-just docker-build
-docker compose up -d
+nix develop -c process-compose up -D     # -D: detached; or run in the foreground TUI
 # wait for the server to report ready
 until curl -fsS http://localhost:8080/ready >/dev/null 2>&1; do sleep 2; done
 ```
@@ -820,9 +846,10 @@ curl -fsS -X POST http://localhost:8080/auth/login \
   -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
 ```
 
-Expected: HTTP 200 with the same token-bearing JSON shape. Tear down with `docker compose
-down -v`. The stack is reproducible: `docker compose up` from a clean volume always migrates,
-bootstraps a key, and serves.
+Expected: HTTP 200 with the same token-bearing JSON shape. Reset to a clean slate with
+`process-compose down`, then `dropdb shomei`, then `process-compose up` again — which always
+re-creates the schema, migrates, bootstraps a key, and serves. The production OCI image (M2)
+remains the separate deployment path.
 
 ### Milestone 4 — CI pipeline (build + test + format check)
 
@@ -1026,11 +1053,14 @@ Expected: `docker load` prints `Loaded image: shomei-server:latest`.
 Author the root `Dockerfile` (Milestone 2, item 3). Smoke-build only when on a non-Nix host;
 it is the documented alternative, not the primary path.
 
-### Step 8 — compose stack + curl transcript
+### Step 8 — local `process-compose` stack + curl transcript
 
-Author `docker-compose.yaml` and the `Justfile` recipes (Milestone 3), then run the M3
-acceptance block and paste the real `curl` signup/login transcript into this section as
-evidence once it passes.
+Extend the repo-root `process-compose.yaml` with the `bootstrap_keys` and `shomei-server`
+processes (Milestone 3; the `postgres` and `create_schema` processes already exist), then,
+from inside `nix develop`, run `process-compose up`, wait for `/ready`, and run the M3
+acceptance block. Paste the real `curl` signup/login transcript into this section as evidence
+once it passes. (No container image is needed for this step — the production image of Steps 6/7
+is a separate path.)
 
 ### Step 9 — CI workflow
 
@@ -1063,10 +1093,11 @@ output to observe.
    key-ensure → `listening on :8080`. A second run logs `active signing key already present`
    (idempotent).
 
-4. **Compose stack (M3).** `docker compose up` brings up both services; the server's
-   healthcheck flips healthy only after `/ready` returns 200; a `curl` signup returns a token
-   JSON body and a subsequent `curl` login returns HTTP 200 with tokens. This is the
-   end-to-end proof the stack works.
+4. **Local stack (M3).** From inside `nix develop`, `process-compose up` brings up the socket
+   PostgreSQL, schema/migrations, key bootstrap, and `shomei-server`; the server's readiness
+   probe flips ready only after `/ready` returns 200; a `curl` signup returns a token JSON body
+   and a subsequent `curl` login returns HTTP 200 with tokens. This is the end-to-end proof the
+   local stack works, and it needs no built container image.
 
 5. **CI (M4).** The GitHub Actions `build-test-fmt` job is green: build, test (including the
    `ephemeral-pg` integration tests), and `nix fmt --fail-on-change` all succeed.
@@ -1086,11 +1117,13 @@ output to observe.
   container is safe.
 - **The image build.** `nix build .#dockerImage` is reproducible; re-running yields the same
   image (same store path). `docker load` of the same tarball is a no-op.
-- **The compose stack.** `docker compose up` is repeatable; `docker compose down -v` removes
-  the database volume for a clean slate. If the server container crash-loops, inspect
-  `docker compose logs shomei-server` — the most common cause is an unreachable database
-  (check `SHOMEI_DATABASE_URL` and that postgres is healthy) or the entrypoint failing a
-  migration (the logs name the failing migration).
+- **The local `process-compose` stack.** `process-compose up` is repeatable; reset to a clean
+  slate with `process-compose down` then `dropdb shomei` (then `process-compose up` re-creates
+  the schema). If the `shomei-server` process fails to come ready, inspect its logs (the
+  `process-compose` TUI, or `./.dev/process-compose.log`) — the most common cause is an
+  unreachable socket database (check that the `postgres` process is up and
+  `PG_CONNECTION_STRING` points at `$PGHOST`) or a failed migration (the `create_schema` logs
+  name the failing migration).
 - **CI.** The workflow is read-only with respect to the repo (it does not push). A failed run
   is safe to re-run; the cabal-store cache only speeds things up and never blocks correctness.
 - **Recovery from a broken `flake.module.nix`.** If `nix build .#dockerImage` fails to
@@ -1114,8 +1147,9 @@ output to observe.
   build with no Docker daemon. `pkgs.writeShellApplication` — wraps `deploy/entrypoint.sh`
   with its `runtimeInputs` on `PATH`. `pkgs.cacert` — TLS root certificates (for any outbound
   TLS, e.g. a TLS database connection). Optionally `pkgs.curl` for the container healthcheck.
-- **`docker` / `docker compose`** — runtime; only needed to *run* the image and stack, not to
-  build the Nix image.
+- **`docker` / Nix** — needed only to build and run the **production** OCI image
+  (`nix build .#dockerImage` builds it with no Docker daemon; `docker`/Podman runs it). The
+  local dev/test stack needs neither — just the Nix dev shell and `process-compose`.
 - **GitHub Actions** + `cachix/install-nix-action` — CI host and Nix installer.
 - **`ephemeral-pg`** — already in the test stack (via `shomei-migrations:test-support`);
   provides each integration test its own throwaway PostgreSQL, so CI needs no DB service.
@@ -1148,7 +1182,8 @@ output to observe.
 
 - End of **M2**: a flake attribute `packages.dockerImage` (build with
   `nix build .#dockerImage`) and a committed `deploy/entrypoint.sh`.
-- End of **M3**: a committed `docker-compose.yaml`; `docker compose up` serves the API.
+- End of **M3**: `process-compose.yaml` extended with `bootstrap_keys` + `shomei-server`;
+  `process-compose up` (inside `nix develop`) serves the API at :8080.
 - End of **M4**: a committed `.github/workflows/ci.yaml` that is green.
 
 ### Integration points
@@ -1176,8 +1211,9 @@ output to observe.
   Dhall+env config loader (IP-6) in `Shomei.Server.Config`, superseding MasterPlan 1 EP-6's
   env-only `loadConfig` while keeping `loadConfigFromEnv`; the reproducible OCI image via
   `pkgs.dockerTools.buildLayeredImage` in `flake.module.nix` with a migrate-then-ensure-key
-  entrypoint (hard dependency on EP-4's `shomei-admin`); the `docker-compose.yaml` with
-  `/health`/`/ready` gating; the GitHub Actions Nix CI workflow; and a lightweight
+  entrypoint (hard dependency on EP-4's `shomei-admin`); a `docker-compose.yaml` with
+  `/health`/`/ready` gating (later removed — see the 2026-06-17 note; the local stack is now
+  `process-compose`); the GitHub Actions Nix CI workflow; and a lightweight
   versioning/changelog policy. Reasoning for every choice is recorded in the Decision Log.
   Verified the `dhall` 1.42.3 API surface (`input`/`inputFile`/`auto`/`genericAutoWith`/
   `FromDhall`) and `base < 5` bound against the on-disk source via `mori`. Noted the soft
@@ -1192,3 +1228,10 @@ output to observe.
   retargeted to general TLS). Email sending was descoped from EP-1 (see
   `docs/plans/8-…` and MasterPlan 2's Decision Log); the loader never wired SMTP fields, so the
   implemented EP-5 behaviour is unchanged — only the illustrative wording is corrected.
+- 2026-06-17 — Replaced the `docker compose` local stack with the Nix + `process-compose` +
+  Unix-socket PostgreSQL pattern used across the project (no TCP port conflicts; no built image
+  needed for local dev). `docker-compose.yaml` removed; `process-compose.yaml` extended with
+  `bootstrap_keys` + `shomei-server`. The production OCI image (`nix build .#dockerImage`) and
+  plain `Dockerfile` are retained unchanged as the deployment artifact. Updated Purpose,
+  Progress (M3), Surprises, Decision Log, Context, Milestone 3, Concrete Steps (Step 8),
+  Validation, Idempotence, and Interfaces accordingly.

@@ -1,5 +1,17 @@
 ---
 
+# One-command local development/test stack (run from inside the Nix dev shell):
+#
+#   process-compose up
+#
+# Starts a local PostgreSQL on a Unix-domain socket (no TCP port, so it never conflicts
+# with any other Postgres on the machine), creates and migrates the `shomei` database,
+# ensures an active ES256 signing key, then runs `shomei-server` on http://localhost:8080.
+#
+# PGHOST/PGDATA/PGDATABASE/PG_CONNECTION_STRING are exported by the dev shell
+# (nix/haskell.nix); the server and the admin CLI reach the database over the socket via
+# PG_CONNECTION_STRING. This is the LOCAL stack — production is the OCI image
+# (`nix build .#dockerImage`) / plain Dockerfile, not anything here.
 version: "0.5"
 log_level: debug
 log_location: ./.dev/process-compose.log
@@ -8,15 +20,10 @@ processes:
     command: "echo $PGLOG"
     availability:
       restart: "exit_on_failure"
-  create_schema:
-    command: "just create-database"
-    availability:
-      restart: "no"
-    depends_on:
-      postgres:
-        condition: process_healthy
 
   postgres:
+    # Socket-only Postgres: --unix_socket_directories points at $PGHOST and
+    # listen_addresses='' disables TCP entirely, so there is no port to clash on.
     command: pg_ctl start -w -l $PGLOG -o "--unix_socket_directories='$PGHOST'" -o "-c listen_addresses=''"
     is_daemon: true
     shutdown:
@@ -31,3 +38,46 @@ processes:
       failure_threshold: 5
     availability:
       restart: on_failure
+
+  create_schema:
+    # Idempotently create the database (over the socket) and apply all migrations.
+    command: "just create-database"
+    availability:
+      restart: "no"
+    depends_on:
+      postgres:
+        condition: process_healthy
+
+  bootstrap_keys:
+    # Ensure an active ES256 signing key exists so the server can issue tokens. Mirrors
+    # deploy/entrypoint.sh's key-ensure step, but for local dev via the admin CLI.
+    command: >
+      sh -c 'if cabal run -v0 shomei-admin -- keys list | grep -q KeyActive; then
+        echo "[bootstrap_keys] active signing key already present";
+      else
+        echo "[bootstrap_keys] no active key; generating and activating one";
+        kid="$(cabal run -v0 shomei-admin -- keys generate | sed "s/.*key: //")";
+        cabal run -v0 shomei-admin -- keys activate "$kid";
+      fi'
+    availability:
+      restart: "no"
+    depends_on:
+      create_schema:
+        condition: process_completed_successfully
+
+  shomei-server:
+    # The auth server. Connects to the local PostgreSQL over the Unix socket via the
+    # PG_CONNECTION_STRING exported by the dev shell; reachable at http://localhost:8080.
+    command: "cabal run shomei-server"
+    environment:
+      - "SHOMEI_PORT=8080"
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8080
+        path: /ready
+      initial_delay_seconds: 3
+      period_seconds: 2
+    depends_on:
+      bootstrap_keys:
+        condition: process_completed_successfully

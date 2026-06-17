@@ -40,10 +40,10 @@ repository root).
 After this change, a newcomer can:
 
 - Read `README.md` at the repository root, understand in two minutes what Shōmei is and which
-  of the two deployment modes they want, and run a **5-minute quickstart**: `docker compose
-  up` brings up `shomei-server` plus PostgreSQL, and a handful of `curl` commands sign a user
-  up, log in, fetch the current user, refresh the token pair, and fetch the JWKS — each
-  returning the documented response.
+  of the two deployment modes they want, and run a **5-minute quickstart**: from inside the
+  Nix dev shell, `process-compose up` brings up a local PostgreSQL (on a Unix socket) plus
+  `shomei-server`, and a handful of `curl` commands sign a user up, log in, fetch the current
+  user, refresh the token pair, and fetch the JWKS — each returning the documented response.
 - Read `docs/architecture.md` to understand the library-first, transport-agnostic-core
   design; the package dependency layering; the effects-and-workflows model; the domain model;
   and the two deployment-model diagrams.
@@ -54,9 +54,10 @@ After this change, a newcomer can:
   sessions safe, with a short threat-model table and the list of deliberately deferred
   protections.
 - Read `docs/deployment.md` to deploy the server: the typed Dhall/environment configuration
-  reference, the container image and `docker compose` stack, the `shomei-admin` operator
-  runbook, migrations, health/readiness probes and graceful shutdown, and how a downstream
-  service verifies JWTs locally from the JWKS endpoint.
+  reference, the production OCI container image (and plain `Dockerfile`) for registry/k8s
+  deployment, the local `process-compose` dev/test runbook (Nix dev shell + Unix-socket
+  PostgreSQL), the `shomei-admin` operator runbook, migrations, health/readiness probes and
+  graceful shutdown, and how a downstream service verifies JWTs locally from the JWKS endpoint.
 
 The observable, human-verifiable outcome of this plan is simple and strict: **a reader who
 follows each document succeeds.** The quickstart boots. Every `curl` example returns the
@@ -124,8 +125,9 @@ This section must always reflect the actual current state of the work.
   zero-downtime key lifecycle, the no-account-existence-leak guarantees, the EP-2 abuse-protection
   defaults, session revocation, and logging hygiene. Completed 2026-06-10.
 - [x] M4: `docs/deployment.md` written — the config reference (every env var + Dhall field and
-  the precedence), the `shomei-admin` runbook, the OCI image + `docker compose` flow (with the
-  honest "not built in sandbox" note), probes, graceful shutdown, and CI. Completed 2026-06-10.
+  the precedence), the `shomei-admin` runbook, the production OCI image + `Dockerfile` flow
+  (with the honest "not built in sandbox" note) and the local `process-compose` dev/test
+  runbook, probes, graceful shutdown, and CI. Completed 2026-06-10.
 - [x] Final: the five docs are cross-linked (README → the four `docs/*`; api/security/deployment
   reference each other). Outcomes recorded below.
 
@@ -254,7 +256,8 @@ Complete. Concretely, by the time this plan executes:
   with JWKS reflecting overlapping keys during rotation).
 - EP-5 (`docs/plans/12-packaging-configuration-and-deployment.md`) delivered the typed
   Dhall/environment configuration loader that assembles the fully-extended `ShomeiConfig`, the
-  OCI container image, and the `docker compose` stack (server + PostgreSQL), plus CI.
+  production OCI container image (and a plain `Dockerfile`) for registry/k8s deployment, and the
+  local `process-compose` dev/test stack (Nix dev shell + Unix-socket PostgreSQL + server), plus CI.
 
 Because this plan is authored *before* those plans run, **treat every endpoint, flag, command,
 and field this plan names as a claim to be checked, not a fact to be trusted.** The first
@@ -290,17 +293,19 @@ the doc files yet; the output is a set of confirmed facts recorded in Surprises 
 
 What to do, from the repository root inside `nix develop` (the dev shell):
 
-1. Boot the stack the way the README will tell readers to:
+1. Boot the stack the way the README will tell readers to, from inside the Nix dev shell:
 
    ```bash
-   docker compose up -d
+   process-compose up
    ```
 
-   Confirm the server and PostgreSQL containers reach a healthy state (the exact service
-   names come from EP-5's compose file; inspect it with `docker compose config --services`).
-   If the container entrypoint runs migrations and ensures an active signing key via
-   `shomei-admin`, confirm those steps succeed in the logs (`docker compose logs shomei` or
-   the real service name).
+   Confirm the local PostgreSQL (started on a Unix socket under `$PGHOST=$PWD/db`, no TCP
+   port) and the `shomei-server` process reach a healthy state. The process names come from
+   `process-compose.yaml` — `postgres`, `create_schema`, `bootstrap_keys`, and
+   `shomei-server`. The `create_schema` process runs `just create-database` (which runs
+   `createdb` + `just migrate`) and `bootstrap_keys` ensures an active ES256 signing key via
+   `shomei-admin keys list`/`generate`/`activate`; confirm those steps succeed by following
+   the process logs in the process-compose TUI or in `./.dev/process-compose.log`.
 
 2. Enumerate every route the server actually serves. The fastest honest way is to probe each
    endpoint this plan documents and confirm its method, path, and status code, and to read
@@ -339,12 +344,14 @@ is and which mode they want, run the quickstart successfully, and click through 
 architecture document. The exact required content for both files is specified verbatim in
 "Concrete Steps" below; write those files, then verify by following them.
 
-Acceptance for M1: a reader (or the implementer simulating one) runs `docker compose up`,
-then the README's `curl` sequence (signup → login → me → refresh → jwks), and observes each
-documented response. The architecture doc's package table matches `mori.dhall`; its diagrams
-render; its claims about layering and the domain model match `shomei-core`'s modules. Confirm
-the quickstart on a clean checkout (`docker compose down -v` first, to prove it works from an
-empty database).
+Acceptance for M1: a reader (or the implementer simulating one) runs `process-compose up`
+from inside the Nix dev shell, then the README's `curl` sequence (signup → login → me →
+refresh → jwks), and observes each documented response. The architecture doc's package table
+matches `mori.dhall`; its diagrams render; its claims about layering and the domain model
+match `shomei-core`'s modules. Confirm the quickstart from a pristine database first (stop the
+stack with `process-compose down`, drop the socket DB with `dropdb shomei`, then
+`process-compose up` re-runs `just create-database` to recreate and migrate), to prove it
+works from an empty database.
 
 ### Milestone M2 — `docs/api.md`
 
@@ -354,7 +361,8 @@ JSON, status codes, and a verified `curl` transcript. This is the most drift-sen
 document after the config reference; every example must be run.
 
 Acceptance for M2: for each endpoint, the implementer runs the documented `curl` against the
-live `docker compose` server and confirms the status code and JSON shape match the document.
+live `process-compose` server (at `http://localhost:8080`) and confirms the status code and
+JSON shape match the document.
 The 429/lockout behavior (EP-2) is exercised by deliberately failing login repeatedly until a
 429 (or lockout) response appears, and that response is documented. `/ready`, `/metrics`,
 `/health`, and `/.well-known/jwks.json` are all probed and documented from their real output.
@@ -379,8 +387,9 @@ by attempting to reuse a token and observing rejection.
 Scope: the operator's guide. At the end of M4, an operator can configure, run, migrate,
 rotate keys for, and health-check a Shōmei deployment, and a downstream service author can
 verify JWTs locally. Content includes the full config reference table (derived in M0), the
-image/compose section, the `shomei-admin` runbook, the migrations section, the probes and
-graceful-shutdown section, and the downstream local-verification section.
+production OCI image / `Dockerfile` section and the local `process-compose` dev/test runbook,
+the `shomei-admin` runbook, the migrations section, the probes and graceful-shutdown section,
+and the downstream local-verification section.
 
 Acceptance for M4: every config field documented exists in `Shomei.Config`/the loader (the M0
 table); every `shomei-admin` command in the runbook runs and produces its documented effect
@@ -435,9 +444,10 @@ Create `README.md` at the repository root with these sections in order:
    checkout:
 
    ```bash
-   # From the repository root. Brings up shomei-server + PostgreSQL.
-   # The entrypoint runs database migrations and ensures an active ES256 signing key.
-   docker compose up -d
+   # From the repository root, inside the Nix dev shell (`nix develop`, or automatically via
+   # direnv). Brings up a local PostgreSQL on a Unix socket plus shomei-server. The stack runs
+   # database migrations (`just create-database`) and ensures an active ES256 signing key.
+   process-compose up
 
    # Wait for readiness (HTTP 200 once migrations have run and a key is active).
    curl -fsS http://localhost:8080/ready
@@ -499,9 +509,11 @@ Create `README.md` at the repository root with these sections in order:
 6. **Building from source.** One short block: enter `nix develop`, then `cabal build all` and
    `cabal test all`. Note GHC 9.12.4 and the Cabal multi-package workspace.
 
-Verify M1's README half: from a clean state (`docker compose down -v` then `docker compose up
--d`), run every command in the quickstart in order and confirm each returns the documented
-response. If a port number, path, or field differs, correct the README and record the drift.
+Verify M1's README half: from a pristine database (inside the Nix dev shell, run
+`process-compose down`, then `dropdb shomei`, then `process-compose up` — which re-runs
+`just create-database` to recreate and migrate), run every command in the quickstart in order
+and confirm each returns the documented response. If a port number, path, or field differs,
+correct the README and record the drift.
 
 ### Step 2 — Write `docs/architecture.md` (M1)
 
@@ -654,9 +666,10 @@ body. Include a short "Status codes" subsection summarizing the conventions (200
 204 for logout, 401 unauthenticated/invalid credentials, 403 forbidden, 409 conflict, 422/400
 validation, 429 throttled/locked, 503 not ready).
 
-Verify M2: run every documented `curl` against the live `docker compose` server and confirm
-status codes and JSON shapes. Drive the 429 path deliberately. Probe `/ready`, `/metrics`,
-`/health`, and `/.well-known/jwks.json` and paste their real (truncated) output.
+Verify M2: run every documented `curl` against the live `process-compose` server (at
+`http://localhost:8080`) and confirm status codes and JSON shapes. Drive the 429 path
+deliberately. Probe `/ready`, `/metrics`, `/health`, and `/.well-known/jwks.json` and paste
+their real (truncated) output.
 
 ### Step 4 — Write `docs/security.md` (M3)
 
@@ -777,17 +790,40 @@ Create `docs/deployment.md` as the operator's guide. Cover:
    export SHOMEI_BIND_PORT="8080"
    ```
 
-2. **Container image and `docker compose` stack (EP-5).** How to build/pull the OCI image and
-   what the compose stack contains (server + PostgreSQL). The headline commands:
+2. **Production image and local `process-compose` stack (EP-5).** Distinguish the two clearly:
+   the **production deployment artifact** is the OCI container image, and the **local
+   dev/test stack** is `process-compose` (no Docker on the local path).
+
+   For production, build the reproducible image with Nix and load it for a registry push:
 
    ```bash
-   docker compose up -d         # start server + PostgreSQL
-   docker compose logs -f shomei # follow server logs (confirm the service name)
-   docker compose down          # stop; add -v to also drop the database volume
+   nix build .#dockerImage        # reproducible OCI image
+   docker load < result           # loads shomei-server:latest
    ```
 
-   Explain that the container entrypoint runs migrations and ensures an active signing key on
-   startup by invoking `shomei-admin`, so a fresh `up` reaches readiness without manual steps.
+   A plain `Dockerfile` is the non-reproducible secondary build path. Both produce the image
+   you push to a registry and run under k8s; neither is used for local development. There is
+   no `docker-compose.yaml`.
+
+   For local dev/test, run the one-command stack from inside the Nix dev shell (`nix develop`,
+   or automatically via direnv). It starts a local PostgreSQL on a Unix socket under
+   `$PGHOST=$PWD/db` (socket-only, no TCP port, so it never conflicts), then migrates and
+   ensures an active signing key:
+
+   ```bash
+   process-compose up             # start postgres (Unix socket) + create_schema + bootstrap_keys + shomei-server
+   ```
+
+   Follow the `shomei-server` process logs in the process-compose TUI, or tail
+   `./.dev/process-compose.log`. The process names in `process-compose.yaml` are `postgres`,
+   `create_schema`, `bootstrap_keys`, and `shomei-server`. To stop the stack, press Ctrl-C or
+   run `process-compose down`; to reset to a pristine database, run `process-compose down`,
+   then `dropdb shomei` (the socket DB), then `process-compose up` again (its `create_schema`
+   process re-runs `just create-database`, which recreates and migrates the database).
+
+   Explain that the stack runs migrations (via `just create-database`) and ensures an active
+   signing key on startup by invoking `shomei-admin`, so a fresh `process-compose up` reaches
+   readiness (`http://localhost:8080/ready`) without manual steps.
 
 3. **`shomei-admin` operator runbook (EP-4).** A subsection per command, each with the exact
    invocation and its effect (confirm names/flags from M0):
@@ -858,11 +894,12 @@ in Outcomes & Retrospective.
 Validation is behavioral: **a reader following each document succeeds against the real running
 system.** The acceptance criteria, each phrased as observable behavior:
 
-1. **Quickstart boots (README).** From a clean state (`docker compose down -v` then
-   `docker compose up -d`), `curl http://localhost:8080/ready` eventually returns 200, and the
-   README's signup → login → me → refresh → jwks `curl` sequence each returns the documented
-   status code and JSON shape. Observable: five successful `curl` invocations with bodies
-   matching the doc.
+1. **Quickstart boots (README).** From a pristine database (inside the Nix dev shell:
+   `process-compose down`, then `dropdb shomei`, then `process-compose up` — which re-runs
+   `just create-database` to recreate and migrate), `curl http://localhost:8080/ready`
+   eventually returns 200, and the README's signup → login → me → refresh → jwks `curl`
+   sequence each returns the documented status code and JSON shape. Observable: five
+   successful `curl` invocations with bodies matching the doc.
 
 2. **Architecture matches reality (architecture.md).** The package table equals the seven
    packages in `mori.dhall`; every effect and domain type named in the doc exists under
@@ -903,9 +940,11 @@ documents touch no source code, no build files, and no migrations, so there is n
 build drift to recover from.
 
 The verification commands are read-only or self-cleaning. `curl` probes mutate only
-application state (a user row, a session, a signing key) in the **local** `docker compose`
-database, never anything outside it; to reset to a pristine database, run `docker compose down
--v` (drops the volume) and `docker compose up -d` again. `shomei-admin migrate` is idempotent
+application state (a user row, a session, a signing key) in the **local** `process-compose`
+Unix-socket database, never anything outside it; to reset to a pristine database, stop the
+stack (`process-compose down`), drop the socket DB (`dropdb shomei`), then `process-compose up`
+again (its `create_schema` process re-runs `just create-database` to recreate and migrate).
+`shomei-admin migrate` is idempotent
 (codd applies only pending migrations). The key-rotation runbook is reversible in the sense
 that you can always generate a fresh key and activate it; a key accidentally revoked cannot be
 un-revoked, so the doc must instruct operators to verify the `kid` before `keys revoke` — and
@@ -929,14 +968,14 @@ document:
 - **README.md & docs/architecture.md** — `mori.dhall` (package list and descriptions);
   `docs/initial-spec.md` (design principles, layering, deployment models, domain model);
   `shomei-core/src/Shomei/` (the real effects, domain types, and `Shomei.Workflow`);
-  `examples/` (the two demo apps that embody the two deployment modes); EP-5's `docker
-  compose` stack (the quickstart).
+  `examples/` (the two demo apps that embody the two deployment modes); EP-5's local
+  `process-compose` stack (`process-compose.yaml` + the Nix dev shell, the quickstart).
 
 - **docs/api.md** — the `ShomeiAPI` route record in `shomei-servant` plus the
   server's WAI assembly in `shomei-server` (the full route set, including EP-1's
   account-lifecycle routes and EP-3's `/ready` and `/metrics`); the request/response DTOs that
   follow the `SignupRequest`/`LoginRequest` JSON conventions; EP-2's 429/lockout responses; the
-  live `docker compose` server (to run every example).
+  live `process-compose` server (to run every example).
 
 - **docs/security.md** — the password hasher interpreter (Argon2id); the PostgreSQL schema and
   the refresh/one-time-token stores ("only hashes persisted"); `Shomei.Workflow` (rotation,
@@ -946,8 +985,9 @@ document:
   spec's deferred-features list.
 
 - **docs/deployment.md** — `Shomei.Config` (`shomei-core/src/Shomei/Config.hs`) and
-  EP-5's configuration loader (IP-6) and Dhall schema (the config reference); EP-5's OCI image
-  and `docker compose` stack; EP-4's `shomei-admin` CLI (every subcommand and flag);
+  EP-5's configuration loader (IP-6) and Dhall schema (the config reference); EP-5's production
+  OCI image / `Dockerfile` and the local `process-compose` stack; EP-4's `shomei-admin` CLI
+  (every subcommand and flag);
   `shomei-migrations` (codd migrations); EP-3's `/health`, `/ready`, structured
   logging, `/metrics`, and graceful shutdown; `shomei-jwt`'s verifier and the
   `examples/microservice-auth-stack` demo (downstream local verification).
@@ -988,3 +1028,5 @@ provider-call example, the webhook variant, the wiring point in `Shomei.Server.A
 and the fire-and-forget / in-process-Haskell caveats). Linked from `README.md` and
 cross-referenced from `docs/architecture.md` and `docs/api.md`. This is the operator-facing
 counterpart to the EP-1 descoping decision.
+
+- 2026-06-17 — Retargeted the local dev/test stack from `docker compose` to the Nix + `process-compose` + Unix-socket PostgreSQL pattern used across the project (no TCP port conflicts). The production OCI image (`nix build .#dockerImage`) and plain `Dockerfile` are unchanged; only `docker-compose.yaml` is removed. Quickstart, runbook, and acceptance steps now use `process-compose up`.

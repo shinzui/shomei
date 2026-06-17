@@ -22,5 +22,6 @@ tagged release.
 - **Operational CLI (EP-4):** `shomei-admin` with `migrate`, `keys
   generate/activate/retire/revoke/list`, and `users create`; zero-downtime signing-key rotation
   (`pending → active → retired → revoked`) with overlapping-key JWKS verification.
-- **Packaging & config (EP-5):** typed Dhall + environment configuration loader; OCI image via
-  the Nix flake, a `docker compose` stack, and a CI pipeline.
+- **Packaging & config (EP-5):** typed Dhall + environment configuration loader; a production
+  OCI image via the Nix flake; a local `process-compose` stack (PostgreSQL on a Unix socket +
+  the server) for development/test; and a CI pipeline.
