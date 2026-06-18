@@ -7,6 +7,11 @@
 
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
+
+    # Wires `nix fmt` (the flake `formatter`) and the `treefmt` check via
+    # ./nix/treefmt.nix.
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   # The shinzui Cachix cache carries the prebuilt haskell-nix-dev toolchain
@@ -29,6 +34,7 @@
       imports =
         [
           ./nix/haskell.nix
+          ./nix/treefmt.nix
         ]
         # Your project-specific customizations. seihou never generates, touches,
         # or migrates this file, so it is the conflict-free place to extend.
