@@ -871,7 +871,7 @@ the schema-create is folded into the users file's predecessor). Note: identifier
 that hold TypeID UUIDs are `uuid`; status columns are `text`; payloads are `jsonb`;
 timestamps are `timestamptz`.
 
-`2026-06-03-00-00-00-shomei-schema.sql`:
+`2026-06-03-18-44-51-shomei-schema.sql`:
 
 ```sql
 -- codd: in-txn
@@ -880,7 +880,7 @@ timestamps are `timestamptz`.
 CREATE SCHEMA IF NOT EXISTS shomei;
 ```
 
-`2026-06-03-00-00-01-shomei-users.sql`:
+`2026-06-03-18-44-52-shomei-users.sql`:
 
 ```sql
 -- codd: in-txn
@@ -897,7 +897,7 @@ CREATE TABLE IF NOT EXISTS shomei_users (
 );
 ```
 
-`2026-06-03-00-00-02-shomei-password-credentials.sql`:
+`2026-06-03-18-44-53-shomei-password-credentials.sql`:
 
 ```sql
 -- codd: in-txn
@@ -914,7 +914,7 @@ CREATE TABLE IF NOT EXISTS shomei_password_credentials (
 );
 ```
 
-`2026-06-03-00-00-03-shomei-sessions.sql`:
+`2026-06-03-18-44-54-shomei-sessions.sql`:
 
 ```sql
 -- codd: in-txn
@@ -934,7 +934,7 @@ CREATE INDEX IF NOT EXISTS shomei_sessions_user_id_idx ON shomei_sessions (user_
 CREATE INDEX IF NOT EXISTS shomei_sessions_status_idx  ON shomei_sessions (status);
 ```
 
-`2026-06-03-00-00-04-shomei-refresh-tokens.sql`:
+`2026-06-03-18-44-55-shomei-refresh-tokens.sql`:
 
 ```sql
 -- codd: in-txn
@@ -961,7 +961,7 @@ CREATE INDEX IF NOT EXISTS shomei_refresh_tokens_status_idx
   ON shomei_refresh_tokens (status);
 ```
 
-`2026-06-03-00-00-05-shomei-signing-keys.sql` (JWK columns; see Decision Log):
+`2026-06-03-18-44-56-shomei-signing-keys.sql` (JWK columns; see Decision Log):
 
 ```sql
 -- codd: in-txn
@@ -980,7 +980,7 @@ CREATE TABLE IF NOT EXISTS shomei_signing_keys (
 );
 ```
 
-`2026-06-03-00-00-06-shomei-auth-events.sql`:
+`2026-06-03-18-44-57-shomei-auth-events.sql`:
 
 ```sql
 -- codd: in-txn

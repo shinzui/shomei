@@ -340,7 +340,7 @@ file:
   column.
 
 - `shomei-migrations` — embedded SQL migrations. The signing-keys table is created in
-  `shomei-migrations/sql-migrations/2026-06-03-00-00-05-shomei-signing-keys.sql`; the table already
+  `shomei-migrations/sql-migrations/2026-06-03-18-44-56-shomei-signing-keys.sql`; the table already
   has a `algorithm text NOT NULL` column, so **no new migration is required** for the algorithm.
 
 **Terms used in this plan, defined in plain language.**
@@ -1026,7 +1026,7 @@ failure is any `FAIL`/`tests failed` line with the named case.
   build fails because a literal `AuthClaims{...}` is missing the new field, the compiler names the
   exact file and line; add `extraClaims = noExtraClaims` there.
 - **No migration is needed.** The `shomei_signing_keys.algorithm` column already exists
-  (`shomei-migrations/sql-migrations/2026-06-03-00-00-05-shomei-signing-keys.sql`). RSA keys are
+  (`shomei-migrations/sql-migrations/2026-06-03-18-44-56-shomei-signing-keys.sql`). RSA keys are
   stored as opaque JWK JSON in the same columns ES256 keys use.
 - **Key-algorithm changes are guarded.** `bootstrapKeys` only generates a key when none is active,
   so flipping `SHOMEI_SIGNING_ALG` on an already-keyed database has no effect until you rotate.
@@ -1111,7 +1111,7 @@ using `makeJWSHeader` with the `addClaim` chain; the `-Wno-deprecations` pragma 
 `Sign.hs`; `verifyToken`/`claimsToAuth`; `bootstrapKeys :: Pool -> IO (JWK, JWKSet)` and its
 `Boot.hs` call site; `keysGenerate :: Pool -> IO ()` and the `Admin.hs` parser; the
 `transportEnv`/`overlayCoreFromEnv`/`FileConfig`/`baseFromFile` env-overlay pattern in
-`Server/Config.hs`; the `2026-06-03-00-00-05-shomei-signing-keys.sql` migration with `algorithm
+`Server/Config.hs`; the `2026-06-03-18-44-56-shomei-signing-keys.sql` migration with `algorithm
 text NOT NULL`; the tasty test harness with `TestSupport.mkClaims`/`mkClaimsWith`/`testConfig`;
 `buildClaims` in `Workflow/Session.hs`; and `Workflow/Impersonation.hs` constructing `AuthClaims`
 directly (a construction site M3 step 4 must update). One corrective change was applied: the M2

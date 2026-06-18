@@ -291,7 +291,7 @@ data SessionStore :: Effect where
 Its Postgres interpreter is `shomei-postgres/src/Shomei/Postgres/SessionStore.hs` (rows are
 `(UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime)` via `hasql`'s `contrazip6`), and the
 in-memory interpreter is in `shomei-core/src/Shomei/Effect/InMemory.hs`. The session table is
-defined in `shomei-migrations/sql-migrations/2026-06-03-00-00-03-shomei-sessions.sql`.
+defined in `shomei-migrations/sql-migrations/2026-06-03-18-44-54-shomei-sessions.sql`.
 
 **The shared token-minting tail** is `issueSession` in `shomei-core/src/Shomei/Workflow/Session.hs`.
 It creates a session, creates a refresh token, signs an access token via `buildClaims`, and
@@ -400,7 +400,7 @@ Edits:
    haskell`). The main one is `issueSession` in `Workflow/Session.hs`: set `actor = Nothing` for
    normal logins. The Postgres store's `mkSession` helper and in-memory store likewise.
 3. New migration file
-   `shomei-migrations/sql-migrations/2026-06-17-00-00-00-shomei-sessions-actor.sql`:
+   `shomei-migrations/sql-migrations/2026-06-17-12-07-46-shomei-sessions-actor.sql`:
 
    ```sql
    -- codd: in-txn
@@ -873,7 +873,7 @@ Types and signatures that must exist at the end of each milestone (full module p
   `Shomei.Effect.SessionStore.SessionStore` effect is unchanged in signature (it already takes
   `NewSession`), and both its interpreters (`Shomei.Postgres.SessionStore`,
   `Shomei.Effect.InMemory`) persist/return `actor`; migration
-  `shomei-migrations/sql-migrations/2026-06-17-00-00-00-shomei-sessions-actor.sql` exists.
+  `shomei-migrations/sql-migrations/2026-06-17-12-07-46-shomei-sessions-actor.sql` exists.
 - M3 — `Shomei.Config.ImpersonationConfig` and `ShomeiConfig.impersonationConfig` exist;
   `Shomei.Error.AuthError` has `ImpersonationForbidden`, `ImpersonationTargetInvalid`,
   `ImpersonationActionBlocked`; `Shomei.Domain.Event.AuthEvent` has `ImpersonationStarted`,

@@ -543,7 +543,7 @@ data SessionStore :: Effect where
 
 The migration naming convention, from
 `shomei-migrations/sql-migrations/` — seven files exist today, the latest being
-`2026-06-03-00-00-06-shomei-auth-events.sql`. New files use the same
+`2026-06-03-18-44-57-shomei-auth-events.sql`. New files use the same
 `YYYY-MM-DD-HH-MM-SS-<slug>.sql` shape with **timestamps strictly later** than that, each
 starting with `-- codd: in-txn` then `SET search_path TO shomei, pg_catalog;`. The `Justfile`
 `new-migration` recipe scaffolds one with the current UTC timestamp; `just migrate` applies
@@ -742,7 +742,7 @@ leaves the tree unchanged.
 ### M2 steps
 
 **Step M2-a — migrations.** From the repo root inside `nix develop`, scaffold three migrations
-with timestamps later than `2026-06-03-00-00-06`:
+with timestamps later than `2026-06-03-18-44-57`:
 
 ```bash
 just new-migration name=shomei-users-email-verified

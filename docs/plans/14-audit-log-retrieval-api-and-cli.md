@@ -388,7 +388,7 @@ insertAuthEventStmt =
 
 ### The table schema
 
-From `shomei-migrations/sql-migrations/2026-06-03-00-00-06-shomei-auth-events.sql`:
+From `shomei-migrations/sql-migrations/2026-06-03-18-44-57-shomei-auth-events.sql`:
 
 ```sql
 SET search_path TO shomei, pg_catalog;

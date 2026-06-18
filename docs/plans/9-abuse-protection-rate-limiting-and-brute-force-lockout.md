@@ -128,8 +128,8 @@ This section must always reflect the actual current state of the work.
 - [x] M1: pure tasty tests (`Shomei.LockoutSpec`) prove lock-after-N, generic-response,
   unlock-after-cooldown, per-IP throttle, and counter-reset-on-success. `cabal test
   shomei-core` green (21 tests). Completed 2026-06-10.
-- [x] M2: codd migrations `2026-06-05-00-00-00-shomei-login-attempts.sql` and
-  `2026-06-05-00-00-01-shomei-account-lockouts.sql` added with timestamps later than EP-1's
+- [x] M2: codd migrations `2026-06-05-12-37-20-shomei-login-attempts.sql` and
+  `2026-06-05-12-37-21-shomei-account-lockouts.sql` added with timestamps later than EP-1's
   (IP-7); applied via `just migrate`. Completed 2026-06-10.
 - [x] M2: PostgreSQL interpreter `Shomei.Postgres.LoginAttemptStore` added, mirroring the
   existing stores; `loginOutcome` codecs + event projections added; wired into the assembled
@@ -240,7 +240,7 @@ Record every decision made while working on the plan.
   consumer; EP-2 must not hard-block on EP-1.
   Date: 2026-06-04
 
-- Decision: New migration timestamps start at **`2026-06-05-00-00-00`**, strictly later than
+- Decision: New migration timestamps start at **`2026-06-05-12-37-20`**, strictly later than
   every existing `2026-06-03-*` file and later than EP-1's planned `2026-06-04-*` window.
   Rationale: MasterPlan 2 IP-7 requires migrations to be append-only and EP-2 to choose
   timestamps later than EP-1's. EP-1 (account lifecycle) is sequenced before EP-2 and will
@@ -399,8 +399,8 @@ shomei-core/src/Shomei/Workflow.hs                        (edit: throttle + lock
 shomei-core/shomei-core.cabal                             (edit: expose new modules; test deps)
 shomei-core/test/Shomei/LockoutSpec.hs                    (new)
 shomei-core/test/Main.hs                                  (edit: register LockoutSpec)
-shomei-migrations/sql-migrations/2026-06-05-00-00-00-shomei-login-attempts.sql   (new)
-shomei-migrations/sql-migrations/2026-06-05-00-00-01-shomei-account-lockouts.sql (new)
+shomei-migrations/sql-migrations/2026-06-05-12-37-20-shomei-login-attempts.sql   (new)
+shomei-migrations/sql-migrations/2026-06-05-12-37-21-shomei-account-lockouts.sql (new)
 shomei-postgres/src/Shomei/Postgres/LoginAttemptStore.hs  (new)
 shomei-postgres/src/Shomei/Postgres/Codec.hs              (edit: loginOutcome <-> text)
 shomei-postgres/shomei-postgres.cabal                     (edit: expose new module)
@@ -975,11 +975,11 @@ Create the two SQL files under `shomei-migrations/sql-migrations/`. The timestam
 are **later than every existing `2026-06-03-*` file and later than EP-1's `2026-06-04-*`
 window** (IP-7; see Decision Log). Each file begins with the codd directive `-- codd: in-txn`
 (run inside a transaction), then pins the search path, then idempotent DDL — exactly like the
-existing migrations (see `2026-06-03-00-00-06-shomei-auth-events.sql`). Identifier/hash keys
+existing migrations (see `2026-06-03-18-44-57-shomei-auth-events.sql`). Identifier/hash keys
 are `text` (the account key is a hash, not a TypeID UUID), counts are `int`, timestamps are
 `timestamptz`.
 
-`2026-06-05-00-00-00-shomei-login-attempts.sql`:
+`2026-06-05-12-37-20-shomei-login-attempts.sql`:
 
 ```sql
 -- codd: in-txn
@@ -1005,7 +1005,7 @@ CREATE INDEX IF NOT EXISTS shomei_login_attempts_ip_failures_idx
   WHERE outcome = 'failure';
 ```
 
-`2026-06-05-00-00-01-shomei-account-lockouts.sql`:
+`2026-06-05-12-37-21-shomei-account-lockouts.sql`:
 
 ```sql
 -- codd: in-txn
@@ -1457,7 +1457,7 @@ additive (new field, new constructors), so re-running them is safe and never rem
 variants.
 
 The migrations are **append-only and immutable** (IP-7): once `just migrate` has applied
-`2026-06-05-00-00-00-…` and `…-01-…`, codd records them and never re-runs them; re-running
+`2026-06-05-12-37-20-…` and `…-01-…`, codd records them and never re-runs them; re-running
 `just migrate` is a no-op for already-applied files. The DDL itself is idempotent
 (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`), so even a manual re-apply
 against a partially-migrated database is safe. **Never edit an applied migration** — to change

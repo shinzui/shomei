@@ -100,8 +100,8 @@ This section must always reflect the actual current state of the work.
 
 ### Milestone 2 — migrations + PostgreSQL interpreters + DB stack wiring
 
-- [x] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-00-shomei-webauthn-credentials.sql`.
-- [x] Create `shomei-migrations/sql-migrations/2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`.
+- [x] Create `shomei-migrations/sql-migrations/2026-06-18-10-33-55-shomei-webauthn-credentials.sql`.
+- [x] Create `shomei-migrations/sql-migrations/2026-06-18-10-33-56-shomei-webauthn-pending-ceremonies.sql`.
 - [x] Touch `shomei-migrations/src/Shomei/Migrations.hs` (added a two-line comment referencing
       the two new files) to force the `embedDir` Template Haskell splice to recompile.
 - [x] Confirm `shomei-migrations.cabal` `extra-source-files: sql-migrations/*.sql` already
@@ -143,7 +143,7 @@ Confirmed during implementation (2026-06-17):
   `print (length Shomei.Migrations.embeddedFiles)` in a `cabal repl` (temporarily exporting
   `embeddedFiles` for the check, then reverting): it printed `14`. The `shomei-postgres-test`
   run then shows codd applying both new files
-  (`Applying 2026-06-18-00-00-00-shomei-webauthn-credentials.sql`,
+  (`Applying 2026-06-18-10-33-55-shomei-webauthn-credentials.sql`,
   `…-01-shomei-webauthn-pending-ceremonies.sql`). Touching `Shomei.Migrations.hs` (a two-line
   comment) was sufficient to force the `embedDir` splice to re-run; no `.cabal` edit was
   needed (the `extra-source-files: sql-migrations/*.sql` glob already covers new files).
@@ -601,12 +601,12 @@ PostgreSQL. `nix develop --command cabal build all` and
 
 **Edits.**
 
-1. **`shomei-migrations/sql-migrations/2026-06-18-00-00-00-shomei-webauthn-credentials.sql`
-   (new).** Exact contents in "Concrete Steps". Timestamp `2026-06-18-00-00-00` is strictly
-   later than the existing latest (`2026-06-05-00-00-01`), so codd orders it last but one.
+1. **`shomei-migrations/sql-migrations/2026-06-18-10-33-55-shomei-webauthn-credentials.sql`
+   (new).** Exact contents in "Concrete Steps". Timestamp `2026-06-18-10-33-55` is strictly
+   later than the existing latest (`2026-06-05-12-37-21`), so codd orders it last but one.
 
-2. **`shomei-migrations/sql-migrations/2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`
-   (new).** Exact contents in "Concrete Steps". Timestamp `2026-06-18-00-00-01` orders it
+2. **`shomei-migrations/sql-migrations/2026-06-18-10-33-56-shomei-webauthn-pending-ceremonies.sql`
+   (new).** Exact contents in "Concrete Steps". Timestamp `2026-06-18-10-33-56` orders it
    last.
 
 3. **`shomei-migrations/src/Shomei/Migrations.hs`.** Append a comment line to the block that
@@ -757,7 +757,7 @@ All N tests passed (0.0Ns)
 
 ### Step 2 — write the two migration files.
 
-`shomei-migrations/sql-migrations/2026-06-18-00-00-00-shomei-webauthn-credentials.sql`:
+`shomei-migrations/sql-migrations/2026-06-18-10-33-55-shomei-webauthn-credentials.sql`:
 
 ```sql
 -- codd: in-txn
@@ -788,7 +788,7 @@ constraint, so no separate index statement is needed for it. The `user_id` index
 `FindPasskeysByUser`/`CountPasskeysByUser`; the `user_handle` index speeds
 `FindPasskeysByUserHandle`.)
 
-`shomei-migrations/sql-migrations/2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`:
+`shomei-migrations/sql-migrations/2026-06-18-10-33-56-shomei-webauthn-pending-ceremonies.sql`:
 
 ```sql
 -- codd: in-txn

@@ -86,7 +86,7 @@ This section must always reflect the actual current state of the work.
 - [x] M3: Expand/contract PostgreSQL migration + store updates: add `login_id` column with
   backfill, relax `email` to nullable, swap unique constraints. `cabal test
   shomei-postgres-test` green against the ephemeral database. **(2026-06-17)** Done. Four new
-  migration files (`2026-06-19-00-00-00..03`) expand/backfill/constrain `login_id` and relax
+  migration files (`2026-06-19-16-55-51..03`) expand/backfill/constrain `login_id` and relax
   `email` to nullable + partial-unique on both `shomei_users` and `shomei_password_credentials`.
   The `Shomei.Migrations` splice was edited (documenting comment) to force the `embedDir`
   recompile — without it the new files are silently not embedded (the first test run failed with
@@ -200,7 +200,7 @@ implementation. Provide concise evidence.
   UUID and `beginPasskeyRegistration` reading `emailText user.email` for `accountName`; `UserId =
   KindID "user"`; the two base migrations with `email text NOT NULL UNIQUE` and the `embedDir
   "sql-migrations"` splice (latest existing migration is
-  `2026-06-18-00-00-01-shomei-webauthn-pending-ceremonies.sql`, so the new files should sort after
+  `2026-06-18-10-33-56-shomei-webauthn-pending-ceremonies.sql`, so the new files should sort after
   it, e.g. `2026-06-19-…`); the postgres `UserStore`/`CredentialStore` INSERTs and
   `nonNullable D.text` email decoders plus `Codec.emailFromDb`; the servant `SignupRequest`/
   `LoginRequest`/`UserResponse` DTOs, `userToResponse`, and `env.accountKeyOf :: Email ->
@@ -387,7 +387,7 @@ carries `contextEmail :: !(Maybe Text)` and `contextDisplayName :: !(Maybe Text)
 we simply pass `Nothing` for `contextEmail` when there is no email.
 
 The database. The base user table
-(`/Users/shinzui/Keikaku/bokuno/shomei/shomei-migrations/sql-migrations/2026-06-03-00-00-01-shomei-users.sql`):
+(`/Users/shinzui/Keikaku/bokuno/shomei/shomei-migrations/sql-migrations/2026-06-03-18-44-52-shomei-users.sql`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS shomei_users (
@@ -401,11 +401,11 @@ CREATE TABLE IF NOT EXISTS shomei_users (
 ```
 
 The credentials table
-(`/Users/shinzui/Keikaku/bokuno/shomei/shomei-migrations/sql-migrations/2026-06-03-00-00-02-shomei-password-credentials.sql`)
+(`/Users/shinzui/Keikaku/bokuno/shomei/shomei-migrations/sql-migrations/2026-06-03-18-44-53-shomei-password-credentials.sql`)
 similarly declares `email text NOT NULL UNIQUE`. Migration files begin with a `-- codd: in-txn`
 header and a `SET search_path TO shomei, pg_catalog;` line; codd orders them by filename, so a
 new change is a new dated file (look at the existing names like
-`2026-06-04-00-00-00-shomei-users-email-verified.sql`, which is a plain additive `ALTER TABLE
+`2026-06-04-05-46-54-shomei-users-email-verified.sql`, which is a plain additive `ALTER TABLE
 ... ADD COLUMN IF NOT EXISTS`). The files are embedded at compile time by
 `/Users/shinzui/Keikaku/bokuno/shomei/shomei-migrations/src/Shomei/Migrations.hs` via
 `$(embedDir "sql-migrations")`; **adding a new `.sql` file requires recompiling that module**
