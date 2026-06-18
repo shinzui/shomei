@@ -5,6 +5,11 @@ on:
     branches: [master]
   pull_request:
 
+# Keep the whole cabal layout (config, package index, build store) in one
+# predictable directory so it can be cached as a unit across runs.
+env:
+  CABAL_DIR: ${{ github.workspace }}/.cabal
+
 jobs:
   build-test-format:
     runs-on: ubuntu-latest
@@ -16,6 +21,25 @@ jobs:
 
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # magic-nix-cache only caches the Nix store (GHC/cabal/HLS). It does NOT
+      # cache the Hackage index, cabal's build store, or dist-newstyle, so the
+      # git-pinned dependencies (codd, webauthn, jose, ephemeral-pg) get
+      # recompiled from scratch on every run. Cache them here.
+      - name: Cache cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.cabal
+            dist-newstyle
+          key: cabal-${{ runner.os }}-ghc9.12.4-${{ hashFiles('cabal.project', '**/*.cabal') }}
+          restore-keys: |
+            cabal-${{ runner.os }}-ghc9.12.4-
+
+      # cabal needs a Hackage package index to resolve non-git dependencies
+      # (e.g. optparse-applicative); the CI image doesn't ship one.
+      - name: Update Hackage index
+        run: nix develop --command cabal update
 
       - name: Build all packages
         run: nix develop --command cabal build all
