@@ -9,12 +9,14 @@
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
   };
 
-  # TODO(haskell-nix-dev EP-2): fill in the Cachix substituter URL and public key once the
-  # base flake's binary cache is published, so the first `nix develop` downloads prebuilt
-  # GHC/HLS/cabal instead of compiling HLS from source. Left empty (inert) until then.
+  # The shinzui Cachix cache carries the prebuilt haskell-nix-dev toolchain
+  # (GHC/HLS/cabal), so the first `nix develop` downloads them instead of
+  # compiling HLS from source. Local users must trust this config (run with
+  # `--accept-flake-config`, or add yourself to nix's trusted-users); CI sets
+  # the same substituter as trusted install-time config in .github/workflows/ci.yaml.
   nixConfig = {
-    extra-substituters = [ ];
-    extra-trusted-public-keys = [ ];
+    extra-substituters = [ "https://shinzui.cachix.org" ];
+    extra-trusted-public-keys = [ "shinzui.cachix.org-1:QEmAoJrA9WwLP0uxfDgktLi2BRrcvQQWdz8NzcMg4/E=" ];
   };
 
   # This flake is a thin, seihou-managed shell. All project wiring lives in the

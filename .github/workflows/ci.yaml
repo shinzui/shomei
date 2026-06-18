@@ -5,6 +5,12 @@ on:
     branches: [master]
   pull_request:
 
+# Cancel an in-progress run when a newer commit supersedes it, so a slow build
+# isn't left running against stale code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 # Keep the whole cabal layout (config, package index, build store) in one
 # predictable directory so it can be cached as a unit across runs.
 env:
@@ -18,6 +24,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
+        with:
+          # Pull the prebuilt haskell-nix-dev toolchain (GHC/HLS/cabal) from the
+          # shinzui Cachix cache instead of compiling it. Set as trusted install-
+          # time config so it works headlessly (flake nixConfig substituters are
+          # ignored as untrusted in CI).
+          extra-conf: |
+            extra-substituters = https://shinzui.cachix.org
+            extra-trusted-public-keys = shinzui.cachix.org-1:QEmAoJrA9WwLP0uxfDgktLi2BRrcvQQWdz8NzcMg4/E=
 
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@main
