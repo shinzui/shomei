@@ -82,18 +82,18 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-- **EP-5's port stack and the PostgreSQL interpreters need different stacks; `inject` bridges
-  them.** EP-5 (built before this plan) fixed `Shomei.Servant.Seam.AppEffects` as the ports +
+- **EP-5's effect stack and the PostgreSQL interpreters need different stacks; `inject` bridges
+  them.** EP-5 (built before this plan) fixed `Shomei.Servant.Seam.AppEffects` as the effects +
   `IOE` only (its in-memory interpreters need nothing more). But the PostgreSQL interpreters
   require `(Database :> es, IOE :> es, Error AuthError :> es)` in their residual (evidence:
   `runUserStorePostgres :: (Database :> es, IOE :> es, Error AuthError :> es) => Eff (UserStore :
   es) a -> Eff es a`). So this server's `AppEffects` is the EP-5 stack **extended** with
-  `Database` and `Error AuthError` beneath the ports, and `Shomei.Server.Boot.seamEnv` builds
+  `Database` and `Error AuthError` beneath the effects, and `Shomei.Server.Boot.seamEnv` builds
   EP-5's `Env.runPorts` by `inject`-ing an `Eff Seam.AppEffects a` into `Eff App.AppEffects a`
   (`inject :: Subset subEs es => Eff subEs a -> Eff es a` from `Effectful`) and running the
   postgres composition. Infra failures (a `Left AuthError` from `runAppIO`) become an IO
   exception (warp → 500); domain errors flow through EP-5's seam to the right status.
-- **The crypto interpreters live in `Shomei.Crypto`, not `shomei-postgres`'s port modules.**
+- **The crypto interpreters live in `Shomei.Crypto`, not `shomei-postgres`'s effect modules.**
   The plan guessed `Shomei.Postgres.PasswordHasher` / `Shomei.Postgres.TokenGen`; the real
   surface is `Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)` (Argon2id + crypton
   random). The store/clock/publisher/signing-key interpreters are `Shomei.Postgres.*`
@@ -228,17 +228,17 @@ ExecPlans that are hard dependencies of this one, are:
 
 - `shomei-core` (EP-2): the transport-agnostic domain. It defines the domain types
   and identifiers (`Shomei.Id`), the error types (`Shomei.Error.AuthError`,
-  `Shomei.Error.TokenError`), the runtime configuration record `ShomeiConfig`, the **ports**
-  — interfaces expressed as `effectful` effects — and the **workflows** (signup, login,
-  refresh-rotation, logout, verification) written purely against those ports. "`effectful`"
+  `Shomei.Error.TokenError`), the runtime configuration record `ShomeiConfig`, the **effects**
+  (expressed with `effectful`) and the **workflows** (signup, login,
+  refresh-rotation, logout, verification) written purely against those effects. "`effectful`"
   is a Haskell effect-system library; an **effect** is a typed capability (e.g. "I can read a
   user from a store") and an **interpreter** is a function that gives an effect a concrete
-  meaning (e.g. "read it from PostgreSQL"). The ports are: `UserStore`, `CredentialStore`,
+  meaning (e.g. "read it from PostgreSQL"). The effects are: `UserStore`, `CredentialStore`,
   `SessionStore`, `RefreshTokenStore`, `PasswordHasher`, `TokenSigner`, `TokenVerifier`,
   `AuthEventPublisher`, `SigningKeyStore`, and the support effects `Clock` (current time) and
   `TokenGen` (random opaque tokens).
 - `shomei-postgres` (EP-3): PostgreSQL interpreters for the store/publisher/
-  signing-key/clock ports, the Argon2id `PasswordHasher` interpreter, the `TokenGen`
+  signing-key/clock effects, the Argon2id `PasswordHasher` interpreter, the `TokenGen`
   interpreter, and a hasql-based `Database` effect. ("hasql" is a fast PostgreSQL client
   library; a **pool** is a reusable set of connections.) Key surface this plan uses:
   `runDatabasePool :: (IOE :> es) => Pool -> Eff (Database : es) a -> Eff es a` and the
@@ -255,7 +255,7 @@ ExecPlans that are hard dependencies of this one, are:
   creates an ephemeral PostgreSQL database, applies all migrations, and hands the test a
   connection string.
 - `shomei-jwt` (EP-4): the JWT/JWKS adapter. Surface this plan uses:
-  `runTokenSignerJwt` / `runTokenVerifierJwt` (interpreters for the signer/verifier ports),
+  `runTokenSignerJwt` / `runTokenVerifierJwt` (interpreters for the signer/verifier effects),
   `verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)` (the
   standalone verifier the auth handler calls), `jwksDocument` (build the public JWKS),
   the key generation/rotation operations over `SigningKeyStore` in `Shomei.Jwt.Rotation`,
@@ -294,7 +294,7 @@ the `AppEffects` type, and `runAppIO` with its documented interpreter order),
 `/Users/shinzui/Keikaku/bokuno/kizashi/kizashi-core/src/Kizashi/Http/Seam.hs` (the
 per-action `effToHandler` seam that maps `runAppIO`'s `Either` result into a Servant
 `Handler`). Shōmei differs in two ways: (1) it has a much larger effect stack (every auth
-port), and (2) it uses `serveWithContext` rather than `serve` because the API is
+effect), and (2) it uses `serveWithContext` rather than `serve` because the API is
 authentication-protected.
 
 **Module layout this plan creates** (all under `shomei-server/`):
@@ -557,7 +557,7 @@ default. They are written out in full during implementation; only the shape matt
 ### Step 3 — The effect stack and runner
 
 Create `shomei-server/src/Shomei/Server/App.hs`. This is the heart of the
-assembly. The stack lists every port plus the support effects and the base:
+assembly. The stack lists every effect plus the support effects and the base:
 
 ```haskell
 {-# LANGUAGE DataKinds #-}
@@ -611,7 +611,7 @@ import "jose" Crypto.JWT (JWK, JWKSet)
 -- left-to-right is reading from the /handler's/ point of view (the effects it
 -- may use); reading the interpreter composition in 'runAppIO' bottom-up is the
 -- /runtime's/ point of view (the order effects are given meaning). The head of
--- the list is interpreted last-ish among the ports but the high-level ports come
+-- the list is interpreted last-ish among the effects but the high-level effects come
 -- first so they may rely on the support effects beneath them.
 type AppEffects =
   '[ UserStore
@@ -652,12 +652,12 @@ data Env = Env
 --     issue SQL, so they are interpreted ABOVE 'runDatabasePool' — 'Database'
 --     must still be in scope when they run.
 --   * 'runTokenSignerJwt' / 'runTokenVerifierJwt' are pure-ish over the supplied
---     key/JWKS and config; they sit among the ports.
+--     key/JWKS and config; they sit among the effects.
 --   * 'runClockIO' and 'runTokenGenCrypto' provide time and randomness; the
 --     store/signer layers above them may consume those, so they are interpreted
---     beneath the ports but above 'runDatabasePool'.
+--     beneath the effects but above 'runDatabasePool'.
 --   * 'runDatabasePool' removes 'Database', needing 'IOE'; it is interpreted
---     below every SQL-issuing port.
+--     below every SQL-issuing effect.
 --   * 'runErrorNoCallStack' removes @Error AuthError@, producing the @Either@.
 --   * 'runEff' removes 'IOE', producing 'IO'.
 runAppIO :: Env -> Eff AppEffects a -> IO (Either AuthError a)
@@ -682,7 +682,7 @@ Note the relationship between `AppEffects` (head = `UserStore`) and the composit
 (`runUserStorePostgres` applied last, i.e. outermost in the `.` chain so it removes the head
 first). The exact module paths for the interpreters are confirmed against the EP-3/EP-4
 deliverables during implementation; if a name differs, fix the import — the *ordering rule*
-(SQL ports above `runDatabasePool`; `Database`/`Error`/`IOE` at the base) is what must hold.
+(SQL effects above `runDatabasePool`; `Database`/`Error`/`IOE` at the base) is what must hold.
 
 ### Step 4 — The servant seam
 
@@ -1222,8 +1222,8 @@ Every startup step is safe to repeat:
 
 Libraries and packages, and why each is used:
 
-- `shomei-core` — `ShomeiConfig` (IP-5), the port effects (IP-3), domain types (IP-2),
-  `AuthError`. The server consumes the config and assembles interpreters of the ports.
+- `shomei-core` — `ShomeiConfig` (IP-5), the effects (IP-3), domain types (IP-2),
+  `AuthError`. The server consumes the config and assembles interpreters of the effects.
 - `shomei-postgres` — the `Database` effect + `runDatabasePool`, the store/publisher/
   signing-key/clock interpreters, the Argon2 `PasswordHasher`, the `TokenGen` interpreter.
   The persistence half of the stack (IP-3/IP-7).
@@ -1281,7 +1281,7 @@ End of Milestone 3:
 spec :: Spec
 ```
 
-Consumption of integration points (from the MasterPlan): this plan consumes **IP-3** (port
+Consumption of integration points (from the MasterPlan): this plan consumes **IP-3** (the
 effects — it assembles their PostgreSQL/JWT interpreters into one stack), **IP-5**
 (`ShomeiConfig` — it loads and threads it), **IP-6** (`ShomeiAPI`, DTOs, `AuthUser` — it
 serves them), and **IP-7** (the schema — it runs the migrations). It is the **integration

@@ -32,7 +32,7 @@ After this plan, an operator gains four concrete, demonstrable abilities:
 1. **One typed configuration file.** A single
    [Dhall](https://dhall-lang.org) file (Dhall is a small, strongly-typed configuration
    language — think "JSON with types, functions, and imports") at `config/shomei.dhall`
-   describes *every* runtime setting: the database connection, the address and effect the
+   describes *every* runtime setting: the database connection, the address and port the
    server listens on, the JWT issuer/audience, all the token lifetimes, the password
    policy, the rate-limit and account-lockout policy, the notifier settings, and the
    log level. Environment variables override any value in that file, so the same image
@@ -309,7 +309,7 @@ wiring, is `flake.module.nix` at the repo root. This plan adds the container-ima
   This plan's loader must populate whichever of those fields exist when it runs (see
   "Cross-plan config dependence" below).
 - `shomei-server/src/Shomei/Server/Config.hs`: MasterPlan 1's EP-6 created this
-  module with a `ServerSettings` record (the listen effect and the raw PostgreSQL connection
+  module with a `ServerSettings` record (the listen port and the raw PostgreSQL connection
   string) and `loadConfig :: IO (ShomeiConfig, ServerSettings)` that reads environment
   variables and falls back to `ShomeiConfig`'s defaults. **This plan supersedes that env-only
   loader** with a Dhall + env loader in the same module, widening `ServerSettings` into a
@@ -572,7 +572,7 @@ green, including an env-override case. Both `shomei-server` and `shomei-admin` c
      (`Optional`), matching `FileConfig`.
    - `config/shomei.example.dhall` — a committed, fully-populated example using non-secret
      placeholder values (issuer `https://auth.example.com`, audience `example-api`, database
-     URL `postgresql://shomei:shomei@localhost:5432/shomei`, effect `8080`, etc.). Secrets (e.g.
+     URL `postgresql://shomei:shomei@localhost:5432/shomei`, port `8080`, etc.). Secrets (e.g.
      the signing-key passphrase) are shown as `env:SHOMEI_SIGNING_KEY_PASSPHRASE as Text`
      comments or left `None Text`, never as literals. (Email sending was descoped 2026-06-17, so
      there is no SMTP password secret.)
@@ -582,7 +582,7 @@ green, including an env-override case. Both `shomei-server` and `shomei-admin` c
 
 5. **The test.** `test/Shomei/Server/ConfigSpec.hs`:
    - *File-load case:* set `SHOMEI_CONFIG=config/shomei.example.dhall`, call `loadConfig`,
-     assert specific fields (issuer, audience, effect `8080`, the database URL, a token TTL).
+     assert specific fields (issuer, audience, port `8080`, the database URL, a token TTL).
    - *Env-override case:* with the same config file, additionally `setEnv "SHOMEI_PORT" "9999"`
      and `setEnv "SHOMEI_DATABASE_URL" "postgresql://override/db"`, call `loadConfig`, assert
      `bindPort == 9999` and `databaseUrl == "postgresql://override/db"` (env beats file).
@@ -979,7 +979,7 @@ library
     , text
 
 test-suite shomei-server-config-test
-  imeffect:         warnings, shared
+  import:         warnings, shared
   type:           exitcode-stdio-1.0
   main-is:        Main.hs
   hs-source-dirs: test

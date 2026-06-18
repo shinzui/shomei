@@ -142,7 +142,7 @@ What already exists today and is stable (so this plan can rely on it):
   `shomei_auth_events`; this plan additionally **observes** them to feed domain metric counters.
 
   > **Read side (EP-7).** This plan only *writes* and *observes* the audit-event stream. The
-  > *read* counterpart — querying `shomei_auth_events` back out via the `AuthEventReader` port,
+  > *read* counterpart — querying `shomei_auth_events` back out via the `AuthEventReader` effect,
   > the admin-gated `GET /admin/audit/events` endpoint, and the `shomei-admin audit` CLI — is
   > delivered by **EP-7** (`docs/plans/14-audit-log-retrieval-api-and-cli.md`). A reader of this
   > write side looking for "how do I get the events back out" should go there.
@@ -187,7 +187,7 @@ queued until this one recovers — all without a disruptive restart.
 These are established by MasterPlan 1's EP-1/EP-2/EP-3 and reused verbatim:
 
 - GHC **9.12.4**, language edition **GHC2024**, `cabal-version: 3.0`.
-- Each `.cabal` stanza writes `imeffect: warnings, shared`. The `warnings` stanza enables
+- Each `.cabal` stanza writes `import: warnings, shared`. The `warnings` stanza enables
   `-Wall` and friends; the `shared` stanza sets `default-extensions: DeriveAnyClass,
   DuplicateRecordFields, BlockArguments, MultilineStrings, OverloadedLabels,
   OverloadedRecordDot, OverloadedStrings, PackageImports, QualifiedDo, TemplateHaskell`.
@@ -791,7 +791,7 @@ still boots — the missing field falls back to the default. Then set
 
 All commands run from the repository root `/Users/shinzui/Keikaku/bokuno/shomei` inside the Nix
 dev shell (`nix develop`, or automatically via `direnv` from `.envrc`). Replace `PORT` with the
-server's actual listen effect (the MasterPlan-1 default; discover it from the config or the
+server's actual listen port (the MasterPlan-1 default; discover it from the config or the
 server's startup log).
 
 ### Step 0 — confirm the precondition

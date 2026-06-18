@@ -337,7 +337,7 @@ pool, behind a small `Database` effect
   **only** base names may omit the import to satisfy `-Wall`'s `-Wunused-imports` (see EP-2's
   Surprises). Re-importing a name the prelude already provides (e.g. `liftIO`, `toJSON`)
   triggers `-Wunused-imports`; take only the *additional* names from `Effectful`/`Data.Aeson`.
-- `cabal-version: 3.0`, `default-language: GHC2024`; each stanza writes `imeffect: warnings,
+- `cabal-version: 3.0`, `default-language: GHC2024`; each stanza writes `import: warnings,
   shared`. The `shared` stanza's `default-extensions` include `DuplicateRecordFields`,
   `OverloadedRecordDot`, `OverloadedLabels`, `OverloadedStrings`, `PackageImports`,
   `MultilineStrings`, `BlockArguments`, `QualifiedDo`, `TemplateHaskell`, `DeriveAnyClass`.

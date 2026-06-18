@@ -24,9 +24,9 @@ signing-key rotation).
 
 | Package | Role |
 |---|---|
-| `shomei-core` | Transport-agnostic heart: domain types, the `effectful` effect interfaces (ports), the auth workflows, and an in-memory interpreter. No database/HTTP/JWT dependency. |
+| `shomei-core` | Transport-agnostic heart: domain types, the `effectful` effect interfaces, the auth workflows, and an in-memory interpreter. No database/HTTP/JWT dependency. |
 | `shomei-jwt` | ES256/RS256 JWT signing/verification and the JWKS document (`jose`). |
-| `shomei-postgres` | `hasql` adapters: a PostgreSQL interpreter for each port, plus Argon2id hashing and SHA-256 token hashing (`crypton`/`ram`). |
+| `shomei-postgres` | `hasql` adapters: a PostgreSQL interpreter for each effect, plus Argon2id hashing and SHA-256 token hashing (`crypton`/`ram`). |
 | `shomei-migrations` | `codd`-managed SQL schema in the `shomei` PostgreSQL schema. |
 | `shomei-servant` | The `ShomeiAPI` `NamedRoutes` record, request/response DTOs, handlers, and the `Authenticated`/`RequireRole` combinators. |
 | `shomei-server` | The warp executable (`shomei-server`), the `shomei-admin` operations CLI, the WAI middleware stack (logging, metrics, rate limiting), and the config loader. |
@@ -68,7 +68,7 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — design, package layering, the ports & workflows pattern.
+- [docs/architecture.md](docs/architecture.md) — design, package layering, the effects & workflows pattern.
 - [docs/api.md](docs/api.md) — every HTTP endpoint with request/response shapes and status codes.
 - [docs/passkeys.md](docs/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
 - [docs/security.md](docs/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.

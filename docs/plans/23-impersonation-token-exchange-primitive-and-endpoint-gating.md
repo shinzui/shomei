@@ -202,14 +202,14 @@ with a `Maybe` field is fully backward-compatible: every existing token/row stay
 Shōmei is a multi-package Haskell (Cabal) project. A "package" is a unit with its own `.cabal`
 build file. The packages relevant to this plan, with their full paths and roles:
 
-- `shomei-core/` — transport-agnostic domain. Pure types, commands, events, errors, and *effect
-  interfaces* called "ports." It has no web/database/JWT dependencies. An "effect" here is a typed
+- `shomei-core/` — transport-agnostic domain. Pure types, commands, events, errors, and *effects*.
+  It has no web/database/JWT dependencies. An "effect" here is a typed
   capability (using the `effectful` library) such as "I can store sessions" (`SessionStore`) or "I
-  can publish an audit event" (`AuthEventPublisher`); a "port" is the abstract declaration of one,
-  and an "interpreter" is a concrete implementation (in-memory for tests, Postgres for production).
+  can publish an audit event" (`AuthEventPublisher`); an "interpreter" is a concrete implementation
+  of one (in-memory for tests, Postgres for production).
 - `shomei-jwt/` — turns `AuthClaims` (the domain's description of a token's contents) into a signed
   JWT string and back. Depends on `shomei-core`.
-- `shomei-postgres/` — PostgreSQL interpreters of the core ports (session store, audit-event
+- `shomei-postgres/` — PostgreSQL interpreters of the core effects (session store, audit-event
   publisher, etc.) using the `hasql` library. Depends on `shomei-core` and `shomei-migrations`.
 - `shomei-migrations/` — SQL schema migrations managed by the `codd` tool. Each migration is a
   `.sql` file in `shomei-migrations/sql-migrations/`.
@@ -278,7 +278,7 @@ data NewSession = NewSession
     }
 ```
 
-The `SessionStore` port is in `shomei-core/src/Shomei/Effect/SessionStore.hs`:
+The `SessionStore` effect is in `shomei-core/src/Shomei/Effect/SessionStore.hs`:
 
 ```haskell
 data SessionStore :: Effect where
@@ -316,7 +316,7 @@ buildClaims cfg uid sid ts =
 
 **Domain events** are the sum type `AuthEvent` in `shomei-core/src/Shomei/Domain/Event.hs`; each
 constructor wraps a `*Data` record (e.g. `MfaSucceededData { userId, sessionId, occurredAt }`).
-Events are published with `publishAuthEvent :: AuthEvent -> Eff es ()` (port in
+Events are published with `publishAuthEvent :: AuthEvent -> Eff es ()` (effect in
 `shomei-core/src/Shomei/Effect/AuthEventPublisher.hs`). The Postgres publisher
 `shomei-postgres/src/Shomei/Postgres/AuthEventPublisher.hs` maps each event to the tuple
 `(Maybe UUID userId, Maybe UUID sessionId, Text eventType, Value payload, UTCTime)` in
@@ -537,7 +537,7 @@ Edits:
 
    `startImpersonation` logic, in order (use `runErrorNoCallStack`/`Either` like
    `Account.changePassword`):
-   - `now <- currentTime` (the `Clock` port).
+   - `now <- currentTime` (the `Clock` effect).
    - **Scope check**: if `cfg.impersonationConfig.impersonateScope` is not in
      `actorClaims.scopes`, return `Left ImpersonationForbidden`.
    - **Freshness check**: if `now` is later than `actorClaims.issuedAt` plus
@@ -861,7 +861,7 @@ presented token and is harmless if that session is already revoked.
 
 ## Interfaces and Dependencies
 
-No new external libraries are required; this plan composes existing ones (`effectful` for ports,
+No new external libraries are required; this plan composes existing ones (`effectful` for effects,
 `jose` for JWT, `hasql` for Postgres, `servant-server` for HTTP, `aeson` for JSON).
 
 Types and signatures that must exist at the end of each milestone (full module paths):
@@ -870,7 +870,7 @@ Types and signatures that must exist at the end of each milestone (full module p
   `Shomei.Jwt.Sign.claimsFromAuth` emits the `act` claim iff `actor` is `Just`;
   `Shomei.Jwt.Verify.claimsToAuth` populates `actor` from the `act` claim.
 - M2 — `Shomei.Domain.Session.Session` and `.NewSession` have field `actor :: Maybe UserId`; the
-  `Shomei.Effect.SessionStore.SessionStore` port is unchanged in signature (it already takes
+  `Shomei.Effect.SessionStore.SessionStore` effect is unchanged in signature (it already takes
   `NewSession`), and both its interpreters (`Shomei.Postgres.SessionStore`,
   `Shomei.Effect.InMemory`) persist/return `actor`; migration
   `shomei-migrations/sql-migrations/2026-06-17-00-00-00-shomei-sessions-actor.sql` exists.

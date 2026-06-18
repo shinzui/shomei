@@ -29,7 +29,7 @@ refresh-token rotation or detected reuse, an email verification, a password rese
 suspension or deletion, an account lockout or login throttle — is written as a row in the
 PostgreSQL table `shomei_auth_events` (one row per event, with a denormalized `user_id` /
 `session_id`, an `event_type` string, a JSONB `payload`, and a `created_at` timestamp). The
-code that does this is the `AuthEventPublisher` port and its PostgreSQL interpreter.
+code that does this is the `AuthEventPublisher` effect and its PostgreSQL interpreter.
 
 The problem this plan solves: **there is no way to read that trail back out.** Today an
 operator who wants to answer "show me everything that happened to user X", "list every
@@ -62,7 +62,7 @@ server, then run `shomei-admin audit events --type login_failed` and watch the f
 row print; or `curl` the HTTP endpoint with an admin token and get a JSON page of events back,
 while the same `curl` with a non-admin token gets `403 Forbidden`.
 
-The heart of this plan is a single **read/query layer** — a new effect port
+The heart of this plan is a single **read/query layer** — a new effect
 `AuthEventReader` in `shomei-core` and its PostgreSQL interpreter in `shomei-postgres` — that
 both surfaces sit on top of. The CLI and the API are deliberately thin: they parse inputs,
 call the query layer, and format outputs. This keeps the filtering, pagination, and
@@ -75,17 +75,17 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Read/query layer (shomei-core port + shomei-postgres interpreter): **DONE (2026-06-17)**
+Milestone 1 — Read/query layer (shomei-core effect + shomei-postgres interpreter): **DONE (2026-06-17)**
 
 - [x] Add `reconstructAuthEvent :: Text -> Value -> Either String AuthEvent` to `shomei-core` (new module `Shomei.Domain.EventCodec`). **Covers all 24 constructors** (the vocabulary grew past the 16 the plan described — see Surprises).
 - [x] Add a pure round-trip test proving every one of the **24** event constructors survives `project → toJSON → reconstruct` (`Shomei.Domain.EventCodecSpec`, wired into `shomei-core:shomei-core-test`; a count guard asserts coverage of all 24). 103 core tests pass.
-- [x] Add the `AuthEventReader` effect port (`shomei-core/src/Shomei/Effect/AuthEventReader.hs`) with `AuditEventQuery`, `AuditCursor`, `StoredAuthEvent`, `queryAuthEvents`, `countAuthEvents`, `emptyAuditQuery`, `maxAuditLimit`, `clampLimit`.
+- [x] Add the `AuthEventReader` effect (`shomei-core/src/Shomei/Effect/AuthEventReader.hs`) with `AuditEventQuery`, `AuditCursor`, `StoredAuthEvent`, `queryAuthEvents`, `countAuthEvents`, `emptyAuditQuery`, `maxAuditLimit`, `clampLimit`.
 - [x] Add the PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/AuthEventReader.hs`): filtered, keyset-paginated SELECT + COUNT (Params-monoid encoder; `text[]` via `E.foldableArray`; applicative row decoder).
 - [x] Wire `runAuthEventReaderPostgres` into the `shomei-postgres` test stack (both interpreter chains + `AppEffects`) and add `testAuditEventReader` (seed 5 events for two users, assert newest-first ordering, user/type/time filters, `count`, two-page keyset walk is disjoint+complete, one reconstruct check). 22 postgres tests pass.
 
 Milestone 2 — HTTP API (`GET /admin/audit/events`): **DONE (2026-06-17)**
 
-- [x] Add `AuthEventReader` to the servant (`Shomei.Servant.Seam.AppEffects`) and server (`Shomei.Server.App.AppEffects`) effect stacks; wire `runAuthEventReaderPostgres` into `runAppIO`. The `inject` bridge in `Shomei.Server.Boot` type-checks unchanged. Also added an in-memory `runAuthEventReader` to `Shomei.Effect.InMemory` so the hybrid servant-test stack interprets the new port (see Decision Log: the event→envelope projection was hoisted to `Shomei.Domain.EventCodec.projectAuthEvent` as the single source of truth, and the PostgreSQL writer now delegates to it).
+- [x] Add `AuthEventReader` to the servant (`Shomei.Servant.Seam.AppEffects`) and server (`Shomei.Server.App.AppEffects`) effect stacks; wire `runAuthEventReaderPostgres` into `runAppIO`. The `inject` bridge in `Shomei.Server.Boot` type-checks unchanged. Also added an in-memory `runAuthEventReader` to `Shomei.Effect.InMemory` so the hybrid servant-test stack interprets the new effect (see Decision Log: the event→envelope projection was hoisted to `Shomei.Domain.EventCodec.projectAuthEvent` as the single source of truth, and the PostgreSQL writer now delegates to it).
 - [x] Add DTOs (`AuditEventResponse`, `AuditEventsPage`) + `storedToResponse` and the opaque cursor codec (`encodeCursor`/`decodeCursor`, `"<iso8601>;<uuid>"`) to `shomei-servant/src/Shomei/Servant/DTO.hs`. Added `uuid` to the servant cabal.
 - [x] Add the `auditEvents` route to `ShomeiAPI` (QueryParam/QueryParams), the admin-gated `auditEventsH` + total `buildQuery` (malformed UUID/timestamp/cursor → 400), and wire `auditEvents = auditEventsH env` into `shomeiServer`.
 - [x] Servant integration tests: admin token → 200 with a non-empty trail; non-admin → 403; no token → 401; `?type=login_succeeded` filters; `?user=not-a-uuid` → 400; `?limit=1` + follow `nextCursor` walks disjoint pages. `shomei-servant-test` passes.
@@ -222,7 +222,7 @@ Against the original purpose (read the audit trail back out without hand-written
 is **fully delivered**. The trail is now readable through one shared query layer with two thin
 surfaces on top:
 
-- **Query layer (M1).** `Shomei.Effect.AuthEventReader` (port) + `runAuthEventReaderPostgres`
+- **Query layer (M1).** `Shomei.Effect.AuthEventReader` (effect) + `runAuthEventReaderPostgres`
   (filtered, keyset-paginated `SELECT`/`COUNT`, read-only) + `Shomei.Domain.EventCodec`
   (`reconstructAuthEvent` and the hoisted `projectAuthEvent`). A pure round-trip spec pins all
   **24** `AuthEvent` constructors and a PostgreSQL interpreter test proves filters, ordering,
@@ -230,7 +230,7 @@ surfaces on top:
 - **HTTP (M2).** Admin-gated `GET /admin/audit/events` with filters + opaque cursor pagination;
   integration-tested for admin→200, non-admin→403, no-token→401, type filter, bad-UUID→400, and
   a two-page cursor walk. An in-memory `AuthEventReader` was added to `Shomei.Effect.InMemory`
-  so the hybrid servant test interprets the new port.
+  so the hybrid servant test interprets the new effect.
 - **CLI (M3).** `shomei-admin audit events|user|session|count` with tab-separated + `--json`
   output; integration-tested over real PostgreSQL and live-verified against the dev socket DB.
 - **Docs (M4).** `docs/security.md` (runbook + limitation), `docs/api.md`, and a forward note in
@@ -266,14 +266,14 @@ will mirror.
 Shōmei is a Haskell authentication toolkit built as a multi-package Cabal project. The
 packages relevant to this plan are:
 
-- `shomei-core` — pure domain types and *effect ports*. An **effect port** (we will just say
-  "port") is an interface, defined with the `effectful` library, that describes an operation
-  the domain needs without saying how it is implemented. Ports live under
+- `shomei-core` — pure domain types and *effects*. An **effect** is an interface, defined with
+  the `effectful` library, that describes an operation the domain needs without saying how it
+  is implemented. Effects live under
   `shomei-core/src/Shomei/Effect/`. Domain data types live under
   `shomei-core/src/Shomei/Domain/`.
-- `shomei-postgres` — *interpreters* for those ports backed by PostgreSQL. An **interpreter**
-  is the concrete implementation of a port; for example `runAuthEventPublisherPostgres`
-  implements the `AuthEventPublisher` port by inserting rows. Interpreters live under
+- `shomei-postgres` — *interpreters* for those effects backed by PostgreSQL. An **interpreter**
+  is the concrete implementation of an effect; for example `runAuthEventPublisherPostgres`
+  implements the `AuthEventPublisher` effect by inserting rows. Interpreters live under
   `shomei-postgres/src/Shomei/Postgres/`.
 - `shomei-servant` — the HTTP API: the route type (`ShomeiAPI`), the request/response JSON
   types (DTOs), the authentication/authorization seam, and the handlers.
@@ -456,13 +456,13 @@ effect). In the CLI, the existing `keys` handlers run a session directly with
 ### The effect-stack wiring you must extend
 
 The HTTP handlers run over a fixed effect list. In
-`shomei-servant/src/Shomei/Servant/Seam.hs` there is a type `AppEffects` listing every port a
+`shomei-servant/src/Shomei/Servant/Seam.hs` there is a type `AppEffects` listing every effect a
 handler may use (`UserStore`, `SessionStore`, …, `AuthEventPublisher`, `SigningKeyStore`,
 `Clock`, `TokenGen`, `IOE`). The server provides the concrete interpreters in
 `shomei-server/src/Shomei/Server/App.hs` (`runAppIO`) and bridges them in
 `shomei-server/src/Shomei/Server/Boot.hs` (`seamEnv`/`runPorts`). The `shomei-postgres` test
 suite (`shomei-postgres/test/Main.hs`) has its own `AppEffects` list and `runApp` interpreter
-chain. **Adding the new `AuthEventReader` port means adding it to each of these lists and
+chain. **Adding the new `AuthEventReader` effect means adding it to each of these lists and
 adding its interpreter to each chain.** All such sites are enumerated in Milestone 2 and
 Milestone 1's test step. Mirror exactly how `AuthEventPublisher` already appears in each.
 
@@ -527,7 +527,7 @@ milestone is independently verifiable.
 
 ### Milestone 1 — The read/query layer
 
-Scope: a new effect port and its PostgreSQL interpreter, plus the pure event-reconstruction
+Scope: a new effect and its PostgreSQL interpreter, plus the pure event-reconstruction
 function they depend on. At the end of this milestone, a test can seed events into an
 ephemeral PostgreSQL and query them back — filtered, ordered newest-first, and paginated —
 with every event reconstructed into its typed `AuthEvent` form. Nothing user-facing exists
@@ -591,7 +591,7 @@ suite if one exists, otherwise add a small `tasty`/`tasty-hunit` suite to
 `shomei-core.cabal`. This test is the primary guard against the payload/`event_type` mapping
 drifting from the writer.
 
-Step 1.3 — The port. Create `shomei-core/src/Shomei/Effect/AuthEventReader.hs`, mirroring the
+Step 1.3 — The effect. Create `shomei-core/src/Shomei/Effect/AuthEventReader.hs`, mirroring the
 structure of `Shomei.Effect.AuthEventPublisher` (a `data ... :: Effect where` GADT,
 `type instance DispatchOf ... = Dynamic`, and `send`-based helper functions):
 
@@ -1097,7 +1097,7 @@ end-to-end transcript in Concrete Steps reproduces.
 ## Idempotence and Recovery
 
 This plan is purely additive and read-only with respect to data. It adds modules, one effect
-port, one interpreter, one HTTP route, one CLI subcommand group, and documentation; it changes
+effect, one interpreter, one HTTP route, one CLI subcommand group, and documentation; it changes
 no existing behavior and requires no database migration. Re-running any build or test step is
 safe. The query layer only issues `SELECT`/`COUNT` statements — there is no path by which the
 CLI or API can mutate the audit table, by design (the audit trail is append-only and only the
@@ -1114,7 +1114,7 @@ reverted without losing earlier working state. Every commit must carry the three
 ## Interfaces and Dependencies
 
 Libraries already in the project that this plan uses: `effectful`/`effectful-core` (effect
-ports and interpreters), `hasql` (SQL statements, encoders `Hasql.Encoders as E`, decoders
+effects and interpreters), `hasql` (SQL statements, encoders `Hasql.Encoders as E`, decoders
 `Hasql.Decoders as D`, `Hasql.Session`, `Hasql.Statement.preparable`), `hasql-pool`
 (`Hasql.Pool.Pool`, `use`), `aeson` (`Value`, `FromJSON`, `fromJSON`, `Result(..)`), `uuid`
 (`Data.UUID` — `toText`, `fromText`), `time` (`UTCTime`,

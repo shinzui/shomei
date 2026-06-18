@@ -18,7 +18,7 @@ This is **EP-2**, the second child plan of the MasterPlan
 (`docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md`), which produces the
 compiling multi-package cabal workspace, the shared cabal `common` stanzas, and the
 `Shomei.Prelude` custom prelude. EP-2 fills the `shomei-core` package and owns
-Integration Points **IP-2** (domain types + `Shomei.Id`), **IP-3** (port effect interfaces),
+Integration Points **IP-2** (domain types + `Shomei.Id`), **IP-3** (effect interfaces),
 **IP-4** (`StoredSigningKey` + `SigningKeyStore`), and **IP-5** (`ShomeiConfig`). Every later
 plan (EP-3 PostgreSQL, EP-4 JWT, EP-5 Servant, EP-6 server, EP-7 demos) consumes these.
 
@@ -27,14 +27,14 @@ plan (EP-3 PostgreSQL, EP-4 JWT, EP-5 Servant, EP-6 server, EP-7 demos) consumes
 
 After this change, `shomei-core` contains the complete, transport-agnostic heart of the
 Shōmei authentication toolkit: every domain type (with safe smart constructors), the typed
-identifiers, the error vocabulary, the runtime configuration, the **ports** (the abstract
-interfaces to the outside world, expressed as `effectful` effects), and the **auth workflows**
+identifiers, the error vocabulary, the runtime configuration, the **`effectful` effects** (the
+abstract interfaces to the outside world), and the **auth workflows**
 (signup, login, refresh-token rotation with reuse detection, logout, and token verification)
-written purely against those ports. No database, no JWT library, no HTTP — just the rules of
+written purely against those effects. No database, no JWT library, no HTTP — just the rules of
 the system.
 
 The observable outcome is a **green pure test suite** that drives the real workflows through
-an in-memory interpreter of every port and proves the security-critical behaviors end to end:
+an in-memory interpreter of every effect and proves the security-critical behaviors end to end:
 a user can sign up and then log in with the same credentials; a refresh rotates the token and
 marks the old one used; **presenting an already-used refresh token is detected as theft and
 revokes the whole token family and the session**; logout revokes the session; password
@@ -45,9 +45,9 @@ running.
 
 Definitions used throughout (so a reader new to the codebase is not lost):
 
-- **Port** — an abstract capability the core needs from the outside world (e.g. "store a
+- **Effect** — an abstract capability the core needs from the outside world (e.g. "store a
   user", "hash a password", "tell me the current time"). The core depends only on the *shape*
-  of the capability, never on a concrete implementation. We express each port as an
+  of the capability, never on a concrete implementation. We express each effect as an
   `effectful` dynamic effect.
 - **`effectful` effect** — a value of kind `Effect` declared as a GADT, registered as
   dynamically dispatched via `type instance DispatchOf E = Dynamic`. Each constructor is one
@@ -83,7 +83,7 @@ This section must always reflect the actual current state of the work.
 - [x] M2: `Shomei.Effect.*` modules compile (UserStore, CredentialStore, SessionStore,
   RefreshTokenStore, PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher,
   SigningKeyStore, Clock, TokenGen) with `send` smart constructors. (2026-06-03)
-- [x] M2: `Shomei.Effect.InMemory` compiles (in-memory `World` + interpreter for every port).
+- [x] M2: `Shomei.Effect.InMemory` compiles (in-memory `World` + interpreter for every effect).
   (2026-06-03; `cabal build shomei-core` exit 0, zero warnings)
 - [x] M3: `Shomei.Workflow` compiles (signup, login, refresh, logout, verifyToken). (2026-06-03)
 - [x] M3: `test-suite shomei-core-test` written and passing. Acceptance:
@@ -107,7 +107,7 @@ implementation. Provide concise evidence.
   initially lacked `deriving stock (Generic)`, so `#users %~ …` failed with
   `No instance for 'Generic World'`. Added the derive.
 
-- **`-Wall` flags the "import the prelude everywhere" convention.** Seven port-effect
+- **`-Wall` flags the "import the prelude everywhere" convention.** Seven effect
   modules use no `Shomei.Prelude` name (only base `Maybe`/`Either`/`Bool`/`(.)`, which come
   from the still-implicit base `Prelude`), so `-Wunused-imports` reported the
   `Shomei.Prelude` import as redundant in each. See Decision Log for the resolution.
@@ -122,7 +122,7 @@ implementation. Provide concise evidence.
 
 Record every decision made while working on the plan.
 
-- Decision: Model the core ports as `effectful` dynamic effects (GADT + `DispatchOf = Dynamic`
+- Decision: Model the core effects as `effectful` dynamic effects (GADT + `DispatchOf = Dynamic`
   + `send` smart constructors), not the spec's tagless-final `class Monad m => UserStore m`.
   Rationale: Inherited from the MasterPlan's kickoff decision; matches house style (kizashi's
   `AppEffects`) and gives one interpretable effect stack with IO and in-memory interpreters.
@@ -160,7 +160,7 @@ Record every decision made while working on the plan.
   is keyed off the presented token's id so the interpreter can walk parent/child links.
   Date: 2026-06-03
 
-- Decision: Signing keys cross the `SigningKeyStore` port as a storage-agnostic
+- Decision: Signing keys cross the `SigningKeyStore` effect as a storage-agnostic
   `StoredSigningKey` whose key material is opaque `Text` (JWK JSON); `shomei-core` never
   imports `jose`.
   Rationale: Inherited IP-4 decision; preserves the transport-agnostic core. Only `shomei-jwt`
@@ -169,7 +169,7 @@ Record every decision made while working on the plan.
   `public_key_pem`/`private_key_pem_encrypted` — EP-3 maps between them.
   Date: 2026-06-03
 
-- Decision: Provide an in-memory interpreter (`Shomei.Effect.InMemory`) for every port, backing
+- Decision: Provide an in-memory interpreter (`Shomei.Effect.InMemory`) for every effect, backing
   the pure test suite; no DB/JWT in EP-2 tests.
   Rationale: Lets the workflows be validated as behavior (not just compilation) with zero
   infrastructure, which is the demonstrable outcome of this plan. `TokenSigner`/`TokenVerifier`
@@ -186,7 +186,7 @@ Record every decision made while working on the plan.
   Date: 2026-06-03
 
 - Decision (during implementation): Drop the `import Shomei.Prelude` line from the seven
-  port-effect modules that reference no `Shomei.Prelude` name (UserStore, CredentialStore,
+  effect modules that reference no `Shomei.Prelude` name (UserStore, CredentialStore,
   PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher, TokenGen); keep it where a
   prelude name (`UTCTime`/`Text`) is actually used (SessionStore, RefreshTokenStore,
   SigningKeyStore, Clock) and in all domain/workflow/interpreter modules.
@@ -215,8 +215,8 @@ Compare the result against the original purpose.
 **Achieved (2026-06-03).** `shomei-core` now holds the complete transport-agnostic heart of
 Shōmei: TypeID identifiers (`Shomei.Id`), the error vocabulary (`Shomei.Error`), all domain
 types with smart constructors (`Shomei.Domain.*`), the runtime config (`Shomei.Config`), the
-eleven port effects (`Shomei.Effect.*`, IP-3) with `send` smart constructors, the storage-agnostic
-`StoredSigningKey` (IP-4), an in-memory interpreter for every port (`Shomei.Effect.InMemory`), and
+eleven effects (`Shomei.Effect.*`, IP-3) with `send` smart constructors, the storage-agnostic
+`StoredSigningKey` (IP-4), an in-memory interpreter for every effect (`Shomei.Effect.InMemory`), and
 the five auth workflows (`Shomei.Workflow`). `cabal build shomei-core` and `cabal build all` are
 green with zero warnings, and `cabal test shomei-core` passes all seven behavioral cases that
 prove the security-critical properties: signup→login round-trip, refresh rotation with the old
@@ -227,10 +227,10 @@ error. The suite uses only the in-memory interpreter — no DB, JWT, or network.
 **Faithfulness to the contract.** The exported signatures match the plan's IP-2/IP-3/IP-4/IP-5
 contracts that EP-3/EP-4/EP-5 consume. The only deviations are internal and documented in the
 Decision Log (generic-lens for record updates; dropping the unused `Shomei.Prelude` import from
-seven trivial port modules to satisfy `-Wall`; an aeson-round-trip `TokenSigner`/`TokenVerifier`
-fake). No port *signature* changed, so no cascade to adapter plans is required.
+seven trivial effect modules to satisfy `-Wall`; an aeson-round-trip `TokenSigner`/`TokenVerifier`
+fake). No effect *signature* changed, so no cascade to adapter plans is required.
 
-**For the next contributor.** EP-3 (PostgreSQL) and EP-4 (JWT) implement the same port effects
+**For the next contributor.** EP-3 (PostgreSQL) and EP-4 (JWT) implement the same effects
 against real infrastructure; the in-memory interpreter here is the executable reference for the
 expected behavior (especially `RevokeRefreshTokenFamily`'s parent-link walk and the
 fail-closed/no-leak login rules). Importing a domain record for `.field` access requires `(..)`
@@ -331,24 +331,24 @@ http-api-data instances). Create `Shomei.Error` (`AuthError`, `TokenError`,
 `PasswordPolicyViolation`). Create the `Shomei.Domain.*` modules (one concern per module) with
 their smart constructors. Create `Shomei.Config` (`ShomeiConfig`, the transport/check enums,
 `defaultShomeiConfig`, and the default TTLs). At the end of M1, `shomei-core`
-type-checks with no ports and no workflows yet. Acceptance: `cabal build shomei-core`
+type-checks with no effects and no workflows yet. Acceptance: `cabal build shomei-core`
 succeeds.
 
-### Milestone M2 — Port effects + in-memory interpreters compile
+### Milestone M2 — Effects + in-memory interpreters compile
 
 Scope: the abstract boundary. Create the eleven `Shomei.Effect.*` effect modules, each a GADT
 `Effect` with `type instance DispatchOf E = Dynamic` and one `send`-based smart constructor per
 operation, matching the exact method sets below. Then create `Shomei.Effect.InMemory`: a mutable
 `World` record holding maps for users, credentials, sessions, and refresh tokens (plus signing
-keys and a published-event log), and an `interpret`/`interpret_`-based handler for every port
-backed by an `IORef World` (or the `effectful` `State` effect). At the end of M2, the ports and
+keys and a published-event log), and an `interpret`/`interpret_`-based handler for every effect
+backed by an `IORef World` (or the `effectful` `State` effect). At the end of M2, the effects and
 interpreters compile but are not yet exercised. Acceptance: `cabal build shomei-core`
 succeeds.
 
 ### Milestone M3 — Workflows implemented; pure in-memory tests pass
 
 Scope: the behavior. Create `Shomei.Workflow` with `signup`, `login`, `refresh`, `logout`, and
-`verifyToken`, each a function over the port effects returning `Eff es (Either AuthError ...)`,
+`verifyToken`, each a function over the effects returning `Eff es (Either AuthError ...)`,
 implemented per the spec's "Workflows" section. Then create the tasty test suite
 (`test/Main.hs` + `test/Shomei/WorkflowSpec.hs`) that runs the workflows through
 `Shomei.Effect.InMemory.runInMemory` and asserts the round-trip, rotation, reuse-detection,
@@ -474,7 +474,7 @@ M1 acceptance: this command exits 0.
 
 ### Step 3 — Create the `Shomei.Effect.*` modules and `Shomei.Effect.InMemory` (M2)
 
-Create the eleven port modules and the interpreter module, then build:
+Create the eleven effect modules and the interpreter module, then build:
 
 ```bash
 cabal build shomei-core
@@ -572,15 +572,15 @@ new empty world), so there is no cross-test contamination to clean up.
 Libraries used and why: **mmzk-typeid** (typed `KindID` identifiers — `mori.dhall` already
 lists it), **uuid** (the underlying `UUID` stored in Postgres by EP-3), **http-api-data**
 (`FromHttpApiData`/`ToHttpApiData` for EP-5's Servant captures; pure, so allowed in core),
-**effectful**/**effectful-core** (the port effects and their interpreters), **containers**
+**effectful**/**effectful-core** (the effects and their interpreters), **containers**
 (`Set Scope`/`Set Role`, and the in-memory `Map` stores), **aeson** (JSON instances for DTOs in
 EP-5), **time** (`UTCTime`/`NominalDiffTime`), **lens** + **generic-lens** (`#field` access),
 **bytestring** + **base64** (opaque token text), **text** (the workhorse string type).
 **tasty**/**tasty-hunit** (test suite). Forbidden: servant, wai, hasql, postgresql, jose.
 
 The signatures below are the **contract other plans consume**. EP-2 **owns** IP-2 (domain
-types + `Shomei.Id`), IP-3 (the port effects), IP-4 (`StoredSigningKey` + `SigningKeyStore`),
-and IP-5 (`ShomeiConfig`). Adapter plans must implement the port effects exactly and may not
+types + `Shomei.Id`), IP-3 (the effects), IP-4 (`StoredSigningKey` + `SigningKeyStore`),
+and IP-5 (`ShomeiConfig`). Adapter plans must implement the effects exactly and may not
 change a signature without a Decision Log entry here.
 
 ### IP-2 — `Shomei.Id` (identifiers)
@@ -1016,9 +1016,9 @@ defaultShomeiConfig iss aud = ShomeiConfig
   }
 ```
 
-### IP-3 — port effects (the `effectful` idiom)
+### IP-3 — effects (the `effectful` idiom)
 
-Every port follows this exact shape. Three full modules are shown; the rest are identical in
+Every effect follows this exact shape. Three full modules are shown; the rest are identical in
 form. **`UserStore`:**
 
 ```haskell
@@ -1098,7 +1098,7 @@ hashRefreshToken :: (TokenGen :> es) => RefreshToken -> Eff es RefreshTokenHash
 hashRefreshToken = send . HashRefreshToken
 ```
 
-The remaining eight ports follow the identical pattern. Their constructors and `send` smart
+The remaining eight effects follow the identical pattern. Their constructors and `send` smart
 constructors:
 
 - `Shomei.Effect.CredentialStore` — `CreatePasswordCredential :: UserId -> Email -> PasswordHash
@@ -1124,8 +1124,8 @@ constructors:
 ### In-memory interpreters — `Shomei.Effect.InMemory`
 
 A single mutable `World` holds every store's state plus the published-event log. The module
-exposes `emptyWorld`, the per-port handlers, and a `runInMemory` convenience that stacks all the
-port interpreters over `IOE` against a shared `IORef World`. The interpreters use `interpret_`
+exposes `emptyWorld`, the per-effect handlers, and a `runInMemory` convenience that stacks all the
+effect interpreters over `IOE` against a shared `IORef World`. The interpreters use `interpret_`
 (first-order, no `LocalEnv`) and read/modify the `IORef`. Sketch:
 
 ```haskell
@@ -1152,7 +1152,7 @@ runUserStore ref = interpret_ \case
   FindUserByEmail e -> liftIO (lookupUserByEmail e <$> readIORef ref)
   ...
 
--- Stacks every port interpreter; TokenSigner/TokenVerifier are deterministic fakes here
+-- Stacks every effect interpreter; TokenSigner/TokenVerifier are deterministic fakes here
 -- (sign = AccessToken (claims rendered to Text); verify round-trips that Text back to claims).
 runInMemory :: IORef World -> Eff '[ UserStore, CredentialStore, SessionStore
                                    , RefreshTokenStore, PasswordHasher, TokenSigner

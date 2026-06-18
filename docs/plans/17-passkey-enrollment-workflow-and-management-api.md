@@ -54,10 +54,10 @@ This plan is **EP-3** of MasterPlan 3 (`docs/masterplans/3-webauthn-passkey-mult
 It **hard-depends** on two prior ExecPlans whose deliverables it consumes verbatim:
 
 - **EP-1** (`docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md`):
-  the `WebAuthnCeremony` port (the effect that produces creation options and verifies the
+  the `WebAuthnCeremony` effect (which produces creation options and verifies the
   browser's answer), the passkey domain types, and the `WebAuthnConfig` config sub-record.
 - **EP-2** (`docs/plans/16-passkey-and-pending-ceremony-persistence.md`): the `PasskeyStore`
-  (persisted passkeys) and `PendingCeremonyStore` (the consume-once challenge state) ports
+  (persisted passkeys) and `PendingCeremonyStore` (the consume-once challenge state) effects
   and their in-memory and PostgreSQL interpreters.
 
 Because EP-1 and EP-2 are skeletons at the time this plan was authored, the exact shared
@@ -89,7 +89,7 @@ Milestone 2 — HTTP surface (routes + DTOs + handlers), event publisher wiring,
 - [x] Added `passkeyRegisterBeginH`, `passkeyRegisterCompleteH`, `passkeysListH`, `passkeyDeleteH` and wired them into `shomeiServer`.
 - [x] Mapped the three new `AuthError` constructors in `Shomei.Servant.Error` (404/404/400).
 - [x] Wired `PasskeyRegistered` / `PasskeyRemoved` into `Shomei.Postgres.AuthEventPublisher.projectAuthEvent`.
-- [x] Extended `shomei-servant/test/Main.hs` with the begin→complete→list→delete (+404 re-complete, +401 no-token) scenario. The hybrid runner already interprets the EP-1/EP-2 ports (added by EP-1/EP-2), so no Seam/runHybrid change was needed beyond what EP-2 landed.
+- [x] Extended `shomei-servant/test/Main.hs` with the begin→complete→list→delete (+404 re-complete, +401 no-token) scenario. The hybrid runner already interprets the EP-1/EP-2 effects (added by EP-1/EP-2), so no Seam/runHybrid change was needed beyond what EP-2 landed.
 - [x] `AppAPI` embedded example and `shomei-client` still type-check (the grown `NamedRoutes` record auto-propagates).
 - [x] `cabal build all` and `cabal test all` green (all 11 suites).
 
@@ -108,7 +108,7 @@ assumed). Reconciled during implementation (2026-06-17):
   constructors are all exported from the effect module. `Shomei.Domain.Passkey` owns only the
   stored/pending data types (`PasskeyCredential`, `NewPasskeyCredential`, `PendingCeremony`,
   `CeremonyKind`, and the byte newtypes). Imports were split accordingly.
-- **There is no `generateCeremonyId` in the port.** EP-1/EP-2 mint ceremony ids via
+- **There is no `generateCeremonyId` in the effect.** EP-1/EP-2 mint ceremony ids via
   `genCeremonyId :: MonadIO m => m CeremonyId` in `Shomei.Id`. `beginPasskeyRegistration`
   therefore carries an `IOE :> es` constraint (instead of the skeleton's `TokenGen`) and calls
   `genCeremonyId` directly; `IOE` sits at the base of every stack the workflow runs in.
@@ -130,7 +130,7 @@ assumed). Reconciled during implementation (2026-06-17):
   the created user via `User{userId} <- createUser …`. (`req.field` dot still works for the
   plain servant DTOs, as it does for the existing `SignupRequest`/`LoginRequest`.)
 - **No Seam/runHybrid change was needed for EP-3.** EP-1 (WebAuthnCeremony) and EP-2
-  (PasskeyStore/PendingCeremonyStore) had already added their ports and interpreters to every
+  (PasskeyStore/PendingCeremonyStore) had already added their effects and interpreters to every
   stack (servant `AppEffects` + `runHybrid`, server `runAppIO`, in-memory `runInMemory`), so
   EP-3 only added routes/handlers and relied on the existing wiring.
 - **Adding four `NamedRoutes` fields propagated cleanly to `shomei-client` and the embedded
@@ -181,9 +181,9 @@ Record every decision made while working on the plan.
 
 - Decision: Mint the ceremony id in `beginPasskeyRegistration` via `genCeremonyId`
   (`Shomei.Id`, `MonadIO`) under an `IOE :> es` constraint, rather than the skeleton's
-  assumed `WebAuthnCeremony` `generateCeremonyId` port operation or the `TokenGen` port.
-  Rationale: EP-1 shipped no `generateCeremonyId` on the port (and IP-1 forbids EP-3 changing
-  the port signature), and `TokenGen` only mints opaque refresh tokens, not typed `KindID`s.
+  assumed `WebAuthnCeremony` `generateCeremonyId` effect operation or the `TokenGen` effect.
+  Rationale: EP-1 shipped no `generateCeremonyId` on the effect (and IP-1 forbids EP-3 changing
+  the effect signature), and `TokenGen` only mints opaque refresh tokens, not typed `KindID`s.
   EP-2's `genCeremonyId` is the established id source; the workflow must mint the id because
   `PutPendingCeremony` takes a fully-formed `PendingCeremony` and the id is also the response.
   `IOE` is at the base of every stack the workflow runs in (in-memory, servant seam, server),
@@ -238,17 +238,17 @@ Shōmei is a Haskell authentication toolkit organized as a set of Cabal packages
 packages beyond what is written here.
 
 - `shomei-core` (`shomei-core/`) holds the transport- and infrastructure-agnostic heart:
-  domain types (`Shomei.Domain.*`), **ports** (effect interfaces under `Shomei.Effect.*`,
+  domain types (`Shomei.Domain.*`), **effects** (effect interfaces under `Shomei.Effect.*`,
   built with the `effectful` library), and **workflows** (`Shomei.Workflow`,
-  `Shomei.Workflow.Account`) that orchestrate ports. It depends on no database and no HTTP
-  library. *An "effect" / "port" here is a typed capability* (e.g. `UserStore` is "can read
+  `Shomei.Workflow.Account`) that orchestrate effects. It depends on no database and no HTTP
+  library. *An "effect" here is a typed capability* (e.g. `UserStore` is "can read
   and write users"); a workflow names the effects it needs as constraints like `UserStore :>
   es` and stays oblivious to how they are implemented.
-- `shomei-postgres` (`shomei-postgres/`) interprets those ports against PostgreSQL.
-- `shomei-jwt` (`shomei-jwt/`) interprets the token ports against the `jose` library.
+- `shomei-postgres` (`shomei-postgres/`) interprets those effects against PostgreSQL.
+- `shomei-jwt` (`shomei-jwt/`) interprets the token effects against the `jose` library.
 - `shomei-webauthn` (`shomei-webauthn/`, **created by EP-1**) interprets the new
-  `WebAuthnCeremony` port against the `tweag/webauthn` library. EP-3 does *not* touch this
-  package's internals; it only calls the port.
+  `WebAuthnCeremony` effect against the `tweag/webauthn` library. EP-3 does *not* touch this
+  package's internals; it only calls the effect.
 - `shomei-servant` (`shomei-servant/`) exposes the HTTP API as a Servant `NamedRoutes` record
   (`Shomei.Servant.API.ShomeiAPI`), with request/response DTOs (`Shomei.Servant.DTO`),
   handlers (`Shomei.Servant.Handlers`), the auth combinator and principal
@@ -271,7 +271,7 @@ packages beyond what is written here.
   helper. The server verifies it.
 - *Relying Party (RP).* The server's identity in WebAuthn terms (an `rpId` domain and a
   human-readable `rpName`). EP-1's `WebAuthnConfig` carries these; the EP-1 interpreter reads
-  them. This plan only passes the user-specific bits (`CredentialUserInfo`) to the port.
+  them. This plan only passes the user-specific bits (`CredentialUserInfo`) to the effect.
 - *Pending ceremony.* The short-lived server-side state (the challenge / options blob) created
   at *begin* and consumed exactly once at *complete*. EP-2's `PendingCeremonyStore` persists
   it with a TTL (time-to-live) expiry.
@@ -279,7 +279,7 @@ packages beyond what is written here.
   `Shomei.Servant.Auth`: it carries `authUserId :: UserId` and `authSessionId :: SessionId`
   (plus roles/scopes/claims). We use `authUserId` to scope every passkey operation.
 - *`Value`.* `Data.Aeson.Value`, an arbitrary JSON value. The WebAuthn JSON crosses the API
-  and the port boundary as a `Value` verbatim, so the core never names a WebAuthn library type.
+  and the effect boundary as a `Value` verbatim, so the core never names a WebAuthn library type.
 
 The four existing files this plan reads and mirrors most closely:
 
@@ -390,7 +390,7 @@ The full intended module:
 -- A "passkey" is a stored public-key credential. These workflows let an already-authenticated
 -- user begin a WebAuthn registration ceremony, complete it (verifying the browser's answer and
 -- storing the public key), list their passkeys, and remove one. They are written purely against
--- port effects, so the same code runs over the in-memory test interpreters and the real
+-- effects, so the same code runs over the in-memory test interpreters and the real
 -- PostgreSQL + shomei-webauthn interpreters.
 module Shomei.Workflow.Passkey (
     beginPasskeyRegistration,
@@ -557,9 +557,9 @@ removePasskey uid pid = runErrorNoCallStack do
 Notes on the workflow:
 
 - `CeremonyId` is `type CeremonyId = KindID "webauthn_ceremony"` (EP-1). The id is generated by
-  the `WebAuthnCeremony` port's `generateCeremonyId` (EP-1 owns it; it lives in the ceremony
+  the `WebAuthnCeremony` effect's `generateCeremonyId` (EP-1 owns it; it lives in the ceremony
   effect because EP-1 generates ids there). If EP-1 instead exposes a plain `genCeremonyId ::
-  MonadIO m => m CeremonyId` in `Shomei.Id`, call that via `liftIO`/the `TokenGen` port and drop
+  MonadIO m => m CeremonyId` in `Shomei.Id`, call that via `liftIO`/the `TokenGen` effect and drop
   `generateCeremonyId` from the `WebAuthnCeremony` import — record which one in the Decision Log.
   (The `TokenGen` constraint is kept on `beginPasskeyRegistration` for exactly this reason, and
   because a fresh id may need random bytes; remove it if unused once EP-1's id source is known.)
@@ -596,7 +596,7 @@ like `runWebAuthnCeremonyFake :: IORef World -> Eff (WebAuthnCeremony : es) a ->
 names these differently, adapt the imports and note it here.
 
 The test asserts the five behaviors below. Use the in-memory `World`/`runInMemory` pattern from
-`shomei-core`'s existing `WorkflowSpec` for the non-WebAuthn ports, threaded with the new EP-1/EP-2
+`shomei-core`'s existing `WorkflowSpec` for the non-WebAuthn effects, threaded with the new EP-1/EP-2
 interpreters in the same effect order EP-2 established.
 
 ```haskell
@@ -800,9 +800,9 @@ Add imports: `import Shomei.Workflow.Passkey qualified as Passkey`,
 **A note on the seam stack.** `runAuth`/`runPort` run in `Shomei.Servant.Seam.AppEffects`. EP-1
 adds `WebAuthnCeremony` and EP-2 adds `PasskeyStore`/`PendingCeremonyStore` to that
 `AppEffects` list (MasterPlan IP-6 makes those additions EP-1/EP-2's responsibility, not EP-3's).
-EP-3 therefore writes no new `Seam`/`Boot` wiring; it relies on those ports already being present
+EP-3 therefore writes no new `Seam`/`Boot` wiring; it relies on those effects already being present
 in the stack and interpreted in `runAppIO` (server) and the in-memory runner (tests). If, when
-EP-3 is implemented, EP-1/EP-2 have **not** yet added their ports to `AppEffects`, that is a
+EP-3 is implemented, EP-1/EP-2 have **not** yet added their effects to `AppEffects`, that is a
 missing prerequisite — add them in the same relative position across `AppEffects`,
 `Shomei.Server.App.AppEffects`/`runAppIO`, and `Shomei.Effect.InMemory.runInMemory`, and record
 it as a Surprise here (it would mean EP-1/EP-2 were incomplete).
@@ -1060,7 +1060,7 @@ This plan adds the module `Shomei.Workflow.Passkey` (in `shomei-core`), extends
 extends the `shomei-servant` test. It introduces no new package and no new third-party dependency
 (it reuses `aeson`, `effectful`, `servant`, `time`, `text`, `uuid` already present). The
 `shomei-webauthn` package and the `webauthn` library are pulled in *transitively* via EP-1's
-ports — EP-3 names no `webauthn` library type.
+effects — EP-3 names no `webauthn` library type.
 
 ### Function signatures that must exist at the end of each milestone
 

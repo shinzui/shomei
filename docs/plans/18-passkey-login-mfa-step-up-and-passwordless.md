@@ -56,12 +56,12 @@ This plan is **EP-4** of MasterPlan 3
 (`docs/masterplans/3-webauthn-passkey-multi-factor-authentication.md`). It **hard-depends** on:
 
 - **EP-1** (`docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md`):
-  the `WebAuthnCeremony` port (it produces authentication options and verifies the browser's
+  the `WebAuthnCeremony` effect (it produces authentication options and verifies the browser's
   signed assertion), the passkey domain types, the `WebAuthnConfig` config sub-record (with
   `mfaRequired` and `pendingCeremonyTTL`), and a deterministic **fake** ceremony interpreter
   for tests.
 - **EP-2** (`docs/plans/16-passkey-and-pending-ceremony-persistence.md`): the `PasskeyStore`
-  (persisted passkeys) and `PendingCeremonyStore` (consume-once challenge state) ports and
+  (persisted passkeys) and `PendingCeremonyStore` (consume-once challenge state) effects and
   their in-memory and PostgreSQL interpreters.
 
 It **soft-depends** on **EP-3**
@@ -361,7 +361,7 @@ Record every decision made while working on the plan.
 - Decision: **`genCeremonyId` (the `MonadIO` generator in `Shomei.Id`) mints the ceremony id;
   `login`, `prepareMfaChallenge`, and `beginPasswordlessLogin` therefore carry an `IOE :> es`
   constraint** — matching EP-3's `beginPasskeyRegistration`. There is no `generateCeremonyId`
-  port op.
+  effect op.
   Rationale: EP-3 already made exactly this choice; the in-memory and PostgreSQL stacks both end
   in `IOE`, so the constraint is always satisfiable. (Resolves the open note in Plan-of-Work
   Step 1.4 / Surprises.)
@@ -429,13 +429,13 @@ Nix dev shell; every build/test command runs from the repository root
 **hexagonal** (ports-and-adapters):
 
 - `shomei-core` (`shomei-core/src/Shomei/…`) holds domain types (`Shomei.Domain.*`), the
-  effect **ports** (`Shomei.Effect.*`, built with the `effectful` library — a "port" is a
+  **effects** (`Shomei.Effect.*`, built with the `effectful` library — an effect is a
   typed capability such as "can read/write sessions"), and the **workflows**
   (`Shomei.Workflow`, `Shomei.Workflow.Account`, and EP-3's `Shomei.Workflow.Passkey`). It has
   **no** database, JWT, HTTP, or WebAuthn-library dependency.
 - `shomei-postgres`, `shomei-jwt`, and the EP-1 `shomei-webauthn` package *interpret* those
-  ports against real infrastructure. `shomei-core/src/Shomei/Effect/InMemory.hs` interprets
-  every port purely (IORef-backed `World`) for the test suites.
+  effects against real infrastructure. `shomei-core/src/Shomei/Effect/InMemory.hs` interprets
+  every effect purely (IORef-backed `World`) for the test suites.
 - `shomei-servant` (`shomei-servant/src/Shomei/Servant/…`) exposes the HTTP API as a Servant
   `NamedRoutes` record (`Shomei.Servant.API.ShomeiAPI`), with DTOs (`Shomei.Servant.DTO`),
   handlers (`Shomei.Servant.Handlers`), the seam onto the effect stack
@@ -448,7 +448,7 @@ Nix dev shell; every build/test command runs from the repository root
   an existing passkey. It has a *begin* step (server emits options with a random *challenge*)
   and a *complete* step (server verifies the browser's signed *assertion*).
 - *Assertion.* The JSON the browser returns from `navigator.credentials.get()` (serialized by
-  the standard `webauthn-json` helper). It crosses the API and the port boundary as an aeson
+  the standard `webauthn-json` helper). It crosses the API and the effect boundary as an aeson
   `Value` verbatim, so the core never names a WebAuthn library type.
 - *Pending ceremony.* The short-lived server-side challenge/options blob, created at *begin*
   and consumed **exactly once** at *complete* (EP-2's `PendingCeremonyStore` enforces this
@@ -458,7 +458,7 @@ Nix dev shell; every build/test command runs from the repository root
 - *Passwordless.* Logging in with the passkey alone (no password), using the browser's
   discoverable-credential picker.
 - *Abuse protection.* The existing per-IP throttle + per-account lockout layered into `login`
-  via the `LoginAttemptStore` port. This plan **preserves it unchanged**; the MFA branch runs
+  via the `LoginAttemptStore` effect. This plan **preserves it unchanged**; the MFA branch runs
   only *after* a fully successful password check.
 
 The files this plan reads and changes, with their roles:
@@ -514,10 +514,10 @@ The two effect-stack lists that `login`'s widened signature touches indirectly a
 correct for this plan: EP-1 added `WebAuthnCeremony` and EP-2 added
 `PasskeyStore`/`PendingCeremonyStore` to `Shomei.Servant.Seam.AppEffects`,
 `Shomei.Server.App.AppEffects`/`runAppIO`, `Shomei.Effect.InMemory.runInMemory`, and the
-`shomei-postgres` test stack. **This plan adds no new ports**, so it touches none of those
-lists — it only *uses* ports that are already present. (If, when you implement, those ports
+`shomei-postgres` test stack. **This plan adds no new effects**, so it touches none of those
+lists — it only *uses* effects that are already present. (If, when you implement, those effects
 are NOT in the stacks, EP-1/EP-2 are incomplete: stop and finish them, recording it as a
-Surprise. Do not add ports here.)
+Surprise. Do not add effects here.)
 
 
 ## Plan of Work
@@ -601,7 +601,7 @@ plan needs them. EP-3's `docs/plans/17-…md` Step 1.2 shows the exact additions
 **Step 1.3 — the shared `issueSession` helper.** In `shomei-core/src/Shomei/Workflow.hs`, add a
 helper that is exactly the current success tail of `login`/`signup`. It runs inside the
 `Error AuthError` effect (so it can be called from a `runErrorNoCallStack do` block) and uses
-the same ports `login` already constrains. Place it after `buildClaims`:
+the same effects `login` already constrains. Place it after `buildClaims`:
 
 ```haskell
 {- | Mint a fresh session + refresh token + signed access token for an authenticated user,
@@ -678,7 +678,7 @@ data LoginResult
 ```
 
 Add the needed imports to `Shomei.Workflow.hs`: `Data.Aeson (Value)`, `Shomei.Id (CeremonyId)`
-(extend the existing `Shomei.Id` import), the EP-1 ceremony port
+(extend the existing `Shomei.Id` import), the EP-1 ceremony effect
 (`Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony, BeginCeremony (..), beginAuthenticationCeremony)`),
 the EP-2 stores
 (`Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser, findPasskeysByUser)` and
@@ -749,7 +749,7 @@ Notes:
 
 - `genCeremonyId :: MonadIO m => m CeremonyId` is EP-1's generator in `Shomei.Id`. It runs in
   `Eff` because the workflow's `es` includes `IOE` at the base (every interpreter stack ends in
-  `IOE`); if EP-1 instead exposes ceremony-id generation through the `WebAuthnCeremony` port
+  `IOE`); if EP-1 instead exposes ceremony-id generation through the `WebAuthnCeremony` effect
   (some EP-3 drafts mention a `generateCeremonyId` op), call that and drop `genCeremonyId` —
   record which in the Decision Log. EP-3's enrollment workflow already makes this exact choice,
   so match it.
@@ -967,7 +967,7 @@ requireOwnedCredential uid cid = do
 
 {- | Verify a step-up assertion: find the passkey the assertion claims (by the credential id
 embedded in the assertion JSON — the verifier needs the stored credential to check the
-signature), then call the ceremony port. We look the credential up FIRST because
+signature), then call the ceremony effect. We look the credential up FIRST because
 'CompleteAuthenticationCeremony' takes a 'StoredCredentialForVerify'. The credential id is read
 from the assertion via the EP-1 helper 'assertionCredentialId' (see note). On a Left or on a
 clone warning we publish 'MfaFailed' and throw 'MfaAssertionInvalid'. -}
@@ -1435,7 +1435,7 @@ nix develop --command bash -c '
 ```
 
 Expected: the four files exist, `Config` mentions `mfaRequired`/`pendingCeremonyTTL`, `Error`
-mentions the three WebAuthn arms, and `Seam.AppEffects` lists the three new ports. If any is
+mentions the three WebAuthn arms, and `Seam.AppEffects` lists the three new effects. If any is
 missing, the corresponding prior plan is incomplete — finish it (or, for the `Error` arms only,
 add them here and record it as a Surprise).
 
@@ -1573,7 +1573,7 @@ This plan adds the module `Shomei.Workflow.Mfa` (in `shomei-core`), widens
 `Shomei.Servant.Error`, and `Shomei.Postgres.AuthEventPublisher`, and extends the `shomei-servant`
 test. It introduces no new package and no new third-party dependency (it reuses `aeson`,
 `effectful`, `servant`, `time`, `text`, `bytestring`, `uuid` already present). The
-`shomei-webauthn` package and the `webauthn` library are pulled in transitively via the ports
+`shomei-webauthn` package and the `webauthn` library are pulled in transitively via the effects
 EP-1/EP-2 already wired into the effect stacks; this plan does not depend on them directly.
 
 ### Types and functions that must exist at the end of each milestone
@@ -1638,7 +1638,7 @@ loginResultToResponse :: LoginResult -> LoginResponse
 If the real types differ when you implement, update this section and the Decision Log.
 
 ```haskell
--- EP-1 (Shomei.Effect.WebAuthnCeremony): the ceremony port. This plan uses only the
+-- EP-1 (Shomei.Effect.WebAuthnCeremony): the ceremony effect. This plan uses only the
 -- authentication operations.
 BeginAuthenticationCeremony
     :: [WebAuthnCredentialId] -> WebAuthnCeremony m BeginCeremony   -- [] = passwordless discovery
@@ -1669,13 +1669,13 @@ data PendingCeremony = PendingCeremony
 
 -- EP-1 (Shomei.Id): the ceremony id + generator.
 type CeremonyId = KindID "webauthn_ceremony"
-genCeremonyId :: MonadIO m => m CeremonyId     -- (or a WebAuthnCeremony port op; match EP-1)
+genCeremonyId :: MonadIO m => m CeremonyId     -- (or a WebAuthnCeremony effect op; match EP-1)
 
 -- EP-1 (Shomei.Config): the WebAuthn config sub-record this plan reads.
 data WebAuthnConfig = WebAuthnConfig { …, pendingCeremonyTTL :: NominalDiffTime, mfaRequired :: Bool }
 -- ShomeiConfig gains `webauthnConfig :: WebAuthnConfig`.
 
--- EP-2 (Shomei.Effect.PasskeyStore): the persistence port. This plan uses these ops.
+-- EP-2 (Shomei.Effect.PasskeyStore): the persistence effect. This plan uses these ops.
 findPasskeysByUser        :: (PasskeyStore :> es) => UserId -> Eff es [PasskeyCredential]
 findPasskeyByCredentialId :: (PasskeyStore :> es) => WebAuthnCredentialId -> Eff es (Maybe PasskeyCredential)
 updatePasskeySignCounter  :: (PasskeyStore :> es) => PasskeyId -> SignatureCounter -> UTCTime -> Eff es ()
@@ -1696,9 +1696,9 @@ takePendingCeremony :: (PendingCeremonyStore :> es) => CeremonyId -> UTCTime -> 
 ### Libraries and modules used, and why
 
 - **`effectful`** — the effect system; `login` and the MFA workflows are written purely against
-  ports and run unchanged over the in-memory and PostgreSQL+webauthn interpreter assemblies.
+  effects and run unchanged over the in-memory and PostgreSQL+webauthn interpreter assemblies.
 - **`aeson` (`Value`, `object`, `withObject`, `Parser`)** — the assertion/options JSON crosses
-  the API and port boundary verbatim; the hand-written `LoginResponse` instances switch on the
+  the API and effect boundary verbatim; the hand-written `LoginResponse` instances switch on the
   `status` tag.
 - **`servant`** — the three new routes are plain `ReqBody`/`Post` fields on `ShomeiAPI`; the
   completion endpoints are unauthenticated (proving the factor IS how a session is obtained).
@@ -1706,7 +1706,7 @@ takePendingCeremony :: (PendingCeremonyStore :> es) => CeremonyId -> UTCTime -> 
   `completeMfa`, and `completePasswordlessLogin` all call it so the four (counting `signup`,
   which keeps its own copy for a minimal diff) token-mint sites cannot drift.
 - **EP-1 `WebAuthnCeremony`, EP-2 `PasskeyStore`/`PendingCeremonyStore`** — already present in
-  every effect-stack list (EP-1/EP-2 wired them); this plan only *uses* them, adding no port.
+  every effect-stack list (EP-1/EP-2 wired them); this plan only *uses* them, adding no effect.
 
 ### Callers of `login` that this plan (or EP-5) must update — enumerated
 

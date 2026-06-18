@@ -301,15 +301,15 @@ this plan are written to be run from the repo root unless a different working di
 **Packages you will touch (full paths).** A "package" is one sub-directory with its own `.cabal`
 file:
 
-- `shomei-core` — the pure domain types, the effect *ports* (interfaces), and the workflows. It
+- `shomei-core` — the pure domain types, the *effects* (interfaces), and the workflows. It
   must **never** depend on the `jose` JWT library (that is an architectural rule stated in
   `shomei-core/src/Shomei/Domain/SigningKey.hs`). Key files:
   - `shomei-core/src/Shomei/Domain/Claims.hs` — the `AuthClaims` record (the claims of a token).
   - `shomei-core/src/Shomei/Domain/SigningKey.hs` — `StoredSigningKey` (the storage-agnostic key
-    record that crosses the store port) with its `algorithm :: Text` field.
+    record that crosses the store effect) with its `algorithm :: Text` field.
   - `shomei-core/src/Shomei/Config.hs` — `ShomeiConfig`, including `SigningKeyConfig{algorithm ::
     Text}`.
-  - `shomei-core/src/Shomei/Effect/TokenSigner.hs` and `.../TokenVerifier.hs` — the two ports a
+  - `shomei-core/src/Shomei/Effect/TokenSigner.hs` and `.../TokenVerifier.hs` — the two effects a
     token signer/verifier must implement.
   - `shomei-core/src/Shomei/Workflow.hs`, `.../Workflow/Session.hs` — where workflows build
     `AuthClaims` (via `buildClaims`) and call `signAccessToken`.
@@ -335,7 +335,7 @@ file:
   - `shomei-server/src/Shomei/Server/Config.hs` — loads config from defaults → Dhall file → env.
   - `shomei-server/app/Shomei/Admin/Keys.hs` — the `shomei-admin keys generate/activate/...` CLI.
 
-- `shomei-postgres` — the PostgreSQL interpreters of the ports.
+- `shomei-postgres` — the PostgreSQL interpreters of the effects.
   `shomei-postgres/src/Shomei/Postgres/SigningKeyStore.hs` reads/writes the `algorithm` text
   column.
 
@@ -364,15 +364,15 @@ file:
 - *kid (key id).* A short string in the JWT header naming which key signed the token, so a verifier
   with several keys can pick the right one. Shōmei sets it to the RFC 7638 thumbprint (a SHA-256
   hash of the key's canonical JSON).
-- *Port / effect / interpreter.* Shōmei is built on the `effectful` library. A *port* (e.g.
+- *Effect / interpreter.* Shōmei is built on the `effectful` library. An *effect* (e.g.
   `TokenSigner`) is an interface — a small GADT of operations. An *interpreter* (e.g.
-  `runTokenSignerJwt`) gives the operations real behavior. Workflows depend only on ports, so the
+  `runTokenSignerJwt`) gives the operations real behavior. Workflows depend only on effects, so the
   same workflow runs against an in-memory test interpreter or the real JWT one.
 
 **The current claim flow, end to end (read this to know what you are changing).** A workflow such
 as `Shomei.Workflow.Session.buildClaims` constructs an `AuthClaims` value (subject, session id,
 issuer, audience, timestamps, scopes, roles, optional actor). It calls `signAccessToken` on the
-`TokenSigner` port. The JWT interpreter `runTokenSignerJwt` (in `shomei-jwt/.../Sign.hs`) holds
+`TokenSigner` effect. The JWT interpreter `runTokenSignerJwt` (in `shomei-jwt/.../Sign.hs`) holds
 the active private `JWK`; it calls `claimsFromAuth` to turn the `AuthClaims` into a `jose`
 `ClaimsSet` (standard claims via lenses, custom `sid`/`scopes`/`roles`/`act` via `addClaim`), then
 `makeJWSHeader` + `signClaims` to produce the compact token. Verification is the mirror:

@@ -84,7 +84,7 @@ shomei-server
 
 `shomei-core` should not depend on Servant, WAI, PostgreSQL, JWT libraries, cookies, or HTTP.
 
-It should define domain types, commands, events, errors, and ports.
+It should define domain types, commands, events, errors, and effects.
 
 ### Servant-native
 
@@ -272,7 +272,7 @@ data AuthClaims = AuthClaims
   }
 ```
 
-## Core Ports
+## Core Effects
 
 ### User Store
 
@@ -1186,7 +1186,7 @@ Should auth events be stored in a regular audit table or event-sourced through M
 Recommendation:
 
 ```text
-Start with an AuthEventPublisher port.
+Start with an AuthEventPublisher effect.
 Provide a PostgreSQL audit implementation first.
 Add MessageDB implementation later.
 ```

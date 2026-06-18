@@ -12,11 +12,11 @@ interfaces. Concrete *interpreters* supply meaning at the edges.
 ```
 shomei-core  ──>  shomei-jwt / shomei-postgres  ──>  shomei-servant  ──>  shomei-server
  (domain,           (ES256 JWT,    (hasql adapters,    (ShomeiAPI,         (warp exe,
-  ports,             JWKS)          Argon2id)           handlers,           shomei-admin,
+  effects,           JWKS)          Argon2id)           handlers,           shomei-admin,
   workflows)                                            combinators)        middleware, config)
 ```
 
-## Ports and interpreters
+## Effects and interpreters
 
 Each effect interface lives in `shomei-core/src/Shomei/Effect/*` as a GADT of operations plus a
 `send`-based smart constructor — for example `UserStore`, `CredentialStore`, `SessionStore`,

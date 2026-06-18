@@ -35,10 +35,10 @@ JWTs locally using only the JWKS document. The same handlers can be mounted insi
 Servant app, and a `RequireRole`/`RequireScope` combinator can guard application routes.
 
 The architecture is **library-first** and **transport-agnostic at the core**. `shomei-core`
-defines the domain (types, commands, events, errors), the **ports** as `effectful` effects,
+defines the domain (types, commands, events, errors), the **effects** (expressed with `effectful`),
 and the auth **workflows** (signup, login, refresh-rotation, logout, verification) written
 purely against those effects. Adapters live in separate packages: `shomei-postgres`
-(hasql interpreters of the store ports), `shomei-jwt` (JWT signing/verification and JWKS via
+(hasql interpreters of the store effects), `shomei-jwt` (JWT signing/verification and JWKS via
 the `jose` library), `shomei-migrations` (codd-managed schema), and `shomei-servant`
 (Servant combinators, API types, and handlers). `shomei-server` is a thin executable that
 assembles the adapters; `shomei-client` and two example apps demonstrate both deployment
@@ -47,7 +47,7 @@ modes.
 In scope for this bootstrap: user registration, email/password login, persisted sessions,
 refresh-token rotation with reuse detection, JWT access tokens with asymmetric signing,
 JWKS publishing and key rotation, Servant route protection (Bearer plus optional HttpOnly
-cookie), PostgreSQL persistence, an audit/security event port with a PostgreSQL
+cookie), PostgreSQL persistence, an audit/security event effect with a PostgreSQL
 implementation, minimal role/scope authorization primitives, the standalone HTTP API, the
 embedded Servant integration, a Haskell client, and the two demo apps.
 
@@ -55,7 +55,7 @@ Explicitly out of scope (deferred, per the spec): OAuth, OIDC, social login, mag
 passkeys/WebAuthn, MFA, device management, an admin UI, organization/team management, a full
 authorization policy engine, risk scoring, and anomaly detection. Event-sourcing the audit
 log (e.g. via MessageDB) is also deferred; the bootstrap ships a relational audit table
-behind the event port.
+behind the event effect.
 
 
 ## Decomposition Strategy
@@ -76,17 +76,17 @@ Seven child ExecPlans are grouped into six implementation phases:
 
 - **Phase 2 — Domain core.** EP-2 fills `shomei-core`: all domain types with smart
   constructors (TypeID identifiers, `Email` normalization, password newtypes), commands,
-  events, errors, the `ShomeiConfig`, the ports expressed as `effectful` effects, and the
-  auth workflows implemented against those ports — validated end-to-end with an in-memory
+  events, errors, the `ShomeiConfig`, the `effectful` effects, and the
+  auth workflows implemented against those effects — validated end-to-end with an in-memory
   interpreter and pure tests. This is the heart of the system; every later plan consumes its
   types and effect interfaces.
 
 - **Phase 3 — Adapters (parallel).** EP-3 (PostgreSQL persistence + migrations) and EP-4
   (JWT/JWKS) both depend only on the core and can be implemented concurrently. EP-3 provides
-  the codd migration package, the hasql `Database` effect, and the store-port interpreters
+  the codd migration package, the hasql `Database` effect, and the store-effect interpreters
   plus the audit-event publisher. EP-4 provides signing-key handling, JWT signing,
   verification, and the JWKS document, interpreting the core's `TokenSigner`/`TokenVerifier`
-  ports.
+  effects.
 
 - **Phase 4 — HTTP surface.** EP-5 builds `shomei-servant`: the `Authenticated` combinator
   (custom `AuthProtect` + `AuthHandler`), `RequireRole`/`RequireScope`, the `ShomeiAPI`
@@ -136,10 +136,10 @@ EP-1).
 
 EP-2 is the second root of all real work: it defines, in `shomei-core`, the domain types, the
 TypeID identifiers (`Shomei.Id`), the error type, the `ShomeiConfig`, and — critically — the
-**port effects** and the **auth workflows**. EP-3 hard-depends on EP-2 because the postgres
-package interprets the store/publisher port effects and persists the core's domain types;
+**effects** and the **auth workflows**. EP-3 hard-depends on EP-2 because the postgres
+package interprets the store/publisher effects and persists the core's domain types;
 it cannot compile without those effect and type definitions. EP-4 hard-depends on EP-2
-because it interprets the `TokenSigner`/`TokenVerifier` port effects and converts the core's
+because it interprets the `TokenSigner`/`TokenVerifier` effects and converts the core's
 storage-agnostic `StoredSigningKey` records to/from `jose` keys; `AuthClaims`, `AccessToken`,
 and `TokenError` are core types it must match.
 
@@ -148,7 +148,7 @@ EP-3 and EP-4 have no dependency on each other and run in parallel during Phase 
 EP-5 hard-depends on EP-2 (it drives the workflows and exposes `AuthUser`, commands, and DTOs
 built from core types) and on EP-4 (the `Authenticated` combinator needs a token-verifier of
 shape `Text -> IO (Either TokenError AuthClaims)`, which EP-4 provides). It soft-depends on
-EP-3: handlers run against the store ports, which can be exercised with EP-2's in-memory
+EP-3: handlers run against the store effects, which can be exercised with EP-2's in-memory
 interpreter in `shomei-servant`'s own tests, with full PostgreSQL wiring deferred to EP-6.
 
 EP-6 hard-depends on EP-3, EP-4, and EP-5: it is the assembly point that runs the real
@@ -181,21 +181,21 @@ EP-5 (DTOs and `AuthUser`), EP-6, EP-7. Rule: identifiers are TypeIDs at the typ
 are stored as native `uuid` columns in Postgres via `getUUID`/`decorateKindID`; no plan may
 redefine these types.
 
-**IP-3 — Port effects (the `effectful` effect interfaces).** `Shomei.Effect.UserStore`,
+**IP-3 — Effects (the `effectful` effect interfaces).** `Shomei.Effect.UserStore`,
 `Shomei.Effect.CredentialStore`, `Shomei.Effect.SessionStore`, `Shomei.Effect.RefreshTokenStore`,
 `Shomei.Effect.PasswordHasher`, `Shomei.Effect.TokenSigner`, `Shomei.Effect.TokenVerifier`,
 `Shomei.Effect.AuthEventPublisher`, `Shomei.Effect.SigningKeyStore`, and the support effects
 `Shomei.Effect.Clock` (current time) and `Shomei.Effect.TokenGen` (random opaque tokens). Owner:
 **EP-2** (defines each as a dynamic `effectful` `Effect` GADT with `send` smart constructors,
 plus an in-memory interpreter for testing). Consumers: EP-3 interprets the store/publisher/
-signing-key/clock ports against PostgreSQL and Argon2; EP-4 interprets `TokenSigner`/
-`TokenVerifier` and consumes `SigningKeyStore`; EP-5 runs workflows over the ports; EP-6
+signing-key/clock effects against PostgreSQL and Argon2; EP-4 interprets `TokenSigner`/
+`TokenVerifier` and consumes `SigningKeyStore`; EP-5 runs workflows over the effects; EP-6
 assembles the real interpreter stack. Rule: the **effect signatures are owned by EP-2**;
 adapter plans must implement them exactly and may not change a signature without a Decision
 Log entry here and a cascade to the affected plans.
 
 **IP-4 — `StoredSigningKey` and the signing-key boundary.** To keep `shomei-core` free of any
-`jose` dependency (transport-agnostic core), signing keys cross the `SigningKeyStore` port as
+`jose` dependency (transport-agnostic core), signing keys cross the `SigningKeyStore` effect as
 a storage-agnostic `Shomei.Domain.SigningKey.StoredSigningKey` record whose key material is
 opaque `Text` (JWK JSON or PEM), with a `kid`, algorithm tag, status, and timestamps. Owner:
 **EP-2** (defines `StoredSigningKey` and `SigningKeyStore`). EP-3 persists it to the
@@ -246,10 +246,10 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-1: Multi-package cabal workspace compiles (`cabal build all` green in `nix develop`) (2026-06-03)
 - [x] EP-1: `Shomei.Prelude` and shared `common` stanzas in place; treefmt/fourmolu wired (2026-06-03)
 - [x] EP-2: Domain types, `Shomei.Id`, errors, and `ShomeiConfig` defined (2026-06-03)
-- [x] EP-2: Port effects + in-memory interpreters defined (2026-06-03)
+- [x] EP-2: Effects + in-memory interpreters defined (2026-06-03)
 - [x] EP-2: Signup/login/refresh-rotation/logout workflows pass pure in-memory tests (2026-06-03; 7/7 cases)
 - [x] EP-3: codd `shomei-migrations` package + schema migrations apply to ephemeral PostgreSQL (2026-06-03)
-- [x] EP-3: hasql `Database` effect + store-port interpreters + audit publisher pass integration tests (2026-06-03; 9/9)
+- [x] EP-3: hasql `Database` effect + store-effect interpreters + audit publisher pass integration tests (2026-06-03; 9/9)
 - [x] EP-4: signing-key generation + `StoredSigningKey` ↔ JWK conversion working (2026-06-03)
 - [x] EP-4: JWT sign → verify round-trip and JWKS public document validated (2026-06-03; `cabal test shomei-jwt`, 9/9)
 - [x] EP-5: `Authenticated`/`RequireRole`/`RequireScope` combinators and `ShomeiAPI` defined (2026-06-03)
@@ -300,7 +300,7 @@ implementation. Provide concise evidence.
   `Prelude` instead (the custom prelude does not set `NoImplicitPrelude`). (4) For record
   *updates*, use `generic-lens` `#field` lenses (`x & #f .~ v`), which need `Generic` on the
   record and a per-module `import Data.Generics.Labels ()`. The in-memory interpreter
-  (`Shomei.Effect.InMemory`) is the executable reference for the expected port behavior.
+  (`Shomei.Effect.InMemory`) is the executable reference for the expected effect behavior.
 - **EP-4: jose PR-#137 builds cleanly on GHC 9.12.4 with no `allow-newer` (IP-8).** The pinned
   `jose` resolved as 0.13 with crypton-1.1.3 / ram-0.21.1 / monad-time-0.4 / concise-0.1 and
   built without relaxing any version bound — Risk 2 (GHC 9.12.4 bounds) from EP-4's plan did
@@ -326,7 +326,7 @@ implementation. Provide concise evidence.
   `verifier = verifyToken jwks config` and `jwksJson = Aeson.decode (jwksDocument keys)`, then
   serve with `serveWithContext shomeiAPI (authHandler env.verifier :. EmptyContext) (shomeiServer
   env)`. Note `jwksDocument :: [JWK] -> ByteString` (the EP-5 plan's sketch had `JWKSet -> Value`).
-- **EP-5: the canonical port stack `AppEffects` is fixed and ordered (affects EP-6, IP-3).**
+- **EP-5: the canonical effect stack `AppEffects` is fixed and ordered (affects EP-6, IP-3).**
   `Shomei.Servant.Seam.AppEffects` is `[UserStore, CredentialStore, SessionStore,
   RefreshTokenStore, PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher,
   SigningKeyStore, Clock, TokenGen, IOE]` — the same order as EP-2's `runInMemory`. `Env.runPorts
@@ -344,15 +344,15 @@ implementation. Provide concise evidence.
   `role` fails to parse; `Shomei.Servant.Authz` uses `data RequireRole r` / `data RequireScope s`
   with standalone kind signatures. Also: warp's `testWithApplication` needs `-threaded`.
 - **EP-6: the assembled server reuses EP-5's seam and bridges the two effect stacks with
-  `inject` (affects EP-7 embedded mode).** EP-5's port stack (`Shomei.Servant.Seam.AppEffects`)
-  is ports + `IOE`; the PostgreSQL interpreters need `Database` + `Error AuthError` beneath the
-  ports. So `Shomei.Server.App.AppEffects` extends EP-5's stack with those two, and
+  `inject` (affects EP-7 embedded mode).** EP-5's effect stack (`Shomei.Servant.Seam.AppEffects`)
+  is effects + `IOE`; the PostgreSQL interpreters need `Database` + `Error AuthError` beneath the
+  effects. So `Shomei.Server.App.AppEffects` extends EP-5's stack with those two, and
   `Shomei.Server.Boot` builds EP-5's `Env.runPorts` by `inject`-ing the smaller stack into the
   larger postgres one (`runAppIO`). No new servant seam was written — EP-5's `shomeiServer` +
   `authHandler` are reused directly. The plan's `effToHandler`/`Shomei.Server.Seam` sketch (written
   before EP-5 existed) was superseded. EP-7 builds its embedded `Env` the same way.
 - **EP-6: crypto interpreters are in `Shomei.Crypto` (`runPasswordHasherCrypto`,
-  `runTokenGenCrypto`), not in `shomei-postgres`'s port modules.** The full real stack mirrors
+  `runTokenGenCrypto`), not in `shomei-postgres`'s effect modules.** The full real stack mirrors
   `shomei-postgres`'s own test `runApp`, extended with EP-4's `runTokenSignerJwt` /
   `runTokenVerifierJwt`. The pool comes from `Shomei.Postgres.Pool.acquirePool`.
 - **EP-6 cascaded `coddSettingsFromConnString` into `shomei-migrations` (IP-7).** The standalone
@@ -375,14 +375,14 @@ implementation. Provide concise evidence.
 - **EP-4: `currentJwks` publishes only active keys for now (affects future rotation work).**
   The `SigningKeyStore.ListActiveSigningKeys` contract returns only `KeyActive` keys, so the
   published JWKS does not yet include retired-but-valid keys. Zero-downtime overlapping-key
-  rotation will need a non-revoked store query — an EP-2 port addition cascading to EP-3's
+  rotation will need a non-revoked store query — an EP-2 effect addition cascading to EP-3's
   postgres interpreter (IP-3) — deferred until a plan first needs it. No bootstrap acceptance
   scenario depends on it.
 
 
 ## Decision Log
 
-- Decision: Model the core ports as `effectful` effects rather than the spec's tagless-final
+- Decision: Model the core capabilities as `effectful` effects rather than the spec's tagless-final
   `class Monad m => UserStore m` typeclasses.
   Rationale: Matches the established house style (kizashi's `AppEffects`, `mori.dhall`'s
   declared stack) and the user's Haskell standards; gives one fixed, interpretable effect
@@ -405,7 +405,7 @@ implementation. Provide concise evidence.
   updated to register the seventh package during EP-3.
   Date: 2026-06-03
 
-- Decision: Keep signing-key material crossing the `SigningKeyStore` port as a
+- Decision: Keep signing-key material crossing the `SigningKeyStore` effect as a
   storage-agnostic `StoredSigningKey` (key material as opaque `Text`), so `shomei-core` and
   `shomei-postgres` never depend on `jose`.
   Rationale: Preserves the transport-agnostic-core principle; only `shomei-jwt` knows about
@@ -477,8 +477,8 @@ from one set of primitives, and the full vertical slice is end-to-end demonstrab
 
 - **EP-1** — multi-package cabal workspace (GHC 9.12.4, GHC2024, `Shomei.Prelude`, treefmt/
   fourmolu, `nix fmt` wired); `cabal build all` green.
-- **EP-2** — `shomei-core`: domain types, TypeID `Shomei.Id`, errors, `ShomeiConfig`, the ports
-  as `effectful` effects, the auth workflows, and an in-memory interpreter; pure tests pass.
+- **EP-2** — `shomei-core`: domain types, TypeID `Shomei.Id`, errors, `ShomeiConfig`, the
+  `effectful` effects, the auth workflows, and an in-memory interpreter; pure tests pass.
 - **EP-3** — `shomei-postgres` + `shomei-migrations`: hasql `Database`, the store/publisher/
   signing-key interpreters, Argon2id/token crypto, codd migrations; integration tests over real
   ephemeral PostgreSQL pass.
@@ -500,7 +500,7 @@ session, logout, `me`/`session`, the JWKS document, downstream local verificatio
 mounting, and a typed client — all green via `cabal build all` and the per-package test suites.
 
 **Cross-cutting lessons (evidence in each plan's Surprises):** (1) the effect-stack contract is
-load-bearing — EP-5 fixed a ports+`IOE` stack for in-memory testing, and EP-6 bridged it onto the
+load-bearing — EP-5 fixed an effects+`IOE` stack for in-memory testing, and EP-6 bridged it onto the
 larger postgres stack (`Database`+`Error AuthError`) with `inject` rather than reworking EP-5;
 (2) GHC2024 surprises bit twice — `RoleAnnotations` made `role`/`scope` reserved (EP-5), and the
 prelude's re-exported lens `Context` clashes with servant's (EP-6/EP-7); (3) `OverloadedRecordDot`

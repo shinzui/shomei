@@ -46,7 +46,7 @@ policy-violation error, and these checks can be toggled by editing a Dhall file 
 an environment variable without recompiling.
 
 In scope: the policy data model and its configuration plumbing; a local common/contextual
-password check; an opt-in HIBP breach check with a swappable port and a test fake; wiring all
+password check; an opt-in HIBP breach check with a swappable effect and a test fake; wiring all
 three checks into the three password-accepting workflows (signup, change password, confirm
 password reset); and HTTP error mapping for the new violation kinds.
 
@@ -82,7 +82,7 @@ three requested items (configurability, common/contextual rejection, breach chec
 - **EP-3 (Plan 22) — Compromised Password Breach Checking via HIBP k-Anonymity.** Implements
   the opt-in network check behind the `breachCheckEnabled` / `breachCheckFailClosed` /
   `breachCheckTimeoutMs` flags EP-1 introduces. Because it performs IO (an HTTPS request), it
-  cannot fold into the pure `validatePassword`; instead it introduces a new effect/port
+  cannot fold into the pure `validatePassword`; instead it introduces a new effect
   (`PasswordBreachChecker`) with a production HIBP interpreter and an in-memory test fake, and
   adds an effectful guard to the workflows. It produces a new `PasswordBreached` violation.
 
@@ -339,10 +339,10 @@ interactions between child plans. Provide concise evidence.
   was seen.
   Date: 2026-06-17
 
-- Decision: Breach checking is introduced as a new `PasswordBreachChecker` effect/port with an
+- Decision: Breach checking is introduced as a new `PasswordBreachChecker` effect with an
   effectful guard in the workflows, not folded into the pure `validatePassword`.
   Rationale: the HIBP check performs IO (an HTTPS request); the pure `Either`-returning
-  `validatePassword` cannot perform IO, and mirroring the existing `PasswordHasher` port keeps
+  `validatePassword` cannot perform IO, and mirroring the existing `PasswordHasher` effect keeps
   the design swappable and gives tests an in-memory fake (IP-5).
   Date: 2026-06-17
 
@@ -373,7 +373,7 @@ Against the original vision, an operator of Shōmei can now:
    local/no-network, on by default, threaded through all three password-accepting workflows via a
    context-aware `validatePassword`.
 3. **Optionally reject breached passwords** (EP-3) — an opt-in HIBP k-anonymity check
-   (`PasswordBreached`) behind a swappable `PasswordBreachChecker` port with a production
+   (`PasswordBreached`) behind a swappable `PasswordBreachChecker` effect with a production
    interpreter and a test fake, off by default and fail-open by default, where only the 5-char
    SHA-1 prefix ever leaves the process.
 

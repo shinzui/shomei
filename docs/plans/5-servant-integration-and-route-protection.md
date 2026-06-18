@@ -19,7 +19,7 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 After this change, Shōmei has an **HTTP surface**: the `shomei-servant` library that
 turns the pure authentication workflows from EP-2 (`shomei-core`) into a real, runnable
 Servant web API. A developer who finishes this plan can boot an in-process web server (using
-EP-2's in-memory port interpreters plus a freshly generated ES256 signing key from EP-4) and
+EP-2's in-memory effect interpreters plus a freshly generated ES256 signing key from EP-4) and
 observe these concrete behaviors over real HTTP:
 
 - `POST /auth/signup` with an email and password returns a JSON body containing the new user
@@ -172,11 +172,11 @@ Record every decision made while working on the plan.
   Date: 2026-06-03
 
 - Decision: Wire handlers with **style A — a per-action `effToHandler` seam** carrying an `Env`
-  with the port-interpreter runner, **not** a whole-server `hoistServer` natural transformation.
+  with the effect-interpreter runner, **not** a whole-server `hoistServer` natural transformation.
   Rationale: Mirrors kizashi's `Kizashi.Http.Seam.effToHandler`. The handlers run *in*
   `Handler`, call `effToHandler env (workflow …)` to run the `Eff` stack to `IO (Either
   AuthError result)`, and branch on the domain `Either` themselves. A global `hoistServer` over
-  `Eff Ports` cannot map an `AuthError` to an HTTP status (the effect stack has no `Error
+  `Eff Effects` cannot map an `AuthError` to an HTTP status (the effect stack has no `Error
   ServerError`); the seam is the single place infrastructure/domain failure meets HTTP.
   Date: 2026-06-03
 
@@ -188,7 +188,7 @@ Record every decision made while working on the plan.
   `401`/message at the boundary.
   Date: 2026-06-03
 
-- Decision: Test `shomei-servant` with **EP-2's in-memory port interpreters plus a real ES256
+- Decision: Test `shomei-servant` with **EP-2's in-memory effect interpreters plus a real ES256
   key generated in-test** (no PostgreSQL).
   Rationale: EP-5 soft-depends on EP-3; PostgreSQL wiring is EP-6. Using the in-memory
   interpreters keeps the test hermetic and fast, and a real key makes signing/verification
@@ -210,8 +210,8 @@ Record every decision made while working on the plan.
   Rationale: EP-2's workflows *already* return `Eff es (Either AuthError result)` (they run a
   local `Effectful.Error.Static` internally), so the runner must not add a second `Either` layer.
   `runAuth` runs the workflow and maps a `Left AuthError` through `authErrorToServerError`;
-  `runPort` runs a plain port read (e.g. `findUserById` for `me`) whose `Maybe` the handler
-  branches on itself (a missing row → `404`). `AppEffects` is the fixed, ordered port-effect list
+  `runPort` runs a plain effect read (e.g. `findUserById` for `me`) whose `Maybe` the handler
+  branches on itself (a missing row → `404`). `AppEffects` is the fixed, ordered effect list
   (matching EP-2's `runInMemory` order) that every assembly — the test's in-memory+jose hybrid and
   EP-6's postgres+jose stack — provides a `runPorts` for.
   Date: 2026-06-03
@@ -283,21 +283,21 @@ What EP-2 (`shomei-core`) provides and EP-5 consumes (assume importable; do **no
 - `ShomeiConfig` (IP-5): includes `tokenTransport :: TokenTransport` where `TokenTransport =
   BearerToken | HttpOnlyCookie | BearerAndCookie`, and `sessionCheckMode :: SessionCheckMode`.
 - Commands `SignupCommand`, `LoginCommand`, `RefreshCommand`, `LogoutCommand`.
-- The auth **workflows**, each written purely against the port effects:
+- The auth **workflows**, each written purely against the effects:
 
   ```haskell
-  signup  :: (<ports> :> es) => ShomeiConfig -> SignupCommand  -> Eff es (Either AuthError (User, TokenPair))
-  login   :: (<ports> :> es) => ShomeiConfig -> LoginCommand   -> Eff es (Either AuthError (User, TokenPair))
-  refresh :: (<ports> :> es) => ShomeiConfig -> RefreshCommand -> Eff es (Either AuthError TokenPair)
-  logout  :: (<ports> :> es) => ShomeiConfig -> LogoutCommand  -> Eff es (Either AuthError ())
+  signup  :: (<effects> :> es) => ShomeiConfig -> SignupCommand  -> Eff es (Either AuthError (User, TokenPair))
+  login   :: (<effects> :> es) => ShomeiConfig -> LoginCommand   -> Eff es (Either AuthError (User, TokenPair))
+  refresh :: (<effects> :> es) => ShomeiConfig -> RefreshCommand -> Eff es (Either AuthError TokenPair)
+  logout  :: (<effects> :> es) => ShomeiConfig -> LogoutCommand  -> Eff es (Either AuthError ())
   ```
 
-  (`<ports>` abbreviates the full constraint set: `UserStore`, `CredentialStore`,
+  (`<effects>` abbreviates the full constraint set: `UserStore`, `CredentialStore`,
   `SessionStore`, `RefreshTokenStore`, `PasswordHasher`, `TokenSigner`, `TokenVerifier`,
   `AuthEventPublisher`, `SigningKeyStore`, `Clock`, `TokenGen`, all `:> es`.) Exact return
   shapes are confirmed against `shomei-core` during Milestone 2; the DTO mapping is the only
   thing that depends on them.
-- The **port effects** (IP-3) and EP-2's **in-memory interpreters** for testing, plus
+- The **effects** (IP-3) and EP-2's **in-memory interpreters** for testing, plus
   `Shomei.Id` TypeID identifiers with orphan `FromHttpApiData`/`ToHttpApiData` (so a
   `Capture "id" SessionId` parses).
 
@@ -958,7 +958,7 @@ authErrorToServerError = \case
 ```haskell
 {-# LANGUAGE DataKinds #-}
 
--- | THE SEAM (style A, per-action). Run an 'Eff' over the port stack to IO via the
+-- | THE SEAM (style A, per-action). Run an 'Eff' over the effect stack to IO via the
 -- runner carried in 'Env', then map a domain @Left AuthError@ to a 'ServerError'
 -- through "Shomei.Servant.Error". Mirrors kizashi's 'Kizashi.Http.Seam.effToHandler'.
 module Shomei.Servant.Seam
@@ -976,7 +976,7 @@ import "servant-server" Servant (Handler, throwError)
 import "servant-server" Servant.Server (runHandler)  -- not used directly; here for clarity
 import Control.Monad.IO.Class (liftIO)
 
--- | The runtime environment threaded to every handler. @runEff@ is the EP-2 port
+-- | The runtime environment threaded to every handler. @runEff@ is the EP-2 effect
 -- interpreter runner (in tests, the in-memory stack; in EP-6, the postgres+jwt
 -- stack). @config@ is the 'ShomeiConfig'. @jwks@ is the current public 'JWKSet'
 -- used by the jwks route and (partially applied) by the AuthHandler verifier.
@@ -996,9 +996,9 @@ effToHandler env action = do
     Left err -> throwError (authErrorToServerError err)
 ```
 
-(`AppEffects` is the concrete port effect-list alias; in the real module it is either imported
+(`AppEffects` is the concrete effect-list alias; in the real module it is either imported
 from `shomei-core` if EP-2 exports such an alias, or defined locally as the list of the eleven
-port effects. `JWKSet` is from `shomei-jwt`/`jose` re-export.)
+effects. `JWKSet` is from `shomei-jwt`/`jose` re-export.)
 
 ### Step 8 — `src/Shomei/Servant/Handlers.hs` (`shomeiServer`)
 
@@ -1064,8 +1064,8 @@ meH env user =
   -- through the seam. The MVP fetches to return the live record:
   effToHandler env (lookupUserResponse (authUserId user))
   where
-    lookupUserResponse uid = fmap userToResponse <$> fetchUser uid  -- via UserStore port
-    -- 'fetchUser' is a thin Eff over the UserStore port; on miss the workflow
+    lookupUserResponse uid = fmap userToResponse <$> fetchUser uid  -- via UserStore effect
+    -- 'fetchUser' is a thin Eff over the UserStore effect; on miss the workflow
     -- returns Left (a Session/Token error) which the seam maps to 401/404.
 
 loginH   :: Env -> LoginRequest   -> Handler LoginResponse
@@ -1116,7 +1116,7 @@ The test boots the app in-process and drives it with `http-client`.
 ### Step 9 — `test/Main.hs`
 
 The test (a) generates a real ES256 key in-test (EP-4's key generator), (b) builds the EP-2
-in-memory port-interpreter runner and the `Env`, (c) boots via
+in-memory effect-interpreter runner and the `Env`, (c) boots via
 `Network.Wai.Handler.Warp.testWithApplication` on an ephemeral port, then asserts:
 
 ```haskell
@@ -1231,8 +1231,8 @@ Libraries used and why:
   provided by EP-2's `Shomei.Id`).
 - `aeson`, `text`, `time`, `containers`, `bytestring` — DTO JSON, token text, timestamps,
   `Set Role`/`Set Scope`, raw header bytes.
-- `effectful`, `effectful-core` — the `Eff` port stack and the seam runner type.
-- `shomei-core` — domain types, errors, `ShomeiConfig`, port effects, and the auth workflows.
+- `effectful`, `effectful-core` — the `Eff` effect stack and the seam runner type.
+- `shomei-core` — domain types, errors, `ShomeiConfig`, the effects, and the auth workflows.
 - `shomei-jwt` — `verifyToken` (the AuthHandler verifier) and `jwksDocument` (the jwks route).
 - `tasty`, `tasty-hunit`, `http-client`, `http-types` (test only) — the end-to-end harness.
 

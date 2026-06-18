@@ -48,7 +48,7 @@ You can see the change working three ways once it lands:
    written, because `SignupCommand` has no field for a non-email identifier and `signup`
    rejects anything `mkEmail` cannot parse.
 2. A second test signs up a user *with* an email, requests a password reset, and asserts that
-   the `Notifier` port received a `PasswordResetRequested` notification addressed to that
+   the `Notifier` effect received a `PasswordResetRequested` notification addressed to that
    email — proving email-bearing accounts keep their reset path. A companion assertion turns
    on `breachCheckEnabled` + `rejectContextualPasswords` and proves the email still feeds the
    contextual/breach context.
@@ -76,9 +76,9 @@ This section must always reflect the actual current state of the work.
   optional. Core compiles; in-memory interpreter updated. **(2026-06-17)** Done. Note: the
   `shomei-core` *library* could not be built in isolation at the M1 boundary because the
   workflows (`Shomei.Workflow`) live in the same library and construct `NewUser` — see Surprises
-  & Discoveries. M1's domain/type changes therefore landed together with M2's workflow/port
+  & Discoveries. M1's domain/type changes therefore landed together with M2's workflow/effect
   changes in one buildable commit.
-- [x] M2: Update workflows (`signup`, `login`, account/password-reset) and the effect ports
+- [x] M2: Update workflows (`signup`, `login`, account/password-reset) and the effects
   (`UserStore`, `CredentialStore`, `Command`) to key on `LoginId`, keeping optional
   lookup-by-email for reset/verification. **(2026-06-17)** Done. `cabal test shomei-core-test`
   green — all 105 tests pass, including the new `signup+login by identifier with no email` and
@@ -251,7 +251,7 @@ Record every decision made while working on the plan.
   Rationale: The `shomei-core` *library* contains the workflows, which construct `NewUser`; the
   M1 record change alone does not compile (see Surprises & Discoveries). Rather than introduce
   throwaway scaffolding to make an intermediate library build, M1's type changes were landed
-  together with the M2 port/workflow changes in one commit that leaves the library and the test
+  together with the M2 effect/workflow changes in one commit that leaves the library and the test
   suite green. The milestone *structure* and acceptance criteria are unchanged.
   Date: 2026-06-17
 
@@ -279,7 +279,7 @@ Compare the result against the original purpose.
 **Completed 2026-06-17 — all four milestones delivered; `cabal test all -j1` green across all 11
 suites.** The principal of Shōmei is now a free-form, case-insensitive, unique `LoginId`, with
 email an optional attribute end-to-end: domain types (`User`/`NewUser`/`Credential`), the
-effect ports (`FindUserByLoginId`/`FindPasswordCredentialByLoginId`, `CreatePasswordCredential`
+effects (`FindUserByLoginId`/`FindPasswordCredentialByLoginId`, `CreatePasswordCredential`
 now `UserId -> LoginId -> Maybe Email -> PasswordHash`), the workflows (signup/login key on the
 login id; reset/verification/breach-context guard on `Maybe Email`), the PostgreSQL schema
 (expand/contract migrations adding `login_id NOT NULL UNIQUE` and relaxing `email` to nullable +
@@ -313,10 +313,10 @@ This section assumes you have never seen this repository. Read it before editing
 with `cabal test`. The repo uses a Nix dev shell; the canonical entry is `nix develop` and then
 the `cabal` commands. The packages relevant to this plan are:
 
-- `shomei-core` — pure domain types, "effect ports" (described below), and the auth workflows.
+- `shomei-core` — pure domain types, "effects" (described below), and the auth workflows.
   This is where the principal is modeled. Source under
   `/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/`.
-- `shomei-postgres` — the PostgreSQL "interpreters" for the ports (hasql-based). Source under
+- `shomei-postgres` — the PostgreSQL "interpreters" for the effects (hasql-based). Source under
   `/Users/shinzui/Keikaku/bokuno/shomei/shomei-postgres/src/Shomei/Postgres/`.
 - `shomei-migrations` — the SQL schema migrations (one file per change), embedded into the
   binary and applied by the `codd` migration tool. Files live under
@@ -325,14 +325,14 @@ the `cabal` commands. The packages relevant to this plan are:
   the handlers that translate them into workflow calls. Source under
   `/Users/shinzui/Keikaku/bokuno/shomei/shomei-servant/src/Shomei/Servant/`.
 
-**"Effect port" and "interpreter" (terms of art, defined here).** Shōmei uses the `effectful`
-library. An *effect port* is a small typed interface (a GADT named like `UserStore`) declaring
+**"Effect" and "interpreter" (terms of art, defined here).** Shōmei uses the `effectful`
+library. An *effect* is a small typed interface (a GADT named like `UserStore`) declaring
 the operations the workflows may perform — for example "create a user", "find a user by X". The
-workflows depend only on these ports, never on a database. An *interpreter* is a concrete
-implementation of a port: there is an in-memory interpreter used in tests
+workflows depend only on these effects, never on a database. An *interpreter* is a concrete
+implementation of an effect: there is an in-memory interpreter used in tests
 (`shomei-core/src/Shomei/Effect/InMemory.hs`) and a PostgreSQL interpreter used in production
-(`shomei-postgres/src/Shomei/Postgres/*Store*.hs`). When you change a port (add or rename an
-operation), you must update **every** interpreter of that port or the build breaks.
+(`shomei-postgres/src/Shomei/Postgres/*Store*.hs`). When you change an effect (add or rename an
+operation), you must update **every** interpreter of that effect or the build breaks.
 
 **The principal today (what we are changing).** The user entity is
 `/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/Domain/User.hs`:
@@ -359,7 +359,7 @@ The credential entity
 (`/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/Domain/Credential.hs`) likewise
 carries `email :: !Email`.
 
-The ports are keyed by email. `UserStore`
+The effects are keyed by email. `UserStore`
 (`/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/Effect/UserStore.hs`) declares
 `FindUserByEmail :: Email -> UserStore m (Maybe User)`, and `CredentialStore`
 (`/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/Effect/CredentialStore.hs`)
@@ -431,7 +431,7 @@ and the login handler computes an abuse-protection `accountKey` from the email v
 **What is genuinely email-dependent (must keep working when email is present).**
 
 - *Password-reset delivery* — `requestPasswordReset` in `Workflow/Account.hs` sends
-  `PasswordResetRequested user.email raw expires` to the `Notifier` port. With no email there
+  `PasswordResetRequested user.email raw expires` to the `Notifier` effect. With no email there
   is nothing to deliver to; with an email it must still deliver.
 - *Email verification* — `requestEmailVerification`/`confirmEmailVerification` only make sense
   for an account that has an email.
@@ -461,7 +461,7 @@ this plan; the *login identifier* is a separate human-supplied handle, not an id
 ## Plan of Work
 
 The work is four milestones. M1 introduces the new domain type and threads it through the pure
-data and the in-memory interpreter. M2 updates the ports, commands, and workflows so the
+data and the in-memory interpreter. M2 updates the effects, commands, and workflows so the
 *behavior* changes (you can sign up/login by identifier with no email, and email still drives
 reset/breach when present). M3 changes the database (expand/contract migration) and the
 PostgreSQL interpreters. M4 updates the HTTP wire surface. Each milestone leaves the tree
@@ -555,13 +555,13 @@ workflows. To keep M1 self-verifiable, build only the `shomei-core` *library* ta
 (not the test suite).
 
 
-### Milestone 2 — Ports, commands, and workflows: principal is `LoginId`, email optional
+### Milestone 2 — Effects, commands, and workflows: principal is `LoginId`, email optional
 
 **Scope.** Change the behavior. After this milestone you can sign up and log in by `LoginId`
 with no email, and when an email is present the reset/verification/breach-context paths still
 work. The in-memory test suite proves both.
 
-**Ports.** In
+**Effects.** In
 `/Users/shinzui/Keikaku/bokuno/shomei/shomei-core/src/Shomei/Effect/UserStore.hs`:
 
 - Add `FindUserByLoginId :: LoginId -> UserStore m (Maybe User)` and its `findUserByLoginId`
@@ -995,7 +995,7 @@ re-`SET NOT NULL` on email (only possible if no NULL emails were inserted), and 
 ## Interfaces and Dependencies
 
 Libraries and modules used (all already present in the repo; no new external dependency):
-`effectful` (the effect ports), `hasql` (PostgreSQL interpreters), `codd` + `ephemeral-pg`
+`effectful` (the effects), `hasql` (PostgreSQL interpreters), `codd` + `ephemeral-pg`
 (migrations and the ephemeral test database, pinned in
 `/Users/shinzui/Keikaku/bokuno/shomei/cabal.project`), `mmzk-typeid` (the `KindID` identifiers
 in `Shomei.Id`), `servant`/`aeson` (the wire layer), and `tasty`/`hspec`-style HUnit cases for
@@ -1022,7 +1022,7 @@ Types and signatures that must exist at the end of each milestone:
     `Maybe Email`.
 - End of M3:
   - `Shomei.Postgres.UserStore.runUserStorePostgres` and
-    `Shomei.Postgres.CredentialStore.runCredentialStorePostgres` interpret the new ports against
+    `Shomei.Postgres.CredentialStore.runCredentialStorePostgres` interpret the new effects against
     a schema with `login_id text NOT NULL UNIQUE` and `email text NULL` (partial-unique).
   - Four new migration files under `shomei-migrations/sql-migrations/`.
 - End of M4:
@@ -1054,7 +1054,7 @@ the consuming initiative is
   recorded in the Decision Log. Reason: deliver the SH-25 prerequisite consumed by
   auth-service-v2 EP-2 and EP-8.
 - 2026-06-17 (validation pass): Validated every factual claim against the live shomei tree (see
-  the new Surprises & Discoveries entries). All file paths, record fields, port signatures,
+  the new Surprises & Discoveries entries). All file paths, record fields, effect signatures,
   workflow behaviors, migrations, postgres decoders, servant DTOs/handlers, and test harness
   details were confirmed accurate. Two refinements applied: (1) the in-memory interpreter keys
   credentials in a `Map Email Credential` (`credsByEmail`), so M1/M2 now spell out re-keying that

@@ -40,8 +40,8 @@ You can see it working two ways:
   a `Breached` result.
 
 The check performs IO (an HTTPS request), so it CANNOT live inside the pure `validatePassword`
-function. It is delivered as a new `effectful` dynamic-dispatch port, `PasswordBreachChecker`,
-mirroring the existing `PasswordHasher` port, with a production HIBP interpreter, an in-memory
+function. It is delivered as a new `effectful` dynamic-dispatch effect, `PasswordBreachChecker`,
+mirroring the existing `PasswordHasher` effect, with a production HIBP interpreter, an in-memory
 test fake, and an effectful guard appended to the three password-accepting workflows.
 
 
@@ -127,7 +127,7 @@ implementation. Provide concise evidence.
 
 Record every decision made while working on the plan.
 
-- Decision: Implement breach checking as a new `effectful` port `PasswordBreachChecker`
+- Decision: Implement breach checking as a new `effectful` effect `PasswordBreachChecker`
   rather than folding it into the pure `validatePassword`.
   Rationale: the check performs an HTTPS request (IO); `validatePassword :: PasswordPolicy ->
   PlainPassword -> Either PasswordPolicyViolation ()` is pure and must stay pure so it can be
@@ -135,7 +135,7 @@ Record every decision made while working on the plan.
   pure validation.
   Date: 2026-06-17
 
-- Decision: The port returns a tri-state `BreachResult = NotBreached | Breached |
+- Decision: The effect returns a tri-state `BreachResult = NotBreached | Breached |
   BreachCheckUnavailable` instead of a `Bool`.
   Rationale: the policy must distinguish "HIBP says clean" from "HIBP could not be reached" so
   it can honor `breachCheckFailClosed`. A `Bool` cannot express the unreachable case.
@@ -200,7 +200,7 @@ construction: only the 5-char uppercase SHA-1 prefix leaves the process (`sha1Pr
 and an unreachable HIBP resolves to `BreachCheckUnavailable`, honored as fail-open by default or
 fail-closed under `breachCheckFailClosed`.
 
-The IO check lives in a new `effectful` port (`PasswordBreachChecker`) with a production HIBP
+The IO check lives in a new `effectful` effect (`PasswordBreachChecker`) with a production HIBP
 interpreter (`Shomei.Server.BreachChecker`) and an in-memory fake seeded from the test `World`,
 exactly mirroring the `PasswordHasher` precedent. Pure parsing/hashing logic
 (`parseHibpResponse`, `sha1PrefixSuffix`) is factored out and unit-tested hermetically. All
@@ -221,15 +221,15 @@ No gaps against scope. Known intentional limitation: the admin CLI bypasses the 
 
 This is **shomei**, a Haskell authentication toolkit built as a cabal workspace (GHC 9.12.4,
 `cabal build all`, `cabal test all`; test framework tasty + tasty-hunit). The architecture is
-ports-and-adapters using the `effectful` library with **dynamic dispatch**: each external
-capability is an `Effect` (a "port"), and each port has one or more "interpreters" (adapters)
+effects-and-adapters using the `effectful` library with **dynamic dispatch**: each external
+capability is an `Effect`, and each effect has one or more "interpreters" (adapters)
 — a pure in-memory fake for tests and a production interpreter for the live stack.
 
 Read this section as if you know nothing about the codebase.
 
-### The effectful port pattern (the template you will copy)
+### The effectful effect pattern (the template you will copy)
 
-The cleanest template is the password-hasher port at
+The cleanest template is the password-hasher effect at
 `shomei-core/src/Shomei/Effect/PasswordHasher.hs`:
 
 ```haskell
@@ -254,7 +254,7 @@ verifyPassword :: (PasswordHasher :> es) => PlainPassword -> PasswordHash -> Eff
 verifyPassword p h = send (VerifyPassword p h)
 ```
 
-A port is: a GADT whose constructors are the operations; a `DispatchOf = Dynamic` instance;
+An effect is: a GADT whose constructors are the operations; a `DispatchOf = Dynamic` instance;
 and thin `send`-wrapping smart constructors used by the workflows.
 
 The matching interpreters for `PasswordHasher`:
@@ -319,7 +319,7 @@ The live effect stack is assembled in `shomei-server/src/Shomei/Server/App.hs`:
   the production interpreters, including `. runPasswordHasherCrypto`.
 
 A **second** `AppEffects` list also exists in `shomei-servant/src/Shomei/Servant/Seam.hs`
-(lines ~58-78) — the servant port stack used by the servant test harness. Both lists must gain
+(lines ~58-78) — the servant effect stack used by the servant test harness. Both lists must gain
 the new effect, in the same position relative to `PasswordHasher`, or the seam will not typecheck.
 
 ### crypton SHA-1 precedent
@@ -398,7 +398,7 @@ Parent MasterPlan:
 ## Plan of Work
 
 The work is four milestones, each independently verifiable. The integration points (IPs) from
-the MasterPlan map onto these milestones: IP-2 (violation type) → M1; the new port + fake +
+the MasterPlan map onto these milestones: IP-2 (violation type) → M1; the new effect + fake +
 pure helpers (IP-5 partial) → M2; the workflow guards (IP-3) → M3; the production interpreter +
 stack wiring (IP-5 partial) → M4. IP-4 (servant mapping) is a confirmation in M1.
 
@@ -418,11 +418,11 @@ Commands: `cabal build all`.
 Acceptance: `cabal build all` succeeds; `grep` finds no non-wildcard exhaustive match on
 `PasswordPolicyViolation` that omits `PasswordBreached`.
 
-### Milestone M2 — the port, the pure helpers, the fake, and unit tests
+### Milestone M2 — the effect, the pure helpers, the fake, and unit tests
 
 Scope: create the `PasswordBreachChecker` effect with `BreachResult`; add two pure helpers
 (`sha1PrefixSuffix`, `parseHibpResponse`); add the in-memory fake plus `World` fields; wire the
-fake into `runInMemory`; add hermetic unit tests for the pure helpers. At the end, the port
+fake into `runInMemory`; add hermetic unit tests for the pure helpers. At the end, the effect
 exists, the fake is composed into the in-memory stack, and the pure parsing/hashing logic is
 unit-tested.
 
@@ -542,7 +542,7 @@ Create `shomei-core/src/Shomei/Effect/PasswordBreachChecker.hs`:
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-{- | The password-breach-checker port: decide whether a password appears in a known public
+{- | The password-breach-checker effect: decide whether a password appears in a known public
 breach. Implemented in production by a HIBP k-anonymity range query (EP-3) and in tests by an
 in-memory fake. Kept separate from the pure 'Shomei.Domain.Password.validatePassword' because
 the production check performs IO.
@@ -1235,7 +1235,7 @@ All suites pass with no network access. The optional manual ghci check in Step M
 `Breached` for `password` and `NotBreached` for an unlikely passphrase — run it by hand only.
 
 The change is effective beyond compilation because the workflow tests demonstrate the new
-rejection path end-to-end through the workflow + port + fake, and the disabled-case test proves
+rejection path end-to-end through the workflow + effect + fake, and the disabled-case test proves
 the gating.
 
 
@@ -1263,7 +1263,7 @@ Risks and their safety nets:
   default `cabal test all`; all automated coverage uses the in-memory fake. The manual ghci
   check is opt-in.
 - **EP-1 not landed.** Step 0's grep is the gate; if the `breachCheck*` fields are absent, stop
-  and land EP-1 first. The plan's M1 and M2.1 (the constructor + the port + pure helpers) do not
+  and land EP-1 first. The plan's M1 and M2.1 (the constructor + the effect + pure helpers) do not
   depend on EP-1 and may be done early, but M3 (`enforceBreachPolicy` reads the flags) requires
   the fields.
 

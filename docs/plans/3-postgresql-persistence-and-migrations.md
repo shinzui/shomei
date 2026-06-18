@@ -18,12 +18,12 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 Shōmei ("証明", proof / authentication) is a Haskell authentication toolkit. Its
 domain layer — types like `User`, `Session`, `PersistedRefreshToken`, plus a set of
-"ports" (abstract interfaces) such as `UserStore` and `SessionStore` — is built by a
+effects (abstract interfaces) such as `UserStore` and `SessionStore` — is built by a
 sibling plan, EP-2 (`docs/plans/2-core-domain-model-ports-and-auth-workflows.md`), in
-the package `shomei-core`. A *port* in this codebase is an `effectful` dynamic
+the package `shomei-core`. An *effect* in this codebase is an `effectful` dynamic
 effect: a small typed interface (a GADT of operations) with no implementation attached,
 so the domain can be written once and run against different backends (an in-memory test
-double, or a real database). EP-2 ships those ports and an in-memory interpreter for
+double, or a real database). EP-2 ships those effects and an in-memory interpreter for
 tests. It does **not** persist anything to disk.
 
 This plan, EP-3, makes Shōmei durable. After this change, a developer can run one
@@ -38,13 +38,13 @@ PostgreSQL database instead of an in-memory map. Concretely, after EP-3:
   `shomei_sessions`, `shomei_refresh_tokens`, `shomei_signing_keys`, and
   `shomei_auth_events`.
 - Running `cabal test shomei-postgres` spins up a throwaway PostgreSQL server, applies
-  the schema to it, and exercises every store port against that real database: create a
+  the schema to it, and exercises every store effect against that real database: create a
   user and read it back, create a credential and find it by email, open a session and
   revoke it, mint a refresh token and rotate it, insert and list signing keys, publish
   an audit event and observe the row. The same test then drives EP-2's *workflows*
   (signup → rows appear; refresh rotation → old token marked `used` and a child token
   inserted; reuse of a used token → the whole token family and its session are revoked)
-  through the PostgreSQL adapters, proving the adapters truly satisfy the ports
+  through the PostgreSQL adapters, proving the adapters truly satisfy the effects
   end-to-end against PostgreSQL.
 
 The user-visible outcome is therefore: Shōmei's authentication state survives process
@@ -60,12 +60,12 @@ This plan delivers two new packages:
   already applied, using `ephemeral-pg`.
 - `shomei-postgres` — owns the runtime adapters. It defines a `Database`
   effect (a thin `effectful` wrapper over a `hasql` connection pool) and provides
-  PostgreSQL interpreters for every EP-2 store/publisher/signing-key port, plus the
-  infrastructure ports `Clock` and `PasswordHasher` (Argon2id) and a token-generation
+  PostgreSQL interpreters for every EP-2 store/publisher/signing-key effect, plus the
+  infrastructure effects `Clock` and `PasswordHasher` (Argon2id) and a token-generation
   helper.
 
 EP-3 hard-depends on EP-1 (`docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md`,
-the Cabal workspace and Nix dev shell) and EP-2 (the domain types and ports it
+the Cabal workspace and Nix dev shell) and EP-2 (the domain types and effects it
 persists and interprets). It runs in parallel with EP-4 (JWT/JWKS); the two share no
 code. EP-3 owns Integration Point **IP-7** (the database schema and the `shomei`
 namespace) and contributes the persistence entries to Integration Point **IP-8** (the
@@ -95,14 +95,14 @@ This section must always reflect the actual current state of the work.
   - [x] Add `create-database`, `migrate`, and `new-migration` recipes to the root
         `Justfile`. (2026-06-03)
   - [x] Register `shomei-migrations` (and `shomei-postgres`) in `mori.dhall`. (2026-06-03)
-- [x] Milestone 2 — `shomei-postgres` `Database` effect + port interpreters + Argon2
+- [x] Milestone 2 — `shomei-postgres` `Database` effect + effect interpreters + Argon2
       hasher compile. (2026-06-03; `cabal build shomei-postgres` exit 0, zero warnings)
   - [x] Create `shomei-postgres/shomei-postgres.cabal`. (2026-06-03)
   - [x] Write `shomei-postgres/src/Shomei/Postgres/Database.hs`. (2026-06-03)
   - [x] Write the connection-pool helper and the example `hasql` statements. (2026-06-03;
         `acquirePool` uses `Hasql.Connection.Settings.connectionString` per the verified
         hasql 1.10 / hasql-pool API — see Surprises)
-  - [x] Write each port interpreter under `Shomei.Postgres.*` (+ shared `Shomei.Postgres.Codec`).
+  - [x] Write each effect interpreter under `Shomei.Postgres.*` (+ shared `Shomei.Postgres.Codec`).
         (2026-06-03; adapted to the as-built EP-2 surface — see Decision Log)
   - [x] Write `Shomei.Crypto` (Argon2id hasher + token generation + the `PasswordHasher`
         and `TokenGen` interpreters). (2026-06-03; Argon2 `hash` returns `CryptoFailable`,
@@ -110,7 +110,7 @@ This section must always reflect the actual current state of the work.
 - [x] Milestone 3 — Integration tests green: `cabal test shomei-postgres` passes,
       including the workflow-over-PostgreSQL scenario. (2026-06-03; all 9 tests pass)
   - [x] Write `test-suite shomei-postgres-test`. (2026-06-03)
-  - [x] Round-trip tests for every port. (2026-06-03; user, credential, session+revoke,
+  - [x] Round-trip tests for every effect. (2026-06-03; user, credential, session+revoke,
         refresh-token+mark-used, signing keys, publish-event)
   - [x] Workflow-over-PostgreSQL tests (signup / rotation / reuse-revokes-family). (2026-06-03)
 
@@ -244,7 +244,7 @@ Record every decision made while working on the plan.
   Rationale: The plan's `jsonb` choice assumed EP-2's `StoredSigningKey` JWK fields were
   `Data.Aeson.Value`. The **actual** EP-2 surface (see the reconciliation decision below)
   makes them **opaque `Text`** (MasterPlan IP-4: the core/postgres packages never import
-  `jose`; key material crosses the `SigningKeyStore` port as opaque `Text`). Storing opaque
+  `jose`; key material crosses the `SigningKeyStore` effect as opaque `Text`). Storing opaque
   `Text` in a `text` column is lossless and avoids forcing the material to be re-parseable
   JSON; only EP-4's `shomei-jwt` interprets it as a JWK. Event payloads remain `jsonb`.
   Date: 2026-06-03
@@ -273,7 +273,7 @@ Record every decision made while working on the plan.
     parameter rather than `now()`.
   - `PasswordHasher` ops take `PlainPassword` (a newtype over `Text`), not raw `Text`; the
     interpreter unwraps it.
-  - EP-2 **does** expose a `TokenGen` port (`GenerateOpaqueToken`, `HashRefreshToken`); EP-3
+  - EP-2 **does** expose a `TokenGen` effect (`GenerateOpaqueToken`, `HashRefreshToken`); EP-3
     therefore adds a real `runTokenGenCrypto` interpreter in `Shomei.Crypto` (crypton random
     + SHA-256), beyond the bare `generateOpaqueToken`/`hashRefreshToken` IO helpers.
   - `AuthEvent`'s per-constructor `*Data` records carry typed fields (not a uniform
@@ -294,9 +294,9 @@ schema: `just migrate` applies the seven codd migrations (the `shomei` schema + 
 to the dev DB, and `\dt shomei.*` lists them; the public `test-support` sublibrary
 provisions fresh ephemeral PostgreSQL databases with the schema applied.
 `shomei-postgres` provides the `Database` effect over a hasql pool, PostgreSQL
-interpreters for every EP-2 store/publisher/signing-key port plus `Clock`, and
+interpreters for every EP-2 store/publisher/signing-key effect plus `Clock`, and
 `Shomei.Crypto` (Argon2id hashing + `PasswordHasher`/`TokenGen` interpreters).
-`cabal test shomei-postgres` is green — all nine cases: the six port round-trips and the
+`cabal test shomei-postgres` is green — all nine cases: the six effect round-trips and the
 three workflow-over-PostgreSQL scenarios (signup persists user+session+token; refresh
 rotation marks the old token `used` and inserts a child with `parent_token_id` set; reuse
 of a used token revokes the whole token family **and** its session). `cabal build all` and
@@ -307,7 +307,7 @@ ephemeral-pg `source-repository-package` pins). Two deliberate deviations from t
 written, both forced by reality and recorded in the Decision Log / Surprises: (1) the
 interpreters target the **as-built EP-2 surface** (UTCTime-carrying revoke ops, PlainPassword,
 four-constructor `RefreshTokenStatus`, opaque-`Text` JWK fields, interpreter-allocated ids,
-typed event `*Data` records), and EP-2 turned out to expose a `TokenGen` port so EP-3 adds a
+typed event `*Data` records), and EP-2 turned out to expose a `TokenGen` effect so EP-3 adds a
 real `runTokenGenCrypto`; (2) the `public_key_jwk`/`private_key_jwk` columns are `text` (opaque
 material per IP-4), not `jsonb`. Library-API corrections vs the plan's sketches: Argon2 `hash`
 returns `CryptoFailable`, hasql 1.10 `preparable` takes `Text`, and the pool is built via
@@ -521,8 +521,8 @@ data TokenError = …
 data ShomeiConfig = …
 ```
 
-The port effects EP-3 must interpret (each is an `effectful` dynamic effect in
-`Shomei.Effect.*`). The operation set per port:
+The effects EP-3 must interpret (each is an `effectful` dynamic effect in
+`Shomei.Effect.*`). The operation set per effect:
 
 ```haskell
 -- Shomei.Effect.UserStore
@@ -574,7 +574,7 @@ data PasswordHasher :: Effect where
   VerifyPassword :: Text -> PasswordHash -> PasswordHasher m Bool
 ```
 
-Each port also exports `send`-wrapper functions (`createUser`, `findUserById`, …); the
+Each effect also exports `send`-wrapper functions (`createUser`, `findUserById`, …); the
 interpreters do not need them, only the GADT constructors.
 
 ### House conventions (apply to every Shōmei module)
@@ -657,15 +657,15 @@ Eighth, register `shomei-migrations` and `shomei-postgres` in `mori.dhall`.
 Acceptance: from the dev shell, `just migrate` exits 0 and `psql -c '\dt shomei.*'`
 lists the six tables; `cabal build shomei-migrations:test-support` succeeds.
 
-### Milestone 2 — the `Database` effect, port interpreters, and Argon2 hasher
+### Milestone 2 — the `Database` effect, effect interpreters, and Argon2 hasher
 
-Scope: stand up `shomei-postgres`. At the end, the `Database` effect, all port
+Scope: stand up `shomei-postgres`. At the end, the `Database` effect, all effect
 interpreters, and the Argon2id hasher compile.
 
 Create `shomei-postgres/shomei-postgres.cabal`. Write
 `src/Shomei/Postgres/Database.hs` (the `Database` effect + `runDatabasePool`), a small
-pool-construction helper, the example `hasql` statements, the port interpreters (one
-module per port group, all under `Shomei.Postgres.*`), and `Shomei.Crypto` (Argon2id +
+pool-construction helper, the example `hasql` statements, the effect interpreters (one
+module per effect group, all under `Shomei.Postgres.*`), and `Shomei.Crypto` (Argon2id +
 token generation + SHA-256 token hashing). Each store/publisher/signing-key interpreter
 translates each operation into a `hasql` `Session`/`Transaction` run via `runSession`/
 `runTransaction`, mapping a `Left UsageError` to a failure (we throw an `Error AuthError`
@@ -676,7 +676,7 @@ Acceptance: `cabal build shomei-postgres` succeeds.
 
 ### Milestone 3 — integration tests, including workflows over PostgreSQL
 
-Scope: prove the adapters satisfy the ports against real PostgreSQL. Write
+Scope: prove the adapters satisfy the effects against real PostgreSQL. Write
 `test-suite shomei-postgres-test` (tasty + tasty-hunit, `-threaded`) depending on
 `shomei-migrations:test-support`. For each test, provision a fresh ephemeral DB via
 `withShomeiMigratedDatabase`, acquire a `hasql` pool against its connection string, run
@@ -1114,7 +1114,7 @@ Add a `Schema.Package::{…}` entry for `shomei-migrations` (path
 cabal-version:      3.0
 name:               shomei-postgres
 version:            0.1.0.0
-synopsis:           PostgreSQL adapters for Shōmei's store/publisher/signing-key ports
+synopsis:           PostgreSQL adapters for Shōmei's store/publisher/signing-key effects
 license:            BSD-3-Clause
 author:             Nadeem Bitar
 maintainer:         nadeem@gmail.com
@@ -1365,9 +1365,9 @@ findRefreshTokenByHashStmt =
     )
 ```
 
-### Step 13 — port interpreters (full for two; the rest follow the same shape)
+### Step 13 — effect interpreters (full for two; the rest follow the same shape)
 
-Every interpreter follows one shape: `interpret_` over the port GADT; each operation
+Every interpreter follows one shape: `interpret_` over the effect GADT; each operation
 builds a `Session`/`Transaction` of one or more statements, runs it via `runSession`/
 `runTransaction`, and translates a `Left UsageError` into a thrown
 `InternalAuthError` via an `Error AuthError` effect. Status enums and `KindID`s are
@@ -1430,7 +1430,7 @@ rebuildUser (uid, e, dn, st, c, u) =
 ```
 
 Note: whether `CreateUser` allocates the `UserId` and timestamps inside the interpreter
-or whether EP-2's workflow supplies them via the `Clock` port and an id generator is an
+or whether EP-2's workflow supplies them via the `Clock` effect and an id generator is an
 EP-2 contract detail. The brief's `NewUser` has only `email`/`displayName`, so the
 interpreter must allocate. Allocate the UUID with `uuid`'s random generator and the
 timestamps via the same `getCurrentTime` the `Clock` interpreter uses. Resolve this
@@ -1591,8 +1591,8 @@ hashRefreshToken tok =
 ```
 
 The token generator and `hashRefreshToken` live here (not in core) because they need
-`crypton`. EP-2's workflows call them through whichever port EP-2 exposes for token
-generation; if EP-2 has no such port, the workflow can call these directly in the
+`crypton`. EP-2's workflows call them through whichever effect EP-2 exposes for token
+generation; if EP-2 has no such effect, the workflow can call these directly in the
 assembly layer (EP-6). Record the integration point in the Decision Log when EP-2 lands.
 
 ### Step 15 — the test suite (`shomei-postgres/test/Main.hs`)
@@ -1605,7 +1605,7 @@ module Main (main) where
 import "shomei-migrations" Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.Database (runDatabasePool)
--- import the interpreters and EP-2 ports/workflows
+-- import the interpreters and EP-2 effects/workflows
 import Test.Tasty (defaultMain, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=), assertBool)
 
@@ -1740,8 +1740,8 @@ encoders), `crypton` (>=1.1.0) + `ram` + `base64-bytestring` (Argon2id, SHA-256,
 constant-time compare, base64 encodings — `ram` is the maintained drop-in replacement for the
 deprecated `memory` package, keeping the `Data.ByteArray` module and `constEq`/`convert`), `aeson` (jsonb payloads and JWK columns),
 `uuid` (TypeID UUID component + random event ids), `time` (timestamps), `effectful` +
-`effectful-core` (the effect system the ports and `Database` effect use),
-`tasty` + `tasty-hunit` (tests). `shomei-core` provides every domain type and port.
+`effectful-core` (the effect system the effects and `Database` effect use),
+`tasty` + `tasty-hunit` (tests). `shomei-core` provides every domain type and effect.
 
 Signatures that must exist at the end of each milestone.
 
@@ -1768,7 +1768,7 @@ runDatabasePool :: (IOE :> es) => Pool -> Eff (Database : es) a -> Eff es a
 -- Shomei.Postgres.Pool
 acquirePool :: Int -> Text -> IO Pool
 
--- One interpreter per port; all share this shape:
+-- One interpreter per effect; all share this shape:
 runUserStorePostgres
   :: (Database :> es, IOE :> es, Error AuthError :> es) => Eff (UserStore : es) a -> Eff es a
 runCredentialStorePostgres

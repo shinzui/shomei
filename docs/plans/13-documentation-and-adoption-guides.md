@@ -116,7 +116,7 @@ This section must always reflect the actual current state of the work.
 - [x] M1: `README.md` written — what Shōmei is, the two modes, the package table, and a
   `nix develop` + `curl` / `shomei-admin` quickstart. Completed 2026-06-10.
 - [x] M1: `docs/architecture.md` written — library-first/transport-agnostic design, package
-  layering, the ports-and-interpreters model, the workflows, the HTTP/middleware layer, and
+  layering, the effects-and-interpreters model, the workflows, the HTTP/middleware layer, and
   persistence. Completed 2026-06-10.
 - [x] M2: `docs/api.md` written — every endpoint (account/session, the account-lifecycle 202
   routes, `/health`, `/ready`, `/metrics`, JWKS) with bodies, status codes, the generic-error

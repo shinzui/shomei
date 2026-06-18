@@ -41,24 +41,24 @@ hasql interpreters** against an ephemeral PostgreSQL that has the **two new migr
 applied, runnable with `nix develop --command cabal test shomei-postgres-test`. Both prove
 behavior, not just that the code compiles.
 
-Concretely, this plan delivers, in Shōmei's hexagonal style (core defines ports with no
+Concretely, this plan delivers, in Shōmei's hexagonal style (core defines effects with no
 infrastructure dependency; `shomei-postgres` interprets them against hasql/PostgreSQL; the
 in-memory interpreter backs the test suite):
 
-- two new core **ports** (effectful dynamic effects): `Shomei.Effect.PasskeyStore` and
+- two new core **effects** (`effectful` dynamic effects): `Shomei.Effect.PasskeyStore` and
   `Shomei.Effect.PendingCeremonyStore`;
 - their **in-memory interpreters** (extending `Shomei.Effect.InMemory.World`);
 - their **PostgreSQL interpreters** (`Shomei.Postgres.PasskeyStore` and
   `Shomei.Postgres.PendingCeremonyStore`);
 - two new **codd migrations** creating the `shomei_webauthn_credentials` and
   `shomei_webauthn_pending_ceremonies` tables;
-- the wiring that inserts both new ports into every **effect-stack list** Shōmei keeps in
+- the wiring that inserts both new effects into every **effect-stack list** Shōmei keeps in
   lock-step.
 
 This plan is **EP-2** of MasterPlan 3. Its only hard dependency is **EP-1**
 (`docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md`), which
 defines the shared passkey **domain types** this plan persists. EP-1 also adds the
-`WebAuthnCeremony` port to the effect stacks (right after `Notifier`); this plan must not
+`WebAuthnCeremony` effect to the effect stacks (right after `Notifier`); this plan must not
 move that entry. See "Context and Orientation" for the exact domain-type contract, which is
 reproduced here so this plan is self-contained even if EP-1's document is still a skeleton
 when you read it.
@@ -70,15 +70,15 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-### Milestone 1 — core ports + in-memory interpreters + non-DB stack wiring
+### Milestone 1 — core effects + in-memory interpreters + non-DB stack wiring
 
 - [x] Confirm EP-1's `Shomei.Domain.Passkey` module exists and exports the domain types and
       ids listed in "Context and Orientation". (Verified: module + `Shomei.Id` ids/codecs all
       present — EP-1 is Complete.)
 - [x] Add `PasskeyId` / `CeremonyId` to `Shomei.Id` IF EP-1 has not already. (Not needed —
       EP-1 already defined both ids and their gen/UUID helpers.)
-- [x] Create `shomei-core/src/Shomei/Effect/PasskeyStore.hs` (the port + smart constructors).
-- [x] Create `shomei-core/src/Shomei/Effect/PendingCeremonyStore.hs` (the port + smart
+- [x] Create `shomei-core/src/Shomei/Effect/PasskeyStore.hs` (the effect + smart constructors).
+- [x] Create `shomei-core/src/Shomei/Effect/PendingCeremonyStore.hs` (the effect + smart
       constructors).
 - [x] Add both modules to `shomei-core.cabal` `exposed-modules`.
 - [x] Extend `Shomei.Effect.InMemory.World` with `passkeys` and `pendingCeremonies` fields;
@@ -129,7 +129,7 @@ This section must always reflect the actual current state of the work.
 
 ### Remaining / follow-on (not this plan)
 
-- [ ] EP-3 / EP-4 consume these ports. Not in scope here.
+- [ ] EP-3 / EP-4 consume these effects. Not in scope here.
 
 
 ## Surprises & Discoveries
@@ -148,7 +148,7 @@ Confirmed during implementation (2026-06-17):
   comment) was sufficient to force the `embedDir` splice to re-run; no `.cabal` edit was
   needed (the `extra-source-files: sql-migrations/*.sql` glob already covers new files).
 - **EP-1 had already landed `WebAuthnCeremony` after `Notifier` in every stack** (the master
-  plan marks EP-1 Complete). As instructed, it was left untouched and the two new ports were
+  plan marks EP-1 Complete). As instructed, it was left untouched and the two new effects were
   inserted between `LoginAttemptStore` and `Notifier`. The canonical order is now
   `… LoginAttemptStore, PasskeyStore, PendingCeremonyStore, Notifier, WebAuthnCeremony …`.
 - **The composition order is the exact reverse of the type-list order** (the head of the
@@ -231,7 +231,7 @@ Record every decision made while working on the plan.
   passkey id leaks. The two finders are used by the authentication/login path (EP-4), which
   looks a credential up *before* it knows which user is authenticating (passwordless
   discovery keys off the credential id / user handle the browser returns), so they must not
-  be user-scoped. This matches the canonical port contract in MasterPlan 3 IP-2.
+  be user-scoped. This matches the canonical effect contract in MasterPlan 3 IP-2.
   Date: 2026-06-17
 
 - Decision: Confirmed `shomei-migrations.cabal` already globs the new `.sql` files via
@@ -286,11 +286,11 @@ stash a pending ceremony and consume it exactly once" — is now demonstrable tw
   the `DELETE … RETURNING` count assertions (a second take returns `Nothing`; an expired take
   returns `Nothing` yet still removes the stale row).
 
-`cabal build all` and `cabal test all` are green across all 11 suites. The two new ports sit
+`cabal build all` and `cabal test all` are green across all 11 suites. The two new effects sit
 in every effect-stack list between `LoginAttemptStore` and `Notifier`, leaving EP-1's
 `WebAuthnCeremony` untouched. The embedded migration count rose 12 → 14.
 
-**Gaps / deferred (as planned):** EP-3 (enrollment) and EP-4 (login/MFA) consume these ports
+**Gaps / deferred (as planned):** EP-3 (enrollment) and EP-4 (login/MFA) consume these effects
 and own their HTTP surfaces; not in scope here. `DeleteExpiredCeremonies` is implemented and
 wired but has no caller yet (the future sweeper/cron is EP-4's or operational concern).
 
@@ -310,17 +310,17 @@ Shōmei is a multi-package Haskell authentication toolkit built with GHC 9.12.4 
 `effectful` effect system. It is **hexagonal**:
 
 - `shomei-core` (`shomei-core/src/Shomei/…`) holds the domain model — pure types, the
-  workflows, and the **ports**. A port is a dynamic `effectful` effect: a GADT named like
+  workflows, and the **effects**. An effect is a dynamic `effectful` effect: a GADT named like
   `data Foo :: Effect where …` plus small `send`-based smart constructors. The core has **no
   database, JWT, or HTTP dependency**. This is the invariant you must preserve: nothing you
   add to `shomei-core` may import hasql, a WebAuthn library, or servant.
-- `shomei-postgres` (`shomei-postgres/src/Shomei/Postgres/…`) **interprets** those ports
+- `shomei-postgres` (`shomei-postgres/src/Shomei/Postgres/…`) **interprets** those effects
   against PostgreSQL using the `hasql` library. Each interpreter is a function
   `run<Port>Postgres :: (Database :> es, IOE :> es, Error AuthError :> es) => Eff (<Port> :
   es) a -> Eff es a`.
 - `shomei-core/src/Shomei/Effect/InMemory.hs` provides a pure, IORef-backed interpreter for
-  **every** port, used by the test suites. A single mutable `World` record holds all the
-  in-memory maps; `runInMemory` stacks one interpreter per port over `IOE`.
+  **every** effect, used by the test suites. A single mutable `World` record holds all the
+  in-memory maps; `runInMemory` stacks one interpreter per effect over `IOE`.
 - `shomei-migrations` owns the PostgreSQL schema as timestamped `.sql` files under
   `sql-migrations/`, embedded at compile time and applied by the `codd` migration tool.
 - `shomei-servant` exposes HTTP; `shomei-server` assembles everything into a runnable binary.
@@ -409,7 +409,7 @@ login path and gets a `UNIQUE` index.
 ### The store this plan mirrors
 
 `shomei-core/src/Shomei/Effect/VerificationTokenStore.hs` is the **template** for a core
-port (GADT + `type instance DispatchOf … = Dynamic` + one smart constructor per operation).
+effect (GADT + `type instance DispatchOf … = Dynamic` + one smart constructor per operation).
 `shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs` is the template for a
 PostgreSQL interpreter (a `Statement` per operation built with `preparable`, hasql
 `Hasql.Encoders`/`Hasql.Decoders`, `contrazipN` from `contravariant-extras` to combine
@@ -420,7 +420,7 @@ writing code.
 
 ### The effect-stack lists that must stay in lock-step
 
-Five lists enumerate the port stack in the same relative order, and the workflows rely on
+Five lists enumerate the effect stack in the same relative order, and the workflows rely on
 that order being identical across all of them:
 
 1. `Shomei.Servant.Seam.AppEffects` (`shomei-servant/src/Shomei/Servant/Seam.hs`).
@@ -438,15 +438,15 @@ This plan inserts `PasskeyStore` then `PendingCeremonyStore` immediately **after
 
 ## Plan of Work
 
-The work splits cleanly into two independently verifiable milestones. M1 is the core ports
+The work splits cleanly into two independently verifiable milestones. M1 is the core effects
 plus their in-memory interpreters plus the non-database stack wiring — it needs no
 PostgreSQL and is verified by a pure `shomei-core` test. M2 is the migrations plus the
 PostgreSQL interpreters plus the database stack wiring — verified by the `shomei-postgres`
 integration test against an ephemeral PostgreSQL.
 
-### Milestone 1 — core ports, in-memory interpreters, non-DB wiring
+### Milestone 1 — core effects, in-memory interpreters, non-DB wiring
 
-**Scope and end state.** At the end of M1, `shomei-core` exports two new ports and their
+**Scope and end state.** At the end of M1, `shomei-core` exports two new effects and their
 in-memory interpreters, the servant and server `AppEffects` lists contain the two new
 entries, and a new pure test exercises every operation of both stores against the fake
 `World`. `nix develop --command cabal build all` and
@@ -496,7 +496,7 @@ entries, and a new pure test exercises every operation of both stores against th
    constructors. Document on `TakePendingCeremony` that it is **consume-once**: it removes
    the row and returns it only if present AND not yet expired (`expiresAt > now`); it returns
    `Nothing` if the ceremony is absent OR expired. The `UTCTime` argument is "now", supplied
-   by the caller (the workflow reads it from the `Clock` port).
+   by the caller (the workflow reads it from the `Clock` effect).
 
 3. **`shomei-core/shomei-core.cabal`.** Add the two modules to the library's
    `exposed-modules` (alphabetically: after `Shomei.Effect.PasswordResetTokenStore` add
@@ -567,7 +567,7 @@ entries, and a new pure test exercises every operation of both stores against th
 6. **`shomei-server/src/Shomei/Server/App.hs`.** Add the two imports and insert the two
    entries into the `AppEffects` type list in the same position. (The `runAppIO` chain edit
    is deferred to M2, where the PostgreSQL interpreters exist; if you compile after this step
-   only, `AppEffects` will list ports with no interpreter and `runAppIO` will not
+   only, `AppEffects` will list effects with no interpreter and `runAppIO` will not
    type-check — so do step 6 and M2 step 4 together if you want `shomei-server` to compile in
    isolation. It is fine to let `shomei-server` be temporarily uncompilable between M1 and M2
    as long as `cabal build shomei-core` and `cabal test shomei-core-test` are green at the M1
@@ -594,7 +594,7 @@ entries, and a new pure test exercises every operation of both stores against th
 `shomei_webauthn_credentials` and `shomei_webauthn_pending_ceremonies` tables; the embedded
 migration count has grown from 12 to 14; `shomei-postgres` exports the two PostgreSQL
 interpreters; the server `runAppIO` and the `shomei-postgres` test harness interpret the two
-new ports; and a new set of integration test cases proves insert/query-three-ways/update/
+new effects; and a new set of integration test cases proves insert/query-three-ways/update/
 delete for a passkey and consume-exactly-once for a pending ceremony against a real
 PostgreSQL. `nix develop --command cabal build all` and
 `nix develop --command cabal test shomei-postgres-test` are green.
@@ -706,7 +706,7 @@ PostgreSQL. `nix develop --command cabal build all` and
    and `. runLoginAttemptStorePostgres` in the source text (same head-last reasoning as the
    in-memory chain). Verify by compiling.
 
-8. **`shomei-postgres/test/Main.hs`.** Imports the two interpreters and the two ports' smart
+8. **`shomei-postgres/test/Main.hs`.** Imports the two interpreters and the two effects' smart
    constructors and the `Shomei.Domain.Passkey`/`Shomei.Id` types. Insert `PasskeyStore` and
    `PendingCeremonyStore` after `LoginAttemptStore` in the test `AppEffects`, and insert
    `. runPasskeyStorePostgres . runPendingCeremonyStorePostgres` in the same relative
@@ -972,8 +972,8 @@ not recompile — re-touch `Migrations.hs` and rebuild `shomei-migrations`.
 
 Libraries and modules used, and why:
 
-- **`effectful` / `effectful-core`** — the effect system; the two new ports are dynamic
-  effects (`type instance DispatchOf … = Dynamic`) interpreted with `interpret_`.
+- **`effectful` / `effectful-core`** — the effect system; the two new effects are dynamic
+  (`type instance DispatchOf … = Dynamic`) interpreted with `interpret_`.
 - **`hasql` (`Hasql.Encoders`, `Hasql.Decoders`, `Hasql.Statement`, `Hasql.Session`)** — the
   PostgreSQL access layer. Encoders/decoders used: `uuid`, `bytea`, `int8` (the bigint sign
   counter, over `Int64`), `jsonb` (the transports array, over aeson `Value`), `text`,
@@ -995,7 +995,7 @@ Libraries and modules used, and why:
 - **`Shomei.Id`** — `PasskeyId`/`CeremonyId` and their gen/UUID helpers (EP-1).
 - **Consumers (later plans):**
   `docs/plans/17-passkey-enrollment-workflow-and-management-api.md` (EP-3) and
-  `docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md` (EP-4) consume these ports;
+  `docs/plans/18-passkey-login-mfa-step-up-and-passwordless.md` (EP-4) consume these effects;
   this plan must not depend on them.
 
 ### Types and functions that must exist at the end of each milestone
@@ -1066,5 +1066,5 @@ PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher, SigningKeyStore,
 > `SigningKeyStore`, `TokenSigner`, `PasswordHasher`, `TokenGen`, `Clock`). Do NOT
 > "normalize" that pre-existing tail — only insert `PasskeyStore, PendingCeremonyStore`
 > after `LoginAttemptStore` and before `Notifier`, matching the rule "add exactly your two
-> entries in the same relative position, reorder nothing else." The two new ports sit above
+> entries in the same relative position, reorder nothing else." The two new effects sit above
 > `Notifier` in every list, which is the invariant that matters for the workflows.

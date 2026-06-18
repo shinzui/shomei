@@ -430,7 +430,7 @@ cabal-version: 3.0
 name:          shomei-core
 version:       0.1.0.0
 synopsis:
-    Transport-agnostic domain: types, commands, events, errors, and ports
+    Transport-agnostic domain: types, commands, events, errors, and effects
 
 description:
     shomei-core contains the domain model that does not depend on any
@@ -578,7 +578,7 @@ cabal-version: 3.0
 name:          shomei-postgres
 version:       0.1.0.0
 synopsis:
-    PostgreSQL implementations of the core store ports and audit-event publisher
+    PostgreSQL implementations of the core store effects and audit-event publisher
 
 license:       MIT
 author:        Nadeem Bitar

@@ -26,7 +26,7 @@ independent things — a password you *know* plus a device you *have*), and acce
 on its own as a passwordless login. Those four plans are:
 
 - **EP-1** (`docs/plans/15-webauthn-ceremony-port-and-shomei-webauthn-interpreter-package.md`)
-  — the WebAuthn ceremony port, the passkey domain types, the new `shomei-webauthn` package,
+  — the WebAuthn ceremony effect, the passkey domain types, the new `shomei-webauthn` package,
   and the `webauthnConfig` sub-record on `ShomeiConfig`.
 - **EP-2** (`docs/plans/16-passkey-and-pending-ceremony-persistence.md`) — the PostgreSQL and
   in-memory stores for passkeys and the short-lived ceremony state.

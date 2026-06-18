@@ -455,7 +455,7 @@ conventions verbatim.
   `cabal build all`, test with `cabal test <pkg>`, format with `nix fmt` (fourmolu 0.19.0.1,
   4-space indent, leading-comma style) — **all inside `nix develop`** (entered automatically by
   `direnv` from `.envrc`, or manually with `nix develop`).
-- Every `.cabal` stanza writes `imeffect: warnings, shared`. The `shared` stanza's
+- Every `.cabal` stanza writes `import: warnings, shared`. The `shared` stanza's
   `default-extensions` include `DeriveAnyClass DuplicateRecordFields BlockArguments
   MultilineStrings OverloadedLabels OverloadedRecordDot OverloadedStrings PackageImports
   QualifiedDo TemplateHaskell` (and, in the postgres package, `DataKinds GADTs LambdaCase

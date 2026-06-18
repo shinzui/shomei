@@ -327,7 +327,7 @@ schema + runner), `shomei-servant` (HTTP API types), `shomei-server` (the runnab
   `UTCTime`, `liftIO`, `toJSON`, the aeson class surface, etc. (Caution from prior plans:
   importing a name the prelude already re-exports triggers `-Wall`'s `-Wunused-imports`; take
   only the *additional* names from `Effectful`/`Data.Aeson`.)
-- Each `.cabal` imports two shared `common` stanzas via `imeffect: warnings, shared`. `warnings`
+- Each `.cabal` imports two shared `common` stanzas via `import: warnings, shared`. `warnings`
   enables `-Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns
   -Wpartial-fields -Wredundant-constraints`. `shared` sets `default-extensions: BlockArguments,
   DeriveAnyClass, DuplicateRecordFields, MultilineStrings, OverloadedLabels, OverloadedRecordDot,
@@ -597,7 +597,7 @@ shomei-server` stanza). The test-suite stanza is added here too (used from M1 on
 
 ```cabal
 executable shomei-admin
-  imeffect:         warnings, shared
+  import:         warnings, shared
   hs-source-dirs: app
   main-is:        Admin.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
@@ -623,7 +623,7 @@ executable shomei-admin
     , time
 
 test-suite shomei-admin-test
-  imeffect:         warnings, shared
+  import:         warnings, shared
   type:           exitcode-stdio-1.0
   hs-source-dirs: app, test
   main-is:        Admin/Main.hs

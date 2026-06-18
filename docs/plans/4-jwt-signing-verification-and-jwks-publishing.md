@@ -51,10 +51,10 @@ unrelated key B — demonstrating that selection by `kid` works. The final accep
 command `cabal test shomei-jwt` printing `All N tests passed`.
 
 This package is deliberately narrow. It depends only on `shomei-core` (for the domain types
-and the port effect interfaces) plus the `jose` cryptography library and its `crypton`
+and the effect interfaces) plus the `jose` cryptography library and its `crypton`
 backend. It must **not** depend on `shomei-postgres`: signing keys reach this package as
-plain records through the `SigningKeyStore` port effect, and the PostgreSQL implementation
-of that port is wired up by a later, separate plan (EP-6). Keeping `shomei-jwt` ignorant of
+plain records through the `SigningKeyStore` effect, and the PostgreSQL implementation
+of that effect is wired up by a later, separate plan (EP-6). Keeping `shomei-jwt` ignorant of
 the database is what lets it be tested in complete isolation and reused in the embedded
 deployment mode where there may be no Shōmei database at all.
 
@@ -291,11 +291,11 @@ Record every decision made while working on the plan.
 
 - Decision: `currentJwks` publishes whatever `listActiveSigningKeys` returns (filtered to
   non-revoked), rather than adding a new `ListNonRevokedSigningKeys` query to the
-  `SigningKeyStore` port now.
+  `SigningKeyStore` effect now.
   Rationale: The EP-2 `SigningKeyStore` contract's `listActiveSigningKeys` returns only
   `KeyActive` keys (confirmed in `Shomei.Effect.InMemory`: `activeKeys w = [k | …, k.status ==
   KeyActive]`). Including retired-but-valid keys in the JWKS (the zero-downtime-rotation goal)
-  would require extending the port — an EP-2 signature change with a cascade to EP-3's postgres
+  would require extending the effect — an EP-2 signature change with a cascade to EP-3's postgres
   interpreter (MasterPlan IP-3). None of the bootstrap acceptance scenarios (a–h) exercise
   rotation, so the minimal correct behavior for now is to publish the active key(s) and filter
   out revoked ones defensively. Adding the non-revoked query is deferred to whichever later
@@ -304,9 +304,9 @@ Record every decision made while working on the plan.
 
 - Decision: `shomei-jwt` depends only on `shomei-core` plus `jose`/`crypton` and supporting
   libraries; it does **not** depend on `shomei-postgres`.
-  Rationale: Signing keys cross into this package through the `SigningKeyStore` port effect as
+  Rationale: Signing keys cross into this package through the `SigningKeyStore` effect as
   storage-agnostic `StoredSigningKey` records (MasterPlan IP-3, IP-4). The PostgreSQL
-  interpreter of that port is provided by `shomei-postgres` and assembled by EP-6. Keeping the
+  interpreter of that effect is provided by `shomei-postgres` and assembled by EP-6. Keeping the
   dependency out preserves isolated testability and the embedded deployment mode.
   Date: 2026-06-03
 
@@ -337,7 +337,7 @@ the crypto stack — no `shomei-postgres` dependency — so it stays testable in
 reusable in the embedded deployment mode.
 
 **Gaps / deferrals.** (1) `currentJwks` publishes only the active key(s) until the
-`SigningKeyStore` port gains a non-revoked query (Decision Log); overlapping-key rotation is
+`SigningKeyStore` effect gains a non-revoked query (Decision Log); overlapping-key rotation is
 not yet demonstrable end-to-end. (2) Custom claims still use the jose-deprecated
 `addClaim`/`unregisteredClaims`; a `HasClaimsSet` payload subtype is the eventual clean path.
 
@@ -364,7 +364,7 @@ repository containing several related but separately-built packages). The reposi
 (`docs/plans/1-project-scaffolding-and-multi-package-build-foundation.md`), creates the cabal
 workspace, the shared build conventions, and a package skeleton at `shomei-jwt`. A
 prior plan, EP-2 (`docs/plans/2-core-domain-model-ports-and-auth-workflows.md`), fills the
-`shomei-core` package with the domain types and the **port effects** this plan consumes and
+`shomei-core` package with the domain types and the **effects** this plan consumes and
 interprets. If you are starting and those packages do not yet exist on disk, that is expected
 only if EP-1/EP-2 have not run; this plan assumes they have, and the precise types it depends
 on are reproduced below so you do not have to read the other plans.
@@ -472,7 +472,7 @@ data ShomeiConfig = ShomeiConfig
   }
 ```
 
-The port effects (`Shomei.Effect.*`), each a dynamic `effectful` effect. This plan **interprets**
+The effects (`Shomei.Effect.*`), each a dynamic `effectful` effect. This plan **interprets**
 `TokenSigner` and `TokenVerifier`, and **consumes** `SigningKeyStore` and `Clock`:
 
 ```haskell
@@ -1308,7 +1308,7 @@ self-contained (they generate their own keys), so they can be run any number of 
 
 This package depends on `shomei-core` (for `AuthClaims`, `AccessToken`, `TokenError`,
 `StoredSigningKey`, `SigningKeyStatus`, `ShomeiConfig`, the `Shomei.Id` helpers, and the
-`TokenSigner`/`TokenVerifier`/`SigningKeyStore`/`Clock` port effects) and on the cryptography
+`TokenSigner`/`TokenVerifier`/`SigningKeyStore`/`Clock` effects) and on the cryptography
 stack: `jose` (JWS/JWK/JWKS), `lens` (jose's API is lens-based), `aeson` (JWK/claim JSON),
 `crypton` (>=1.1.0)/`ram`/`base64-bytestring` (hashing and Base64URL for thumbprints; `ram`
 is the maintained drop-in for the deprecated `memory` package), `mtl` (the
@@ -1316,7 +1316,7 @@ is the maintained drop-in for the deprecated `memory` package), `mtl` (the
 scopes/roles/custom claims), `effectful`/`effectful-core` (the interpreters), and `monad-time`
 (the `MonadTime IO` instance jose's `verifyClaims` requires). It depends on `tasty` and
 `tasty-hunit` for tests. It must **not** depend on `shomei-postgres`: signing keys arrive
-through the `SigningKeyStore` port effect, whose PostgreSQL interpreter is supplied separately
+through the `SigningKeyStore` effect, whose PostgreSQL interpreter is supplied separately
 by `shomei-postgres` and assembled by EP-6.
 
 The interfaces that must exist at the end of each milestone, by full module path, are:

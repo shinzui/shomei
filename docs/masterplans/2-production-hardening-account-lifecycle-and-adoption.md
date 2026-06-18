@@ -318,7 +318,7 @@ see Decision Log); if a new `shomei-cli`/`shomei-notify` package is introduced i
 register it in `mori.dhall` as MasterPlan 1 EP-3 did for `shomei-migrations`.
 
 **IP-9 — Audit-event read layer over the shared effect stacks.** **EP-7** adds the *read*
-counterpart to EP-3's write-only audit-event stream: a new `effectful` port
+counterpart to EP-3's write-only audit-event stream: a new `effectful` effect
 `Shomei.Effect.AuthEventReader` in `shomei-core` and its PostgreSQL interpreter
 `Shomei.Postgres.AuthEventReader.runAuthEventReaderPostgres`, both consuming the
 `shomei_auth_events` table and the `AuthEvent` vocabulary (`shomei-core/src/Shomei/Domain/Event.hs`)
@@ -353,8 +353,8 @@ Milestone-level tracking across all child plans. Updated as each plan's mileston
 - [x] EP-5: typed Dhall/env config loader assembles the fully-extended `ShomeiConfig` (via `dhall-to-json` + aeson; test green, 2026-06-10)
 - [~] EP-5: production OCI image (`flake.module.nix`) + CI workflow authored; image build NOT run in the dev sandbox (deferred to CI/deploy host). Local dev/test stack is `process-compose up --no-server` (Unix-socket PostgreSQL + schema + key bootstrap + server) — `docker compose` was dropped 2026-06-17 (see Decision Log). **Verified live end-to-end 2026-06-17**: clean `process-compose up --no-server` brings the stack to `/ready` 200 (`database:true, signingKey:true`), JWKS serves the active key, signup→login returns an ES256 token, `/metrics` exports counters, and SIGINT drains gracefully. Three regressions in the committed `process-compose.yaml` were found and fixed during this verification (see Surprises & Discoveries, 2026-06-17).
 - [x] EP-6: `docs/{architecture,api,security,deployment}.md` + getting-started `README.md` written, grounded in the finished EP-1..EP-5 surface (2026-06-10)
-- [x] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` port + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `Shomei.Domain.EventCodec.reconstructAuthEvent`/`projectAuthEvent` (round-trip spec pins all 24 constructors; interpreter test green, 2026-06-17)
-- [x] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403, no token → 401, bad UUID → 400); in-memory `AuthEventReader` added so the servant e2e test interprets the port
+- [x] EP-7: read/query layer — `Shomei.Effect.AuthEventReader` effect + `runAuthEventReaderPostgres` interpreter (filtered, keyset-paginated reads over `shomei_auth_events`) + `Shomei.Domain.EventCodec.reconstructAuthEvent`/`projectAuthEvent` (round-trip spec pins all 24 constructors; interpreter test green, 2026-06-17)
+- [x] EP-7: admin-gated `GET /admin/audit/events` HTTP endpoint with filters + keyset pagination (admin token → 200, non-admin → 403, no token → 401, bad UUID → 400); in-memory `AuthEventReader` added so the servant e2e test interprets the effect
 - [x] EP-7: `shomei-admin audit` subcommand group (`events`/`user`/`session`/`count`, tab-separated + `--json` NDJSON); integration-tested + live-verified against the dev socket Postgres (2026-06-17)
 - [x] EP-7: docs + runbook — `docs/security.md` (runbook + admin-role limitation), `docs/api.md`, and a forward note in EP-3's plan. **EP-7 is Complete.**
 
@@ -566,7 +566,7 @@ recorded here because they cross plan boundaries or touch MasterPlan-1-owned art
 - Decision: Add **EP-7 (Audit log retrieval API and CLI)** as a seventh child plan (Phase 4),
   delivered as a single ExecPlan rather than a new MasterPlan or a multi-plan decomposition.
   Rationale: The user asked for a retrieval surface (CLI + API) over the existing audit-event
-  trail. The work is one shared read/query layer (`AuthEventReader` port + PostgreSQL
+  trail. The work is one shared read/query layer (`AuthEventReader` effect + PostgreSQL
   interpreter) with two thin surfaces on top; coordination is trivially linear (foundation,
   then two independent leaves), which the MasterPlan spec identifies as the signature of a
   single ExecPlan, not a MasterPlan ("a MasterPlan adds value only when coordination across

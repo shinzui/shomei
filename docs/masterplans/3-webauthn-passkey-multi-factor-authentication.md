@@ -75,7 +75,7 @@ yields no usable token.
 
 **In scope.** Server-side (Relying Party) WebAuthn 2 registration and authentication
 ceremonies via the `tweag/webauthn` Haskell library (`webauthn 0.11.0.0`); a new
-`shomei-webauthn` package interpreting a transport-agnostic ceremony port; passkey and
+`shomei-webauthn` package interpreting a transport-agnostic ceremony effect; passkey and
 pending-ceremony persistence (PostgreSQL + in-memory) with new codd migrations; the
 enrollment and passkey-management HTTP surface; the password-then-passkey **MFA step-up**
 login flow and a **passwordless passkey login** path; a `webauthnConfig` sub-record on
@@ -106,29 +106,29 @@ point (IP-8) every caller must handle.
 ## Decomposition Strategy
 
 The initiative is decomposed by **functional concern**, respecting Shōmei's hexagonal
-layering: the transport-agnostic core (`shomei-core`) defines domain types, ports (effect
-interfaces), and workflows with **no infrastructure dependencies**; infrastructure packages
-(`shomei-jwt`, `shomei-postgres`, and the new `shomei-webauthn`) interpret those ports
+layering: the transport-agnostic core (`shomei-core`) defines domain types, effect
+interfaces, and workflows with **no infrastructure dependencies**; infrastructure packages
+(`shomei-jwt`, `shomei-postgres`, and the new `shomei-webauthn`) interpret those effects
 against real libraries; `shomei-servant` exposes HTTP routes/handlers/DTOs; `shomei-server`
 assembles everything; `shomei-client`/`docs` deliver adoption. The single hardest problem
 is keeping the heavy `webauthn` library (it pulls in `crypton-x509`, `cborg`, `serialise`)
 **out of the core** while still letting core workflows orchestrate the ceremonies — solved
-by a `Value`-boundary port (IP-1) so the core never names a WebAuthn library type.
+by a `Value`-boundary effect (IP-1) so the core never names a WebAuthn library type.
 
 Five child plans are grouped into five implementation phases (phases 3 and 4 overlap):
 
-- **Phase 1 — Foundation.** EP-1 (plan 15) introduces the `WebAuthnCeremony` port in
+- **Phase 1 — Foundation.** EP-1 (plan 15) introduces the `WebAuthnCeremony` effect in
   `shomei-core` (whose operations cross the boundary as aeson `Value`s plus Shōmei domain
   result types, so core takes no `webauthn` dependency), the `webauthnConfig` sub-record on
-  `ShomeiConfig`, and the new `shomei-webauthn` package that interprets the port against
+  `ShomeiConfig`, and the new `shomei-webauthn` package that interprets the effect against
   `webauthn 0.11.0.0`. Because the library is tested with GHC 9.10.3 and Shōmei builds with
   GHC 9.12.4, EP-1 includes a **prototyping milestone** that proves the dependency builds in
   `nix develop` (adding any `allow-newer`) and that a full register→authenticate ceremony
   verifies through the interpreter, including the strategy for serializing the pending
   `CredentialOptions` for later persistence. It is first because every other plan needs the
-  ceremony port and the package.
+  ceremony effect and the package.
 
-- **Phase 2 — Persistence.** EP-2 (plan 16) introduces the two storage ports —
+- **Phase 2 — Persistence.** EP-2 (plan 16) introduces the two storage effects —
   `PasskeyStore` (the registered public-key credentials) and `PendingCeremonyStore` (the
   short-lived challenge/options state, consumed once) — in `shomei-core`, their PostgreSQL
   interpreters in `shomei-postgres`, their in-memory interpreters in
@@ -144,7 +144,7 @@ Five child plans are grouped into five implementation phases (phases 3 and 4 ove
   `POST /auth/passkeys/register/begin`, `POST /auth/passkeys/register/complete`,
   `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}`, their DTOs and handlers, server
   assembly of the new interpreters, and the `PasskeyRegistered`/`PasskeyRemoved` audit
-  events. It hard-depends on EP-1 (ceremony port) and EP-2 (stores).
+  events. It hard-depends on EP-1 (ceremony effect) and EP-2 (stores).
 
 - **Phase 4 — Authentication (the MFA step-up).** EP-4 (plan 18) delivers the multi-factor
   login: it widens `Shomei.Workflow.login` to return `LoginComplete` or `MfaRequired`,
@@ -203,16 +203,16 @@ Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3
 ## Dependency Graph
 
 The hard ordering inside this MasterPlan is rooted at **EP-1**, which every other plan
-needs because it defines the `WebAuthnCeremony` port (IP-1), the `webauthnConfig` config
+needs because it defines the `WebAuthnCeremony` effect (IP-1), the `webauthnConfig` config
 sub-record (IP-3), and the `shomei-webauthn` package (IP-7) plus the shared passkey domain
-types that EP-2's storage ports persist.
+types that EP-2's storage effects persist.
 
 EP-2 hard-depends on EP-1 for those shared domain types (`PasskeyCredential`,
-`PendingCeremony`, the WebAuthn id newtypes). EP-2 then defines the two storage ports and
+`PendingCeremony`, the WebAuthn id newtypes). EP-2 then defines the two storage effects and
 their interpreters and owns the migration convention (IP-5) and the effect-stack-extension
 convention (IP-6).
 
-EP-3 (enrollment) and EP-4 (authentication) both hard-depend on EP-1 (ceremony port) and
+EP-3 (enrollment) and EP-4 (authentication) both hard-depend on EP-1 (ceremony effect) and
 EP-2 (stores), and are otherwise **independent of each other** — they add disjoint routes
 (passkey management vs MFA/login) and disjoint workflows. They can be built in **parallel**
 once EP-2 lands. EP-4 soft-depends on EP-3 only so an operator can enroll a passkey before
@@ -230,7 +230,7 @@ finalized last.
 
 ## Integration Points
 
-**IP-1 — `WebAuthnCeremony` port (the ceremony/verification effect).** A new dynamic
+**IP-1 — `WebAuthnCeremony` effect (the ceremony/verification effect).** A new dynamic
 `effectful` effect in `shomei-core/src/Shomei/Effect/WebAuthnCeremony.hs`. Its operations
 cross the package boundary using only **aeson `Value`** (already a core dependency) and
 Shōmei domain types, so `shomei-core` never imports a `webauthn` library type. The intended
@@ -261,7 +261,7 @@ ops) and EP-4 (authentication ops). Rule: the effect signature is owned by EP-1;
 must not change it without a Decision Log entry here. The interpreter closes over the RP
 configuration from IP-3.
 
-**IP-2 — `PasskeyStore` and `PendingCeremonyStore` ports.** Two new dynamic `effectful`
+**IP-2 — `PasskeyStore` and `PendingCeremonyStore` effects.** Two new dynamic `effectful`
 effects in `shomei-core/src/Shomei/Effect/`. `PasskeyStore` persists the registered
 public-key credentials: create a credential, list a user's credentials, find one by its
 WebAuthn credential id, update its signature counter, delete one by Shōmei id, and (for
@@ -314,8 +314,8 @@ later than the existing `2026-06-05-*` files. **Reminder (MasterPlan 2 discovery
 `shomei-migrations/src/Shomei/Migrations.hs` is required to force the `embedDir` Template
 Haskell splice to re-run; verify the embedded count grows before trusting tests.
 
-**IP-6 — the shared effect-stack lists.** The new ports must be appended to every list/chain
-that enumerates the Shōmei port stack, mirroring how MasterPlan 2's IP-9 added
+**IP-6 — the shared effect-stack lists.** The new effects must be appended to every list/chain
+that enumerates the Shōmei effect stack, mirroring how MasterPlan 2's IP-9 added
 `AuthEventReader`: `Shomei.Servant.Seam.AppEffects` (servant stack), `Shomei.Server.App.AppEffects`
 and its `runAppIO` interpreter chain (server stack), `Shomei.Effect.InMemory.runInMemory`
 (test stack), and the `shomei-postgres` test `AppEffects`. **EP-1** adds `WebAuthnCeremony`;
@@ -360,9 +360,9 @@ updated in EP-4 except the client: `Shomei.Servant.Handlers.loginH`, the `LoginR
 Milestone-level tracking across all child plans. Updated as each plan's milestones land.
 
 - [x] EP-1: `webauthn 0.11.0.0` builds in `nix develop` on GHC 9.12.4 (patched fork `shinzui/webauthn-project` @ `a8b5636`, pinned as a source-repository-package; `allow-newer: webauthn:*`); a register→authenticate ceremony verifies (the fork's own emulation test, real ECDSA, 100 cases), and the pending-options WJ-JSON serialization round-trips (100 cases) — 2026-06-17
-- [x] EP-1: `WebAuthnCeremony` port in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`; deterministic fake interpreter + core unit test; port slotted into all effect-stack lists (server uses a temporary stub until M2) — `cabal build all`/`test all` green — 2026-06-17
-- [x] EP-1: `shomei-webauthn` package interprets the port against the library; registered in `cabal.project` + `mori.dhall`; wired into the server's `runAppIO`; `cabal build all`/`cabal test all` green (11 suites); `mori show --full` lists it — 2026-06-17
-- [x] EP-2: `PasskeyStore` + `PendingCeremonyStore` ports + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grew 12→14); pure `PasskeyStoreSpec` green — 2026-06-17
+- [x] EP-1: `WebAuthnCeremony` effect in `shomei-core` (Value-boundary) + Shōmei result domain types; `webauthnConfig` sub-record on `ShomeiConfig`; deterministic fake interpreter + core unit test; effect slotted into all effect-stack lists (server uses a temporary stub until M2) — `cabal build all`/`test all` green — 2026-06-17
+- [x] EP-1: `shomei-webauthn` package interprets the effect against the library; registered in `cabal.project` + `mori.dhall`; wired into the server's `runAppIO`; `cabal build all`/`cabal test all` green (11 suites); `mori show --full` lists it — 2026-06-17
+- [x] EP-2: `PasskeyStore` + `PendingCeremonyStore` effects + in-memory interpreters (extended `World`); two codd migrations applied (embedded count grew 12→14); pure `PasskeyStoreSpec` green — 2026-06-17
 - [x] EP-2: PostgreSQL interpreters for both stores (`runPasskeyStorePostgres`/`runPendingCeremonyStorePostgres`); integration test inserts/queries a passkey three ways and consumes a pending ceremony exactly once (`DELETE … RETURNING`); `cabal test all` green across all 11 suites — 2026-06-17
 - [x] EP-3: enrollment workflow (begin/complete registration) passes pure in-memory tests (`Shomei.Workflow.PasskeySpec`, 5 cases); `PasskeyRegistered`/`PasskeyRemoved` events — 2026-06-17
 - [x] EP-3: `POST /auth/passkeys/register/{begin,complete}`, `GET /auth/passkeys`, `DELETE /auth/passkeys/{id}` routes + handlers + server wiring; in-process HTTP test enrolls/lists/deletes a passkey (begin=200→complete=200→list[1]→delete=204→list[0]→re-complete=404→no-token=401); `cabal test all` green (11 suites) — 2026-06-17
@@ -385,7 +385,7 @@ cross plan boundaries.
 - **The core must not import `webauthn`.** The library defines `CredentialOptions`,
   `Credential`, and `CredentialEntry` and pulls in `crypton-x509`/`cborg`/`serialise`.
   Shōmei's core is transport- and infrastructure-agnostic (mirroring how JWT lives in
-  `shomei-jwt`, not core). The resolution is IP-1: the `WebAuthnCeremony` port crosses the
+  `shomei-jwt`, not core). The resolution is IP-1: the `WebAuthnCeremony` effect crosses the
   boundary as aeson `Value` (browser-facing JSON, already a core dependency) plus Shōmei
   domain result types, and the new `shomei-webauthn` package owns all library types. This is
   the central design constraint shaping EP-1.
@@ -481,7 +481,7 @@ Discoveries during EP-1 implementation (2026-06-17) that affect later plans:
   `b64urlDecode :: Text -> Either String ByteString` (over the `base64` package — note: core uses
   `base64`, NOT `base64-bytestring`) are exported for reuse by EP-2's stores and EP-3/EP-4 DTOs.
 
-- **The port stack is one coupled type; `WebAuthnCeremony` sits immediately after `Notifier`.** It
+- **The effect stack is one coupled type; `WebAuthnCeremony` sits immediately after `Notifier`.** It
   is present (in that fixed position) in `Shomei.Effect.InMemory.runInMemory`,
   `Shomei.Servant.Seam.AppEffects` (+ the servant test `runHybrid`), `Shomei.Server.App.AppEffects`
   (+ `runAppIO`, now using the real `runWebAuthnCeremonyLibrary`), and the `shomei-postgres` test
@@ -490,11 +490,11 @@ Discoveries during EP-1 implementation (2026-06-17) that affect later plans:
 
 Discoveries during EP-2 implementation (2026-06-17) that affect later plans:
 
-- **The canonical port order is now fixed at
+- **The canonical effect order is now fixed at
   `… LoginAttemptStore, PasskeyStore, PendingCeremonyStore, Notifier, WebAuthnCeremony …`** in all
   five lists (`runInMemory`, servant `Seam.AppEffects` + `runHybrid`, server `App.AppEffects` +
   `runAppIO`, and the `shomei-postgres` test `AppEffects` + its two `runApp*` chains). EP-3/EP-4
-  add **no new ports** (they consume EP-1's `WebAuthnCeremony` and EP-2's two stores), so they
+  add **no new effects** (they consume EP-1's `WebAuthnCeremony` and EP-2's two stores), so they
   must not touch this order. Reminder: a stack's interpreter composition is the **strict reverse**
   of its type list (the list head is interpreted by the rightmost `.`-applied runner).
 - **The two stores' interpreters (`runPasskeyStorePostgres`, `runPendingCeremonyStorePostgres`)
@@ -524,7 +524,7 @@ Discoveries during EP-3 implementation (2026-06-17) that affect EP-4/EP-5:
   `beginAuthenticationCeremony`, `completeAuthenticationCeremony` from the effect module, and
   `PasskeyCredential`/`PendingCeremony`/`CeremonyKind`/byte newtypes from the domain module.
 - **Mint `CeremonyId` with `genCeremonyId` (`Shomei.Id`, `MonadIO`) under an `IOE :> es`
-  constraint** — there is no `generateCeremonyId` port op. EP-4's `/auth/login` (the
+  constraint** — there is no `generateCeremonyId` effect op. EP-4's `/auth/login` (the
   `mfa_required` arm) and passwordless-begin paths follow this same pattern.
 - **The deterministic fake `WebAuthnCeremony` requires the credential JSON to echo the begin
   challenge.** `beginAuthenticationCeremony` emits `{"challenge":"ceremony-challenge-N"}`;
@@ -597,7 +597,7 @@ Discoveries during EP-5 implementation (2026-06-17):
   Date: 2026-06-17
 
 - Decision: Introduce a new top-level `shomei-webauthn` package that interprets a
-  transport-agnostic `WebAuthnCeremony` port, rather than placing WebAuthn logic in
+  transport-agnostic `WebAuthnCeremony` effect, rather than placing WebAuthn logic in
   `shomei-core` or folding it into an existing infrastructure package.
   Rationale: The `webauthn` library is infrastructure (it needs `crypton-x509`, `cborg`,
   `serialise`). Shōmei's core has no infrastructure dependencies; isolating the library in a
@@ -605,7 +605,7 @@ Discoveries during EP-5 implementation (2026-06-17):
   registered in `mori.dhall` as MasterPlan 1 EP-3 did for `shomei-migrations`. (IP-1, IP-7.)
   Date: 2026-06-17
 
-- Decision: Cross the core/infrastructure boundary in the `WebAuthnCeremony` port using
+- Decision: Cross the core/infrastructure boundary in the `WebAuthnCeremony` effect using
   aeson `Value` for the browser-facing ceremony payloads plus Shōmei domain result types,
   not the library's own types.
   Rationale: `Value` is already a core dependency (events, claims, config use aeson), the
@@ -614,7 +614,7 @@ Discoveries during EP-5 implementation (2026-06-17):
   Date: 2026-06-17
 
 - Decision: Back the pending-ceremony (challenge/options) state with PostgreSQL via a
-  `PendingCeremonyStore` port, with an in-memory interpreter for tests — not an in-process
+  `PendingCeremonyStore` effect, with an in-memory interpreter for tests — not an in-process
   `TVar` as the library's example server uses.
   Rationale: Shōmei's discipline is to back security state with the database (sessions,
   refresh tokens, lockouts). A PostgreSQL store is consistent and survives restarts; the
@@ -657,7 +657,7 @@ the result against the original vision.
   and possession of the password alone grants no session — EP-4. A **passwordless** path
   (`POST /auth/login/passkey/{begin,complete}`) also lands.
 - The ceremony verification lives in the new `shomei-webauthn` package against `tweag/webauthn`
-  (a patched fork pinned for GHC 9.12.4), behind a `Value`-boundary `WebAuthnCeremony` port so
+  (a patched fork pinned for GHC 9.12.4), behind a `Value`-boundary `WebAuthnCeremony` effect so
   the core takes no `webauthn` dependency — EP-1. Passkeys and consume-once pending ceremonies
   are PostgreSQL-backed — EP-2.
 - An operator can **configure the Relying Party identity and MFA policy** through `webauthnConfig`
@@ -674,7 +674,7 @@ distributed story); no admin UI. An automated end-to-end *browser* ceremony test
 (a real/virtual authenticator is required) — the demo is human-validated, while EP-3/EP-4's
 in-process HTTP tests and EP-1's fake-interpreter tests cover the server side.
 
-**Lessons across the initiative:** (1) The `Value`-boundary port (IP-1) successfully kept the
+**Lessons across the initiative:** (1) The `Value`-boundary effect (IP-1) successfully kept the
 heavy `webauthn` closure out of the core — the central design bet paid off. (2) The
 `OverloadedRecordDot`/`HasField` unreliability for the new records under `DuplicateRecordFields`
 was a recurring tax; record destructuring is the standing workaround. (3) A late "adoption-only"

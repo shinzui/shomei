@@ -30,17 +30,17 @@ This ExecPlan (EP-1, the foundation) delivers exactly that and nothing else down
 1. A new domain vocabulary in `shomei-core` for passkeys (`Shomei.Domain.Passkey`) and a
    new set of typed identifiers (`PasskeyId`, `CeremonyId`), plus a pending-ceremony domain
    record. These are pure data with no infrastructure dependency. Later plans persist them.
-2. A new **port** (an `effectful` "dynamic effect" — an interface whose operations are run
+2. A new **effect** (an `effectful` "dynamic effect" — an interface whose operations are run
    by an interpreter chosen at assembly time) called `WebAuthnCeremony`. Its operations
    cross the package boundary using only aeson `Value` (browser-facing JSON, already a core
    dependency) and the new Shōmei domain types, so `shomei-core` never names a `webauthn`
-   type. Think of a port as a Java interface and an interpreter as a class implementing it.
-3. A new infrastructure package, `shomei-webauthn`, that *interprets* that port against the
+   type. Think of an effect as a Java interface and an interpreter as a class implementing it.
+3. A new infrastructure package, `shomei-webauthn`, that *interprets* that effect against the
    real `tweag/webauthn` library — encoding the options, decoding the browser's credential,
    and calling the library's `verifyRegistrationResponse`/`verifyAuthenticationResponse`.
 4. A new `webauthnConfig` sub-record on `ShomeiConfig` carrying the Relying Party identity
    (the `rpId` domain, allowed origins, the RP display name) and ceremony policy.
-5. The wiring that threads the new port through every effect-stack list in the codebase.
+5. The wiring that threads the new effect through every effect-stack list in the codebase.
 
 How you see it working: after this plan, running `nix develop --command cabal test all`
 exercises a new `shomei-webauthn` test that runs a **complete simulated passkey ceremony** —
@@ -63,7 +63,7 @@ A note on terminology used throughout, defined once:
 - **Challenge.** Random bytes the server puts in the options and the authenticator signs
   over. The challenge is what makes a ceremony safe against replay; it lives *inside* the
   serialized options, not in any id we hand the browser.
-- **`effectful` port / effect / interpreter.** `effectful` is the effect-system library
+- **`effectful` effect / interpreter.** `effectful` is the effect-system library
   Shōmei already uses. A *dynamic effect* is a GADT (`data X :: Effect where …`) whose
   constructors name operations; *smart constructors* call `send` to invoke them; an
   *interpreter* (`run…`) pattern-matches the constructors and supplies behavior. The list of
@@ -96,13 +96,13 @@ Milestone 0 — build/verification spike (de-risk the heavy dependency): **COMPL
 - [x] Record the spike outcome (allow-newer set, serialization choice proven) in the Decision
       Log and Surprises sections.
 
-Milestone 1 — core domain, port, config, fake interpreter, wiring: **COMPLETE (2026-06-17).**
+Milestone 1 — core domain, effect, config, fake interpreter, wiring: **COMPLETE (2026-06-17).**
 
 - [x] Add `PasskeyId`, `CeremonyId` (+ `gen…` + uuid conversions) to `Shomei.Id`.
 - [x] Add `Shomei.Domain.Passkey` with the credential/ceremony domain types (plus the
       `b64urlEncode`/`b64urlDecode` helpers, using the `base64` package — NOT
       `base64-bytestring`; see Surprises).
-- [x] Add `Shomei.Effect.WebAuthnCeremony` (port + smart constructors + error type + records).
+- [x] Add `Shomei.Effect.WebAuthnCeremony` (effect + smart constructors + error type + records).
 - [x] Add `WebAuthnConfig`/`UserVerificationPolicy`/`AttestationPolicy`/`defaultWebAuthnConfig`
       and the `webauthnConfig` field to `Shomei.Config.ShomeiConfig`/`defaultShomeiConfig`.
 - [x] Add the in-memory **fake** `runWebAuthnCeremonyFake` to `Shomei.Effect.InMemory`,
@@ -307,7 +307,7 @@ Record every decision made while working on the plan.
 
 - Decision (M1, 2026-06-17): **The server's `runAppIO` interprets `WebAuthnCeremony` with a
   temporary stub in M1, replaced by the real `runWebAuthnCeremonyLibrary` in M2.**
-  Rationale: `Shomei.Servant.Seam.Env.runPorts` fixes the whole port stack as one type, so
+  Rationale: `Shomei.Servant.Seam.Env.runPorts` fixes the whole effect stack as one type, so
   `WebAuthnCeremony` cannot be added to `runInMemory`/`Seam.AppEffects` without also adding it to
   `Shomei.Server.App.AppEffects` and its `runAppIO` chain (otherwise nothing type-checks). The
   real interpreter lives in `shomei-webauthn`, which does not exist until M2. To keep M1's
@@ -392,8 +392,8 @@ The foundation exists exactly as the Purpose described:
 
 - `shomei-core` gained the passkey vocabulary (`Shomei.Domain.Passkey`), the two ids
   (`PasskeyId`/`CeremonyId`), the `webauthnConfig` sub-record, and the `WebAuthnCeremony`
-  Value-boundary port with a deterministic fake — with **no** `webauthn` dependency in core.
-- `shomei-webauthn` exists and interprets the port against the real `tweag/webauthn` library
+  Value-boundary effect with a deterministic fake — with **no** `webauthn` dependency in core.
+- `shomei-webauthn` exists and interprets the effect against the real `tweag/webauthn` library
   (pinned, patched fork, building on GHC 9.12.4); it is registered in `cabal.project` and
   `mori.dhall` and wired into the server's `runAppIO`.
 - `WebAuthnCeremony` is carried, in the same position (after `Notifier`), by every effect-stack
@@ -406,7 +406,7 @@ The foundation exists exactly as the Purpose described:
 What the build verified beyond compilation: M0's run of the upstream emulator on this patched
 build proved the full register→authenticate ceremony crypto and the WJ JSON round-trips; M2's
 package test proves the interpreter recovers its own persisted `optionsBlob` and fails closed on
-garbage. So a passkey can be registered and used to authenticate, server-side, through the port
+garbage. So a passkey can be registered and used to authenticate, server-side, through the effect
 the rest of MasterPlan 3 will call.
 
 Gaps / handoffs to later plans:
@@ -421,8 +421,8 @@ Gaps / handoffs to later plans:
 Lessons: (1) `allow-newer` only relaxes bounds — API drift still surfaces as compile errors, so a
 build spike is the right first milestone for a heavy, version-skewed dependency. (2) Under
 `DuplicateRecordFields`, `OverloadedRecordDot`/`HasField` is unreliable for some records; prefer
-plain selectors or positional destructuring for the new types. (3) The Shōmei port stack is one
-coupled type across servant/server/in-memory/postgres-test — a new port must be slotted into all
+plain selectors or positional destructuring for the new types. (3) The Shōmei effect stack is one
+coupled type across servant/server/in-memory/postgres-test — a new effect must be slotted into all
 of them in one change.
 
 
@@ -437,12 +437,12 @@ Every build/test command in this plan is run from the repository root and prefix
 The current packages are `shomei-core`, `shomei-jwt`, `shomei-postgres`, `shomei-migrations`,
 `shomei-servant`, `shomei-server`, `shomei-client`, and two examples.
 
-The architecture is **hexagonal**: `shomei-core` holds domain types, the effect *ports*, and
+The architecture is **hexagonal**: `shomei-core` holds domain types, the *effects*, and
 the workflows, with **no infrastructure dependencies** (no Servant, no PostgreSQL, no JWT, no
-`webauthn`). Infrastructure packages interpret the ports: `shomei-jwt` interprets the
-signing/verification ports against the `jose` library; `shomei-postgres` interprets the store
-ports against `hasql`. This plan adds a third such package, `shomei-webauthn`, for the
-ceremony port. The `shomei-jwt` package is the structural template for the new one — read
+`webauthn`). Infrastructure packages interpret the effects: `shomei-jwt` interprets the
+signing/verification effects against the `jose` library; `shomei-postgres` interprets the store
+effects against `hasql`. This plan adds a third such package, `shomei-webauthn`, for the
+ceremony effect. The `shomei-jwt` package is the structural template for the new one — read
 `shomei-jwt/shomei-jwt.cabal` (a `library` stanza exposing `Shomei.Jwt.*` and depending on
 `shomei-core` + `jose` + `crypton`, plus a `test-suite`).
 
@@ -461,13 +461,13 @@ Concepts you will touch, with their exact locations:
   (`userIdToUUID`/`userIdFromUUID`) for the PostgreSQL `uuid` column. This plan adds two new
   ids the same way.
 
-- **A port and its interpreters.** `shomei-core/src/Shomei/Effect/TokenGen.hs` is the simplest
+- **An effect and its interpreters.** `shomei-core/src/Shomei/Effect/TokenGen.hs` is the simplest
   example to copy: it declares `data TokenGen :: Effect where …`, sets
   `type instance DispatchOf TokenGen = Dynamic`, and exports `send`-based smart constructors.
   `shomei-core/src/Shomei/Effect/VerificationTokenStore.hs` is a richer example with several
-  operations and domain arguments. The in-memory (fake) interpreters for **all** ports live in
+  operations and domain arguments. The in-memory (fake) interpreters for **all** effects live in
   one module, `shomei-core/src/Shomei/Effect/InMemory.hs`, which holds a mutable `World`
-  record (an `IORef`) and a `runInMemory` function that stacks one `run…` per port over `IOE`.
+  record (an `IORef`) and a `runInMemory` function that stacks one `run…` per effect over `IOE`.
   Study how `runTokenSigner`/`runTokenVerifier` fake real cryptography by round-tripping
   `AuthClaims` through JSON — the WebAuthn fake follows the same "echo and accept" idea.
 
@@ -478,11 +478,11 @@ Concepts you will touch, with their exact locations:
   `default…Config` value, all wired into `defaultShomeiConfig`. This plan adds a
   `webauthnConfig` field the same way.
 
-- **The effect-stack lists (IP-6).** Several places enumerate the canonical ordered port
+- **The effect-stack lists (IP-6).** Several places enumerate the canonical ordered effect
   stack and must stay identical to each other. They are:
   `shomei-servant/src/Shomei/Servant/Seam.hs` (`type AppEffects`),
   `shomei-server/src/Shomei/Server/App.hs` (`type AppEffects` *and* the `runAppIO`
-  interpreter chain, which additionally has `Database` and `Error AuthError` below the ports),
+  interpreter chain, which additionally has `Database` and `Error AuthError` below the effects),
   `shomei-core/src/Shomei/Effect/InMemory.hs` (`runInMemory`'s explicit `Eff '[…]` type and its
   composition), and the `shomei-postgres` test `AppEffects` (find it with the search command in
   Concrete Steps). This plan inserts `WebAuthnCeremony` into all of them at one fixed position.
@@ -499,8 +499,8 @@ Concepts you will touch, with their exact locations:
   facts the interpreter needs from it are embedded below so you need not re-read it.
 
 The end state of this plan: `shomei-core` gains passkey domain types, two ids, a config
-sub-record, and a ceremony port with a deterministic fake; `shomei-webauthn` exists and
-interprets the port against the real library; every effect-stack list carries
+sub-record, and a ceremony effect with a deterministic fake; `shomei-webauthn` exists and
+interprets the effect against the real library; every effect-stack list carries
 `WebAuthnCeremony`; and two tests prove both interpreters work. No HTTP routes, no database
 tables, no workflow changes — those belong to EP-2..EP-5.
 
@@ -653,9 +653,9 @@ module export list. The KindID prefix must satisfy `ValidPrefix`; `"passkey"` an
 `"webauthn_ceremony"` are lowercase + underscore, matching `"verification_token"`, so they are
 valid.
 
-### The port — `shomei-core/src/Shomei/Effect/WebAuthnCeremony.hs` (new)
+### The effect — `shomei-core/src/Shomei/Effect/WebAuthnCeremony.hs` (new)
 
-The port crosses the boundary using `Data.Aeson.Value` plus the new domain types. Core never
+The effect crosses the boundary using `Data.Aeson.Value` plus the new domain types. Core never
 names a `webauthn` type.
 
 ```haskell
@@ -848,7 +848,7 @@ runWebAuthnCeremonyFake
 
 The work is three milestones. M0 de-risks the heavy dependency and proves the serialization
 strategy with a throwaway harness. M1 adds all the `shomei-core` surface (domain, ids, config,
-port) plus a deterministic fake interpreter and wires the port into every effect-stack list.
+effect) plus a deterministic fake interpreter and wires the effect into every effect-stack list.
 M2 builds the real `shomei-webauthn` package and proves a full simulated ceremony verifies.
 
 ### Milestone 0 — build/verification spike
@@ -999,12 +999,12 @@ If the build fails irrecoverably, record the exact solver error in the Decision 
 placeholder and Surprises, and revise the MasterPlan (whose Surprises section already flags
 this) before proceeding.
 
-### Milestone 1 — core domain, port, config, fake interpreter, wiring
+### Milestone 1 — core domain, effect, config, fake interpreter, wiring
 
 Scope: everything that lives in `shomei-core` (and the two non-core effect-stack lists), with
 no dependency on `webauthn`. At the end, `cabal build all` and the existing `cabal test all`
 stay green, plus a new core unit test drives the deterministic fake `WebAuthnCeremony`
-interpreter. This milestone unblocks EP-2..EP-4 to start coding against the port and domain
+interpreter. This milestone unblocks EP-2..EP-4 to start coding against the effect and domain
 types even before the real interpreter exists.
 
 What will exist that did not before: the modules `Shomei.Domain.Passkey` and
@@ -1366,7 +1366,7 @@ Wire the server (the M1 step-7 deferral lands here):
   `import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)`, and insert
   `. runWebAuthnCeremonyLibrary env.envConfig.webauthnConfig` into the `runAppIO` composition at
   the position matching `Notifier` (i.e. adjacent to `runNotifierFromConfig env.envConfig` on the
-  ports side, above `runDatabasePool`). Add `shomei-webauthn` to `shomei-server`'s
+  effects side, above `runDatabasePool`). Add `shomei-webauthn` to `shomei-server`'s
   `build-depends` in `shomei-server/shomei-server.cabal`. Add `shomei-webauthn` to
   `shomei-server`'s `mori.dhall` `dependencies` list too.
 
@@ -1481,7 +1481,7 @@ The plan is done when all of the following hold and are demonstrated by the comm
 
 Observable behavior beyond compilation: the `shomei-webauthn` test is the end-to-end proof that
 a passkey can be registered and then used to authenticate, entirely server-side, through the
-port the rest of MasterPlan 3 will call. The fake-interpreter test is the proof that downstream
+effect the rest of MasterPlan 3 will call. The fake-interpreter test is the proof that downstream
 plans can exercise the ceremony deterministically.
 
 
@@ -1508,7 +1508,7 @@ depend on the library building, so a hard failure is a MasterPlan-level event.
 
 Libraries used and why:
 
-- `effectful` / `effectful-core` — the effect system; the port is a dynamic effect and the
+- `effectful` / `effectful-core` — the effect system; `WebAuthnCeremony` is a dynamic effect and the
   interpreters use `interpret_`. Already a `shomei-core` dependency.
 - `aeson` — the `Value` boundary and the options-blob JSON serialization. Already core.
 - `base64-bytestring` — base64url encoding of the `ByteString` newtypes' JSON (core) and any
@@ -1544,5 +1544,5 @@ Boundary rule (from MasterPlan IP-1/IP-6): EP-1 owns the `WebAuthnCeremony` sign
 domain types, and the `webauthnConfig` shape. EP-2 will insert `PasskeyStore` and
 `PendingCeremonyStore` into each effect-stack list **right after `LoginAttemptStore`** (before
 `Notifier`/`WebAuthnCeremony`); EP-1 must leave the relative ordering consistent so EP-2's
-insertion does not disturb `WebAuthnCeremony`'s position. EP-3/EP-4 consume the port and must
+insertion does not disturb `WebAuthnCeremony`'s position. EP-3/EP-4 consume the effect and must
 not change its signatures without a Decision Log entry here and in the MasterPlan.
