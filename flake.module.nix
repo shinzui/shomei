@@ -15,6 +15,13 @@
 { ... }:
 {
   perSystem = { pkgs, config, ... }: {
+    # shomei-server renders its Dhall config to JSON by shelling out to the
+    # `dhall-to-json` binary (shomei-server/src/Shomei/Server/Config.hs). The
+    # production image (below) already bundles it; the dev shell must too, so
+    # `cabal test` runs shomei-server-config-test locally and in CI without
+    # depending on a globally-installed binary.
+    haskellProject.extraDevPackages = [ pkgs.dhall-json ];
+
     packages.dockerImage = pkgs.dockerTools.buildLayeredImage {
       name = "shomei-server";
       tag = "latest";
