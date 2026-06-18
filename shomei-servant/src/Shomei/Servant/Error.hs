@@ -40,8 +40,10 @@ err429 =
 authErrorToServerError :: AuthError -> ServerError
 authErrorToServerError = \case
     InvalidEmail -> json err400 "invalid_email" "Email is not valid"
+    InvalidLoginId -> json err400 "invalid_login_id" "Login identifier is not valid"
     WeakPassword _ -> json err400 "weak_password" "Password does not meet policy"
     EmailAlreadyRegistered -> json err409 "email_taken" "Email is already registered"
+    LoginIdAlreadyRegistered -> json err409 "login_id_taken" "Login identifier is already registered"
     InvalidCredentials -> json err401 "invalid_login" "Invalid email or password"
     UserNotActive -> json err401 "invalid_login" "Invalid email or password"
     AccountLocked -> json err401 "invalid_login" "Invalid email or password"

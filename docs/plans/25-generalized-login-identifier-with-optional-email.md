@@ -95,9 +95,19 @@ This section must always reflect the actual current state of the work.
   `contrazip7`, `findUserByLoginIdStmt`/`findCredByLoginIdStmt`). All 23 postgres tests pass
   (19 migrations applied), including the new `NULL email round-trips; login_id unique; NULL
   emails don't collide` case.
-- [ ] M4: Update the Servant DTO/handler wire surface so HTTP signup/login accept a
+- [x] M4: Update the Servant DTO/handler wire surface so HTTP signup/login accept a
   `loginId` (email optional) while preserving backward compatibility for email-only callers.
-  `cabal build shomei-servant` and `cabal test shomei-servant-test` green.
+  `cabal build shomei-servant` and `cabal test shomei-servant-test` green. **(2026-06-17)** Done.
+  `SignupRequest`/`LoginRequest` carry optional `loginId`/`email`; `UserResponse` carries
+  `loginId :: Text` and `email :: Maybe Text`. A single handler helper `resolvePrincipal`
+  implements the compatibility default (explicit `loginId` → `mkLoginId`; else default from a
+  present email; else `400`), and the abuse `accountKey` now keys on the login-id text
+  (`Seam.accountKeyOf :: Text -> AccountKey`, server supplies `sha256Hex`). `Servant.Error` maps
+  the new `InvalidLoginId`/`LoginIdAlreadyRegistered`. Two new servant tests prove identifier-only
+  signup (`email == null`, then login by identifier) and the email-only → `loginId == email`
+  default. `cabal test all` (serialized) is green across all 11 suites; the example/client/admin
+  test fixtures were updated to the new DTO/event shapes. See Surprises & Discoveries for the
+  ephemeral-pg concurrency note and the shared-World test-isolation fix.
 
 
 ## Surprises & Discoveries
@@ -162,6 +172,19 @@ implementation. Provide concise evidence.
   a TH-`embedDir`'d directory. Fix (matching the established convention in `Shomei.Migrations`): edit
   the `Shomei.Migrations` source — a documenting comment above `embeddedFiles` is enough — to force
   the splice to re-evaluate. After that the suite applied 19 migrations and went green.
+
+- **M4: the wire surface had more consumers than the four core packages — and two test-harness
+  gotchas.** Beyond `shomei-servant`, the DTO/command/event changes rippled into
+  `shomei-server` (`Boot.accountKeyOf`, the `shomei-admin` `Users` CLI, and the admin test's
+  `LoginFailedData`), `shomei-client`'s round-trip test, and both `examples/*` test suites — all
+  construct `SignupRequest`/`LoginRequest`/`UserResponse`/`LoginFailedData` by record and broke at
+  `cabal test all` even though `cabal build all` was green (the example/test suites are not built by
+  `build all`). Two harness fixes were needed: (1) the servant test shares one in-memory `World`
+  IORef across test cases, and tasty runs cases in parallel — adding two new cases raced the
+  original scenario into a spurious `401` on the admin route; the fix gives each new case a fresh
+  `World`/`Env`. (2) `cabal test all` boots several ephemeral-pg-backed suites concurrently, which
+  intermittently fails `shomei-postgres-test` on database contention; each suite passes in
+  isolation and `cabal test all -j1` is reliably green across all 11 suites.
 
 - **Validation pass (2026-06-17).** All other factual claims in this plan were checked against the
   live tree and hold exactly: `User`/`NewUser` fields; `mkEmail :: Text -> Either AuthError Email`
@@ -253,7 +276,31 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Completed 2026-06-17 — all four milestones delivered; `cabal test all -j1` green across all 11
+suites.** The principal of Shōmei is now a free-form, case-insensitive, unique `LoginId`, with
+email an optional attribute end-to-end: domain types (`User`/`NewUser`/`Credential`), the
+effect ports (`FindUserByLoginId`/`FindPasswordCredentialByLoginId`, `CreatePasswordCredential`
+now `UserId -> LoginId -> Maybe Email -> PasswordHash`), the workflows (signup/login key on the
+login id; reset/verification/breach-context guard on `Maybe Email`), the PostgreSQL schema
+(expand/contract migrations adding `login_id NOT NULL UNIQUE` and relaxing `email` to nullable +
+partial-unique) and interpreters, and the Servant wire surface (optional `loginId`/`email`, the
+compatibility default in `resolvePrincipal`).
+
+All three demonstrations from Purpose hold, proven by tests: (1) signup+login by
+`agent-4815162342` with no email returns a token pair (`shomei-core-test` and a servant-level
+case); (2) an email-bearing account still drives password-reset delivery and the contextual
+"resembles identity" check (`shomei-core-test` AccountSpec); (3) the PostgreSQL store permits
+`email IS NULL`, enforces a unique `login_id`, and lets multiple NULL emails coexist
+(`shomei-postgres-test`). The passkey user-handle was unaffected as predicted (PasskeySpec stays
+green). The two locked SH-25 decisions (upstream-only enhancement; identifier-equals-email by
+default) were honored; the auth-service-v2 EP-2/EP-8 consumers were not touched.
+
+Gaps / follow-ups: none blocking. Two harness frictions are documented (shared-`World` test
+isolation; ephemeral-pg concurrency under `cabal test all` — use `-j1`). A consumer running the
+expand/contract migration against real data should verify the inline constraint names
+(`shomei_users_email_key`, `shomei_password_credentials_email_key`) match their database; the
+`DROP CONSTRAINT IF EXISTS` makes a name mismatch a safe no-op but then leaves the old unique in
+place.
 
 
 ## Context and Orientation

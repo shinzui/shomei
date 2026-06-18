@@ -54,6 +54,7 @@ import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 
 import Shomei.Domain.Email (emailText)
+import Shomei.Domain.LoginId (loginIdText)
 import Shomei.Domain.Passkey (PasskeyCredential (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Domain.Session (Session (..))
@@ -63,9 +64,13 @@ import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Id (idText)
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 
--- | @POST /auth/signup@ body.
+{- | @POST /auth/signup@ body. The principal is @loginId@; @email@ is optional. For backward
+compatibility either field may be omitted: an email-only caller (no @loginId@) defaults the
+login id to the email text in the handler, and at least one of the two must be present.
+-}
 data SignupRequest = SignupRequest
-    { email :: !Text
+    { loginId :: !(Maybe Text)
+    , email :: !(Maybe Text)
     , password :: !Text
     , displayName :: !Text
     }
@@ -81,10 +86,11 @@ data TokenPairResponse = TokenPairResponse
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
 
--- | A user as wire JSON: @{ userId, email, displayName, status }@ (status lowercased).
+-- | A user as wire JSON: @{ userId, loginId, email, displayName, status }@ (status lowercased).
 data UserResponse = UserResponse
     { userId :: !Text
-    , email :: !Text
+    , loginId :: !Text
+    , email :: !(Maybe Text)
     , displayName :: !Text
     , status :: !Text
     }
@@ -99,9 +105,12 @@ data SignupResponse = SignupResponse
     deriving stock (Generic)
     deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login@ body.
+{- | @POST /auth/login@ body. Log in by @loginId@ (the principal); @email@ is accepted for
+backward compatibility and, when @loginId@ is omitted, the login id defaults to the email text.
+-}
 data LoginRequest = LoginRequest
-    { email :: !Text
+    { loginId :: !(Maybe Text)
+    , email :: !(Maybe Text)
     , password :: !Text
     }
     deriving stock (Generic)
@@ -277,7 +286,8 @@ userToResponse :: User -> UserResponse
 userToResponse u =
     UserResponse
         { userId = idText u.userId
-        , email = emailText u.email
+        , loginId = loginIdText u.loginId
+        , email = emailText <$> u.email
         , displayName = fromMaybe "" u.displayName
         , status = renderStatus u.status
         }

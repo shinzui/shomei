@@ -27,7 +27,6 @@ import Servant (Handler, throwError)
 
 import Shomei.Config (ShomeiConfig)
 import Shomei.Domain.Claims (AuthClaims)
-import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey)
 import Shomei.Error (AuthError, TokenError)
 import Shomei.Servant.Error (authErrorToServerError)
@@ -90,9 +89,10 @@ data Env = Env
     -- ^ the token verifier the 'Shomei.Servant.Auth.authHandler' is built from
     , jwksJson :: !Value
     -- ^ the precomputed public JWKS document served at @\/.well-known\/jwks.json@
-    , accountKeyOf :: !(Email -> AccountKey)
-    {- ^ derive the abuse store's hashed account key from a normalized email (EP-2). The
-    server supplies a SHA-256 hash; tests may supply a trivial mapping.
+    , accountKeyOf :: !(Text -> AccountKey)
+    {- ^ derive the abuse store's hashed account key from the principal's login-id text (SH-25:
+    the abuse key tracks the login identifier you actually authenticate with, not the email).
+    The server supplies a SHA-256 hash; tests may supply a trivial mapping.
     -}
     }
 

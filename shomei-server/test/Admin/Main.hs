@@ -31,6 +31,7 @@ import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Id (genSessionId, genUserId)
@@ -143,7 +144,7 @@ testAuditQuery = testCase "audit reader returns published events; type filter + 
         =<< runPublish
             pool
             ( do
-                publishAuthEvent (Event.LoginFailed (Event.LoginFailedData em t))
+                publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (loginIdFromEmail em) t))
                 publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData uid sid (addUTCTime 1 t)))
             )
     -- Read them back through the CLI's reader stack (newest-first).

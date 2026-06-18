@@ -17,7 +17,8 @@ import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 
 import Shomei.Domain.Command (SignupCommand (..))
-import Shomei.Domain.Email (emailText, mkEmail)
+import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
@@ -48,13 +49,19 @@ import Shomei.Postgres.UserStore (runUserStorePostgres)
 createUserAction :: AdminEnv -> Text -> Text -> Maybe Text -> IO ()
 createUserAction env emailArg pwArg mDisplay = do
     email <- either (\e -> die ("invalid email: " <> show e)) pure (mkEmail emailArg)
-    let cmd = SignupCommand{email = email, password = PlainPassword pwArg, displayName = mDisplay}
+    let cmd =
+            SignupCommand
+                { loginId = loginIdFromEmail email
+                , email = Just email
+                , password = PlainPassword pwArg
+                , displayName = mDisplay
+                }
     outcome <- runSignup env.pool (signup env.config cmd)
     case outcome of
         Left infra -> die ("infrastructure error: " <> show infra)
         Right (Left rejected) -> die ("signup rejected: " <> show rejected)
         Right (Right (user, _)) ->
-            putStrLn ("created user " <> show user.userId <> " <" <> Text.unpack (emailText user.email) <> ">")
+            putStrLn ("created user " <> show user.userId <> " <" <> Text.unpack (loginIdText user.loginId) <> ">")
 
 -- | Run a 'signup' over the PostgreSQL interpreters, with a fake signer.
 runSignup ::

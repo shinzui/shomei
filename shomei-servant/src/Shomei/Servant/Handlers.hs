@@ -32,9 +32,10 @@ import Shomei.Domain.Command (
     RefreshCommand (..),
     SignupCommand (..),
  )
-import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (ClientIp (..))
+import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
@@ -132,10 +133,11 @@ shomeiServer env =
 
 signupH :: Env -> SignupRequest -> Handler SignupResponse
 signupH env req = do
-    email <- either (throwError . authErrorToServerError) pure (mkEmail req.email)
+    (loginId, mEmail) <- resolvePrincipal req.loginId req.email
     let cmd =
             SignupCommand
-                { email = email
+                { loginId = loginId
+                , email = mEmail
                 , password = PlainPassword req.password
                 , displayName = mkDisplayName req.displayName
                 }
@@ -144,15 +146,31 @@ signupH env req = do
 
 loginH :: Env -> SockAddr -> LoginRequest -> Handler LoginResponse
 loginH env peer req = do
-    email <- either (throwError . authErrorToServerError) pure (mkEmail req.email)
-    let cmd = LoginCommand{email = email, password = PlainPassword req.password}
+    (loginId, _mEmail) <- resolvePrincipal req.loginId req.email
+    let cmd = LoginCommand{loginId = loginId, password = PlainPassword req.password}
         ctx =
             ClientContext
                 { clientIp = ClientIp (clientIpText peer)
-                , accountKey = env.accountKeyOf email
+                , accountKey = env.accountKeyOf (loginIdText loginId)
                 }
     result <- runAuth env (Wf.login env.config ctx cmd)
     pure (loginResultToResponse result)
+
+{- | Resolve the @(LoginId, optional Email)@ principal from a request's optional @loginId@/
+@email@ fields (the SH-25 compatibility rule). A /present/ email is parsed through 'mkEmail'
+(malformed → 400). The login id is the explicit @loginId@ parsed through 'mkLoginId'
+(malformed → 400), or, when absent, defaults to the email text; with neither field present the
+request is a 400.
+-}
+resolvePrincipal :: Maybe Text -> Maybe Text -> Handler (LoginId, Maybe Email)
+resolvePrincipal mLoginId mEmailText = do
+    mEmail <- traverse (either (throwError . authErrorToServerError) pure . mkEmail) mEmailText
+    loginId <- case mLoginId of
+        Just t -> either (throwError . authErrorToServerError) pure (mkLoginId t)
+        Nothing -> case mEmail of
+            Just e -> pure (loginIdFromEmail e)
+            Nothing -> throwError err400{errBody = "loginId or email required"}
+    pure (loginId, mEmail)
 
 {- | The source IP of the request as text, used as the per-IP throttle key. Behind a reverse
 proxy this is the proxy's address; a trusted @X-Forwarded-For@ policy would be layered in a

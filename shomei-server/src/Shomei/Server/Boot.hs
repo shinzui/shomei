@@ -53,7 +53,6 @@ import Shomei.Servant.Seam qualified as Seam
 
 import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (sha256Hex)
-import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
@@ -145,7 +144,7 @@ seamEnv env =
         , Seam.config = env.envConfig
         , Seam.verifier = verifyToken env.envJwks env.envConfig
         , Seam.jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [env.envKey]))
-        , Seam.accountKeyOf = AccountKey . sha256Hex . emailText
+        , Seam.accountKeyOf = AccountKey . sha256Hex
         }
   where
     runPorts :: forall a. Eff Seam.AppEffects a -> IO a

@@ -51,15 +51,15 @@ tests =
 
                     _su <-
                         expect "signup"
-                            =<< C.signup cenv SignupRequest{email = email, password = password, displayName = "Ada Lovelace"}
+                            =<< C.signup cenv SignupRequest{loginId = Nothing, email = Just email, password = password, displayName = "Ada Lovelace"}
 
                     lr <-
                         expect "login"
-                            =<< C.login cenv LoginRequest{email = email, password = password}
+                            =<< C.login cenv LoginRequest{loginId = Nothing, email = Just email, password = password}
                     let tok = C.Token lr.token.accessToken
 
                     ur <- expect "me" =<< C.me cenv tok
-                    ur.email @?= email
+                    ur.email @?= Just email
 
                     tp <- expect "refresh" =<< C.refresh cenv RefreshRequest{refreshToken = lr.token.refreshToken}
                     (tp.refreshToken /= lr.token.refreshToken) @?= True

@@ -63,8 +63,8 @@ tests =
 
                     -- Sign up + log in through the mounted /auth routes (via the real client).
                     cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
-                    _ <- expect "signup" =<< C.signup cenv SignupRequest{email = email, password = password, displayName = "Dev"}
-                    lr <- expect "login" =<< C.login cenv LoginRequest{email = email, password = password}
+                    _ <- expect "signup" =<< C.signup cenv SignupRequest{loginId = Nothing, email = Just email, password = password, displayName = "Dev"}
+                    lr <- expect "login" =<< C.login cenv LoginRequest{loginId = Nothing, email = Just email, password = password}
 
                     -- /projects with the Bearer token → 200.
                     withTok <- getProjects mgr port (Just lr.token.accessToken)

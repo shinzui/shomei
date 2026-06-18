@@ -72,8 +72,8 @@ tests =
                     -- Boot the downstream service in-process, pointed at the auth JWKS.
                     testWithApplication (pure (downstreamApplication cache cfg)) \downPort -> do
                         cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show authPort)
-                        _ <- expect "signup" =<< C.signup cenv SignupRequest{email = email, password = password, displayName = "MS"}
-                        lr <- expect "login" =<< C.login cenv LoginRequest{email = email, password = password}
+                        _ <- expect "signup" =<< C.signup cenv SignupRequest{loginId = Nothing, email = Just email, password = password, displayName = "MS"}
+                        lr <- expect "login" =<< C.login cenv LoginRequest{loginId = Nothing, email = Just email, password = password}
                         let token = lr.token.accessToken
 
                         valid <- getProjects mgr downPort (Just token)

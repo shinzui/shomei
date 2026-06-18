@@ -63,7 +63,6 @@ import Data.Map.Strict qualified as Map
 
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
-import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
@@ -215,25 +214,66 @@ main = do
         jwkset = keySetPublicJwks (KeySet jwk [])
     t0 <- getCurrentTime
     ref <- newIORef (emptyWorld t0)
-    let env =
+    -- Build an 'Env' over a FRESH in-memory World. Each test case that mutates state must use
+    -- its own env: tasty runs cases in parallel, so sharing one World IORef races.
+    let mkEnv r =
             Env
-                { runPorts = runHybrid ref jwk jwkset cfg
+                { runPorts = runHybrid r jwk jwkset cfg
                 , config = cfg
                 , verifier = verifyToken jwkset cfg
                 , jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))
-                , accountKeyOf = AccountKey . emailText
+                , accountKeyOf = AccountKey
                 }
+        freshEnv = mkEnv <$> newIORef (emptyWorld t0)
+        env = mkEnv ref
     adminToken <- mkAdminToken jwk cfg
     impToken <- mkImpersonatorToken jwk cfg t0
-    defaultMain (tests ref env adminToken impToken)
+    defaultMain (tests ref env freshEnv adminToken impToken)
 
-tests :: IORef World -> Env -> Text -> Text -> TestTree
-tests ref env adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> Text -> Text -> TestTree
+tests ref env freshEnv adminToken impToken =
     testGroup
         "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
         [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
             testWithApplication (pure (app env)) (scenario ref adminToken impToken)
+        , testCase "signup/login by loginId with no email (email == null)" $ do
+            e <- freshEnv
+            testWithApplication (pure (app e)) scenarioNoEmail
+        , testCase "email-only signup defaults loginId to the email (backward compat)" $ do
+            e <- freshEnv
+            testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId
         ]
+
+{- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
+returned user has that login id and a @null@ email, and the same identifier logs in. -}
+scenarioNoEmail :: Int -> IO ()
+scenarioNoEmail port = do
+    mgr <- newManager defaultManagerSettings
+    let pw = "correct horse battery staple" :: Text
+        signupB = object ["loginId" .= ("agent-x" :: Text), "password" .= pw, "displayName" .= ("" :: Text)]
+    (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupB
+    sStatus @?= 200
+    sresp <- must "signup body" sBody
+    (dig ["user", "loginId"] sresp >>= asText) @?= Just "agent-x"
+    dig ["user", "email"] sresp @?= Just Null
+    (lStatus, lBody) <- postJSON mgr port "/auth/login" (object ["loginId" .= ("agent-x" :: Text), "password" .= pw])
+    lStatus @?= 200
+    lresp <- must "login body" lBody
+    assertBool "login by identifier yields a token" (isJust (dig ["token", "accessToken"] lresp >>= asText))
+
+{- | SH-25 M4 backward compatibility: an email-only signup (no @loginId@) yields a user whose
+@loginId@ equals the email text. -}
+scenarioEmailDefaultsLoginId :: Int -> IO ()
+scenarioEmailDefaultsLoginId port = do
+    mgr <- newManager defaultManagerSettings
+    let em = "grace@example.com" :: Text
+        pw = "correct horse battery staple" :: Text
+        signupB = object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)]
+    (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupB
+    sStatus @?= 200
+    sresp <- must "signup body" sBody
+    (dig ["user", "loginId"] sresp >>= asText) @?= Just em
+    (dig ["user", "email"] sresp >>= asText) @?= Just em
 
 scenario :: IORef World -> Text -> Text -> Int -> IO ()
 scenario ref adminToken impToken port = do
