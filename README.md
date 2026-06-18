@@ -3,7 +3,10 @@
 Shōmei is a Haskell authentication toolkit for building **embedded Servant auth** and
 **standalone auth services** from the same transport-agnostic core. It issues and verifies
 ES256 (or, configurably, RS256) JSON Web Tokens, manages the full account lifecycle (signup, login, refresh, email
-verification, password reset/change), supports **passkey enrollment and WebAuthn multi-factor
+verification, password reset/change). The principal is a free-form, case-insensitive **login
+identifier** (`loginId`) — an agent id, service-account handle, or username — with **email an
+optional attribute**; email-first callers keep working because `loginId` defaults to the email
+when only an email is supplied. Shōmei also supports **passkey enrollment and WebAuthn multi-factor
 login** (password-then-passkey step-up and passwordless), and ships production hardening
 (brute-force lockout, rate limiting), observability (structured logs, Prometheus metrics,
 health/readiness probes), and operations tooling (a `shomei-admin` CLI with zero-downtime
@@ -48,6 +51,9 @@ PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
 # then, from another terminal:
 curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
   -d '{"email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
+# …or sign up by login identifier with no email (the principal need not be an address):
+curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+  -d '{"loginId":"agent-4815162342","password":"correct horse battery staple","displayName":"Agent"}'
 ```
 
 Or use the operations CLI to bootstrap a deployment without the HTTP API:
