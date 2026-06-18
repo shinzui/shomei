@@ -26,9 +26,9 @@
       name = "shomei-server";
       tag = "latest";
       contents = [
-        config.packages.default     # provides /bin/shomei-server and /bin/shomei-admin
-        pkgs.dhall-json             # dhall-to-json, used by the config loader
-        pkgs.busybox                # sh + wget for the entrypoint and healthcheck
+        config.packages.default # provides /bin/shomei-server and /bin/shomei-admin
+        pkgs.dhall-json # dhall-to-json, used by the config loader
+        pkgs.busybox # sh + wget for the entrypoint and healthcheck
         pkgs.cacert
       ];
       config = {

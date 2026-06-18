@@ -36,8 +36,8 @@ library
   exposed-modules:
     Shomei.Notify
     Shomei.Server.App
-    Shomei.Server.BreachChecker
     Shomei.Server.Boot
+    Shomei.Server.BreachChecker
     Shomei.Server.Config
     Shomei.Server.Keys
     Shomei.Server.Middleware.RateLimit

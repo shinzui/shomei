@@ -1,26 +1,25 @@
-{- | The published JWKS (JSON Web Key Set) document and the 'KeySet' abstraction.
-
-A JWKS is the public document a downstream verifier fetches: @{"keys":[ ... ]}@
-containing the *public* projection of each signing key (no private @"d"@). EP-6
-serves 'jwksDocument' at @GET /.well-known/jwks.json@.
--}
-module Shomei.Jwt.Jwks (
-    jwksDocument,
+-- | The published JWKS (JSON Web Key Set) document and the 'KeySet' abstraction.
+--
+-- A JWKS is the public document a downstream verifier fetches: @{"keys":[ ... ]}@
+-- containing the *public* projection of each signing key (no private @"d"@). EP-6
+-- serves 'jwksDocument' at @GET /.well-known/jwks.json@.
+module Shomei.Jwt.Jwks
+  ( jwksDocument,
     KeySet (..),
     keySetPublicJwks,
-) where
+  )
+where
 
-import Shomei.Prelude
-
+import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet), asPublicKey)
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BSL
-import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet), asPublicKey)
+import Shomei.Prelude
 
 -- | A live set of signing keys: the current active key plus any retired-but-valid keys.
 data KeySet = KeySet
-    { activeKey :: !JWK
-    , previousKeys :: ![JWK]
-    }
+  { activeKey :: !JWK,
+    previousKeys :: ![JWK]
+  }
 
 -- | All keys in a 'KeySet' (active first), as live JWKs.
 keySetAll :: KeySet -> [JWK]

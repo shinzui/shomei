@@ -6,7 +6,6 @@
   imports = [ inputs.pre-commit-hooks.flakeModule ];
 
   perSystem = { config, ... }: {
-    pre-commit.settings.hooks = {
-    };
+    pre-commit.settings.hooks = { };
   };
 }

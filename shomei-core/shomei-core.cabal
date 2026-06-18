@@ -1,6 +1,6 @@
-cabal-version: 3.0
-name:          shomei-core
-version:       0.1.0.0
+cabal-version:      3.0
+name:               shomei-core
+version:            0.1.0.0
 synopsis:
   Transport-agnostic domain: types, commands, events, errors, and effects
 
@@ -8,10 +8,10 @@ description:
   shomei-core contains the domain model that does not depend on any
   transport, database, or JWT library. All other packages depend on it.
 
-license:       MIT
-author:        Nadeem Bitar
-maintainer:    nadeem@gmail.com
-category:      Web, Security
+license:            MIT
+author:             Nadeem Bitar
+maintainer:         nadeem@gmail.com
+category:           Web, Security
 
 -- Embedded at compile time by Shomei.Domain.CommonPasswords via Template Haskell.
 extra-source-files: data/common-passwords.txt
@@ -93,14 +93,14 @@ library
 
   build-depends:
     , aeson
-    , base            >=4.18 && <5
+    , base            >=4.18   && <5
     , base64
     , bytestring
     , containers
     , crypton
     , effectful
     , effectful-core
-    , file-embed     >=0.0.15 && <0.0.17
+    , file-embed      >=0.0.15 && <0.0.17
     , generic-lens
     , http-api-data
     , lens
