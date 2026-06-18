@@ -2,21 +2,20 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-{- | Typed, self-describing identifiers for Shōmei domain entities.
-
-Each identifier is an 'mmzk-typeid' 'KindID' — a UUIDv7 with a type-level prefix
-(@user_…@, @session_…@, @refresh_token_…@, @credential_…@). Because the prefix is a
-type-level 'Symbol', 'UserId' and 'SessionId' are distinct types that cannot be
-confused. The underlying UUID is stored as a native @uuid@ column in PostgreSQL
-(EP-3) via 'userIdToUUID' / 'userIdFromUUID' (= 'getUUID' / 'decorateKindID').
-
-The orphan 'FromHttpApiData' / 'ToHttpApiData' instances are required by EP-5's
-Servant @Capture@s; @mmzk-typeid@ ships JSON instances but not these, and
-@http-api-data@ is a pure dependency so it is acceptable in the transport-agnostic
-core.
--}
-module Shomei.Id (
-    UserId,
+-- | Typed, self-describing identifiers for Shōmei domain entities.
+--
+-- Each identifier is an 'mmzk-typeid' 'KindID' — a UUIDv7 with a type-level prefix
+-- (@user_…@, @session_…@, @refresh_token_…@, @credential_…@). Because the prefix is a
+-- type-level 'Symbol', 'UserId' and 'SessionId' are distinct types that cannot be
+-- confused. The underlying UUID is stored as a native @uuid@ column in PostgreSQL
+-- (EP-3) via 'userIdToUUID' / 'userIdFromUUID' (= 'getUUID' / 'decorateKindID').
+--
+-- The orphan 'FromHttpApiData' / 'ToHttpApiData' instances are required by EP-5's
+-- Servant @Capture@s; @mmzk-typeid@ ships JSON instances but not these, and
+-- @http-api-data@ is a pure dependency so it is acceptable in the transport-agnostic
+-- core.
+module Shomei.Id
+  ( UserId,
     SessionId,
     RefreshTokenId,
     VerificationTokenId,
@@ -50,15 +49,15 @@ module Shomei.Id (
     passkeyIdFromUUID,
     ceremonyIdToUUID,
     ceremonyIdFromUUID,
-) where
-
-import Shomei.Prelude
+  )
+where
 
 import Data.KindID.Class (ToPrefix (..), ValidPrefix)
 import Data.KindID.V7 (KindID, decorateKindID, getUUID)
 import Data.KindID.V7 qualified as KindID
 import Data.Text qualified as Text
 import Data.UUID (UUID)
+import Shomei.Prelude
 import Web.HttpApiData (FromHttpApiData (..), ToHttpApiData (..))
 
 type UserId = KindID "user"
@@ -106,8 +105,8 @@ idText = KindID.toText
 
 parseId :: forall p. (ToPrefix p, ValidPrefix (PrefixSymbol p)) => Text -> Either Text (KindID p)
 parseId t = case KindID.parseText @p t of
-    Left e -> Left (Text.pack (show e))
-    Right k -> Right k
+  Left e -> Left (Text.pack (show e))
+  Right k -> Right k
 
 userIdToUUID :: UserId -> UUID
 userIdToUUID = getUUID
@@ -158,7 +157,7 @@ ceremonyIdFromUUID :: UUID -> CeremonyId
 ceremonyIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
-    parseUrlPiece = parseId
+  parseUrlPiece = parseId
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => ToHttpApiData (KindID p) where
-    toUrlPiece = idText
+  toUrlPiece = idText

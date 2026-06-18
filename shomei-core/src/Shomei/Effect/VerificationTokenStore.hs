@@ -3,28 +3,27 @@
 {-# LANGUAGE TypeFamilies #-}
 
 -- | Store effect for email-verification tokens.
-module Shomei.Effect.VerificationTokenStore (
-    VerificationTokenStore (..),
+module Shomei.Effect.VerificationTokenStore
+  ( VerificationTokenStore (..),
     createVerificationToken,
     findVerificationTokenByHash,
     markVerificationTokenConsumed,
     revokeUserVerificationTokens,
-) where
-
-import Shomei.Prelude
+  )
+where
 
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
-
 import Shomei.Domain.OneTimeToken (OneTimeTokenHash)
 import Shomei.Domain.VerificationToken (NewVerificationToken, PersistedVerificationToken)
 import Shomei.Id (UserId, VerificationTokenId)
+import Shomei.Prelude
 
 data VerificationTokenStore :: Effect where
-    CreateVerificationToken :: NewVerificationToken -> VerificationTokenStore m PersistedVerificationToken
-    FindVerificationTokenByHash :: OneTimeTokenHash -> VerificationTokenStore m (Maybe PersistedVerificationToken)
-    MarkVerificationTokenConsumed :: VerificationTokenId -> UTCTime -> VerificationTokenStore m ()
-    RevokeUserVerificationTokens :: UserId -> UTCTime -> VerificationTokenStore m ()
+  CreateVerificationToken :: NewVerificationToken -> VerificationTokenStore m PersistedVerificationToken
+  FindVerificationTokenByHash :: OneTimeTokenHash -> VerificationTokenStore m (Maybe PersistedVerificationToken)
+  MarkVerificationTokenConsumed :: VerificationTokenId -> UTCTime -> VerificationTokenStore m ()
+  RevokeUserVerificationTokens :: UserId -> UTCTime -> VerificationTokenStore m ()
 
 type instance DispatchOf VerificationTokenStore = Dynamic
 

@@ -2,23 +2,22 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-{- | The password-hasher port: hashing and verifying passwords (Argon2id in production,
-EP-3).
--}
-module Shomei.Effect.PasswordHasher (
-    PasswordHasher (..),
+-- | The password-hasher port: hashing and verifying passwords (Argon2id in production,
+-- EP-3).
+module Shomei.Effect.PasswordHasher
+  ( PasswordHasher (..),
     hashPassword,
     verifyPassword,
-) where
+  )
+where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
-
 import Shomei.Domain.Password (PasswordHash, PlainPassword)
 
 data PasswordHasher :: Effect where
-    HashPassword :: PlainPassword -> PasswordHasher m PasswordHash
-    VerifyPassword :: PlainPassword -> PasswordHash -> PasswordHasher m Bool
+  HashPassword :: PlainPassword -> PasswordHasher m PasswordHash
+  VerifyPassword :: PlainPassword -> PasswordHash -> PasswordHasher m Bool
 
 type instance DispatchOf PasswordHasher = Dynamic
 

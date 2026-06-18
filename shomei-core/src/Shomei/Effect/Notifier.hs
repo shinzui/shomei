@@ -3,18 +3,18 @@
 {-# LANGUAGE TypeFamilies #-}
 
 -- | Notification-sending effect for account lifecycle messages.
-module Shomei.Effect.Notifier (
-    Notifier (..),
+module Shomei.Effect.Notifier
+  ( Notifier (..),
     sendNotification,
-) where
+  )
+where
 
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
-
 import Shomei.Domain.Notification (Notification)
 
 data Notifier :: Effect where
-    SendNotification :: Notification -> Notifier m ()
+  SendNotification :: Notification -> Notifier m ()
 
 type instance DispatchOf Notifier = Dynamic
 

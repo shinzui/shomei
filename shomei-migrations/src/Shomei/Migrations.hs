@@ -1,11 +1,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Shomei.Migrations (
-    shomeiMigrations,
+module Shomei.Migrations
+  ( shomeiMigrations,
     runShomeiMigrationsNoCheck,
     coddSettingsFromConnString,
-) where
+  )
+where
 
 import Codd (ApplyResult (SchemasNotVerified), CoddSettings (..), applyMigrationsNoCheck)
 import Codd.Logging (runCoddLogger)
@@ -22,20 +23,19 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (DiffTime)
 import Streaming.Prelude qualified as Streaming
 
-{- | All Shōmei migrations, parsed from the embedded SQL files (ordered by codd by
-the timestamp encoded in each filename).
--}
+-- | All Shōmei migrations, parsed from the embedded SQL files (ordered by codd by
+-- the timestamp encoded in each filename).
 shomeiMigrations :: (MonadFail m, EnvVars m) => m [AddedSqlMigration m]
 shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
   where
     parseEmbeddedMigration :: forall m. (MonadFail m, EnvVars m) => (FilePath, ByteString) -> m (AddedSqlMigration m)
     parseEmbeddedMigration (name, bytes) = do
-        let stream :: PureStream m
-            stream = PureStream (Streaming.yield (TE.decodeUtf8 bytes))
-        result <- parseAddedSqlMigration name stream
-        case result of
-            Left err -> fail ("Invalid Shōmei migration " <> name <> ": " <> err)
-            Right migration -> pure migration
+      let stream :: PureStream m
+          stream = PureStream (Streaming.yield (TE.decodeUtf8 bytes))
+      result <- parseAddedSqlMigration name stream
+      case result of
+        Left err -> fail ("Invalid Shōmei migration " <> name <> ": " <> err)
+        Right migration -> pure migration
 
 -- NB: 'embedDir' is a Template Haskell splice evaluated at COMPILE time. A brand-new
 -- .sql file under sql-migrations/ is not re-embedded until this module is recompiled;
@@ -56,30 +56,29 @@ embeddedFiles = $(embedDir "sql-migrations")
 -- | Apply all migrations through codd WITHOUT expected-schema verification.
 runShomeiMigrationsNoCheck :: CoddSettings -> DiffTime -> IO ApplyResult
 runShomeiMigrationsNoCheck settings connectTimeout =
-    runCoddLogger do
-        migrations <- shomeiMigrations
-        applyMigrationsNoCheck settings (Just migrations) connectTimeout (const (pure SchemasNotVerified))
+  runCoddLogger do
+    migrations <- shomeiMigrations
+    applyMigrationsNoCheck settings (Just migrations) connectTimeout (const (pure SchemasNotVerified))
 
-{- | Build codd settings directly from a libpq connection string (NOT from the
-@CODD_*@ environment). We always apply WITHOUT expected-schema verification, so
-@onDiskReps@ / @namespacesToCheck@ carry harmless placeholders. Used by the standalone
-server's startup migration and by the @test-support@ ephemeral-database helper.
--}
+-- | Build codd settings directly from a libpq connection string (NOT from the
+-- @CODD_*@ environment). We always apply WITHOUT expected-schema verification, so
+-- @onDiskReps@ / @namespacesToCheck@ carry harmless placeholders. Used by the standalone
+-- server's startup migration and by the @test-support@ ephemeral-database helper.
 coddSettingsFromConnString :: Text -> CoddSettings
 coddSettingsFromConnString connStr =
-    CoddSettings
-        { migsConnString = parseConnString connStr
-        , sqlMigrations = []
-        , onDiskReps = Right (DbRep Null Map.empty Map.empty)
-        , namespacesToCheck = IncludeSchemas [SqlSchema "shomei", SqlSchema "public"]
-        , extraRolesToCheck = []
-        , retryPolicy = singleTryPolicy
-        , txnIsolationLvl = DbDefault
-        , schemaAlgoOpts = SchemaAlgo False False False
-        }
+  CoddSettings
+    { migsConnString = parseConnString connStr,
+      sqlMigrations = [],
+      onDiskReps = Right (DbRep Null Map.empty Map.empty),
+      namespacesToCheck = IncludeSchemas [SqlSchema "shomei", SqlSchema "public"],
+      extraRolesToCheck = [],
+      retryPolicy = singleTryPolicy,
+      txnIsolationLvl = DbDefault,
+      schemaAlgoOpts = SchemaAlgo False False False
+    }
 
 parseConnString :: Text -> ConnectionString
 parseConnString connStr =
-    case parseOnly (connStringParser <* endOfInput) connStr of
-        Left err -> error ("Could not parse PostgreSQL connection string for codd: " <> err)
-        Right parsed -> parsed
+  case parseOnly (connStringParser <* endOfInput) connStr of
+    Left err -> error ("Could not parse PostgreSQL connection string for codd: " <> err)
+    Right parsed -> parsed

@@ -2,21 +2,20 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-{- | The clock port: the current wall-clock time. Abstracting it lets tests fix or
-advance time deterministically.
--}
-module Shomei.Effect.Clock (
-    Clock (..),
+-- | The clock port: the current wall-clock time. Abstracting it lets tests fix or
+-- advance time deterministically.
+module Shomei.Effect.Clock
+  ( Clock (..),
     now,
-) where
-
-import Shomei.Prelude
+  )
+where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Prelude
 
 data Clock :: Effect where
-    Now :: Clock m UTCTime
+  Now :: Clock m UTCTime
 
 type instance DispatchOf Clock = Dynamic
 

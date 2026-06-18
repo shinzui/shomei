@@ -2,34 +2,32 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
-{- | The refresh-token-store port: persisting and rotating refresh tokens, including the
-family-revocation operations used by reuse detection.
--}
-module Shomei.Effect.RefreshTokenStore (
-    RefreshTokenStore (..),
+-- | The refresh-token-store port: persisting and rotating refresh tokens, including the
+-- family-revocation operations used by reuse detection.
+module Shomei.Effect.RefreshTokenStore
+  ( RefreshTokenStore (..),
     createRefreshToken,
     findRefreshTokenByHash,
     markRefreshTokenUsed,
     revokeRefreshTokenFamily,
     revokeSessionRefreshTokens,
     revokeAllUserRefreshTokens,
-) where
-
-import Shomei.Prelude
+  )
+where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
-
 import Shomei.Domain.RefreshToken (NewRefreshToken, PersistedRefreshToken, RefreshTokenHash)
 import Shomei.Id (RefreshTokenId, SessionId, UserId)
+import Shomei.Prelude
 
 data RefreshTokenStore :: Effect where
-    CreateRefreshToken :: NewRefreshToken -> RefreshTokenStore m PersistedRefreshToken
-    FindRefreshTokenByHash :: RefreshTokenHash -> RefreshTokenStore m (Maybe PersistedRefreshToken)
-    MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
-    RevokeRefreshTokenFamily :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
-    RevokeSessionRefreshTokens :: SessionId -> UTCTime -> RefreshTokenStore m ()
-    RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()
+  CreateRefreshToken :: NewRefreshToken -> RefreshTokenStore m PersistedRefreshToken
+  FindRefreshTokenByHash :: RefreshTokenHash -> RefreshTokenStore m (Maybe PersistedRefreshToken)
+  MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
+  RevokeRefreshTokenFamily :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
+  RevokeSessionRefreshTokens :: SessionId -> UTCTime -> RefreshTokenStore m ()
+  RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()
 
 type instance DispatchOf RefreshTokenStore = Dynamic
 
