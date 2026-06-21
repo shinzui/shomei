@@ -89,6 +89,16 @@ data AuthError
   | -- | A credential-changing action was attempted under a delegated (impersonation)
     -- token. Maps to 403.
     ImpersonationActionBlocked
+  | -- | Service-token issuance is disabled in runtime configuration. Maps to 403.
+    ServiceTokenDisabled
+  | -- | No configured service account matched the presented id. Maps to 403.
+    ServiceAccountNotFound
+  | -- | The presented service-account secret did not match the configured SHA-256 hash. Maps to 403.
+    ServiceAccountSecretInvalid
+  | -- | The request asked for no scopes or for scopes outside the account's allow-list. Maps to 403.
+    ServiceTokenScopeDenied
+  | -- | The configured service-account user or requested actor user is missing or inactive. Maps to 400.
+    ServiceTokenActorInvalid
   | InternalAuthError Text
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

@@ -10,6 +10,7 @@ import Shomei.WebAuthnCeremonySpec qualified
 import Shomei.Workflow.ImpersonationSpec qualified
 import Shomei.Workflow.MfaSpec qualified
 import Shomei.Workflow.PasskeySpec qualified
+import Shomei.Workflow.ServiceTokenSpec qualified
 import Shomei.WorkflowSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
@@ -28,6 +29,7 @@ main =
           Shomei.WebAuthnCeremonySpec.tests,
           Shomei.Workflow.MfaSpec.tests,
           Shomei.Workflow.ImpersonationSpec.tests,
+          Shomei.Workflow.ServiceTokenSpec.tests,
           Shomei.Workflow.PasskeySpec.tests
         ]
     )

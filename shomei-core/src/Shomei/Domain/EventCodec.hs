@@ -56,6 +56,7 @@ reconstructAuthEvent etype payload = case etype of
   "impersonation_started" -> ImpersonationStarted <$> parse payload
   "impersonation_stopped" -> ImpersonationStopped <$> parse payload
   "impersonation_action_blocked" -> ImpersonationActionBlocked <$> parse payload
+  "service_token_issued" -> ServiceTokenIssued <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -122,3 +123,5 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_stopped", toJSON d, d.occurredAt)
   ImpersonationActionBlocked d ->
     (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_action_blocked", toJSON d, d.occurredAt)
+  ServiceTokenIssued d ->
+    (Just (userIdToUUID d.userId), Just (sessionIdToUUID d.sessionId), "service_token_issued", toJSON d, d.occurredAt)

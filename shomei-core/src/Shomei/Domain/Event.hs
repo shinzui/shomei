@@ -34,12 +34,16 @@ module Shomei.Domain.Event
     ImpersonationStartedData (..),
     ImpersonationStoppedData (..),
     ImpersonationActionBlockedData (..),
+    ServiceTokenIssuedData (..),
   )
 where
 
+import Data.Set (Set)
+import Shomei.Domain.Claims (Scope)
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
 import Shomei.Domain.LoginId (LoginId)
+import Shomei.Config (ServiceAccountId)
 import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
 import Shomei.Prelude
 
@@ -253,6 +257,17 @@ data ImpersonationActionBlockedData = ImpersonationActionBlockedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+data ServiceTokenIssuedData = ServiceTokenIssuedData
+  { userId :: !UserId,
+    sessionId :: !SessionId,
+    accountId :: !ServiceAccountId,
+    scopes :: !(Set Scope),
+    actorId :: !(Maybe UserId),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -278,5 +293,6 @@ data AuthEvent
   | ImpersonationStarted ImpersonationStartedData
   | ImpersonationStopped ImpersonationStoppedData
   | ImpersonationActionBlocked ImpersonationActionBlockedData
+  | ServiceTokenIssued ServiceTokenIssuedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

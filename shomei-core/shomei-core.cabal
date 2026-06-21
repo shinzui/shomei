@@ -89,6 +89,7 @@ library
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
     Shomei.Workflow.Passkey
+    Shomei.Workflow.ServiceToken
     Shomei.Workflow.Session
 
   build-depends:
@@ -127,6 +128,7 @@ test-suite shomei-core-test
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
+    Shomei.Workflow.ServiceTokenSpec
     Shomei.WorkflowSpec
 
   build-depends:
@@ -136,6 +138,7 @@ test-suite shomei-core-test
     , containers
     , effectful
     , effectful-core
+    , generic-lens
     , shomei-core
     , tasty
     , tasty-hunit

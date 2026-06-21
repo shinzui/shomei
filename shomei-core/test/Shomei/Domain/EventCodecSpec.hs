@@ -10,10 +10,13 @@
 module Shomei.Domain.EventCodecSpec (tests) where
 
 import Data.Aeson (ToJSON, toJSON)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Data.UUID qualified as UUID
+import Shomei.Config (ServiceAccountId (..))
+import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
@@ -111,7 +114,8 @@ roundTrips =
     let d = MfaFailedData (Just uid) "bad assertion" t0 in check "mfa_failed" d (MfaFailed d),
     let d = ImpersonationStartedData uid2 uid sid "support ticket" (Just "TICKET-1") (Just "1.2.3.4") t0 in check "impersonation_started" d (ImpersonationStarted d),
     let d = ImpersonationStoppedData uid2 uid sid t0 in check "impersonation_stopped" d (ImpersonationStopped d),
-    let d = ImpersonationActionBlockedData uid2 uid sid "password_change" t0 in check "impersonation_action_blocked" d (ImpersonationActionBlocked d)
+    let d = ImpersonationActionBlockedData uid2 uid sid "password_change" t0 in check "impersonation_action_blocked" d (ImpersonationActionBlocked d),
+    let d = ServiceTokenIssuedData uid sid (ServiceAccountId "connector:rei") (Set.singleton (Scope "kawa:ingest")) (Just uid2) t0 in check "service_token_issued" d (ServiceTokenIssued d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -122,7 +126,7 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 24).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 25).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 24 AuthEvent constructors" (length roundTrips @?= 24)
+  testCase "covers all 25 AuthEvent constructors" (length roundTrips @?= 25)

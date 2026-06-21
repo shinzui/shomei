@@ -17,8 +17,12 @@ module Shomei.Config
     UserVerificationPolicy (..),
     AttestationPolicy (..),
     ImpersonationConfig (..),
+    ServiceAccountId (..),
+    ServiceAccountConfig (..),
+    ServiceTokenConfig (..),
     defaultWebAuthnConfig,
     defaultImpersonationConfig,
+    defaultServiceTokenConfig,
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -32,9 +36,11 @@ module Shomei.Config
 where
 
 import Data.Time (NominalDiffTime)
+import Data.Set (Set)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
+import Shomei.Id (UserId)
 import Shomei.Prelude
 
 data TokenTransport = BearerToken | HttpOnlyCookie | BearerAndCookie
@@ -162,12 +168,41 @@ data ImpersonationConfig = ImpersonationConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+newtype ServiceAccountId = ServiceAccountId Text
+  deriving stock (Generic)
+  deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
+
+data ServiceAccountConfig = ServiceAccountConfig
+  { accountId :: !ServiceAccountId,
+    userId :: !UserId,
+    secretHash :: !Text,
+    allowedScopes :: !(Set Scope)
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ServiceTokenConfig = ServiceTokenConfig
+  { enabled :: !Bool,
+    ttl :: !NominalDiffTime,
+    accounts :: ![ServiceAccountConfig]
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 defaultImpersonationConfig :: ImpersonationConfig
 defaultImpersonationConfig =
   ImpersonationConfig
     { impersonateScope = Scope "impersonate:user",
       impersonationSessionTTL = 30 * 60,
       actorFreshnessWindow = 5 * 60
+    }
+
+defaultServiceTokenConfig :: ServiceTokenConfig
+defaultServiceTokenConfig =
+  ServiceTokenConfig
+    { enabled = False,
+      ttl = 5 * 60,
+      accounts = []
     }
 
 defaultWebAuthnConfig :: WebAuthnConfig
@@ -197,7 +232,8 @@ data ShomeiConfig = ShomeiConfig
     rateLimitConfig :: !RateLimitConfig,
     observabilityConfig :: !ObservabilityConfig,
     webauthnConfig :: !WebAuthnConfig,
-    impersonationConfig :: !ImpersonationConfig
+    impersonationConfig :: !ImpersonationConfig,
+    serviceTokenConfig :: !ServiceTokenConfig
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -262,5 +298,6 @@ defaultShomeiConfig iss aud =
       rateLimitConfig = defaultRateLimitConfig,
       observabilityConfig = defaultObservabilityConfig,
       webauthnConfig = defaultWebAuthnConfig,
-      impersonationConfig = defaultImpersonationConfig
+      impersonationConfig = defaultImpersonationConfig,
+      serviceTokenConfig = defaultServiceTokenConfig
     }
