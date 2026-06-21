@@ -19,7 +19,10 @@ module Shomei.Server.Config
   )
 where
 
-import Data.Aeson (FromJSON, eitherDecodeStrict')
+import Data.Aeson (eitherDecodeStrict')
+import Data.Char (isHexDigit)
+import Data.Foldable (traverse_)
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
@@ -28,6 +31,9 @@ import Shomei.Config
     NotifierConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
+    ServiceAccountConfig (..),
+    ServiceAccountId (..),
+    ServiceTokenConfig (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
     SigningKeyConfig (..),
@@ -36,8 +42,9 @@ import Shomei.Config
     WebAuthnConfig (..),
     defaultShomeiConfig,
   )
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
+import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
+import Shomei.Id (parseId)
 import Shomei.Prelude
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
@@ -87,8 +94,26 @@ data FileConfig = FileConfig
     webauthnCeremonyTimeoutSeconds :: !(Maybe Int),
     webauthnPendingCeremonyTtlSeconds :: !(Maybe Int),
     webauthnMfaRequired :: !(Maybe Bool),
+    serviceToken :: !(Maybe FileServiceTokenConfig),
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     signingAlgorithm :: !(Maybe Text)
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass (FromJSON)
+
+data FileServiceTokenConfig = FileServiceTokenConfig
+  { enabled :: !(Maybe Bool),
+    ttlSeconds :: !(Maybe Int),
+    accounts :: !(Maybe [FileServiceAccount])
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass (FromJSON)
+
+data FileServiceAccount = FileServiceAccount
+  { accountId :: !Text,
+    userId :: !Text,
+    secretSha256 :: !Text,
+    allowedScopes :: ![Text]
   }
   deriving stock (Show, Generic)
   deriving anyclass (FromJSON)
@@ -135,7 +160,8 @@ baseFromFile (Just fc) = do
   let iss = fromMaybe "shomei" fc.issuer
       aud = fromMaybe "shomei-clients" fc.audience
       cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
-      cfg =
+  serviceTokenCfg <- mergeServiceToken "serviceToken (config file)" cfg0.serviceTokenConfig fc.serviceToken
+  let cfg =
         cfg0
           { accessTokenTTL = maybe cfg0.accessTokenTTL fromIntegral fc.accessTokenTtlSeconds,
             refreshTokenTTL = maybe cfg0.refreshTokenTTL fromIntegral fc.refreshTokenTtlSeconds,
@@ -168,6 +194,7 @@ baseFromFile (Just fc) = do
                   gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                 },
             webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc,
+            serviceTokenConfig = serviceTokenCfg,
             signingKeyConfig =
               cfg0.signingKeyConfig
                 { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile
@@ -199,6 +226,7 @@ overlayCoreFromEnv base = do
   tr <- transportEnv
   sc <- sessionCheckEnv
   wa <- overlayWebAuthnFromEnv base.webauthnConfig
+  serviceTokenCfg <- overlayServiceTokenFromEnv base.serviceTokenConfig
   pwMin <- intEnvMaybe "SHOMEI_PASSWORD_MIN_LENGTH"
   pwMax <- intEnvMaybe "SHOMEI_PASSWORD_MAX_LENGTH"
   pwRejCommon <- boolEnv "SHOMEI_PASSWORD_REJECT_COMMON"
@@ -216,6 +244,7 @@ overlayCoreFromEnv base = do
         tokenTransport = fromMaybe base.tokenTransport tr,
         sessionCheckMode = fromMaybe base.sessionCheckMode sc,
         webauthnConfig = wa,
+        serviceTokenConfig = serviceTokenCfg,
         passwordPolicy =
           base.passwordPolicy
             { minLength = fromMaybe base.passwordPolicy.minLength pwMin,
@@ -227,6 +256,77 @@ overlayCoreFromEnv base = do
               breachCheckTimeoutMs = fromMaybe base.passwordPolicy.breachCheckTimeoutMs pwBreachTo
             }
       }
+
+mergeServiceToken :: Text -> ServiceTokenConfig -> Maybe FileServiceTokenConfig -> IO ServiceTokenConfig
+mergeServiceToken _ base Nothing = pure base
+mergeServiceToken label base (Just fileCfg) = do
+  parsedAccounts <- traverse (parseServiceAccounts label) mAccounts
+  validateServiceTokenConfig label
+    ServiceTokenConfig
+      { enabled = fromMaybe baseEnabled mEnabled,
+        ttl = maybe baseTtl fromIntegral mTtlSeconds,
+        accounts = fromMaybe baseAccounts parsedAccounts
+      }
+  where
+    ServiceTokenConfig {enabled = baseEnabled, ttl = baseTtl, accounts = baseAccounts} = base
+    FileServiceTokenConfig {enabled = mEnabled, ttlSeconds = mTtlSeconds, accounts = mAccounts} = fileCfg
+
+overlayServiceTokenFromEnv :: ServiceTokenConfig -> IO ServiceTokenConfig
+overlayServiceTokenFromEnv base = do
+  mEnabled <- boolEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
+  mTtl <- ttlEnv "SHOMEI_SERVICE_TOKEN_TTL"
+  mAccounts <- serviceAccountsEnv
+  validateServiceTokenConfig "service-token environment variables"
+    ServiceTokenConfig
+      { enabled = fromMaybe baseEnabled mEnabled,
+        ttl = fromMaybe baseTtl mTtl,
+        accounts = fromMaybe baseAccounts mAccounts
+      }
+  where
+    ServiceTokenConfig {enabled = baseEnabled, ttl = baseTtl, accounts = baseAccounts} = base
+
+serviceAccountsEnv :: IO (Maybe [ServiceAccountConfig])
+serviceAccountsEnv = do
+  m <- lookupEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
+  case m of
+    Nothing -> pure Nothing
+    Just "" -> pure Nothing
+    Just raw ->
+      case eitherDecodeStrict' (TE.encodeUtf8 (Text.pack raw)) of
+        Left err -> ioError (userError ("SHOMEI_SERVICE_ACCOUNTS_JSON must decode as a service-account JSON array: " <> err))
+        Right accounts -> Just <$> parseServiceAccounts "SHOMEI_SERVICE_ACCOUNTS_JSON" accounts
+
+parseServiceAccounts :: Text -> [FileServiceAccount] -> IO [ServiceAccountConfig]
+parseServiceAccounts label = traverse (parseServiceAccount label)
+
+parseServiceAccount :: Text -> FileServiceAccount -> IO ServiceAccountConfig
+parseServiceAccount label FileServiceAccount {accountId = rawAccountId, userId = rawUserId, secretSha256 = rawSecret, allowedScopes = rawScopes} = do
+  uid <- either (\err -> ioError (userError (Text.unpack label <> " has invalid userId " <> Text.unpack rawUserId <> ": " <> Text.unpack err))) pure (parseId rawUserId)
+  secretHash <- normalizeSha256Hex label rawSecret
+  pure
+    ServiceAccountConfig
+      { accountId = ServiceAccountId rawAccountId,
+        userId = uid,
+        secretHash = secretHash,
+        allowedScopes = Set.fromList (Scope <$> rawScopes)
+      }
+
+validateServiceTokenConfig :: Text -> ServiceTokenConfig -> IO ServiceTokenConfig
+validateServiceTokenConfig label cfg@ServiceTokenConfig {accounts = configuredAccounts} = do
+  traverse_ validateAccount configuredAccounts
+  pure cfg
+  where
+    validateAccount ServiceAccountConfig {accountId = ServiceAccountId rawAccountId, allowedScopes}
+      | Set.null allowedScopes =
+          ioError (userError (Text.unpack label <> " account " <> Text.unpack rawAccountId <> " must allow at least one scope"))
+      | otherwise = pure ()
+
+normalizeSha256Hex :: Text -> Text -> IO Text
+normalizeSha256Hex label raw =
+  let stripped = Text.toLower (Text.strip raw)
+   in if Text.length stripped == 64 && Text.all isHexDigit stripped
+        then pure stripped
+        else ioError (userError (Text.unpack label <> " service account secretSha256 must be a 64-character hex SHA-256 digest"))
 
 -- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
 -- 'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot

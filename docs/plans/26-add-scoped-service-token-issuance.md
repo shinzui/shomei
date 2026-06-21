@@ -49,7 +49,7 @@ reflect the actual current state of the work.
 - [x] M0 - Reconfirm the baseline behavior and run the focused pre-change tests. Completed 2026-06-21: `cabal test shomei-core shomei-servant shomei-jwt` passed with 105 core tests, 3 servant tests, and 20 JWT tests.
 - [x] M1 - Add the core service-token configuration types, workflow command, validation errors, and unit tests. Completed 2026-06-21: added `ServiceTokenConfig`, `ServiceAccountConfig`, `Shomei.Workflow.ServiceToken`, `ServiceTokenIssued`, focused workflow tests, and event-codec coverage. `cabal test shomei-core` passed with 115 tests.
 - [x] M2 - Add the Servant request/response DTOs, route, handler, and in-process HTTP tests. Completed 2026-06-21: added `POST /auth/service-token`, unprefixed DTO fields `accountId`, `secret`, `scopes`, and `actorId`, handler error mapping, and an in-process `/ingest` route guarded by `requireScope`. `cabal test shomei-servant` passed with 4 HTTP scenarios.
-- [ ] M3 - Wire standalone server configuration from Dhall and environment variables, document the endpoint, and add PostgreSQL end-to-end coverage.
+- [x] M3 - Wire standalone server configuration from Dhall and environment variables, document the endpoint, and add PostgreSQL end-to-end coverage. Completed 2026-06-21: added Dhall and environment loading for `serviceToken`, documented `POST /auth/service-token`, and extended config coverage. `dhall-to-json --file config/shomei.example.dhall`, `cabal test shomei-server:shomei-server-config-test`, and `cabal test shomei-server` passed.
 - [ ] M4 - Run formatting, build, and the relevant test suites; update this plan with results and retrospective notes.
 
 

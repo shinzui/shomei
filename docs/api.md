@@ -21,6 +21,22 @@ Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only 
 ### `POST /auth/refresh`
 Body `{"refreshToken"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`).
 
+### `POST /auth/service-token`
+Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:
+the configured service account id and shared secret in the JSON body are the credential. The
+server hashes `secret` with SHA-256, encodes the digest as lowercase hex, and compares it with the
+configured account `secretSha256` using constant-time byte comparison. A successful request returns
+`200 {"accessToken","expiresIn"}` with **no refresh token**. The access token's `sub` is the
+configured service-account user id, `scopes` contains exactly the requested allowed scopes, and
+`act` is set to `actorId` only when supplied and when that user exists and is active.
+
+Service-token issuance is disabled unless `serviceToken.enabled` or
+`SHOMEI_SERVICE_TOKEN_ENABLED=true` enables it and the account is configured. Unknown account ids,
+bad secrets, disabled issuance, and scopes outside the account allow-list return `403`; an empty
+`scopes` array or malformed `actorId` returns `400`. Normal `POST /auth/login` tokens still carry
+empty scopes, so a host route guarded by `requireScope (Scope "kawa:ingest")` accepts a service
+token with that scope and rejects a normal login token with `403`.
+
 ### `POST /auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens.
 

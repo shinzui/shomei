@@ -36,4 +36,17 @@
 , webauthnCeremonyTimeoutSeconds : Natural   -- browser ceremony timeout
 , webauthnPendingCeremonyTtlSeconds : Natural -- how long a begun ceremony stays valid server-side
 , webauthnMfaRequired : Bool                 -- require the second factor for accounts that have a passkey
+-- Service-token issuance. Disabled by default; each configured account maps an operator-chosen
+-- account id to an existing Shōmei user id, a SHA-256 hex secret hash, and coarse allowed scopes.
+, serviceToken :
+    { enabled : Bool
+    , ttlSeconds : Natural
+    , accounts :
+        List
+          { accountId : Text
+          , userId : Text
+          , secretSha256 : Text
+          , allowedScopes : List Text
+          }
+    }
 }
