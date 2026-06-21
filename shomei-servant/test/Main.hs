@@ -15,6 +15,7 @@ import Data.Aeson (Value (..), decode, encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
+import Data.Generics.Labels ()
 import Data.IORef (IORef, newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
@@ -54,14 +55,19 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
+import Shomei.Config (ImpersonationConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Command (SignupCommand (..))
+import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
+import Shomei.Domain.LoginId (mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
+import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.Token (AccessToken (..))
+import Shomei.Domain.User (User (..))
 import Shomei.Effect.InMemory
   ( World (..),
     emptyWorld,
@@ -91,24 +97,45 @@ import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler)
-import Shomei.Servant.Authz (requireRole)
+import Shomei.Servant.Authz (requireRole, requireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam (AppEffects, Env (..))
+import Shomei.Prelude ((&), (.~), (^.))
+import Shomei.Workflow qualified as Wf
+import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+serviceAccount :: ServiceAccountId
+serviceAccount = ServiceAccountId "connector:rei"
+
+serviceLoginId :: Text
+serviceLoginId = "connector-rei"
+
+serviceSecret :: Text
+serviceSecret = "test-secret"
+
+servicePassword :: Text
+servicePassword = "correct horse battery staple"
+
+ingestScope :: Scope
+ingestScope = Scope "kawa:ingest"
 
 -- | The test API: the whole Shōmei API plus a host admin route guarded by the
 -- 'requireRole' function (proving embeddability + the @RequireRole@ behavior).
 type TestAPI =
   NamedRoutes ShomeiAPI
     :<|> "admin" :> "users" :> Authenticated :> Get '[JSON] [UserResponse]
+    :<|> "ingest" :> Authenticated :> Get '[JSON] [UserResponse]
 
 testServer :: Env -> Server TestAPI
-testServer env = shomeiServer env :<|> adminUsersH
+testServer env = shomeiServer env :<|> adminUsersH :<|> ingestH
   where
     adminUsersH :: AuthUser -> Handler [UserResponse]
     adminUsersH user = requireRole (Role "admin") user >> pure []
+    ingestH :: AuthUser -> Handler [UserResponse]
+    ingestH user = requireScope ingestScope user >> pure []
 
 app :: Env -> Application
 app env = serveWithContext (Proxy @TestAPI) ctx (testServer env)
@@ -201,22 +228,65 @@ main = do
   ref <- newIORef (emptyWorld t0)
   -- Build an 'Env' over a FRESH in-memory World. Each test case that mutates state must use
   -- its own env: tasty runs cases in parallel, so sharing one World IORef races.
-  let mkEnv r =
+  let mkEnvWith cfg' r =
         Env
-          { runPorts = runHybrid r jwk jwkset cfg,
-            config = cfg,
-            verifier = verifyToken jwkset cfg,
+          { runPorts = runHybrid r jwk jwkset cfg',
+            config = cfg',
+            verifier = verifyToken jwkset cfg',
             jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [jwk])),
             accountKeyOf = AccountKey
           }
+      mkEnv = mkEnvWith cfg
       freshEnv = mkEnv <$> newIORef (emptyWorld t0)
+      freshServiceEnv = do
+        r <- newIORef (emptyWorld t0)
+        serviceUser <- seedServiceUser r jwk jwkset cfg
+        let serviceCfg =
+              cfg
+                & #serviceTokenConfig
+                .~ ServiceTokenConfig
+                  { enabled = True,
+                    ttl = 300,
+                    accounts =
+                      [ ServiceAccountConfig
+                          { accountId = serviceAccount,
+                            userId = serviceUser ^. #userId,
+                            secretHash = sha256Hex serviceSecret,
+                            allowedScopes = Set.singleton ingestScope
+                          }
+                      ]
+                  }
+        pure (mkEnvWith serviceCfg r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv adminToken impToken)
+  defaultMain (tests ref env freshEnv freshServiceEnv adminToken impToken)
 
-tests :: IORef World -> Env -> IO Env -> Text -> Text -> TestTree
-tests ref env freshEnv adminToken impToken =
+seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
+seedServiceUser ref jwk jwkset cfg = do
+  loginId <- either (assertFailure . ("bad service login id: " <>) . show) pure (mkLoginId serviceLoginId)
+  email <- either (assertFailure . ("bad service email: " <>) . show) pure (mkEmail "connector-rei@example.com")
+  result <-
+    runHybrid
+      ref
+      jwk
+      jwkset
+      cfg
+      ( Wf.signup
+          cfg
+          SignupCommand
+            { loginId,
+              email = Just email,
+              password = PlainPassword servicePassword,
+              displayName = Just "Connector Rei"
+            }
+      )
+  case result of
+    Right (user, _) -> pure user
+    Left err -> assertFailure ("service user signup failed: " <> show err)
+
+tests :: IORef World -> Env -> IO Env -> IO Env -> Text -> Text -> TestTree
+tests ref env freshEnv freshServiceEnv adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
@@ -227,6 +297,10 @@ tests ref env freshEnv adminToken impToken =
       testCase "email-only signup defaults loginId to the email (backward compat)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId
+      ,
+      testCase "service token with allowed scope passes RequireScope while normal login token fails" $ do
+        e <- freshServiceEnv
+        testWithApplication (pure (app e)) scenarioServiceToken
     ]
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
@@ -259,6 +333,57 @@ scenarioEmailDefaultsLoginId port = do
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just em
   (dig ["user", "email"] sresp >>= asText) @?= Just em
+
+scenarioServiceToken :: Int -> IO ()
+scenarioServiceToken port = do
+  mgr <- newManager defaultManagerSettings
+  let body =
+        object
+          [ "accountId" .= serviceAccountText,
+            "secret" .= serviceSecret,
+            "scopes" .= [scopeText ingestScope],
+            "actorId" .= Null
+          ]
+  (status, responseBody) <- postJSON mgr port "/auth/service-token" body
+  status @?= 200
+  response <- must "service-token body" responseBody
+  access <- must "service-token accessToken" (dig ["accessToken"] response >>= asText)
+  assertBool "service-token response has no refreshToken" (isNothing (dig ["refreshToken"] response))
+  (ingestStatus, _) <- getJSON mgr port "/ingest" (bearer access)
+  ingestStatus @?= 200
+
+  (deniedStatus, _) <-
+    postJSON
+      mgr
+      port
+      "/auth/service-token"
+      ( object
+          [ "accountId" .= serviceAccountText,
+            "secret" .= serviceSecret,
+            "scopes" .= ["channel:egress" :: Text],
+            "actorId" .= Null
+          ]
+      )
+  deniedStatus @?= 403
+
+  (loginStatus, loginBody) <-
+    postJSON
+      mgr
+      port
+      "/auth/login"
+      (object ["loginId" .= serviceLoginId, "password" .= servicePassword])
+  loginStatus @?= 200
+  loginResp <- must "service login body" loginBody
+  normalAccess <- must "service login accessToken" (dig ["token", "accessToken"] loginResp >>= asText)
+  (normalIngestStatus, _) <- getJSON mgr port "/ingest" (bearer normalAccess)
+  normalIngestStatus @?= 403
+  where
+    serviceAccountText =
+      case serviceAccount of
+        ServiceAccountId t -> t
+    scopeText =
+      \case
+        Scope t -> t
 
 scenario :: IORef World -> Text -> Text -> Int -> IO ()
 scenario ref adminToken impToken port = do

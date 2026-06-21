@@ -29,6 +29,8 @@ module Shomei.Servant.DTO
     PasskeyLoginCompleteRequest (..),
     ImpersonateRequest (..),
     ImpersonateResponse (..),
+    ServiceTokenRequest (..),
+    ServiceTokenResponse (..),
     AuditEventResponse (..),
     AuditEventsPage (..),
     userToResponse,
@@ -37,6 +39,7 @@ module Shomei.Servant.DTO
     passkeyToResponse,
     loginResultToResponse,
     impersonateToResponse,
+    serviceTokenToResponse,
     storedToResponse,
     encodeCursor,
     decodeCursor,
@@ -48,7 +51,6 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser)
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
-import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginId (loginIdText)
@@ -61,6 +63,7 @@ import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Id (idText)
 import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
+import Shomei.Workflow.ServiceToken (IssuedServiceToken (..))
 
 -- | @POST /auth/signup@ body. The principal is @loginId@; @email@ is optional. For backward
 -- compatibility either field may be omitted: an email-only caller (no @loginId@) defaults the
@@ -332,6 +335,25 @@ data ImpersonateResponse = ImpersonateResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | @POST /auth/service-token@ body: configured service account id, shared secret,
+-- requested coarse scopes, and optional actor user id for @act@ attribution.
+data ServiceTokenRequest = ServiceTokenRequest
+  { accountId :: !Text,
+    secret :: !Text,
+    scopes :: ![Text],
+    actorId :: !(Maybe Text)
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | @POST /auth/service-token@ response: refresh-less access token and lifetime.
+data ServiceTokenResponse = ServiceTokenResponse
+  { accessToken :: !Text,
+    expiresIn :: !Int
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
 -- | Render the @(Session, AccessToken)@ a successful impersonation returns into the
 -- wire DTO. The session's @actor@ is always 'Just' for a delegated session; an empty
 -- string is a defensive fallback that should never occur.
@@ -343,6 +365,15 @@ impersonateToResponse s (AccessToken tok) =
       actorUserId = maybe "" idText s.actor,
       expiresAt = Text.pack (iso8601Show s.expiresAt)
     }
+
+serviceTokenToResponse :: IssuedServiceToken -> ServiceTokenResponse
+serviceTokenToResponse issued =
+  ServiceTokenResponse
+    { accessToken = unAccess issued.accessToken,
+      expiresIn = round (realToFrac issued.expiresIn :: Double)
+    }
+  where
+    unAccess (AccessToken t) = t
 
 -- | One audit-trail row as wire JSON. The envelope columns plus the raw event 'payload'
 -- (passed through verbatim — the read path never reshapes the stored JSON). Identifiers are

@@ -41,6 +41,8 @@ import Shomei.Servant.DTO
     ReadyResponse,
     RefreshRequest,
     SessionResponse,
+    ServiceTokenRequest,
+    ServiceTokenResponse,
     SignupRequest,
     SignupResponse,
     TokenPairResponse,
@@ -70,6 +72,12 @@ data ShomeiAPI mode = ShomeiAPI
           :> "refresh"
           :> ReqBody '[JSON] RefreshRequest
           :> Post '[JSON] TokenPairResponse,
+    serviceToken ::
+      mode
+        :- "auth"
+          :> "service-token"
+          :> ReqBody '[JSON] ServiceTokenRequest
+          :> Post '[JSON] ServiceTokenResponse,
     verifyEmailRequest ::
       mode
         :- "auth"

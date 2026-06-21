@@ -61,6 +61,11 @@ authErrorToServerError = \case
   ImpersonationForbidden -> json err403 "impersonation_forbidden" "Not allowed to impersonate"
   ImpersonationTargetInvalid -> json err400 "impersonation_target_invalid" "Invalid impersonation target"
   ImpersonationActionBlocked -> json err403 "impersonation_action_blocked" "This action is not permitted while impersonating"
+  ServiceTokenDisabled -> json err403 "service_token_disabled" "Service-token issuance is disabled"
+  ServiceAccountNotFound -> json err403 "service_account_invalid" "Service account is invalid"
+  ServiceAccountSecretInvalid -> json err403 "service_account_invalid" "Service account is invalid"
+  ServiceTokenScopeDenied -> json err403 "service_token_scope_denied" "Requested scopes are not allowed"
+  ServiceTokenActorInvalid -> json err400 "service_token_actor_invalid" "Invalid service-token actor"
   InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where
     json base code msg =

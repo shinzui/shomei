@@ -13,6 +13,7 @@ where
 
 import Data.Aeson (Value, encode, object)
 import Data.Aeson qualified as Aeson
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
@@ -20,7 +21,8 @@ import Data.UUID qualified as UUID
 import Network.Socket (SockAddr (..))
 import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Domain.Claims (AuthClaims (..), Role (..))
+import Shomei.Config (ServiceAccountId (..))
+import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
     LoginCommand (..),
@@ -74,6 +76,8 @@ import Shomei.Servant.DTO
     ReadyResponse (..),
     RefreshRequest (..),
     SessionResponse,
+    ServiceTokenRequest (..),
+    ServiceTokenResponse,
     SignupRequest (..),
     SignupResponse (..),
     TokenPairResponse,
@@ -85,6 +89,7 @@ import Shomei.Servant.DTO
     loginResultToResponse,
     passkeyToResponse,
     sessionToResponse,
+    serviceTokenToResponse,
     storedToResponse,
     tokenPairToResponse,
     userToResponse,
@@ -96,6 +101,7 @@ import Shomei.Workflow.Account qualified as Account
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
+import Shomei.Workflow.ServiceToken qualified as ServiceToken
 
 -- | Assemble the server record from the per-route handlers.
 shomeiServer :: Env -> ShomeiAPI (AsServerT Handler)
@@ -104,6 +110,7 @@ shomeiServer env =
     { signup = signupH env,
       login = loginH env,
       refresh = refreshH env,
+      serviceToken = serviceTokenH env,
       verifyEmailRequest = verifyEmailRequestH env,
       verifyEmailConfirm = verifyEmailConfirmH env,
       passwordResetRequest = passwordResetRequestH env,
@@ -181,6 +188,26 @@ refreshH :: Env -> RefreshRequest -> Handler TokenPairResponse
 refreshH env req =
   tokenPairToResponse
     <$> runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken req.refreshToken}))
+
+serviceTokenH :: Env -> ServiceTokenRequest -> Handler ServiceTokenResponse
+serviceTokenH env req = do
+  when (null req.scopes) (throwError err400 {errBody = "scopes must not be empty"})
+  actorId <- traverse parseActor req.actorId
+  serviceTokenToResponse
+    <$> runAuth
+      env
+      ( ServiceToken.issueServiceToken
+          env.config
+          ServiceToken.IssueServiceToken
+            { accountId = ServiceAccountId req.accountId,
+              secret = req.secret,
+              scopes = Set.fromList (Scope <$> req.scopes),
+              actorId = actorId
+            }
+      )
+  where
+    parseActor t =
+      either (\_ -> throwError err400 {errBody = "invalid actorId"}) pure (parseId t)
 
 verifyEmailRequestH :: Env -> VerifyEmailRequest -> Handler NoContent
 verifyEmailRequestH env req = do

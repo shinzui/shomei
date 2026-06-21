@@ -72,6 +72,7 @@ test-suite shomei-servant-test
     , bytestring
     , containers
     , effectful
+    , generic-lens
     , http-client
     , http-types
     , jose
