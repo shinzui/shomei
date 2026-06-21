@@ -39,11 +39,11 @@ module Shomei.Domain.Event
 where
 
 import Data.Set (Set)
+import Shomei.Config (ServiceAccountId)
 import Shomei.Domain.Claims (Scope)
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
 import Shomei.Domain.LoginId (LoginId)
-import Shomei.Config (ServiceAccountId)
 import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
 import Shomei.Prelude
 

@@ -261,7 +261,8 @@ mergeServiceToken :: Text -> ServiceTokenConfig -> Maybe FileServiceTokenConfig 
 mergeServiceToken _ base Nothing = pure base
 mergeServiceToken label base (Just fileCfg) = do
   parsedAccounts <- traverse (parseServiceAccounts label) mAccounts
-  validateServiceTokenConfig label
+  validateServiceTokenConfig
+    label
     ServiceTokenConfig
       { enabled = fromMaybe baseEnabled mEnabled,
         ttl = maybe baseTtl fromIntegral mTtlSeconds,
@@ -276,7 +277,8 @@ overlayServiceTokenFromEnv base = do
   mEnabled <- boolEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
   mTtl <- ttlEnv "SHOMEI_SERVICE_TOKEN_TTL"
   mAccounts <- serviceAccountsEnv
-  validateServiceTokenConfig "service-token environment variables"
+  validateServiceTokenConfig
+    "service-token environment variables"
     ServiceTokenConfig
       { enabled = fromMaybe baseEnabled mEnabled,
         ttl = fromMaybe baseTtl mTtl,

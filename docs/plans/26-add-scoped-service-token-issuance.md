@@ -50,7 +50,7 @@ reflect the actual current state of the work.
 - [x] M1 - Add the core service-token configuration types, workflow command, validation errors, and unit tests. Completed 2026-06-21: added `ServiceTokenConfig`, `ServiceAccountConfig`, `Shomei.Workflow.ServiceToken`, `ServiceTokenIssued`, focused workflow tests, and event-codec coverage. `cabal test shomei-core` passed with 115 tests.
 - [x] M2 - Add the Servant request/response DTOs, route, handler, and in-process HTTP tests. Completed 2026-06-21: added `POST /auth/service-token`, unprefixed DTO fields `accountId`, `secret`, `scopes`, and `actorId`, handler error mapping, and an in-process `/ingest` route guarded by `requireScope`. `cabal test shomei-servant` passed with 4 HTTP scenarios.
 - [x] M3 - Wire standalone server configuration from Dhall and environment variables, document the endpoint, and add PostgreSQL end-to-end coverage. Completed 2026-06-21: added Dhall and environment loading for `serviceToken`, documented `POST /auth/service-token`, and extended config coverage. `dhall-to-json --file config/shomei.example.dhall`, `cabal test shomei-server:shomei-server-config-test`, and `cabal test shomei-server` passed.
-- [ ] M4 - Run formatting, build, and the relevant test suites; update this plan with results and retrospective notes.
+- [x] M4 - Run formatting, build, and the relevant test suites; update this plan with results and retrospective notes. Completed 2026-06-21: `nix fmt`, `cabal build all`, and `cabal test shomei-core shomei-servant shomei-server shomei-jwt` passed.
 
 
 ## Surprises & Discoveries
@@ -150,9 +150,29 @@ implementation therefore uses fields such as `accountId`, `userId`, `secretHash`
 
 ## Outcomes & Retrospective
 
-To be filled during and after implementation. At completion this section must state which endpoint
-shape shipped, which tests prove the token passes `verifyToken` and `requireScope`, and any follow-up
-work deferred to a later plan.
+Implemented `POST /auth/service-token` with request body
+`{"accountId","secret","scopes","actorId"?}` and response body `{"accessToken","expiresIn"}`. The
+endpoint is not bearer-authenticated; the configured service account id plus shared secret are the
+credential. Successful issuance creates a refresh-less session, signs an access token for the
+configured service-account user, carries exactly the requested allowed scopes, optionally carries an
+`act` actor claim, and publishes `service_token_issued`.
+
+The standalone server now accepts `serviceToken` configuration from Dhall and environment
+overrides via `SHOMEI_SERVICE_TOKEN_ENABLED`, `SHOMEI_SERVICE_TOKEN_TTL`, and
+`SHOMEI_SERVICE_ACCOUNTS_JSON`. Secrets are configured as 64-character SHA-256 hex digests, normalized
+to lowercase, and compared against the request secret hash using constant-time comparison in the
+core workflow. The example config keeps issuance disabled by default.
+
+The core workflow tests prove successful service-token issuance signs a scoped token that verifies
+through the existing verifier and records no refresh token. The Servant HTTP test proves a token
+with `kawa:ingest` passes a route guarded by `requireScope`, while a normal login token still has
+empty scopes and fails the same route with HTTP 403. The final verification run passed
+`nix fmt`, `cabal build all`, and `cabal test shomei-core shomei-servant shomei-server shomei-jwt`.
+
+Deferred follow-up: service-account policy remains runtime configuration rather than a PostgreSQL
+table or admin API. That keeps this iteration small and closed by default, but future operator
+workflows may want database-backed service-account lifecycle management, secret rotation, and
+per-account audit queries.
 
 
 ## Context and Orientation

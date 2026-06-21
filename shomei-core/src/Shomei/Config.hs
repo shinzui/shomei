@@ -35,8 +35,8 @@ module Shomei.Config
   )
 where
 
-import Data.Time (NominalDiffTime)
 import Data.Set (Set)
+import Data.Time (NominalDiffTime)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)

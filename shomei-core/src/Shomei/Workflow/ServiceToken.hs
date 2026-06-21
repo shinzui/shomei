@@ -87,9 +87,12 @@ issueServiceToken cfg cmd = runErrorNoCallStack do
         }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)
-          & #expiresAt .~ expires
-          & #scopes .~ (cmd ^. #scopes)
-          & #actor .~ (cmd ^. #actorId)
+          & #expiresAt
+          .~ expires
+          & #scopes
+          .~ (cmd ^. #scopes)
+          & #actor
+          .~ (cmd ^. #actorId)
   access <- signAccessToken claims
   publishAuthEvent
     ( Event.ServiceTokenIssued

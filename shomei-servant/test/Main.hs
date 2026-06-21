@@ -95,13 +95,13 @@ import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
+import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler)
 import Shomei.Servant.Authz (requireRole, requireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam (AppEffects, Env (..))
-import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -296,8 +296,7 @@ tests ref env freshEnv freshServiceEnv adminToken impToken =
         testWithApplication (pure (app e)) scenarioNoEmail,
       testCase "email-only signup defaults loginId to the email (backward compat)" $ do
         e <- freshEnv
-        testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId
-      ,
+        testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId,
       testCase "service token with allowed scope passes RequireScope while normal login token fails" $ do
         e <- freshServiceEnv
         testWithApplication (pure (app e)) scenarioServiceToken
