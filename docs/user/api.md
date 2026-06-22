@@ -37,6 +37,8 @@ bad secrets, disabled issuance, and scopes outside the account allow-list return
 empty scopes, so a host route guarded by `requireScope (Scope "kawa:ingest")` accepts a service
 token with that scope and rejects a normal login token with `403`.
 
+See [service-tokens.md](service-tokens.md) for configuration and operating guidance.
+
 ### `POST /auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens.
 
@@ -140,7 +142,7 @@ Gated by `requireRole (Role "admin")`: → `403` for a non-admin token, `401` wi
 
 > **Admin-role limitation.** Signup/login do not issue roles, so no production flow yields an
 > admin token yet; this endpoint is exercised by tests and out-of-band-minted tokens. The
-> supported operator path today is the `shomei-admin audit …` CLI (see `docs/security.md`).
+> supported operator path today is the `shomei-admin audit …` CLI (see [security.md](security.md)).
 
 ## Operational endpoints
 

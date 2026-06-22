@@ -22,6 +22,12 @@ twelve-factor — env always wins):
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both` | `bearer` |
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
+| `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |
+| `SHOMEI_PASSWORD_REJECT_COMMON` | reject passwords from the built-in common-password dictionary | `true` |
+| `SHOMEI_PASSWORD_REJECT_CONTEXTUAL` | reject passwords equal to the login email/local-part/display name | `true` |
+| `SHOMEI_PASSWORD_BREACH_CHECK` | enable HIBP k-anonymity breached-password checks | `false` |
+| `SHOMEI_PASSWORD_BREACH_FAIL_CLOSED` | reject passwords when the breach check cannot be reached | `false` |
+| `SHOMEI_PASSWORD_BREACH_TIMEOUT_MS` | breach-check timeout | `1000` |
 | `SHOMEI_WEBAUTHN_RP_ID` | passkey relying-party domain (no scheme/port) | `localhost` |
 | `SHOMEI_WEBAUTHN_RP_NAME` | human RP name shown by the authenticator | `Shōmei` |
 | `SHOMEI_WEBAUTHN_ORIGINS` | allowed page origins (comma-separated) | `http://localhost:8080` |
@@ -29,7 +35,23 @@ twelve-factor — env always wins):
 | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` \| `direct` | `none` |
 | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` / `SHOMEI_WEBAUTHN_PENDING_TTL` | ceremony timeout / pending-ceremony TTL (seconds) | `300` |
 | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | require MFA for accounts that have a passkey | `true` |
+| `SHOMEI_SERVICE_TOKEN_ENABLED` | enable `POST /auth/service-token` | `false` |
+| `SHOMEI_SERVICE_TOKEN_TTL` | service-token access-token lifetime, seconds | `300` |
+| `SHOMEI_SERVICE_ACCOUNTS_JSON` | JSON array of service account objects: `accountId`, `userId`, `secretSha256`, `allowedScopes` | unset |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
+
+`SHOMEI_SERVICE_ACCOUNTS_JSON` replaces the configured service-account list when set. Example:
+
+```json
+[
+  {
+    "accountId": "connector:kawa",
+    "userId": "user_...",
+    "secretSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "allowedScopes": ["kawa:ingest"]
+  }
+]
+```
 
 ### Dhall config file
 
@@ -44,10 +66,15 @@ Every field is optional; an absent field falls back to the default, and any `SHO
 overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `accessTokenTtlSeconds`,
 `refreshTokenTtlSeconds`, `sessionTtlSeconds`, `publicBaseUrl`, `emailVerificationRequired`,
 `rateLimitEnabled`, `maxFailedLoginsPerAccount`, `perIpRequestsPerMinute`, `metricsEnabled`,
-`requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`, and the WebAuthn keys `webauthnRpId`,
-`webauthnRpName`, `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
-`webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`, `webauthnMfaRequired`
-(see [passkeys.md](passkeys.md) for the WebAuthn settings).
+`requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`, password policy fields
+`passwordMinLength`, `passwordMaxLength`, `passwordRejectCommon`, `passwordRejectContextual`,
+`passwordBreachCheckEnabled`, `passwordBreachCheckFailClosed`,
+`passwordBreachCheckTimeoutMs`, the WebAuthn keys `webauthnRpId`, `webauthnRpName`,
+`webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
+`webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
+`webauthnMfaRequired`, `signingAlgorithm`, and `serviceToken` (see
+[passkeys.md](passkeys.md) for WebAuthn and [service-tokens.md](service-tokens.md) for service
+accounts).
 
 ## The `shomei-admin` CLI
 

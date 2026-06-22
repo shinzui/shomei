@@ -3,7 +3,8 @@
 Shōmei is a Haskell authentication toolkit for building **embedded Servant auth** and
 **standalone auth services** from the same transport-agnostic core. It issues and verifies
 ES256 (or, configurably, RS256) JSON Web Tokens, manages the full account lifecycle (signup, login, refresh, email
-verification, password reset/change). The principal is a free-form, case-insensitive **login
+verification, password reset/change), and can mint short-lived scoped service tokens for machine
+callers. The principal is a free-form, case-insensitive **login
 identifier** (`loginId`) — an agent id, service-account handle, or username — with **email an
 optional attribute**; email-first callers keep working because `loginId` defaults to the email
 when only an email is supplied. Shōmei also supports **passkey enrollment and WebAuthn multi-factor
@@ -68,12 +69,15 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — design, package layering, the effects & workflows pattern.
-- [docs/api.md](docs/api.md) — every HTTP endpoint with request/response shapes and status codes.
-- [docs/passkeys.md](docs/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
-- [docs/security.md](docs/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
-- [docs/notifications.md](docs/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.
-- [docs/deployment.md](docs/deployment.md) — configuration reference, the local `process-compose` stack, the production container image, and the operator runbook.
+- [docs/user/index.md](docs/user/index.md) — entry point for all user-facing documentation.
+- [docs/user/architecture.md](docs/user/architecture.md) — design, package layering, the effects & workflows pattern.
+- [docs/user/api.md](docs/user/api.md) — every HTTP endpoint with request/response shapes and status codes.
+- [docs/user/passkeys.md](docs/user/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
+- [docs/user/service-tokens.md](docs/user/service-tokens.md) — scoped machine-token issuance for connectors and agents.
+- [docs/user/security.md](docs/user/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
+- [docs/user/notifications.md](docs/user/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.
+- [docs/user/deployment.md](docs/user/deployment.md) — configuration reference, the local `process-compose` stack, the production container image, and the operator runbook.
+- [docs/user/client-and-examples.md](docs/user/client-and-examples.md) — typed Haskell client and runnable example applications.
 
 ## License
 

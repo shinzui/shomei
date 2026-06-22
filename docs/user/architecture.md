@@ -40,11 +40,12 @@ interpreter (see [notifications.md](notifications.md)).
 
 ## The workflows
 
-`shomei-core/src/Shomei/Workflow.hs` and `Shomei.Workflow.Account` hold the behavioral heart:
-`signup`, `login` (with the EP-2 lockout/throttle gates), `refresh` (rotation with reuse
-detection), `logout`, `verifyToken`, and the account-lifecycle flows
-(`requestEmailVerification`/`confirm`, `requestPasswordReset`/`confirm`, `changePassword`). They
-short-circuit on the first `AuthError` and publish `AuthEvent`s for audit.
+`shomei-core/src/Shomei/Workflow.hs` and the focused `Shomei.Workflow.*` modules hold the
+behavioral heart: `signup`, `login` (with lockout/throttle gates), `refresh` (rotation with reuse
+detection), `logout`, `verifyToken`, account-lifecycle flows
+(`requestEmailVerification`/`confirm`, `requestPasswordReset`/`confirm`, `changePassword`),
+passkey/MFA ceremonies, impersonation/delegated-token exchange, and scoped service-token issuance.
+They short-circuit on the first `AuthError` and publish `AuthEvent`s for audit.
 
 ## The HTTP layer
 
@@ -68,6 +69,7 @@ timestamps are `timestamptz`.
 ## Configuration
 
 `Shomei.Config.ShomeiConfig` is the transport-agnostic runtime config (issuer, audience, TTLs,
-password policy, notifier, rate-limit, observability sub-records). `Shomei.Server.Config`
-assembles it from defaults, an optional typed Dhall file (`$SHOMEI_CONFIG`), and environment
-variables — see [deployment.md](deployment.md).
+password policy, token transport, session-check mode, signing algorithm, notifier, rate-limit,
+observability, WebAuthn, impersonation, and service-token sub-records). `Shomei.Server.Config`
+assembles the standalone server subset from defaults, an optional typed Dhall file
+(`$SHOMEI_CONFIG`), and environment variables — see [deployment.md](deployment.md).

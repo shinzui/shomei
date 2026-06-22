@@ -30,6 +30,10 @@ logs. The minimum-length / policy check runs before hashing.
   reveals a usable token. Refresh tokens rotate on every use; presenting an already-used token is
   treated as theft and **revokes the entire token family and the session**. The one-time tokens
   are single-use with a TTL.
+- **Service tokens** are short-lived access tokens minted through a separate machine-credential
+  endpoint. Service account secrets are configured as SHA-256 hex digests, request secrets are
+  compared in constant time, requested scopes must be a subset of the account allow-list, and no
+  refresh token is issued. See [service-tokens.md](service-tokens.md).
 
 ## Signing-key rotation (zero downtime)
 

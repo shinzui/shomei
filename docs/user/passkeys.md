@@ -142,7 +142,7 @@ enrolled is the recommended hedge.
 ## Browser glue and the demo
 
 A complete, runnable enroll + step-up-login page lives in
-[`examples/embedded-servant-app/www/`](../examples/embedded-servant-app/www/). It loads
+[`examples/embedded-servant-app/www/`](../../examples/embedded-servant-app/www/). It loads
 `@github/webauthn-json` from a CDN (no bundler) and drives the real ceremonies against the demo's
 own mounted `/auth` routes. Because WebAuthn ties a credential to the page origin, the page is
 served from the same warp process as `/auth`, so its origin matches the default
