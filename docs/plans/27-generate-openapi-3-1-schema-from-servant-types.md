@@ -65,12 +65,15 @@ This section must always reflect the actual current state of the work.
   (`shinzui/openapi-hs` @ `89e9ed0`) to `cabal.project`; added `servant-openapi`,
   `openapi-hs`, and `lens` to `shomei-servant.cabal` `build-depends`. Package set
   solves (no `allow-newer` needed) and `cabal build shomei-servant` succeeds.
-- [ ] **M2 — Schemas and combinator instances.** Create
+- [x] **M2 — Schemas and combinator instances.** Created
   `shomei-servant/src/Shomei/Servant/OpenApi.hs` with: `ToSchema` instances for
-  every DTO, a `ToSchema Value` mapping, `ToParamSchema`/`ToSchema` for
-  `PasskeyId`, a hand-written `ToSchema LoginResponse`, `HasOpenApi` instances for
-  the custom combinators (`AuthProtect "shomei-jwt"`, `RequireRole`,
-  `RequireScope`), and `shomeiOpenApi :: OpenApi`. Module compiles.
+  every DTO, a `ToSchema Value` mapping (named `AnyValue`, empty schema),
+  `ToParamSchema PasskeyId`, a hand-written `oneOf` `ToSchema LoginResponse`,
+  `HasOpenApi` instances for the custom combinators (`AuthProtect "shomei-jwt"`,
+  `RequireRole`, `RequireScope`), and `shomeiOpenApi :: OpenApi` (enriched with
+  info/servers + per-operation `operationId`s). Module compiles; `encode
+  shomeiOpenApi` produces a document with 24 paths and a `bearerAuth` security
+  scheme.
 - [ ] **M3 — Generator executable and committed spec.** Add an `executable
   shomei-openapi` to `shomei-servant.cabal`; generate `docs/api/openapi.json`;
   verify `openapi` field is `3.1.0` and all routes are present.
@@ -96,6 +99,16 @@ implementation. Provide concise evidence.
   `89e9ed0` was already reachable from `shinzui/openapi-hs` master. The solver
   pulled in `insert-ordered-containers-0.2.7` transitively; no `allow-newer` was
   required.
+- **M2:** Two API-shape deviations from the plan sketch, both because `openapi-hs`
+  is a true 3.1 model (JSON-Schema-2020-12), not the 3.0 `openapi3`/`swagger2`
+  API: (1) a `Schema`'s `type_` is `Maybe OpenApiTypeValue`, so it is set with
+  `?~ OpenApiTypeSingle OpenApiString` (not `?~ OpenApiString`); (2)
+  `components.securitySchemes` targets the `SecurityDefinitions` newtype which has
+  no `At` instance, so the scheme is registered with `<>~ SecurityDefinitions
+  (IOHM.singleton "bearerAuth" …)` rather than `. at "bearerAuth" ?~`. This needed
+  a direct `insert-ordered-containers` dep (added to `shomei-servant.cabal`).
+  Also: under GHC2024 `role` is a reserved word (RoleAnnotations), so the
+  `RequireRole` instance binds its symbol var as `r`, matching `Authz.hs`.
 
 
 ## Decision Log

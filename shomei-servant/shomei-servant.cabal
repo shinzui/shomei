@@ -41,6 +41,7 @@ library
     Shomei.Servant.DTO
     Shomei.Servant.Error
     Shomei.Servant.Handlers
+    Shomei.Servant.OpenApi
     Shomei.Servant.Seam
 
   build-depends:
@@ -51,6 +52,7 @@ library
     , cookie
     , effectful
     , effectful-core
+    , insert-ordered-containers
     , lens
     , network
     , openapi-hs
