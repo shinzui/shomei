@@ -131,11 +131,16 @@ instance ToSchema AuditEventResponse
 instance ToSchema AuditEventsPage
 
 -- | Free-form JSON. Several DTOs carry an aeson 'Value' (opaque WebAuthn/JWKS
--- payloads), and @openapi-hs@ ships no 'ToSchema' for it. The empty schema is
--- OpenAPI 3.1's "any JSON value", which is exactly right for these passthrough
--- fields.
+-- payloads), and @openapi-hs@ ships no 'ToSchema' for it. @additionalProperties:
+-- true@ makes the schema accept any JSON: non-object values are unconstrained,
+-- and object values may carry any properties. (A bare empty schema is *not*
+-- enough — @openapi-hs@'s validator rejects unmentioned object properties unless
+-- @additionalProperties@ explicitly permits them.)
 instance ToSchema Value where
-  declareNamedSchema _ = pure (O.NamedSchema (Just "AnyValue") mempty)
+  declareNamedSchema _ =
+    pure $
+      O.NamedSchema (Just "AnyValue") $
+        mempty & O.additionalProperties ?~ O.AdditionalPropertiesAllowed True
 
 -- | 'LoginResponse' has a hand-written, @status@-tagged 'ToJSON' (a completed
 -- login vs. an MFA challenge), so its schema is hand-written to match: a @oneOf@

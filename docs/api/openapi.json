@@ -1,7 +1,9 @@
 {
     "components": {
         "schemas": {
-            "AnyValue": {},
+            "AnyValue": {
+                "additionalProperties": true
+            },
             "AuditEventResponse": {
                 "properties": {
                     "createdAt": {

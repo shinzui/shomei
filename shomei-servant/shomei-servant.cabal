@@ -76,6 +76,39 @@ executable shomei-openapi
     , bytestring
     , shomei-servant
 
+-- | OpenAPI 3.1 conformance (EP-27 M4): property-checks that every JSON body
+-- type's actual 'ToJSON' encoding validates against its generated 'ToSchema',
+-- plus smoke assertions on the assembled document. Kept separate from the
+-- end-to-end HTTP suite because it is hspec/QuickCheck-based.
+test-suite shomei-servant-openapi-test
+  import:             warnings
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test-openapi
+  main-is:            Main.hs
+  default-language:   GHC2024
+  default-extensions:
+    DataKinds
+    DerivingStrategies
+    FlexibleInstances
+    OverloadedStrings
+    ScopedTypeVariables
+    StandaloneDeriving
+    TypeApplications
+    TypeOperators
+
+  ghc-options:        -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , aeson
+    , base
+    , hspec
+    , openapi-hs
+    , QuickCheck
+    , quickcheck-instances
+    , servant
+    , servant-openapi
+    , shomei-servant
+    , text
+
 test-suite shomei-servant-test
   import:         warnings, shared
   type:           exitcode-stdio-1.0

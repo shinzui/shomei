@@ -81,10 +81,14 @@ This section must always reflect the actual current state of the work.
   `bearerAuth` HTTP-bearer-JWT scheme attached only to authenticated routes
   (`/auth/me`, `/admin/audit/events`, …), and **byte-identical** output across two
   runs (deterministic generator).
-- [ ] **M4 — Conformance test and external lint.** Add a test in
-  `shomei-servant/test` using `Servant.OpenApi.Test.validateEveryToJSON` and an
-  assertion on the version/path count; lint the generated file with an external
-  OpenAPI validator.
+- [x] **M4 — Conformance test and external lint.** Added a dedicated hspec
+  test-suite `shomei-servant-openapi-test` (`test-openapi/Main.hs`) running
+  `Servant.OpenApi.Test.validateEveryToJSON (Proxy @(NamedRoutes ShomeiAPI))`
+  (100 cases per body type, 28 types) plus smoke assertions (`openapi == "3.1.0"`,
+  24 paths). `cabal test shomei-servant` passes both suites. Linted
+  `docs/api/openapi.json` with `vacuum` (`nix run nixpkgs#vacuum-go -- lint`):
+  **0 errors**, 189 warnings + 36 infos (all missing-description/example/tags —
+  acceptable, see Surprises).
 - [ ] **M5 — Client-generation proof and documentation.** Document the codegen
   workflow under `docs/user/`; prove it by generating one client (e.g.
   `typescript-fetch`). (Optional) serve the spec at `GET /openapi.json` from
@@ -113,6 +117,22 @@ implementation. Provide concise evidence.
   a direct `insert-ordered-containers` dep (added to `shomei-servant.cabal`).
   Also: under GHC2024 `role` is a reserved word (RoleAnnotations), so the
   `RequireRole` instance binds its symbol var as `r`, matching `Authz.hs`.
+- **M4:** Two notable findings. (1) `openapi-hs`'s schema validator rejects an
+  object property that is "not mentioned in the schema" unless
+  `additionalProperties` explicitly permits it — so the planned *empty* `ToSchema
+  Value` (`NamedSchema (Just "AnyValue") mempty`) failed `validateEveryToJSON` for
+  every object-shaped `Value` (8/30 cases). Fixed by giving `AnyValue`
+  `additionalProperties: true`, which the validator's `addlCoversAll` accepts and
+  which non-object JSON ignores. The committed spec was regenerated accordingly.
+  (2) `generic-arbitrary` is not in the local package cache, so the test hand-writes
+  `Arbitrary`/`Show` (orphans, test-only) for the 28 body types rather than
+  deriving them; `Arbitrary Text`/`Arbitrary Value` come from the cached
+  `quickcheck-instances`. The conformance suite is hspec-based (validateEveryToJSON
+  returns a `Spec`), kept separate from the existing tasty HTTP suite — see
+  Decision Log. (3) `vacuum` reports 0 errors but flags missing
+  `description`/`summary`/`example`/`tags` on operations and missing component
+  descriptions (189 warnings, 36 infos). These are documentation-quality nits, not
+  spec validity errors, and do not block client codegen; left as-is for now.
 
 
 ## Decision Log
@@ -151,6 +171,16 @@ Record every decision made while working on the plan.
   (in `examples/embedded-servant-app`) is a host-app demo. `servant-openapi`
   supports `NamedRoutes` via `instance HasOpenApi (ToServantApi sub) => HasOpenApi
   (NamedRoutes sub)` (verified in `Servant/OpenApi/Internal.hs:432`).
+  Date: 2026-06-25
+
+- Decision (M4): Put the OpenAPI conformance test in its own hspec test-suite
+  (`shomei-servant-openapi-test`) rather than the existing tasty suite
+  (`shomei-servant-test`).
+  Rationale: `Servant.OpenApi.Test.validateEveryToJSON` returns an hspec `Spec`;
+  bridging it into tasty would need `tasty-hspec` (not cached). A second
+  `test-suite` is run by the same `cabal test shomei-servant` invocation, keeps the
+  QuickCheck/hspec/quickcheck-instances deps and the orphan `Arbitrary`/`Show`
+  instances out of the HTTP integration suite, and isolates the OpenAPI concern.
   Date: 2026-06-25
 
 - Decision: Commit the generated `docs/api/openapi.json` to the repository.
