@@ -23,6 +23,9 @@ Haskell service, and integrating client applications.
   key rotation, lockout/rate limits, audit logging, impersonation, passkeys, and service tokens.
 - [Client & Examples](client-and-examples.md) shows the typed Haskell client and the two runnable
   example applications.
+- [Generating API Clients](openapi-client-generation.md) explains the committed OpenAPI 3.1 schema
+  (`docs/api/openapi.json`) and how to generate typed clients in TypeScript, Python, Go, and other
+  languages.
 
 ## Historical Reference
 

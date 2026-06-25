@@ -89,10 +89,15 @@ This section must always reflect the actual current state of the work.
   `docs/api/openapi.json` with `vacuum` (`nix run nixpkgs#vacuum-go -- lint`):
   **0 errors**, 189 warnings + 36 infos (all missing-description/example/tags —
   acceptable, see Surprises).
-- [ ] **M5 — Client-generation proof and documentation.** Document the codegen
-  workflow under `docs/user/`; prove it by generating one client (e.g.
-  `typescript-fetch`). (Optional) serve the spec at `GET /openapi.json` from
-  `shomei-server`.
+- [x] **M5 — Client-generation proof and documentation.** Wrote
+  `docs/user/openapi-client-generation.md` (schema location, regeneration, the
+  3.1 caveat, and copy-paste codegen for TypeScript/Python/Go) and linked it from
+  `docs/user/index.md`. Proved codegen end-to-end: `openapi-generator-cli` 7.23.0
+  `typescript-fetch` produced 30 models + a 25-operation API client with readable
+  `operationId` method names and `bearerAuth` wired in (not committed). The
+  optional `GET /openapi.json` runtime endpoint is **deferred** — the committed
+  file + CLI already meet the purpose, and skipping it keeps the embeddable
+  `ShomeiAPI` contract unchanged.
 
 
 ## Surprises & Discoveries
@@ -195,7 +200,37 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (all milestones complete).** The project now produces an OpenAPI 3.1
+document generated directly from the Servant types, fulfilling the Purpose. Every
+validation/acceptance check passes:
+
+1. *Reproducible generation* — `cabal run shomei-openapi > docs/api/openapi.json`
+   yields a document whose first `"openapi"` is `"3.1.0"`; two runs are
+   byte-identical.
+2. *Coverage* — 24 paths covering the whole `ShomeiAPI` route set
+   (`/auth/*`, `/admin/audit/events`, `/.well-known/jwks.json`, `/health`,
+   `/ready`). Authenticated routes carry a `security` requirement referencing
+   `bearerAuth`; `components.securitySchemes.bearerAuth` is an HTTP bearer-JWT
+   scheme.
+3. *Conformance* — `cabal test shomei-servant` passes, including
+   `validateEveryToJSON (Proxy @(NamedRoutes ShomeiAPI))` (100 cases × 28 body
+   types), catching ToJSON/ToSchema drift (incl. the `LoginResponse` `oneOf` and
+   the `Value` fields).
+4. *External validity* — `vacuum lint` reports **0 errors** (warnings are
+   documentation-quality nits only).
+5. *The real goal* — `openapi-generator-cli typescript-fetch` produced a typed
+   client (30 models, 25 operations, readable method names, bearer auth) from the
+   committed file with no Haskell toolchain.
+
+**Gaps / follow-ups (non-blocking).**
+- The spec lacks per-operation `description`/`summary`, `tags`, and response
+  `examples` (189 vacuum warnings). Adding Servant `Description`/`Summary`
+  combinators or a post-processing `applyTags`/example pass would raise the
+  vacuum quality score; deliberately left for a later docs-polish pass.
+- The optional runtime `GET /openapi.json` endpoint was deferred (see M5).
+- Dependency pins are git `source-repository-package`s on `shinzui/servant-openapi`
+  and `shinzui/openapi-hs`; if those are ever published to Hackage, the pins can be
+  relaxed to version bounds.
 
 
 ## Context and Orientation
