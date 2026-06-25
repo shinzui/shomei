@@ -1,0 +1,1206 @@
+{
+    "components": {
+        "schemas": {
+            "AnyValue": {},
+            "AuditEventResponse": {
+                "properties": {
+                    "createdAt": {
+                        "type": "string"
+                    },
+                    "eventId": {
+                        "type": "string"
+                    },
+                    "eventType": {
+                        "type": "string"
+                    },
+                    "payload": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    },
+                    "sessionId": {
+                        "type": "string"
+                    },
+                    "userId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "eventId",
+                    "eventType",
+                    "createdAt",
+                    "payload"
+                ],
+                "type": "object"
+            },
+            "AuditEventsPage": {
+                "properties": {
+                    "events": {
+                        "items": {
+                            "$ref": "#/components/schemas/AuditEventResponse"
+                        },
+                        "type": "array"
+                    },
+                    "nextCursor": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "events"
+                ],
+                "type": "object"
+            },
+            "ChangePasswordRequest": {
+                "properties": {
+                    "currentPassword": {
+                        "type": "string"
+                    },
+                    "newPassword": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "currentPassword",
+                    "newPassword"
+                ],
+                "type": "object"
+            },
+            "ConfirmEmailVerificationRequest": {
+                "properties": {
+                    "token": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "token"
+                ],
+                "type": "object"
+            },
+            "ConfirmPasswordResetRequest": {
+                "properties": {
+                    "newPassword": {
+                        "type": "string"
+                    },
+                    "token": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "token",
+                    "newPassword"
+                ],
+                "type": "object"
+            },
+            "HealthResponse": {
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "status"
+                ],
+                "type": "object"
+            },
+            "ImpersonateRequest": {
+                "properties": {
+                    "reason": {
+                        "type": "string"
+                    },
+                    "ticketId": {
+                        "type": "string"
+                    },
+                    "userId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "userId",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            "ImpersonateResponse": {
+                "properties": {
+                    "accessToken": {
+                        "type": "string"
+                    },
+                    "actorUserId": {
+                        "type": "string"
+                    },
+                    "expiresAt": {
+                        "type": "string"
+                    },
+                    "subjectUserId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "accessToken",
+                    "subjectUserId",
+                    "actorUserId",
+                    "expiresAt"
+                ],
+                "type": "object"
+            },
+            "LoginRequest": {
+                "properties": {
+                    "email": {
+                        "type": "string"
+                    },
+                    "loginId": {
+                        "type": "string"
+                    },
+                    "password": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "password"
+                ],
+                "type": "object"
+            },
+            "LoginResponse": {
+                "oneOf": [
+                    {
+                        "properties": {
+                            "status": {
+                                "type": "string"
+                            },
+                            "token": {
+                                "$ref": "#/components/schemas/TokenPairResponse"
+                            },
+                            "user": {
+                                "$ref": "#/components/schemas/UserResponse"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "user",
+                            "token"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "properties": {
+                            "ceremonyId": {
+                                "type": "string"
+                            },
+                            "options": {
+                                "$ref": "#/components/schemas/AnyValue"
+                            },
+                            "status": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "status",
+                            "ceremonyId",
+                            "options"
+                        ],
+                        "type": "object"
+                    }
+                ]
+            },
+            "MfaCompleteRequest": {
+                "properties": {
+                    "assertion": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    },
+                    "ceremonyId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "ceremonyId",
+                    "assertion"
+                ],
+                "type": "object"
+            },
+            "PasskeyLoginBeginResponse": {
+                "properties": {
+                    "ceremonyId": {
+                        "type": "string"
+                    },
+                    "options": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    }
+                },
+                "required": [
+                    "ceremonyId",
+                    "options"
+                ],
+                "type": "object"
+            },
+            "PasskeyLoginCompleteRequest": {
+                "properties": {
+                    "assertion": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    },
+                    "ceremonyId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "ceremonyId",
+                    "assertion"
+                ],
+                "type": "object"
+            },
+            "PasskeyRegisterBeginResponse": {
+                "properties": {
+                    "ceremonyId": {
+                        "type": "string"
+                    },
+                    "options": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    }
+                },
+                "required": [
+                    "ceremonyId",
+                    "options"
+                ],
+                "type": "object"
+            },
+            "PasskeyRegisterCompleteRequest": {
+                "properties": {
+                    "ceremonyId": {
+                        "type": "string"
+                    },
+                    "credential": {
+                        "$ref": "#/components/schemas/AnyValue"
+                    },
+                    "label": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "ceremonyId",
+                    "credential"
+                ],
+                "type": "object"
+            },
+            "PasskeyResponse": {
+                "properties": {
+                    "createdAt": {
+                        "type": "string"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "lastUsedAt": {
+                        "type": "string"
+                    },
+                    "passkeyId": {
+                        "type": "string"
+                    },
+                    "transports": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "passkeyId",
+                    "transports",
+                    "createdAt"
+                ],
+                "type": "object"
+            },
+            "PasswordResetRequest": {
+                "properties": {
+                    "email": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "email"
+                ],
+                "type": "object"
+            },
+            "ReadyResponse": {
+                "properties": {
+                    "database": {
+                        "type": "boolean"
+                    },
+                    "signingKey": {
+                        "type": "boolean"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "status",
+                    "database",
+                    "signingKey"
+                ],
+                "type": "object"
+            },
+            "RefreshRequest": {
+                "properties": {
+                    "refreshToken": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refreshToken"
+                ],
+                "type": "object"
+            },
+            "ServiceTokenRequest": {
+                "properties": {
+                    "accountId": {
+                        "type": "string"
+                    },
+                    "actorId": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    },
+                    "secret": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "accountId",
+                    "secret",
+                    "scopes"
+                ],
+                "type": "object"
+            },
+            "ServiceTokenResponse": {
+                "properties": {
+                    "accessToken": {
+                        "type": "string"
+                    },
+                    "expiresIn": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "accessToken",
+                    "expiresIn"
+                ],
+                "type": "object"
+            },
+            "SessionResponse": {
+                "properties": {
+                    "createdAt": {
+                        "type": "string"
+                    },
+                    "expiresAt": {
+                        "type": "string"
+                    },
+                    "sessionId": {
+                        "type": "string"
+                    },
+                    "userId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "sessionId",
+                    "userId",
+                    "createdAt",
+                    "expiresAt"
+                ],
+                "type": "object"
+            },
+            "SignupRequest": {
+                "properties": {
+                    "displayName": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string"
+                    },
+                    "loginId": {
+                        "type": "string"
+                    },
+                    "password": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "password",
+                    "displayName"
+                ],
+                "type": "object"
+            },
+            "SignupResponse": {
+                "properties": {
+                    "token": {
+                        "$ref": "#/components/schemas/TokenPairResponse"
+                    },
+                    "user": {
+                        "$ref": "#/components/schemas/UserResponse"
+                    }
+                },
+                "required": [
+                    "user",
+                    "token"
+                ],
+                "type": "object"
+            },
+            "TokenPairResponse": {
+                "properties": {
+                    "accessToken": {
+                        "type": "string"
+                    },
+                    "expiresIn": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "refreshToken": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "accessToken",
+                    "refreshToken",
+                    "expiresIn"
+                ],
+                "type": "object"
+            },
+            "UserResponse": {
+                "properties": {
+                    "displayName": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string"
+                    },
+                    "loginId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "userId": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "userId",
+                    "loginId",
+                    "displayName",
+                    "status"
+                ],
+                "type": "object"
+            },
+            "VerifyEmailRequest": {
+                "properties": {
+                    "email": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "email"
+                ],
+                "type": "object"
+            }
+        },
+        "securitySchemes": {
+            "bearerAuth": {
+                "bearerFormat": "jwt",
+                "description": "JWT access token",
+                "scheme": "bearer",
+                "type": "http"
+            }
+        }
+    },
+    "info": {
+        "description": "Authentication, session, passkey, MFA, impersonation, and token API for the Shōmei auth service.",
+        "title": "Shōmei Authentication API",
+        "version": "0.1.0.0"
+    },
+    "openapi": "3.1.0",
+    "paths": {
+        "/.well-known/jwks.json": {
+            "get": {
+                "operationId": "getWellKnownJwksJson",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AnyValue"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/admin/audit/events": {
+            "get": {
+                "operationId": "getAdminAuditEvents",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "user",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "session",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "type",
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "since",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "until",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "limit",
+                        "required": false,
+                        "schema": {
+                            "maximum": 9223372036854775807,
+                            "minimum": -9223372036854775808,
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "before",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuditEventsPage"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `before` or `limit` or `until` or `since` or `type` or `session` or `user`"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/impersonate": {
+            "delete": {
+                "operationId": "deleteAuthImpersonate",
+                "responses": {
+                    "204": {
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            },
+            "post": {
+                "operationId": "createAuthImpersonate",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ImpersonateRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ImpersonateResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/login": {
+            "post": {
+                "operationId": "createAuthLogin",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/LoginRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LoginResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/login/passkey/begin": {
+            "post": {
+                "operationId": "createAuthLoginPasskeyBegin",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PasskeyLoginBeginResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/auth/login/passkey/complete": {
+            "post": {
+                "operationId": "createAuthLoginPasskeyComplete",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PasskeyLoginCompleteRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TokenPairResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/logout": {
+            "post": {
+                "operationId": "createAuthLogout",
+                "responses": {
+                    "204": {
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/me": {
+            "get": {
+                "operationId": "getAuthMe",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/UserResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/mfa/complete": {
+            "post": {
+                "operationId": "createAuthMfaComplete",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/MfaCompleteRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TokenPairResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/passkeys": {
+            "get": {
+                "operationId": "getAuthPasskeys",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/PasskeyResponse"
+                                    },
+                                    "type": "array"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/passkeys/register/begin": {
+            "post": {
+                "operationId": "createAuthPasskeysRegisterBegin",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PasskeyRegisterBeginResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/passkeys/register/complete": {
+            "post": {
+                "operationId": "createAuthPasskeysRegisterComplete",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PasskeyRegisterCompleteRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PasskeyResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/passkeys/{passkeyId}": {
+            "delete": {
+                "operationId": "deleteAuthPasskeysPasskeyId",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "passkeyId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": ""
+                    },
+                    "404": {
+                        "description": "`passkeyId` not found"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/password-reset/confirm": {
+            "post": {
+                "operationId": "createAuthPasswordResetConfirm",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ConfirmPasswordResetRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/password-reset/request": {
+            "post": {
+                "operationId": "createAuthPasswordResetRequest",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PasswordResetRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/password/change": {
+            "post": {
+                "operationId": "createAuthPasswordChange",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChangePasswordRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "204": {
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/refresh": {
+            "post": {
+                "operationId": "createAuthRefresh",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RefreshRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TokenPairResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/service-token": {
+            "post": {
+                "operationId": "createAuthServiceToken",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ServiceTokenRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ServiceTokenResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/session": {
+            "get": {
+                "operationId": "getAuthSession",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/signup": {
+            "post": {
+                "operationId": "createAuthSignup",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SignupRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SignupResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/verify-email/confirm": {
+            "post": {
+                "operationId": "createAuthVerifyEmailConfirm",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ConfirmEmailVerificationRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/auth/verify-email/request": {
+            "post": {
+                "operationId": "createAuthVerifyEmailRequest",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/VerifyEmailRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": ""
+                    },
+                    "400": {
+                        "description": "Invalid `body`"
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "operationId": "getHealth",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/ready": {
+            "get": {
+                "operationId": "getReady",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReadyResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        }
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8080"
+        }
+    ]
+}

@@ -74,9 +74,13 @@ This section must always reflect the actual current state of the work.
   info/servers + per-operation `operationId`s). Module compiles; `encode
   shomeiOpenApi` produces a document with 24 paths and a `bearerAuth` security
   scheme.
-- [ ] **M3 — Generator executable and committed spec.** Add an `executable
-  shomei-openapi` to `shomei-servant.cabal`; generate `docs/api/openapi.json`;
-  verify `openapi` field is `3.1.0` and all routes are present.
+- [x] **M3 — Generator executable and committed spec.** Added `executable
+  shomei-openapi` (`app/openapi/Main.hs`, pretty JSON via `aeson-pretty`) to
+  `shomei-servant.cabal`; generated and committed `docs/api/openapi.json`. Verified
+  `"openapi": "3.1.0"`, 24 path keys covering every `ShomeiAPI` route, a
+  `bearerAuth` HTTP-bearer-JWT scheme attached only to authenticated routes
+  (`/auth/me`, `/admin/audit/events`, …), and **byte-identical** output across two
+  runs (deterministic generator).
 - [ ] **M4 — Conformance test and external lint.** Add a test in
   `shomei-servant/test` using `Servant.OpenApi.Test.validateEveryToJSON` and an
   assertion on the version/path count; lint the generated file with an external
