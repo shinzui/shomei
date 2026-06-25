@@ -76,3 +76,19 @@ package webauthn
 
 allow-newer:
   webauthn:*
+
+-- ============================================================
+-- EP-27 (OpenAPI): generate an OpenAPI 3.1 schema from the Servant types.
+-- servant-openapi (3.1 line) depends on the openapi-hs fork, which is git-only,
+-- so both are pinned here, mirroring the other source-repository-package pins.
+-- openapi-hs tag matches servant-openapi's own cabal.project pin.
+-- ============================================================
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/servant-openapi.git
+  tag: 558b7b9ee3aaf3bff70a4cf1d6c8e2ed4eaccbde
+
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/openapi-hs.git
+  tag: 89e9ed07e0dd3e1eaa9b3efea28b3c722f8c60c8

@@ -51,8 +51,11 @@ library
     , cookie
     , effectful
     , effectful-core
+    , lens
     , network
+    , openapi-hs
     , servant         >=0.20.2
+    , servant-openapi
     , servant-server  >=0.20
     , shomei-core
     , text
