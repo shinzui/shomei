@@ -85,7 +85,7 @@ unrelated verification strategies.
 | 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | Complete |
 | 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | Complete |
 | 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Complete |
-| 5 | Resilient Downstream JWKS Cache Template | docs/plans/37-resilient-downstream-jwks-cache-template.md | None | None | In Progress |
+| 5 | Resilient Downstream JWKS Cache Template | docs/plans/37-resilient-downstream-jwks-cache-template.md | None | None | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -166,8 +166,12 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 - [x] EP-4: In-flight gauge exception-safe; Warp `setOnException` routed to structured logger
 - [x] EP-4: Log lines written as one strict `BS.hPut` (no interleaving); `setServerName`;
       1 MiB request-body cap answering 413
-- [ ] EP-5: Example JWKS cache rewritten: lock-free reads, single-flight refresh, refresh-ahead, stale-on-error
-- [ ] EP-5: `docs/user/client-and-examples.md` updated to describe the pattern as the recommended template
+- [x] EP-5: Example JWKS cache rewritten: lock-free reads, single-flight refresh, refresh-ahead, stale-on-error
+- [x] EP-5: Fail-closed 503 past a configurable max-staleness bound; `Cache-Control: max-age` honored
+- [x] EP-5: Seven cache tests against a fetch-counting stub server; each property proved by mutation
+- [x] EP-5: Live outage demonstration — auth service killed, downstream serves 200 past four TTL
+      windows, then 503 past the staleness bound
+- [x] EP-5: `docs/user/client-and-examples.md` updated to describe the pattern as the recommended template
 
 
 ## Surprises & Discoveries
@@ -303,6 +307,33 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   `could not create any TCP/IP sockets`. The dev cluster is reached over its unix socket; restart
   it with `pg_ctl start -D "$PGDATA" -o "-c listen_addresses='' -k $PGHOST"`.
 
+- **`http-client`'s `parseRequest` installs no `checkResponse`, so non-2xx responses do not
+  throw.** `parseRequest` builds on `defaultRequest`, whose `checkResponse` is `\_ _ -> return
+  ()`; only `parseUrlThrow` / `setRequestCheckStatus` install `throwErrorStatusCodes`. EP-5's
+  `fetchJwks` (and the code it replaced) would therefore have reported an auth-service `500` as
+  a *JWKS parse failure*. Any plan in any MasterPlan fetching over `HTTP.parseRequest` — note
+  `Env.envHttpManager` is threaded through the server — must check `statusIsSuccessful` itself.
+
+- **`displayException` on an `HttpException` is not one line.** `HttpExceptionRequest` carries
+  the whole `Request` and its `Show` pretty-prints the record over ~20 lines, so a single log
+  call becomes a 20-line stderr dump. EP-5 added a local `describeHttpError` that drops the
+  request and collapses the cause's whitespace. Relevant to `Shomei.Server.Supervisor.logJsonLine`
+  and anything else that logs a caught exception: log `show`n exceptions only after normalizing
+  whitespace, or the structured-logging invariant EP-4 established silently breaks.
+
+- **"Prescribed code is a hypothesis" now has three instances, and the third was invisible to
+  tests.** EP-2's batched `DELETE` violated a foreign key; EP-4's `onException` gauge fix
+  double-decremented; EP-5's "emit one warning line to stderr" emitted twenty, and *no test could
+  have caught it* — the tests assert on fetch counts and status codes, never on log output. Only
+  the live demonstration found it. The lesson generalizes past "prove each fix by reverting it":
+  a plan's acceptance criteria bound what its tests can see, so any plan whose deliverable
+  includes operator-facing output should look at that output once, by hand.
+
+- **An unrelated `ssh` tunnel holds TCP 8080 on this machine.** EP-5's first demonstration run
+  health-checked `localhost:8080` and got an answer *after* killing the auth service. Any plan
+  running the server by hand should pick a port and confirm with
+  `lsof -nP -iTCP:<port> -sTCP:LISTEN` rather than trusting the 8080 default.
+
 
 ## Follow-up work (recorded for a later plan)
 
@@ -413,4 +444,50 @@ MasterPlan 5 already recorded. The loader accepts them all, but a file annotated
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+**All five child plans are Complete.** Measured against the Vision & Scope, every promise landed:
+
+| Promise | Result |
+|---|---|
+| Login and refresh in real transactions, few round-trips | Login 11 → 7 checkouts, refresh 5 → 3, both transactional |
+| Pool size and acquisition timeout are configuration | `SHOMEI_DB_POOL_SIZE` + Dhall fields |
+| Bounded concurrent Argon2 hashing; container-aware RTS | Semaphore (default 2); `+RTS -N<quota>` from the cgroup |
+| Every expirable table swept, with the indexes the sweep needs | Supervised sweeper, `expires_at` indexes, `shomei-admin sweep` |
+| Retention for `shomei_auth_events` / `shomei_login_attempts` | Configurable windows, documented |
+| Rate limiter evicts idle buckets; metrics gauge survives exceptions | Amortized eviction in `takeToken`; `finally` |
+| Downstream example: lock-free reads, single-flight, refresh-ahead, stale-on-error | All four, plus fail-closed 503 and `Cache-Control` |
+
+Two scope changes were taken deliberately and are in the Decision Log: EP-3 was allowed to change
+`shomei-core`'s `PasswordHasher` port (configurable Argon2 parameters would otherwise have
+*reopened* the login timing oracle — preserving a guarantee, not altering one), and EP-3's
+load-test acceptance was rewritten from tail latency to p50 and peak RSS, because the harness
+cannot resolve a tail. The unresolved questions that produced live in **Follow-up work** above,
+outside any child plan: tail latency remains unmeasured, the RTS guidance remains unvalidated
+against a real container, `hashingMaxConcurrency = 2` is a fixed default in a world of varying
+core counts, and `config/shomei-types.dhall` still lags its loader.
+
+**The decomposition held.** All five plans were mutually independent and none needed another's
+code to compile, exactly as the Decomposition Strategy predicted. Both cross-MasterPlan orderings
+resolved cleanly: the Security MasterPlan's EP-1 had already landed when EP-1 began, so the
+compare-and-swap was lifted into the rotation transaction verbatim; and EP-2's `supervisedLoop`
+acquired a second consumer (the key-reload thread) before the Security MasterPlan's EP-2 arrived
+to claim it. The one prediction that missed was EP-4 adopting `supervisedLoop` for rate-limiter
+eviction — it correctly declined, since eviction needs no thread.
+
+**The recurring lesson is that a plan's specified code is a hypothesis, and its acceptance
+criteria bound what its tests can see.** Three separate plans shipped a prescribed fix that was
+itself the defect: EP-2's batched `DELETE` violated the `parent_token_id` foreign key whenever a
+batch boundary split a rotation family; EP-4's `onException` gauge fix double-decremented on
+async exceptions, drifting the gauge *negative* — legal Prometheus, and therefore worse than the
+positive drift it replaced; EP-5's "emit one warning line" emitted twenty. The first two were
+caught by reverting each fix and watching its test go red, a practice EP-4 introduced and EP-5
+extended into systematic mutation testing (six mutations, each killing exactly its own test).
+The third was caught by *neither*, because no test observed the log output — only running the
+thing by hand did. A plan whose deliverable includes operator-facing behavior should exercise
+that behavior once, manually, before it is called done.
+
+The corollary for reviews: this initiative began from a performance review that was right about
+every hot-path claim it could substantiate from reading, and wrong-by-omission about several
+things only execution revealed. Reading found the `MVar`, the unbounded tables, the missing RTS
+flags. Running found the foreign key, the gauge sign, the twenty-line log, the `parseRequest`
+status hole, and — in EP-3 — that `GHCRTS` breaks the server at boot because `dhall-to-json`
+inherits it.

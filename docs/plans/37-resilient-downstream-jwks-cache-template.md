@@ -75,11 +75,13 @@ This section must always reflect the actual current state of the work.
       server) still green with the new cache.
 - [x] M2: each property proved by mutation — six mutations of `Downstream.Service`, each
       killing exactly its own test (transcript in Surprises & Discoveries).
-- [ ] M3: `docs/user/client-and-examples.md` rewritten to present the cache as the
+- [x] M3: `docs/user/client-and-examples.md` rewritten to present the cache as the
       recommended template with its property list, configuration, and the
       server-side `Cache-Control` follow-up note.
-- [ ] `nix fmt` clean; `cabal build all` / `cabal test all` green; MasterPlan 6 Progress and
-      registry updated.
+- [x] Live demonstration run: auth service killed, downstream serves 200 past four TTL
+      windows, then 503 past max staleness (transcript in Surprises & Discoveries).
+- [x] `nix fmt` clean; `cabal build all --enable-tests` warning-free; `cabal test all -j1
+      --test-options="-j1"` green (12/12 suites); MasterPlan 6 Progress and registry updated.
 
 
 ## Surprises & Discoveries
@@ -141,6 +143,52 @@ implementation. Provide concise evidence.
   paying for a PostgreSQL cluster + Argon2 login once beats paying per test. `defaultMain`
   exits by throwing `ExitCode`, which unwinds `testWithApplication` and
   `withShomeiMigratedDatabase` normally, so nothing leaks.
+
+- **The "one warning line to stderr" was twenty lines, and only the live demonstration found
+  it.** `http-client`'s `HttpExceptionRequest` carries the whole `Request`, and its `Show` (and
+  therefore `displayException`) pretty-prints that record field by field. Every failed refresh
+  dumped this:
+
+  ```text
+  [downstream] jwks refresh failed (serving stale, age 4s): HttpExceptionRequest Request {
+    host                 = "localhost"
+    port                 = 8099
+    secure               = False
+    …fifteen more lines…
+  ```
+
+  No test caught it: the tests assert on fetch counts and status codes, never on the log. A
+  `describeHttpError` now drops the request (the cache only ever fetches one URL, so it is not
+  news) and collapses the cause's whitespace, giving the intended single line:
+
+  ```text
+  [downstream] jwks refresh failed (serving stale, age 4s): ConnectionFailure Network.Socket.connect: <socket: 59>: does not exist (Connection refused)
+  ```
+
+  This is the third time in MasterPlan 6 that running the thing found what reading it did not.
+
+- **The live demonstration behaves exactly as the plan predicted.** Auth service on `:8099`,
+  downstream on `:8098`, `DOWNSTREAM_JWKS_TTL_SECONDS=5`,
+  `DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS=20`; the auth service is killed at `t=0` after a warm
+  cold start:
+
+  ```text
+  -- auth service ALIVE (cold start fetches the JWKS) --
+    t= 0s  GET /projects -> 200
+  -- kill the auth service --
+    auth service is down
+    t= 2s  GET /projects -> 200      <- four TTL windows elapse; each refresh fails and logs
+    t= 5s  GET /projects -> 200
+    …
+    t=19s  GET /projects -> 200
+    t=21s  GET /projects -> 503      <- past max staleness, fail closed
+    t=27s  GET /projects -> 503
+  refresh-failure lines: 11
+  ```
+
+  The old cache would have started answering 500 at `t=5s`. Note the demo needs free ports: an
+  unrelated `ssh` tunnel holds `:8080` on this machine, which silently made a first run's
+  health check pass against the wrong process.
 
 
 ## Decision Log
@@ -224,6 +272,14 @@ Record every decision made while working on the plan.
   the one-strict-write convention EP-4 established elsewhere in the repository.
   Date: 2026-07-09
 
+- Decision: `HttpException` is rendered by a local `describeHttpError`, not `displayException`.
+  Rationale: `displayException` on `HttpExceptionRequest` prints the entire `Request` record
+  across ~20 lines, so "one warning line per failed refresh" was false. The request adds no
+  information (the cache fetches exactly one URL), so the renderer keeps only the cause and
+  collapses its whitespace. Found by the live demonstration, not by the tests — which assert on
+  fetch counts and status codes and would never have noticed.
+  Date: 2026-07-09
+
 - Decision: The cache tests run under `dependentTestGroup … AllFinish`, and the auth server /
   JWKS document / access token are obtained once in `main` before `defaultMain`.
   Rationale: Each test mutates its own stub server's mode from the outside while asserting on
@@ -239,7 +295,45 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**All three milestones landed, and every acceptance criterion is met.** The purpose was to turn
+the file downstream teams copy from a trap into a template. The three defects named in Purpose
+are gone and each is pinned by a test that fails without its fix:
+
+| Defect | Replacement | Guarded by |
+|---|---|---|
+| `modifyMVar` on every read | one `readIORef` | `cache hits never fetch`; mutation M-F |
+| refresh blocks all requests | `forkIO` + `tryTakeMVar` single-flight | `refresh-ahead …`, `failure burst …`; M-A, M-B, M-E |
+| fetch failure throws, stale set discarded | stale-on-error, bounded, then 503 | `stale-on-error …`, `past max staleness …`; M-B, M-C |
+
+Acceptance, point by point. (1) All seven cache tests plus the pre-existing end-to-end test
+pass, and `cabal test all -j1 --test-options="-j1"` is green across all twelve suites. (2) The
+single-flight property is quantitative and holds: ten concurrent cold-start callers produce
+exactly one fetch; a twenty-caller failure burst grew the fetch count by one. (3) The resilience
+story was demonstrated live against the real server — 200s through four TTL windows after the
+auth service was killed, 503 after the staleness bound, eleven refresh failures logged. (4) The
+refresh-window read returns in under 100 ms while a deliberately 400 ms-slow refetch proceeds
+behind it. (5) `docs/user/client-and-examples.md` enumerates all six properties, both
+environment variables, and the `Cache-Control` caveat.
+
+**Two things the plan specified were themselves wrong**, both caught by execution rather than
+review, and both recorded above: the plan's own test 3 could not distinguish a background
+refresh from a blocking one (the stub answered instantly, so a synchronous refresh would also
+have returned in under 100 ms), and "emit one warning line to stderr" turned out to emit twenty,
+because `displayException` on an `HttpException` prints the entire `Request`. The first was
+found by mutation testing, the second only by the live demonstration — neither by the test suite
+as written. This is the pattern MasterPlan 6's EP-2 and EP-4 both hit; it now has three
+instances.
+
+**Gaps, deliberately left.** The cache's staleness bound is wall-clock age of the *fetch*, not of
+the keys; a downstream that must react to an emergency key revocation faster than
+`DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS` still needs a restart or a shorter bound, and no
+push-invalidation exists. The `Cache-Control` branch is untested against a real Shōmei server
+because the server does not send the header — the unit test covers it via the stub, and adding
+the header server-side remains the documented follow-up (adjacent to
+`docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md`, which changes how the
+served set is assembled). `refreshAheadFactor` is a named constant rather than configuration, as
+decided. Nothing outside `examples/microservice-auth-stack/` and
+`docs/user/client-and-examples.md` was touched.
 
 
 ## Context and Orientation

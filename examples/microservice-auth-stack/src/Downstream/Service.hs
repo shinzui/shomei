@@ -41,7 +41,7 @@ where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar, withMVar)
-import Control.Exception (Exception, displayException, finally, throwIO, try)
+import Control.Exception (Exception, finally, throwIO, try)
 import Crypto.JOSE.JWK (JWKSet)
 import Data.Aeson (eitherDecode)
 import Data.ByteString.Char8 qualified as BS8
@@ -227,13 +227,24 @@ fetchJwks mgr url = do
     req <- HTTP.parseRequest url
     HTTP.httpLbs req mgr
   pure case res of
-    Left err -> Left (displayException err)
+    Left err -> Left (describeHttpError err)
     Right resp
       | not (statusIsSuccessful (HTTP.responseStatus resp)) ->
           Left ("JWKS fetch returned HTTP " <> show (statusCode (HTTP.responseStatus resp)))
       | otherwise -> case eitherDecode (HTTP.responseBody resp) of
           Right jwks -> Right (jwks, HTTP.responseHeaders resp)
           Left err -> Left ("JWKS parse failed: " <> err)
+
+-- | Render an 'HTTP.HttpException' as one line.
+--
+-- Neither 'show' nor 'displayException' will do: @HttpExceptionRequest@ pretty-prints the
+-- entire 'HTTP.Request' record over some twenty lines, which would turn each refresh failure
+-- into a twenty-line stderr dump. The request is not news — the cache only ever fetches one
+-- URL — so drop it and keep the cause.
+describeHttpError :: HTTP.HttpException -> String
+describeHttpError = \case
+  HTTP.InvalidUrlException url reason -> "invalid JWKS URL " <> url <> ": " <> reason
+  HTTP.HttpExceptionRequest _req content -> unwords (words (show content))
 
 -- | When the key publisher states a freshness lifetime, obey it — that is the JWKS-over-HTTPS
 -- convention, and it makes this template correct against non-Shōmei issuers.
