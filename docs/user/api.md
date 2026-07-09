@@ -3,23 +3,62 @@
 All routes are defined by the `ShomeiAPI` `NamedRoutes` record in
 `shomei-servant/src/Shomei/Servant/API.hs` and served by `shomei-server` (default port
 `8080`). Request and response bodies are JSON. Authenticated routes require an
-`Authorization: Bearer <access-token>` header.
+`Authorization: Bearer <access-token>` header — or, in cookie transport, the `shomei_session`
+cookie (see below).
 
 Errors are returned as `{"error":"<code>","message":"<text>"}`. Authentication errors are
 deliberately **generic** — a wrong password, an unknown account, and a locked account all return
 the same `401 {"error":"invalid_login","message":"Invalid email or password"}` so the API never
 discloses which emails are registered (see [security.md](security.md)).
 
+## Token transport
+
+`SHOMEI_TOKEN_TRANSPORT` selects how tokens travel. **Bearer is the default and is unchanged.**
+
+| Mode | Response bodies | Cookies set | Cookies accepted as credentials |
+|------|-----------------|-------------|-------------------------------|
+| `bearer` (default) | carry `accessToken` + `refreshToken` | never | **never** |
+| `cookie` | omit both token fields (`expiresIn` remains) | yes | yes |
+| `both` | carry both token fields | yes | yes |
+
+A bearer token is accepted in *every* mode: a foreign page cannot set an `Authorization` header,
+and service/CLI callers need it.
+
+The two cookies, set together by every response that issues a token pair (`signup`, `login`'s
+`complete` arm, `refresh`, `mfa/complete`, `login/passkey/complete`):
+
+```text
+Set-Cookie: shomei_session=<jwt>;   Path=/;              Max-Age=900;     HttpOnly; Secure; SameSite=Lax
+Set-Cookie: shomei_refresh=<token>; Path=/auth/refresh;  Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
+```
+
+`HttpOnly` keeps them out of page JavaScript, so an XSS payload cannot read the session.
+`shomei_refresh` is scoped to the one endpoint that consumes it. `POST /auth/logout` re-sets both
+with an empty value and `Max-Age=0`. `Secure` and `SameSite` are configurable
+(`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`).
+
+**CSRF.** Because browsers attach cookies automatically, any **cookie-authenticated mutating
+request** (anything but `GET`/`HEAD`/`OPTIONS`) must carry an allow-listed `Origin` header — or,
+if `Origin` is absent, a `Referer` under an allowed origin. Otherwise:
+
+```text
+403 {"error":"csrf_rejected","message":"Origin not allowed for cookie-authenticated request"}
+```
+
+Configure the allow-list with `SHOMEI_CSRF_ALLOWED_ORIGINS` (comma-separated). Requests with
+*neither* header fail closed. **Bearer-authenticated requests are never CSRF-gated**, in any
+mode. The same gate applies to `POST /auth/refresh` when the refresh token comes from its cookie.
+
 ## Account & session
 
 ### `POST /auth/signup`
-Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `200` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures.
+Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `200` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures. In cookie transport this response also sets the `shomei_session`/`shomei_refresh` cookies and omits the body token values (see [Token transport](#token-transport)).
 
 ### `POST /auth/login`
-Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
 
 ### `POST /auth/refresh`
-Body `{"refreshToken"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
 ### `POST /auth/service-token`
 Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:
@@ -40,7 +79,9 @@ token with that scope and rejects a normal login token with `403`.
 See [service-tokens.md](service-tokens.md) for configuration and operating guidance.
 
 ### `POST /auth/logout` *(authenticated)*
-→ `204`. Revokes the caller's session and its refresh tokens.
+→ `204`. Revokes the caller's session and its refresh tokens. In cookie transport the response
+clears both cookies (`Max-Age=0`), and — being a mutating request — a cookie-authenticated logout
+requires an allow-listed `Origin`.
 
 ### `GET /auth/me` *(authenticated)*
 → `200` the caller's user record. `404` if the user row is missing.
@@ -93,13 +134,13 @@ Body `{"ceremonyId","credential","label"?}`. → `200` `{"passkeyId","label","tr
 → `204`. `404 passkey_not_found` if the passkey is not owned by the caller.
 
 ### `POST /auth/mfa/complete`
-Completes a step-up after `POST /auth/login` returned `mfa_required`. Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` if the assertion does not verify; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. (There is no `/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response.)
+Completes a step-up after `POST /auth/login` returned `mfa_required`. Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` if the assertion does not verify; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response.)
 
 ### `POST /auth/login/passkey/begin`
 Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`.
 
 ### `POST /auth/login/passkey/complete`
-Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport.
 
 ## Impersonation / delegated tokens
 

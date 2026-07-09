@@ -19,7 +19,10 @@ twelve-factor — env always wins):
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
-| `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both` | `bearer` |
+| `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both`. `cookie`/`both` set `HttpOnly` cookies and accept them as credentials; `bearer` neither sets nor accepts them | `bearer` |
+| `SHOMEI_COOKIE_SECURE` | mark Shōmei's cookies `Secure` (HTTPS only; browsers exempt localhost) | `true` |
+| `SHOMEI_COOKIE_SAMESITE` | `strict` \| `lax` \| `none` | `lax` |
+| `SHOMEI_CSRF_ALLOWED_ORIGINS` | **set this in production.** Comma-separated origins allowed to make cookie-authenticated *mutating* requests, e.g. `https://app.example.com`. Anything else gets `403 csrf_rejected` | `http://localhost:8080` |
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
@@ -76,9 +79,20 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `access
 `passwordBreachCheckTimeoutMs`, the WebAuthn keys `webauthnRpId`, `webauthnRpName`,
 `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
 `webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
-`webauthnMfaRequired`, `signingAlgorithm`, and `serviceToken` (see
+`webauthnMfaRequired`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
+`cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, and `serviceToken` (see
 [passkeys.md](passkeys.md) for WebAuthn and [service-tokens.md](service-tokens.md) for service
 accounts).
+
+> **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
+> newer keys (`signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`, `cookieSecure`,
+> `cookieSameSite`, `csrfAllowedOrigins`). The loader accepts them regardless — every field is
+> optional at decode time — but a file that annotates itself `: ./shomei-types.dhall` cannot use
+> them until the schema is widened. Use the environment variables, or drop the annotation.
+
+There is deliberately **no** Dhall key for `SHOMEI_NOTIFIER_LOG_SECRETS` or
+`SHOMEI_KEY_ENCRYPTION_KEY`: both are secrets or secret-revealing switches, and must be explicit
+per-process decisions rather than lines that linger in a committed file.
 
 ## The `shomei-admin` CLI
 
@@ -89,6 +103,8 @@ shomei-admin keys activate <kid>                  # promote pending → active (
 shomei-admin keys retire <kid>                    # active → retired (still trusted in JWKS)
 shomei-admin keys revoke <kid>                    # → revoked (removed from JWKS, distrusted)
 shomei-admin keys list                            # kid / status / timestamps
+shomei-admin keys encrypt-at-rest                 # encrypt plaintext private keys (idempotent)
+shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
 shomei-admin users create --email … --password … [--display-name …]
 ```
 

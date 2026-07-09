@@ -52,27 +52,27 @@ cookies entirely**. Bearer behavior for existing deployments is byte-for-byte un
 Use a checklist to summarize granular steps. Every stopping point must be documented here,
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 
-- [ ] M1: `CookieConfig` (+ `SameSitePolicy`) added to `ShomeiConfig` with defaults; env
+- [x] M1: `CookieConfig` (+ `SameSitePolicy`) added to `ShomeiConfig` with defaults; env
       (`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`, `SHOMEI_CSRF_ALLOWED_ORIGINS`) and
-      Dhall-file plumbing in `Shomei.Server.Config`.
-- [ ] M1: `extractToken` made transport-aware and source-tagged (`FromBearer`/`FromCookie`);
-      `BearerToken` mode no longer reads cookies; unit cases pass.
-- [ ] M1: `authHandler` enforces the Origin/Referer CSRF gate for cookie-sourced
-      credentials on mutating methods; `403 csrf_rejected` shape defined.
-- [ ] M2: `Shomei.Servant.Cookie` helper module (build/clear/render cookies).
-- [ ] M2: `Set-Cookie` emission wired into signup, login (complete arm only), refresh,
+      Dhall-file plumbing in `Shomei.Server.Config`. (2026-07-08)
+- [x] M1: `extractToken` made transport-aware and source-tagged (`FromBearer`/`FromCookie`);
+      `BearerToken` mode no longer reads cookies; unit cases pass. (2026-07-08)
+- [x] M1: `authHandler` enforces the Origin/Referer CSRF gate for cookie-sourced
+      credentials on mutating methods; `403 csrf_rejected` shape defined. (2026-07-08)
+- [x] M2: `Shomei.Servant.Cookie` helper module (build/clear/render cookies). (2026-07-08)
+- [x] M2: `Set-Cookie` emission wired into signup, login (complete arm only), refresh,
       mfaComplete, passkeyLoginComplete; clearing wired into logout; routes carry the
       response-header types; `TokenPairResponse`/`SignupResponse` token fields optional and
-      omitted in cookie-only mode.
-- [ ] M2: refresh accepts the refresh token from the `shomei_refresh` cookie (body takes
-      precedence) and applies the CSRF gate when it does.
-- [ ] M3: servant integration tests: cookie attributes, body omission, cookie auth
+      omitted in cookie-only mode. (2026-07-08)
+- [x] M2: refresh accepts the refresh token from the `shomei_refresh` cookie (body takes
+      precedence) and applies the CSRF gate when it does. (2026-07-08)
+- [x] M3: servant integration tests: cookie attributes, body omission, cookie auth
       round-trip, CSRF accept/reject matrix, bearer-mode cookie rejection, logout clearing,
-      cookie refresh rotation.
-- [ ] M4: `docs/user/api.md` + `docs/user/security.md` updated; OpenAPI spec regenerated
-      (`cabal run shomei-openapi > docs/api/openapi.json`); live curl transcript captured.
-- [ ] `cabal build all` / `cabal test all` green; living sections updated; Outcomes
-      written.
+      cookie refresh rotation. (2026-07-08)
+- [x] M4: `docs/user/api.md` + `docs/user/security.md` updated; OpenAPI spec regenerated
+      (`cabal run shomei-openapi > docs/api/openapi.json`); live curl transcript captured. (2026-07-08)
+- [x] `cabal build all` / `cabal test all` green; living sections updated; Outcomes
+      written. (2026-07-08)
 
 
 ## Surprises & Discoveries
@@ -80,7 +80,55 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **Both security findings reproduce as test failures against pre-plan code**, as the plan
+  required. Reverting just the two guards in `extractToken`/`authHandler`:
+
+  ```text
+  bearer transport: a cookie is not a credential    expected: 401  but got: 200
+  cookie transport: CSRF gate on mutating requests  expected: 403  but got: 204
+  ```
+
+  The first is the dangling read path (any deployment accepted `shomei_session`); the second is
+  the CSRF hole (a cookie-authenticated `POST /auth/logout` with no `Origin` succeeded).
+
+- **`SetCookie` *does* have a `ToHttpApiData` instance** (from `http-api-data-0.7`), contrary to
+  this plan's Decision Log, and `toUrlPiece` renders exactly the header value we want:
+
+  ```text
+  shomei_session=abc; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax
+  ```
+
+  The route type still uses `Header "Set-Cookie" Text` — OpenAPI generation needs schema
+  instances that `SetCookie` lacks — but the renderer is that instance rather than a hand-rolled
+  `Builder` walk. No orphan was defined.
+
+- **A header-carrying empty response cannot be `PostNoContent`.** Servant's `NoContentVerb` takes
+  no headers, so `logout` became `Verb 'POST 204 '[JSON] (WithCookies NoContent)`. That drags
+  `NoContent` into the JSON body types, so the OpenAPI conformance suite needs test-only
+  `Arbitrary`/`ToJSON`/`ToSchema` orphans for it. The wire response is still a bodyless `204`; the
+  generated spec shows `"content": {"application/json;charset=utf-8": {}}` — a media type with no
+  schema, which is noise but not a lie.
+
+- **The generated OpenAPI can only document one `Set-Cookie` header per response**, because
+  OpenAPI models response headers as a map keyed by name. Both cookies are always sent; the spec
+  under-describes this. Nothing to do about it short of leaving OpenAPI.
+
+- **`config/shomei-types.dhall` is a closed record type and was already stale** — it omits
+  `signingAlgorithm`, added by an earlier plan. This plan adds four more file keys
+  (`tokenTransport`, `cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`) plus EP-2's
+  `keyRefreshIntervalSeconds`. The *loader* accepts them all (every `FileConfig` field is
+  optional), but a config that annotates itself with the schema cannot use them. Widening the
+  schema would force every existing annotated file to supply the new keys, so it was left alone
+  and the drift is now documented in `deployment.md`. A future plan should make the schema's
+  optional fields `Optional`.
+
+- **`shomei-client` had to unwrap the new response headers** (`getResponse`) and pass three
+  `Nothing`s for refresh's `Cookie`/`Origin`/`Referer`. Its public API is unchanged — it is a
+  bearer-mode client. Example/test callers of `token.accessToken` needed `Maybe` handling.
+
+- **`Referer` prefix matching needs a delimiter check**, and the test proves it:
+  `http://localhost:8080.evil.com/x` must not satisfy an allow-list containing
+  `http://localhost:8080`. The implementation requires the match to end at `/` or end-of-string.
 
 
 ## Decision Log
@@ -188,13 +236,84 @@ Record every decision made while working on the plan.
   responses. Signup issues tokens today (`SignupResponse.token`), so it is in scope.
   Date: 2026-07-07
 
+- Decision (revises the `Set-Cookie` rendering decision above): the route type stays
+  `Header "Set-Cookie" Text`, but the rendering uses @http-api-data@'s existing
+  `ToHttpApiData SetCookie` instance (`toUrlPiece`) rather than a hand-written renderer.
+  Rationale: the original decision rested on "`SetCookie` has no `ToHttpApiData` instance in our
+  dependency set", which is false — `http-api-data-0.7` provides one, and it emits exactly the
+  header value we want. Keeping `Text` in the route type is still right (OpenAPI generation needs
+  `ToSchema`/`ToParamSchema`, which `SetCookie` lacks); no orphan is defined either way.
+  Date: 2026-07-08
+
+- Decision: `logout` becomes `Verb 'POST 204 '[JSON] (WithCookies NoContent)`, and the OpenAPI
+  conformance suite gains test-only `Arbitrary`/`ToJSON`/`ToSchema` orphans for `NoContent`.
+  Rationale: servant's `NoContentVerb` cannot carry response headers, and logout must clear the
+  cookies. The alternative — inventing a body for a 204 — is worse. The orphans are confined to
+  the test; the production spec and the wire response are unaffected (a bodyless 204).
+  Date: 2026-07-08
+
+- Decision: `Shomei.Servant.Auth.originHeaderAllowed` is factored out of `originAllowed`.
+  Rationale: the CSRF gate must run in two places with different inputs — the `AuthHandler`, which
+  sees a WAI `Request`, and `refreshH`, which is unauthenticated and receives `Origin`/`Referer`
+  as servant `Header` inputs. One implementation, two adapters, so the two can never disagree.
+  Date: 2026-07-08
+
+- Decision: `config/shomei-types.dhall` is left unwidened; the new file keys are documented as
+  loader-accepted but absent from the annotated schema.
+  Rationale: Dhall record types are closed, so adding fields would force every existing file that
+  annotates itself `: ./shomei-types.dhall` to supply them — a breaking change to operators'
+  configs, out of proportion to this plan. The schema was already stale (`signingAlgorithm`).
+  Recorded in Surprises & Discoveries as a follow-up.
+  Date: 2026-07-08
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Delivered as planned; the fallback (removing the read path) was never needed.** CSRF scope did
+not balloon: `SameSite=Lax` plus an `Origin` allow-list is about eighty lines, and the gate lives
+in one function called from two adapters.
+
+The dangerous half is closed. `SHOMEI_TOKEN_TRANSPORT=bearer` — the default, and what every
+existing deployment runs — now ignores the `shomei_session` cookie entirely, where before it
+accepted it as a credential in every deployment regardless of configuration. That was the review's
+actual finding, and it was a *live* hole guarding a feature nothing else implemented.
+
+The other half is now real: cookie mode sets `HttpOnly` cookies on all five token-issuing
+responses, omits token values from the bodies, reads the refresh token from its path-scoped
+cookie, clears both on logout, and refuses cookie-authenticated mutations that do not present an
+allow-listed `Origin`. Bearer behavior is byte-for-byte unchanged, which the untouched existing
+tests attest to.
+
+**What the plan got wrong, and what that cost:** its Decision Log asserted `SetCookie` has no
+`ToHttpApiData` instance. It does. Believing the plan would have produced a hand-rolled renderer
+for no reason. The lesson generalizes: a plan's claims about *library facts* deserve the same
+verification as its claims about our own code — `:i SetCookie` in a repl took ten seconds and
+replaced a paragraph of Decision Log rationale.
+
+**Gaps, none blocking:**
+
+- `config/shomei-types.dhall` does not list the new keys (nor `signingAlgorithm`, which predates
+  this plan). The loader accepts them; a schema-annotated file cannot. Widening the closed record
+  would break operators' existing files, so the fix is to make its fields `Optional` — a small
+  plan of its own.
+- The OpenAPI document shows one `Set-Cookie` header per response, because OpenAPI keys response
+  headers by name. Both are always sent.
+- The `logout` 204 carries `"content": {"application/json;charset=utf-8": {}}` in the spec, an
+  artifact of servant's `NoContentVerb` not supporting headers. No schema is claimed.
+- `SameSite=None` is settable but is only meaningful alongside `Secure`; nothing enforces the
+  pairing, and browsers silently drop such cookies. A config-load validation would be cheap.
+- The CSRF gate compares origins by exact string. A deployment behind a proxy that rewrites
+  `Origin`, or one wanting wildcard subdomains, has no knob. Deliberate: an allow-list you can
+  read is worth more than a matcher you cannot.
+
+**Lesson.** Two of this initiative's five findings were "a config flag exists and nothing reads
+it" (`emailVerificationRequired`, `TokenTransport`). Both were *documented* features. The
+half-built one was far more dangerous than the unbuilt one, because its read path shipped without
+its write path or its defenses — a feature flag with a live consumer and no producer is not
+"unfinished", it is a hole.
 
 
 ## Context and Orientation
@@ -595,6 +714,58 @@ Acceptance is the observable matrix, automated in M3 and demonstrated live in M4
 Test commands: `cabal test shomei-servant`, `cabal test all`. Each security-relevant
 negative case (cookie accepted in bearer mode; CSRF-less mutation) must be observed
 failing against pre-plan code once, recorded in Surprises & Discoveries.
+
+### Executed transcript (2026-07-08)
+
+`cabal test all -j1`: 12 of 12 suites PASS. The servant suite grew from 5 to 10 cases; both
+security negatives were observed failing against pre-plan code (see Surprises & Discoveries).
+
+Live server: `SHOMEI_PORT=8099 SHOMEI_TOKEN_TRANSPORT=cookie
+SHOMEI_CSRF_ALLOWED_ORIGINS=http://localhost:8099 shomei-server`.
+
+**Cookie mode — signup sets both cookies and the body carries no token:**
+
+```text
+$ curl -si -X POST :8099/auth/signup -d '{"email":"c@example.com","password":"…","displayName":"C"}'
+Set-Cookie: shomei_session=eyJhbGciOiJFUzI1NiIs…; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax
+Set-Cookie: shomei_refresh=VRNnD4zhDm09g4AJjOlJ3UUwva9bBLEbuUCRI8UEZKw; Path=/auth/refresh; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
+
+$ tail -1 | jq -c .token
+{"expiresIn":900}
+```
+
+**The CSRF gate:**
+
+```text
+cookie-authenticated GET /auth/me                       -> 200   (safe method, no Origin needed)
+
+POST /auth/logout, cookie, NO Origin:
+{"error":"csrf_rejected","message":"Origin not allowed for cookie-authenticated request"}  <- 403
+
+POST /auth/logout, cookie, FOREIGN Origin                -> 403
+POST /auth/refresh from cookie, no Origin                -> 403
+POST /auth/refresh from cookie, allowed Origin           -> 200
+  Set-Cookie: shomei_refresh=CPXiHnaZcIVgl-E1rdiMiq6JZVkMC5sJ271QZkuuMSA; Path=/auth/refresh   (rotated)
+```
+
+**Logout clears both cookies:**
+
+```text
+HTTP/1.1 204 No Content
+Set-Cookie: shomei_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax
+Set-Cookie: shomei_refresh=; Path=/auth/refresh; Max-Age=0; HttpOnly; Secure; SameSite=Lax
+```
+
+**Bearer-mode regression (no env vars) — and the closed read path:**
+
+```text
+Set-Cookie headers: 0
+body has accessToken: yes
+bearer /auth/me                 -> 200
+same token as a cookie only     -> 401     <- the review's finding, closed
+```
+
+All five acceptance items observed.
 
 
 ## Idempotence and Recovery

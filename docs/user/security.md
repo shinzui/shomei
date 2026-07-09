@@ -85,6 +85,54 @@ meanwhile; the `/ready` probe, which checks for an active key, starts failing so
 notices. Fix the key table with `shomei-admin` and send `SIGHUP` (or wait one interval) to
 recover.
 
+## Cookie transport & CSRF
+
+By default Shōmei speaks bearer tokens: the client stores the access token and sends
+`Authorization: Bearer …`. That is simple and CSRF-immune, but it means the token lives somewhere
+JavaScript can read it, so an XSS bug becomes a session compromise.
+
+Setting `SHOMEI_TOKEN_TRANSPORT=cookie` moves both tokens into **`HttpOnly` cookies**, which page
+JavaScript cannot read at all, and stops the JSON bodies from carrying them — an XSS payload
+cannot exfiltrate what was never serialized.
+
+- `shomei_session` — the access token. `Path=/`, `Max-Age` = `accessTokenTTL`.
+- `shomei_refresh` — the refresh token. `Path=/auth/refresh`, `Max-Age` = `refreshTokenTTL`, so
+  the browser presents this long-lived credential to exactly one endpoint.
+
+Both carry `HttpOnly`, `Secure` (`SHOMEI_COOKIE_SECURE`, default on — browsers exempt localhost
+from the HTTPS requirement), and `SameSite` (`SHOMEI_COOKIE_SAMESITE`, default `Lax`).
+
+**Cookies buy XSS resistance and hand you a CSRF problem.** A browser attaches cookies to a
+request automatically, even one triggered by a page on an attacker's site. The attacker cannot
+read the response — CORS forbids it — but does not need to: the *side effect* (a logout, a
+password change, a deleted passkey) is the attack. Shōmei defends in two layers:
+
+1. **`SameSite=Lax`** tells the browser not to attach these cookies to cross-site POSTs at all.
+2. **An `Origin` allow-list**, checked server-side on every **cookie-authenticated mutating
+   request** (anything but `GET`/`HEAD`/`OPTIONS`). Browsers set `Origin` to the initiating page's
+   origin and JavaScript cannot forge it. If `Origin` is absent, a `Referer` under an allowed
+   origin is accepted; the prefix must end at a `/` or the string's end, so
+   `http://localhost:8080.evil.com` does not satisfy an allow-list containing
+   `http://localhost:8080`. With neither header the request is **refused** —
+   `403 {"error":"csrf_rejected"}` — because a cookie-only mutating request with no origin
+   information is either a non-browser client that should be sending a bearer token, or an attack.
+
+Set the allow-list with `SHOMEI_CSRF_ALLOWED_ORIGINS`. It defaults to `http://localhost:8080` for
+the turnkey dev experience; **production deployments must set their real origins.**
+
+There is deliberately no double-submit CSRF token: Shōmei's mutating surface is JSON-over-POST,
+not HTML forms, so `SameSite` plus the `Origin` check covers it without requiring every embedder's
+frontend to mirror a token into a header.
+
+**Bearer credentials are never CSRF-gated**, in any transport. A foreign page cannot set an
+`Authorization` header, so there is nothing to defend against — and gating them would break curl,
+native clients, and the service-token flow.
+
+**Bearer mode does not accept cookies.** A deployment configured for `bearer` ignores
+`shomei_session` entirely; presenting it yields `401`. (Before this was fixed, the cookie was read
+as a credential in *every* deployment regardless of configuration — a live read path for a feature
+nothing else implemented.)
+
 ## Signing-key encryption at rest
 
 **The threat.** The private signing key is the most powerful secret Shōmei holds: whoever has

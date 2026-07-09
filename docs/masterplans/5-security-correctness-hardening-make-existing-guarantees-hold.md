@@ -88,7 +88,7 @@ verifiable behaviors.
 | 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | Complete |
 | 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Complete |
 | 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Complete |
-| 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | In Progress |
+| 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Complete |
 | 5 | Encrypt Signing Private Keys at Rest | docs/plans/32-encrypt-signing-private-keys-at-rest.md | None | EP-2 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -154,9 +154,9 @@ rename existing ones.
 - [x] EP-3: Dummy-hash verification on unknown-account login path; timing test (2026-07-08)
 - [x] EP-3: `emailVerificationRequired` enforced at login/token issuance (2026-07-08)
 - [x] EP-3: `LogNotifier` redacts one-time tokens (hash prefix only) (2026-07-08)
-- [ ] EP-4: Decision recorded: complete cookie transport (vs. remove read path)
-- [ ] EP-4: Set-Cookie emission on login/refresh/logout honoring `TokenTransport`, with `HttpOnly`/`Secure`/`SameSite`
-- [ ] EP-4: CSRF defense for cookie-authenticated mutations
+- [x] EP-4: Decision recorded: complete cookie transport (vs. remove read path) (2026-07-08)
+- [x] EP-4: Set-Cookie emission on login/refresh/logout honoring `TokenTransport`, with `HttpOnly`/`Secure`/`SameSite` (2026-07-08)
+- [x] EP-4: CSRF defense for cookie-authenticated mutations (2026-07-08)
 - [x] EP-5: Envelope encryption of `private_key_jwk` behind a configured key-encryption key (2026-07-08)
 - [x] EP-5: Migration/backfill path for existing plaintext rows; `shomei-admin` support (2026-07-08)
 
@@ -298,6 +298,33 @@ rename existing ones.
   dev database: `DELETE FROM shomei.shomei_signing_keys` and boot once without a KEK to
   regenerate a plaintext active key.
 
+- **EP-4 changed the HTTP surface: five responses gained `Set-Cookie` headers and two DTOs
+  changed shape.** `TokenPairResponse.accessToken`/`refreshToken` are now `Maybe Text` (omitted,
+  not nulled, in cookie-only mode) and `RefreshRequest.refreshToken` is optional. `logout` is
+  `Verb 'POST 204 '[JSON] (WithCookies NoContent)` rather than `PostNoContent`, because servant's
+  `NoContentVerb` cannot carry headers. Any plan touching these routes or consuming these DTOs
+  (including `shomei-client`) inherits the `Maybe`s and must call `getResponse` to unwrap.
+
+- **`Shomei.Servant.Auth.authHandler` now takes a `CookiePolicy` first argument**, built by
+  `cookiePolicyFromConfig`. Every assembly that registers the servant `Context`
+  (`Shomei.Server.Boot.authContext`, the servant test app, any embedded host) must pass it, or
+  the transport and CSRF policy silently do not apply.
+
+- **The CSRF gate is `originHeaderAllowed`, called from two places**: the `AuthHandler` (which has
+  a WAI `Request`) and `refreshH` (which receives `Origin`/`Referer` as servant `Header` inputs
+  because it is unauthenticated yet reads a cookie). A future token-issuing route that accepts a
+  cookie must call it too — nothing enforces this structurally.
+
+- **`config/shomei-types.dhall` is a closed Dhall record and is stale.** It omits
+  `signingAlgorithm` (pre-existing), `keyRefreshIntervalSeconds` (EP-2), and EP-4's four cookie
+  keys. The loader accepts all of them — every `FileConfig` field is optional — but a config file
+  annotated `: ./shomei-types.dhall` cannot use them. Widening it would force every existing
+  annotated file to supply the new keys. **Follow-up plan: make the schema's fields `Optional`.**
+
+- **`http-api-data` supplies `ToHttpApiData SetCookie`.** EP-4's plan asserted otherwise and
+  budgeted a hand-rolled renderer. Verify a plan's claims about third-party libraries the same way
+  you verify its claims about this repo.
+
 
 ## Decision Log
 
@@ -333,4 +360,58 @@ rename existing ones.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+All five child plans are complete (EP-1 on 2026-07-08 in an earlier session; EP-2 through EP-5 on
+2026-07-08). `cabal test all -j1` is green across 12 suites. Every guarantee named in Vision &
+Scope now holds in code, and each was demonstrated against a running server or a real database
+rather than only unit-tested.
+
+**What was actually wrong.** The review's framing was right: the dangerous fundamentals were
+correct, and the failures were all *promises the code did not keep*. Three distinct shapes:
+
+1. **Checked non-atomically, or not at all** (EP-1): `session.expiresAt` never enforced;
+   `markRefreshTokenUsed` without a status guard; one-time tokens consumable twice.
+2. **A documented feature with no consumer** (EP-3's `emailVerificationRequired`) — or worse, a
+   feature with a live *consumer* and no producer (EP-4's cookie read path, accepted as a
+   credential in every deployment while nothing ever set a cookie and no CSRF defense existed).
+   The half-built one was the more dangerous.
+3. **A guarantee whose proof was never checked** (EP-2's "zero-downtime rotation", which was
+   guaranteed-*downtime* even across a restart, because the restarted server published only the
+   active key and rejected every token signed minutes earlier) and one that was simply absent
+   (EP-5: the most powerful secret in the system stored in plaintext beside hashed passwords).
+
+**Method that paid off.** Every plan asked for the security-relevant negative to be observed
+failing against pre-fix code, once. That discipline caught real things:
+
+- EP-3's `TimingSpec` failed on the *suspended-account* path too, not just the unknown-identifier
+  path the review named — confirming the finding understated the oracle.
+- EP-4's two negatives reproduced exactly (`expected 401, got 200`; `expected 403, got 204`),
+  which is the only evidence that the tests test the fix rather than the implementation.
+- EP-5's claim is checkable in one query: after backfill, `SELECT count(*) … WHERE
+  private_key_jwk LIKE '%"d"%'` returns `0`.
+
+**Cross-plan integration held.** The EP-2 ↔ EP-5 contract — "decryption is a pure
+`StoredSigningKey -> Either KeyDecryptError JWK`, and the loader keeps exactly one stored→live
+conversion point" — meant EP-5 changed one call site. It also let EP-5 *correct* EP-2, whose
+loader had been building the published JWKS out of private material; publication now reads the
+public column and needs no key-encryption key, so a KEK misconfiguration is a failed boot rather
+than a fleet-wide outage of outstanding tokens. Contracts that name a function signature work;
+contracts that gesture at a seam do not.
+
+**Follow-ups this initiative deliberately did not do:**
+
+- `config/shomei-types.dhall` is a closed Dhall record and now lags six loader-accepted keys.
+  Making its fields `Optional` is a small plan of its own (EP-4 Discoveries).
+- No `SHOMEI_EMAIL_VERIFICATION_REQUIRED` env var, though every sibling knob has one (EP-3).
+- The at-rest boot warning inspects only publishable rows, so a plaintext `pending` key goes
+  unremarked until activated; closing it wants a `ListAllSigningKeys` port operation (EP-5).
+- EP-2's periodic reload is a hand-rolled `forkIO` loop pending
+  `Shomei.Server.Supervisor.supervisedLoop`, which `docs/plans/34-…` owns.
+- `rotateSigningKeyFor` still writes plaintext by default (no in-tree callers); library consumers
+  of an encrypted deployment must use `rotateSigningKeyForWith`.
+- Reload-failure log lines embed the failing SQL. Verbose, no secrets; operational polish.
+
+**Lesson for the next initiative.** The most reliable signal that something is broken was a
+*documentation sentence with no test behind it*. `docs/user/security.md` described the intended
+property precisely enough to test in four of five cases — and in the fifth (log redaction), fixing
+the code falsified a sentence elsewhere in the tree that nothing but grep would have caught.
+Treat the docs as the specification, and treat changing an output format as a docs-wide search.
