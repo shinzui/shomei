@@ -344,9 +344,6 @@
                         "type": "string"
                     }
                 },
-                "required": [
-                    "refreshToken"
-                ],
                 "type": "object"
             },
             "ServiceTokenRequest": {
@@ -465,8 +462,6 @@
                     }
                 },
                 "required": [
-                    "accessToken",
-                    "refreshToken",
                     "expiresIn"
                 ],
                 "type": "object"
@@ -697,7 +692,14 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "Invalid `body`"
@@ -743,7 +745,14 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "Invalid `body`"
@@ -756,7 +765,17 @@
                 "operationId": "createAuthLogout",
                 "responses": {
                     "204": {
-                        "description": ""
+                        "content": {
+                            "application/json;charset=utf-8": {}
+                        },
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     }
                 },
                 "security": [
@@ -809,7 +828,14 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "Invalid `body`"
@@ -1009,6 +1035,32 @@
         "/auth/refresh": {
             "post": {
                 "operationId": "createAuthRefresh",
+                "parameters": [
+                    {
+                        "in": "header",
+                        "name": "Cookie",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "header",
+                        "name": "Origin",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "in": "header",
+                        "name": "Referer",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json;charset=utf-8": {
@@ -1027,10 +1079,17 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "description": "Invalid `body` or `Referer` or `Origin` or `Cookie`"
                     }
                 }
             }
@@ -1107,7 +1166,14 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "",
+                        "headers": {
+                            "Set-Cookie": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "Invalid `body`"
