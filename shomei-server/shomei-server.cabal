@@ -160,6 +160,7 @@ test-suite shomei-admin-test
     , shomei-migrations
     , shomei-migrations:test-support
     , shomei-postgres
+    , shomei-server
     , tasty
     , tasty-hunit
     , text

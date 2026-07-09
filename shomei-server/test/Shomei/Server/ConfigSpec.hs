@@ -7,7 +7,7 @@ module Main (main) where
 
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Shomei.Config (RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), WebAuthnConfig (..))
+import Shomei.Config (RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), WebAuthnConfig (..))
 import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (UserId, genUserId, idText)
@@ -27,6 +27,7 @@ dhallContents serviceUserId =
     <> ", port = 8080"
     <> ", maxFailedLoginsPerAccount = 7"
     <> ", metricsEnabled = False"
+    <> ", keyRefreshIntervalSeconds = 15"
     <> ", passwordMinLength = 16"
     <> ", passwordRejectCommon = False"
     <> ", webauthnRpId = \"auth.fromfile.test\""
@@ -55,10 +56,13 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   unsetEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
   unsetEnv "SHOMEI_SERVICE_TOKEN_TTL"
   unsetEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
+  unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
   (cfg, settings) <- loadConfig
   -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
   settings.serverPort @?= 8080
   cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
+  -- The signing-key refresh interval loads from the file (default is 60):
+  cfg.signingKeyConfig.refreshIntervalSeconds @?= 15
   -- File values beat the default password policy (default minLength is 12, rejectCommon True):
   cfg.passwordPolicy.minLength @?= 16
   cfg.passwordPolicy.rejectCommonPasswords @?= False
@@ -114,8 +118,12 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
     _ -> fail "expected one service account from env JSON"
   -- An env var overrides the file's password min length (file says 16):
   setEnv "SHOMEI_PASSWORD_MIN_LENGTH" "20"
+  -- and the file's signing-key refresh interval (file says 15); 0 disables the reload:
+  setEnv "SHOMEI_KEY_REFRESH_INTERVAL" "0"
   (cfg3, _) <- loadConfig
   cfg3.passwordPolicy.minLength @?= 20
+  cfg3.signingKeyConfig.refreshIntervalSeconds @?= 0
+  unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
   unsetEnv "SHOMEI_PASSWORD_MIN_LENGTH"
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "SHOMEI_PORT"

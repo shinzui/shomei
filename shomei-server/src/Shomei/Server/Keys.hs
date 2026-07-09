@@ -19,6 +19,7 @@ module Shomei.Server.Keys
     loadKeyMaterial,
     bootstrapKeys,
     reloadKeys,
+    publishedKids,
   )
 where
 

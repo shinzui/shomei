@@ -5,6 +5,7 @@
 module Main (main) where
 
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
+import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find)
 import Data.Maybe (mapMaybe)
@@ -24,6 +25,7 @@ import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
   ( keysActivate,
     keysGenerate,
+    keysRetire,
     keysRevoke,
     listAllKeys,
     listPublishableSigningKeys,
@@ -46,13 +48,16 @@ import Shomei.Effect.AuthEventReader
   )
 import Shomei.Error (AuthError)
 import Shomei.Id (genSessionId, genUserId)
-import Shomei.Jwt.Key (fromStoredSigningKey)
+import Shomei.Jwt.Key (fromStoredSigningKey, keyKid)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.Pool (acquirePool)
+-- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
+import Shomei.Server.Keys qualified as Keys
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -74,7 +79,18 @@ scalarInt pool sql = do
     fromI = fromIntegral
 
 main :: IO ()
-main = defaultMain (testGroup "shomei-admin" [testMigrateEmpty, testLifecycleOverlap, testUserCreate, testAuditQuery])
+main =
+  defaultMain
+    ( testGroup
+        "shomei-admin"
+        [ testMigrateEmpty,
+          testLifecycleOverlap,
+          testReloadPicksUpRotation,
+          testReloadKeepsLastGoodMaterial,
+          testUserCreate,
+          testAuditQuery
+        ]
+    )
 
 testMigrateEmpty :: TestTree
 testMigrateEmpty = testCase "after migration the keys table exists and is empty" $ withDb \pool _ -> do
@@ -114,6 +130,50 @@ testLifecycleOverlap = testCase "generate→activate→(generate→activate auto
   jwkset2 <- buildJwks publishable2
   v2 <- verifyToken jwkset2 cfg token
   assertBool "revoked-key token no longer verifies" (not (isRight v2))
+
+-- | The hot-reload contract: after @keys generate@ + @keys activate@ on a *running*
+-- server, one 'reloadKeys' makes the new key the signer while the auto-retired one stays
+-- published — so tokens minted a moment ago keep verifying. Before this plan the running
+-- server never saw the rotation at all.
+testReloadPicksUpRotation :: TestTree
+testReloadPicksUpRotation = testCase "reloadKeys picks up an activation: new signer, both keys published" $ withDb \pool _ -> do
+  ref <- newIORef =<< bootstrapKeys ES256 pool
+  kid1 <- signerKid <$> readIORef ref
+
+  keysGenerate ES256 pool
+  kid2 <- onlyPendingKid pool
+  keysActivate pool kid2 -- auto-retires kid1
+
+  reloadKeys pool ref
+  reloaded <- readIORef ref
+  signerKid reloaded @?= kid2
+  Set.fromList (Keys.publishedKids reloaded) @?= Set.fromList [kid1, kid2]
+
+  -- The retired key is still trusted by the reloaded verifier, not merely published.
+  retired <- requireKey pool kid1
+  token <- signWith =<< liftEither (fromStoredSigningKey retired)
+  v <- verifyToken reloaded.verifierJwks cfg token
+  assertBool "retired-key token verifies against the reloaded key set" (isRight v)
+
+-- | A failed reload must never degrade a running server below its last good state: it
+-- keeps signing and verifying with the material it already holds. Retiring the only active
+-- key is the operator mistake that produces this (there is then nothing to sign with).
+testReloadKeepsLastGoodMaterial :: TestTree
+testReloadKeepsLastGoodMaterial = testCase "a failed reload keeps the previous key material" $ withDb \pool _ -> do
+  ref <- newIORef =<< bootstrapKeys ES256 pool
+  before <- readIORef ref
+
+  keysRetire pool (signerKid before)
+
+  reloadKeys pool ref
+  after <- readIORef ref
+  signerKid after @?= signerKid before
+  Keys.publishedKids after @?= Keys.publishedKids before
+
+  -- and the stale-but-good material still verifies a token it signs
+  token <- signWith after.signingKey
+  v <- verifyToken after.verifierJwks cfg token
+  assertBool "server still signs and verifies after a failed reload" (isRight v)
 
 testUserCreate :: TestTree
 testUserCreate = testCase "users create persists a user + credential whose hash verifies" $ withDb \pool connStr -> do
@@ -181,6 +241,10 @@ requireKey pool kid = do
 
 statusOf :: Pool -> Text -> IO SigningKeyStatus
 statusOf pool kid = (.status) <$> requireKey pool kid
+
+-- | The @kid@ of the key that currently signs.
+signerKid :: Keys.LoadedKeys -> Text
+signerKid ks = keyKid ks.signingKey
 
 buildJwks :: [StoredSigningKey] -> IO JWKSet
 buildJwks stored = do
