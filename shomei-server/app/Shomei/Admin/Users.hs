@@ -20,23 +20,19 @@ import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher)
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
-import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Error (AuthError)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
+import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
-import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
-import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Workflow (signup)
 import System.Exit (exitFailure)
@@ -65,12 +61,10 @@ runSignup ::
   Eff
     [ UserStore,
       CredentialStore,
-      SessionStore,
-      RefreshTokenStore,
+      AuthUnitOfWork,
       PasswordBreachChecker,
       PasswordHasher,
       TokenSigner,
-      AuthEventPublisher,
       Clock,
       TokenGen,
       Database,
@@ -85,12 +79,10 @@ runSignup pool =
     . runDatabasePool pool
     . runTokenGenCrypto
     . runClockIO
-    . runAuthEventPublisherPostgres
     . runTokenSignerFake
     . runPasswordHasherCrypto
     . runPasswordBreachCheckerNoCheck
-    . runRefreshTokenStorePostgres
-    . runSessionStorePostgres
+    . runAuthUnitOfWorkPostgres
     . runCredentialStorePostgres
     . runUserStorePostgres
 

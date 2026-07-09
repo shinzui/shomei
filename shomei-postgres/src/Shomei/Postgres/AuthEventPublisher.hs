@@ -3,6 +3,13 @@
 -- into @shomei_auth_events@.
 module Shomei.Postgres.AuthEventPublisher
   ( runAuthEventPublisherPostgres,
+
+    -- * Statement shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Postgres.AuthUnitOfWork@ can lift it into a transaction with
+    --     @Hasql.Transaction.statement@ instead of restating the SQL.
+    AuthEventRow,
+    insertAuthEventStmt,
   )
 where
 

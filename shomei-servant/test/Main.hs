@@ -27,7 +27,6 @@ import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Effectful (Eff, runEff)
 import Network.HTTP.Client
   ( Manager,
-    responseHeaders,
     RequestBody (RequestBodyLBS),
     defaultManagerSettings,
     httpLbs,
@@ -37,6 +36,7 @@ import Network.HTTP.Client
     requestBody,
     requestHeaders,
     responseBody,
+    responseHeaders,
     responseStatus,
   )
 import Network.HTTP.Types (Header, statusCode)
@@ -74,6 +74,7 @@ import Shomei.Effect.InMemory
     emptyWorld,
     runAuthEventPublisher,
     runAuthEventReader,
+    runAuthUnitOfWork,
     runClock,
     runCredentialStore,
     runLoginAttemptStore,
@@ -165,6 +166,7 @@ runHybrid ref jwk jwkset cfg =
     . runLoginAttemptStore ref
     . runPasswordResetTokenStore ref
     . runVerificationTokenStore ref
+    . runAuthUnitOfWork ref
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref

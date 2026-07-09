@@ -27,12 +27,14 @@ import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText)
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
 import Shomei.Domain.User (User (..), UserStatus (UserSuspended))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.InMemory
   ( World (..),
     emptyWorld,
     runAuthEventPublisher,
+    runAuthUnitOfWork,
     runClock,
     runCredentialStore,
     runLoginAttemptStore,
@@ -105,6 +107,7 @@ type Ports =
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
+     AuthUnitOfWork,
      VerificationTokenStore,
      PasswordResetTokenStore,
      LoginAttemptStore,
@@ -153,6 +156,7 @@ runCounting ref counter =
     . runLoginAttemptStore ref
     . runPasswordResetTokenStore ref
     . runVerificationTokenStore ref
+    . runAuthUnitOfWork ref
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref

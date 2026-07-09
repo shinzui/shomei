@@ -1,6 +1,16 @@
 -- | PostgreSQL interpreter for the 'SessionStore' port.
 module Shomei.Postgres.SessionStore
   ( runSessionStorePostgres,
+
+    -- * Statements shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Postgres.AuthUnitOfWork@ can lift them into a transaction with
+    --     @Hasql.Transaction.statement@ instead of restating the SQL. Keep them here: two
+    --     copies of an INSERT drift, and the columns are the interpreter's business, not the
+    --     transaction's.
+    SessionRow,
+    insertSessionStmt,
+    mkSession,
   )
 where
 

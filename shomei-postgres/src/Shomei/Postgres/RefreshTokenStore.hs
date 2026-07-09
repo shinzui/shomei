@@ -2,6 +2,19 @@
 -- family revocation that powers reuse detection.
 module Shomei.Postgres.RefreshTokenStore
   ( runRefreshTokenStorePostgres,
+
+    -- * Statements shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Postgres.AuthUnitOfWork@ can lift them into a transaction with
+    --     @Hasql.Transaction.statement@ instead of restating the SQL. 'markUsedStmt' in
+    --     particular is a compare-and-swap whose exact shape is owned by
+    --     @docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md@;
+    --     lift it, never retype it.
+    RefreshTokenRow,
+    insertRefreshTokenStmt,
+    markUsedStmt,
+    mkPersisted,
+    refreshTokenHashText,
   )
 where
 

@@ -39,6 +39,7 @@ import Shomei.Domain.Passkey
 import Shomei.Domain.Token (TokenPair)
 import Shomei.Domain.User (User (..), UserStatus (UserActive))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.PasskeyStore
   ( PasskeyStore,
@@ -47,8 +48,6 @@ import Shomei.Effect.PasskeyStore
     updatePasskeySignCounter,
   )
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
-import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.UserStore (UserStore, findUserById)
@@ -108,8 +107,7 @@ prepareMfaChallenge cfg user ts = do
 -- and returns 'MfaAssertionInvalid'.
 completeMfa ::
   ( UserStore :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     PasskeyStore :> es,
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
@@ -174,8 +172,7 @@ beginPasswordlessLogin cfg = runErrorNoCallStack do
 -- user), verify, bump the counter, publish 'MfaSucceeded', and mint tokens.
 completePasswordlessLogin ::
   ( UserStore :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     PasskeyStore :> es,
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,

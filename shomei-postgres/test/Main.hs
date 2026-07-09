@@ -61,6 +61,7 @@ import Shomei.Effect.AuthEventReader
     emptyAuditQuery,
     queryAuthEvents,
   )
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock (..), now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
 import Shomei.Effect.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
@@ -111,6 +112,7 @@ import Shomei.Id (PasskeyId, genCeremonyId, genSessionId, genUserId, userIdToUUI
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
+import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
@@ -146,6 +148,7 @@ type AppEffects =
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
+     AuthUnitOfWork,
      VerificationTokenStore,
      PasswordResetTokenStore,
      LoginAttemptStore,
@@ -192,6 +195,7 @@ runAppWithNotifications ref pool action = do
       . runLoginAttemptStorePostgres
       . runPasswordResetTokenStorePostgres
       . runVerificationTokenStorePostgres
+      . runAuthUnitOfWorkPostgres
       . runRefreshTokenStorePostgres
       . runSessionStorePostgres
       . runCredentialStorePostgres
@@ -223,6 +227,7 @@ runAppAtTime t pool action = do
       . runLoginAttemptStorePostgres
       . runPasswordResetTokenStorePostgres
       . runVerificationTokenStorePostgres
+      . runAuthUnitOfWorkPostgres
       . runRefreshTokenStorePostgres
       . runSessionStorePostgres
       . runCredentialStorePostgres

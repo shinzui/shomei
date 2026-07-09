@@ -26,6 +26,7 @@ import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.LoginAttempt (AccountKey)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -56,6 +57,7 @@ type AppEffects =
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
+     AuthUnitOfWork,
      VerificationTokenStore,
      PasswordResetTokenStore,
      LoginAttemptStore,

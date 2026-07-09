@@ -27,6 +27,7 @@ module Shomei.Effect.InMemory
     runCredentialStore,
     runSessionStore,
     runRefreshTokenStore,
+    runAuthUnitOfWork,
     runVerificationTokenStore,
     runPasswordResetTokenStore,
     runLoginAttemptStore,
@@ -111,6 +112,7 @@ import Shomei.Effect.AuthEventReader
     StoredAuthEvent (..),
     clampLimit,
   )
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork (..), NewSessionToken (..), RotationOutcome (..))
 import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
@@ -408,6 +410,63 @@ mkPersisted rid nrt =
       usedAt = Nothing,
       revokedAt = Nothing
     }
+
+-- | In-memory interpreter for the transactional unit-of-work port.
+--
+-- Where the PostgreSQL interpreter wraps its statements in @BEGIN … COMMIT@, this one applies
+-- the whole multi-table update in a single 'atomicModifyIORef'' step, which is the in-memory
+-- equivalent: no other green thread can observe a session without its refresh token, and the
+-- rotation's compare-and-swap and its inserts land together or not at all. The concurrency
+-- regression tests run these workflows from many threads and depend on exactly that.
+--
+-- 'publishedEvents' is newest-first, so a batch of events is prepended reversed: the last event
+-- a workflow authors ends up at the head.
+runAuthUnitOfWork :: (IOE :> es) => IORef World -> Eff (AuthUnitOfWork : es) a -> Eff es a
+runAuthUnitOfWork ref = interpret_ \case
+  PersistNewSession ns nst mkEvents -> do
+    sid <- genSessionId
+    rid <- genRefreshTokenId
+    let session = mkSession sid ns
+        newToken =
+          NewRefreshToken
+            { sessionId = sid,
+              tokenHash = nst.tokenHash,
+              parentTokenId = Nothing,
+              createdAt = nst.createdAt,
+              expiresAt = nst.expiresAt
+            }
+        persisted = mkPersisted rid newToken
+        events = mkEvents sid
+    liftIO
+      ( modifyWorld
+          ref
+          ( (#sessions %~ Map.insert sid session)
+              . (#refreshTokens %~ Map.insert rid persisted)
+              . (#refreshByHash %~ Map.insert nst.tokenHash rid)
+              . (#publishedEvents %~ (reverse events <>))
+          )
+      )
+    pure (session, persisted)
+  RotateRefreshToken presentedId usedAt newToken ev -> do
+    rid <- genRefreshTokenId
+    let persisted = mkPersisted rid newToken
+    liftIO
+      ( atomicModifyIORef' ref \w -> case Map.lookup presentedId w.refreshTokens of
+          Just tok
+            | tok.status == RefreshTokenActive ->
+                ( w
+                    & #refreshTokens
+                    %~ (Map.insert rid persisted . Map.adjust (markUsed usedAt) presentedId)
+                    & #refreshByHash
+                    %~ Map.insert newToken.tokenHash rid
+                    & #publishedEvents
+                    %~ (ev :),
+                  Rotated persisted
+                )
+          _ -> (w, RotationConflict)
+      )
+  where
+    markUsed t tok = tok & #status .~ RefreshTokenUsed & #usedAt .~ Just t
 
 runVerificationTokenStore :: (IOE :> es) => IORef World -> Eff (VerificationTokenStore : es) a -> Eff es a
 runVerificationTokenStore ref = interpret_ \case
@@ -809,6 +868,7 @@ runInMemory ::
       CredentialStore,
       SessionStore,
       RefreshTokenStore,
+      AuthUnitOfWork,
       VerificationTokenStore,
       PasswordResetTokenStore,
       LoginAttemptStore,
@@ -845,6 +905,7 @@ runInMemory ref =
     . runLoginAttemptStore ref
     . runPasswordResetTokenStore ref
     . runVerificationTokenStore ref
+    . runAuthUnitOfWork ref
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref

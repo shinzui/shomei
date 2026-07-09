@@ -47,6 +47,13 @@ import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (Sess
 import Shomei.Domain.Token (AccessToken, TokenPair (..))
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (UserActive))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
+import Shomei.Effect.AuthUnitOfWork
+  ( AuthUnitOfWork,
+    NewSessionToken (..),
+    RotationOutcome (..),
+    persistNewSession,
+    rotateRefreshToken,
+  )
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByLoginId)
 import Shomei.Effect.LoginAttemptStore
@@ -64,13 +71,11 @@ import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPasswor
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore
   ( RefreshTokenStore,
-    createRefreshToken,
     findRefreshTokenByHash,
-    markRefreshTokenUsed,
     revokeRefreshTokenFamily,
     revokeSessionRefreshTokens,
   )
-import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
+import Shomei.Effect.SessionStore (SessionStore, findSessionById, revokeSession)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Effect.TokenVerifier (TokenVerifier, verifyAccessToken)
@@ -104,12 +109,10 @@ data LoginResult
 signup ::
   ( UserStore :> es,
     CredentialStore :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     PasswordHasher :> es,
     PasswordBreachChecker :> es,
     TokenSigner :> es,
-    AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -130,28 +133,28 @@ signup cfg cmd = runErrorNoCallStack do
   ts <- now
   user <- createUser NewUser {loginId = cmd.loginId, email = cmd.email, displayName = cmd.displayName}
   _ <- createPasswordCredential user.userId cmd.loginId cmd.email pwHash
-  session <-
-    createSession
+  rawToken <- generateOpaqueToken
+  tokHash <- hashRefreshToken rawToken
+  -- Session row, refresh-token row, and both audit events in one transaction: a crash here
+  -- leaves the new user with no session rather than a session with no token.
+  (session, _token) <-
+    persistNewSession
       NewSession
         { userId = user.userId,
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
           actor = Nothing
         }
-  rawToken <- generateOpaqueToken
-  tokHash <- hashRefreshToken rawToken
-  _ <-
-    createRefreshToken
-      NewRefreshToken
-        { sessionId = session.sessionId,
-          tokenHash = tokHash,
-          parentTokenId = Nothing,
+      NewSessionToken
+        { tokenHash = tokHash,
           createdAt = ts,
           expiresAt = addUTCTime cfg.refreshTokenTTL ts
         }
+      \sid ->
+        [ Event.UserRegistered (Event.UserRegisteredData user.userId cmd.loginId cmd.email ts),
+          Event.SessionStarted (Event.SessionStartedData sid user.userId ts)
+        ]
   access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
-  publishAuthEvent (Event.UserRegistered (Event.UserRegisteredData user.userId cmd.loginId cmd.email ts))
-  publishAuthEvent (Event.SessionStarted (Event.SessionStartedData session.sessionId user.userId ts))
   pure
     ( user,
       TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
@@ -172,8 +175,7 @@ signup cfg cmd = runErrorNoCallStack do
 login ::
   ( UserStore :> es,
     CredentialStore :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     PasswordHasher :> es,
     TokenSigner :> es,
     AuthEventPublisher :> es,
@@ -308,6 +310,7 @@ failLogin rl ctx loginId ts = do
 refresh ::
   ( SessionStore :> es,
     RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     -- only consulted when 'emailVerificationRequired' is enabled
     UserStore :> es,
     TokenSigner :> es,
@@ -355,29 +358,31 @@ refresh cfg cmd = do
                 case gate of
                   Left e -> pure (Left e)
                   Right () -> do
-                    -- Compare-and-swap: only the caller that transitions this token
-                    -- active → used may rotate it. Losing the race means someone else has
-                    -- already spent the token, which is indistinguishable from theft — so
-                    -- take the reuse path.
-                    won <- markRefreshTokenUsed tok.refreshTokenId ts
-                    if not won
-                      then reuseDetected tok ts
-                      else do
-                        rawNew <- generateOpaqueToken
-                        newHash <- hashRefreshToken rawNew
-                        _ <-
-                          createRefreshToken
-                            NewRefreshToken
-                              { sessionId = tok.sessionId,
-                                tokenHash = newHash,
-                                parentTokenId = Just tok.refreshTokenId,
-                                createdAt = ts,
-                                -- Never mint a token that outlives its session.
-                                expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
-                              }
+                    rawNew <- generateOpaqueToken
+                    newHash <- hashRefreshToken rawNew
+                    -- One transaction: the compare-and-swap that transitions this token
+                    -- active → used, the insert of its replacement, and the rotation event.
+                    -- Only the caller that wins the swap may rotate; losing the race means
+                    -- someone else has already spent the token, which is indistinguishable
+                    -- from theft — so take the reuse path. A conflict inserts nothing, and the
+                    -- token is never re-read to "confirm" it.
+                    outcome <-
+                      rotateRefreshToken
+                        tok.refreshTokenId
+                        ts
+                        NewRefreshToken
+                          { sessionId = tok.sessionId,
+                            tokenHash = newHash,
+                            parentTokenId = Just tok.refreshTokenId,
+                            createdAt = ts,
+                            -- Never mint a token that outlives its session.
+                            expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
+                          }
+                        (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
+                    case outcome of
+                      RotationConflict -> reuseDetected tok ts
+                      Rotated _ -> do
                         access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
-                        publishAuthEvent
-                          (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
                         pure
                           ( Right
                               TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}

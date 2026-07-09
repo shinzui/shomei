@@ -40,6 +40,7 @@ library
     Shomei.Crypto
     Shomei.Postgres.AuthEventPublisher
     Shomei.Postgres.AuthEventReader
+    Shomei.Postgres.AuthUnitOfWork
     Shomei.Postgres.Clock
     Shomei.Postgres.Codec
     Shomei.Postgres.CredentialStore

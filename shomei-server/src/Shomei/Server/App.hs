@@ -29,6 +29,7 @@ import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Domain.Password (PasswordPolicy (breachCheckTimeoutMs))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -48,11 +49,13 @@ import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError)
+import Shomei.Jwt.KeyProtection (KeyEncryptionKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt)
 import Shomei.Jwt.Verify (runTokenVerifierJwt)
 import Shomei.Notify (runNotifierFromConfig)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
+import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
@@ -66,7 +69,6 @@ import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Prelude
-import Shomei.Jwt.KeyProtection (KeyEncryptionKey)
 import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Server.Keys (LoadedKeys (..))
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
@@ -80,6 +82,7 @@ type AppEffects =
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
+     AuthUnitOfWork,
      VerificationTokenStore,
      PasswordResetTokenStore,
      LoginAttemptStore,
@@ -152,6 +155,7 @@ runAppIO env action = do
     . runLoginAttemptStorePostgres
     . runPasswordResetTokenStorePostgres
     . runVerificationTokenStorePostgres
+    . runAuthUnitOfWorkPostgres
     . runRefreshTokenStorePostgres
     . runSessionStorePostgres
     . runCredentialStorePostgres

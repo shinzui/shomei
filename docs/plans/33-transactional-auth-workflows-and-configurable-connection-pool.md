@@ -79,14 +79,22 @@ This section must always reflect the actual current state of the work.
 - [x] M2: workflow tests asserting no `ClearAccountLockout` op is issued on a lockout-free login,
       and that a standing lockout is still cleared. Verified non-vacuous by mutation: restoring
       the unconditional clear makes the first test fail (2026-07-08).
-- [ ] M3: new core effect `Shomei.Effect.AuthUnitOfWork` with `PersistNewSession` and
-      `RotateRefreshToken` operations; smart constructors exported.
-- [ ] M3: PostgreSQL interpreter `Shomei.Postgres.AuthUnitOfWork` running each operation as one
-      `runTransaction` (first-ever caller of `Database.RunTransaction`).
-- [ ] M3: `Shomei.Workflow.Session.issueSession`, the signup tail in `Shomei.Workflow.signup`,
-      and the refresh tail in `Shomei.Workflow.refresh` rewritten onto the new operations.
-- [ ] M3: effect added to `Shomei.Servant.Seam.AppEffects` and
-      `Shomei.Server.App.AppEffects`/`runAppIO`; all in-memory/test interpreters updated.
+- [x] M3: new core effect `Shomei.Effect.AuthUnitOfWork` with `PersistNewSession` and
+      `RotateRefreshToken` operations; smart constructors exported (2026-07-08).
+- [x] M3: PostgreSQL interpreter `Shomei.Postgres.AuthUnitOfWork` running each operation as one
+      `runTransaction` (first-ever caller of `Database.RunTransaction`); the session, refresh-token
+      and auth-event statements are exported from their own store interpreters and lifted with
+      `Hasql.Transaction.statement` rather than restated (2026-07-08).
+- [x] M3: `Shomei.Workflow.Session.issueSession`, the signup tail in `Shomei.Workflow.signup`,
+      and the refresh tail in `Shomei.Workflow.refresh` rewritten onto the new operations;
+      `Shomei.Workflow.Mfa`'s two completion paths follow via `issueSession` (2026-07-08).
+- [x] M3: effect added to `Shomei.Servant.Seam.AppEffects` and
+      `Shomei.Server.App.AppEffects`/`runAppIO`; in-memory interpreter added to
+      `Shomei.Effect.InMemory.runInMemory`; the `shomei-postgres`, `shomei-servant` and
+      `TimingSpec` harness stacks and `shomei-admin`'s `runSignup` stack updated (2026-07-08).
+- [x] M3: `cabal test all -j1` green — all 12 suites, including `shomei-postgres-test` (24 cases
+      against a real database) and the server E2E signup → login → refresh → reuse-detect →
+      logout (2026-07-08).
 - [ ] M4: counting `Database` interpreter test proving login = 7 round-trips, refresh = 3.
 - [ ] M4: statement-log transcript showing `BEGIN`/`COMMIT` around the login tail.
 - [ ] `nix fmt` clean; Decision Log, Surprises, Outcomes updated; MasterPlan 6 Progress and
@@ -144,6 +152,23 @@ implementation. Provide concise evidence.
   `Shomei/Server/App.hs`, `Shomei/Workflow/Session.hs`) that had drifted from the formatter's
   canonical output. Those reverts were discarded to keep this plan's diff focused; expect the
   same drift to reappear on any future `nix fmt` and revert it the same way.
+
+
+- **`cabal test all` is flaky in parallel, and it is not this plan's doing.** Several suites each
+  start their own ephemeral PostgreSQL cluster; run concurrently on this machine they exceed the
+  60-second startup budget and fail with
+
+  ```text
+  Exception: Failed to start ephemeral PostgreSQL: TimeoutError
+    (ConnectionTimeout {durationSeconds = 60, host = "…/pg--a94c20346234cbdc", port = 50551})
+  ```
+
+  Each suite passes on its own, and `cabal test all -j1 --test-options="-j1"` passes all twelve.
+  Use the serialized form to validate this plan; the failure is resource contention, not a
+  regression.
+
+- **`nix fmt` accepts explicit paths.** `nix fmt -- <files>` formats only those files, which
+  avoids the repo-wide import reordering noted above. Prefer it over a bare `nix fmt`.
 
 
 ## Decision Log
@@ -246,6 +271,52 @@ Record every decision made while working on the plan.
   siblings they would race — `poolRejectsNonPositive` setting `SHOMEI_DB_POOL_SIZE=0` while
   `poolDefaults` asserts the default is 10. Sequencing them inside one test case makes the
   ordering explicit and total.
+  Date: 2026-07-08
+
+
+- Decision: `RotateRefreshToken` carries an explicit `UTCTime` (the `used_at` stamp) that the
+  plan's original sketch omitted.
+  Rationale: The compare-and-swap statement `markUsedStmt` is
+  `UPDATE … SET status='used', used_at = $2 WHERE refresh_token_id = $1 AND status='active'`,
+  so the timestamp is a statement parameter. The interpreter cannot invent it: the workflow's
+  `ts` comes from the `Clock` port, and the in-memory interpreter must stamp the same value the
+  test's fixed clock produced. Passing it through keeps both interpreters honest and the
+  statement unchanged.
+  Date: 2026-07-08
+
+- Decision: Export the prepared `Statement` values (`insertSessionStmt`,
+  `insertRefreshTokenStmt`, `markUsedStmt`, `insertAuthEventStmt`) plus their row-type synonyms
+  and the `mkSession`/`mkPersisted` builders from their existing store interpreters, and have
+  `Shomei.Postgres.AuthUnitOfWork` lift them with `Hasql.Transaction.statement`.
+  Rationale: The alternative is to restate the four INSERTs and the CAS inside the transaction
+  module, which guarantees the two copies drift the first time a column is added, and would put
+  a second author on the statement `docs/plans/28` owns. Lifting means the transaction has zero
+  SQL of its own. Each export carries a comment saying why it is exported.
+  Date: 2026-07-08
+
+- Decision: In `signup` and `issueSession`, generate the opaque refresh token *before* the
+  unit-of-work call rather than after the session insert (the order the old code used).
+  Rationale: The token hash is a column of the row the transaction inserts, so it must exist
+  before the transaction opens. `generateOpaqueToken`/`hashRefreshToken` are `TokenGen`
+  operations with no database contact, so moving them earlier costs nothing. In `refresh` this
+  additionally means a request that loses the rotation race has consumed a token-counter tick in
+  the in-memory fake; nothing observes that, and the 100-concurrent-refresh regression test
+  still sees exactly one winner.
+  Date: 2026-07-08
+
+- Decision: Drop `SessionStore`, `RefreshTokenStore` and `AuthEventPublisher` from
+  `shomei-admin`'s `runSignup` effect list rather than leaving them interpreted-but-unused.
+  Rationale: `signup`'s constraints no longer mention them, so the stack would carry three
+  interpreters no operation can reach. `runAuthUnitOfWorkPostgres` needs only `Database`,
+  `Error AuthError` and `IOE`, all already present.
+  Date: 2026-07-08
+
+- Decision: `RotateRefreshToken` returns `RotationConflict` from inside the transaction and lets
+  it commit, rather than calling `Hasql.Transaction.condemn` to force a rollback.
+  Rationale: On a conflict the compare-and-swap matched no row and the interpreter runs no
+  further statements, so the transaction has nothing to undo — committing an empty transaction
+  and rolling one back are indistinguishable in effect, and `condemn` would only add a failure
+  mode. The conflict is a signal, not an error.
   Date: 2026-07-08
 
 

@@ -27,17 +27,14 @@ import Effectful (Eff, (:>))
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..), mkExtraClaims, noExtraClaims)
 import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.RefreshToken (NewRefreshToken (..))
 import Shomei.Domain.Session (NewSession (..), Session (..))
 import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken)
-import Shomei.Effect.SessionStore (SessionStore, createSession)
+import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork, NewSessionToken (..), persistNewSession)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
-import Shomei.Id (SessionId, UserId)
 import Shomei.Error (AuthError (EmailNotVerified))
+import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
 -- | Build the access-token claims for a freshly-authenticated session. The MVP issues no
@@ -85,11 +82,15 @@ buildClaimsWith cfg extra uid sid ts =
 -- publishing 'LoginSucceeded' and 'SessionStarted'. Returns the new session id alongside the
 -- token pair so a caller (e.g. 'Shomei.Workflow.Mfa.completeMfa') can name the session in its
 -- own audit event. The session id is fresh each call.
+--
+-- The session row, the refresh-token row, and both audit events are written by a single
+-- 'persistNewSession' — one database transaction, one round-trip — so a crash mid-tail cannot
+-- leave a session without its token. Signing the access token is pure CPU work and stays
+-- outside the transaction. The session id is generated inside the unit-of-work interpreter,
+-- which is why the events are supplied as a function of it.
 issueSession ::
-  ( SessionStore :> es,
-    RefreshTokenStore :> es,
+  ( AuthUnitOfWork :> es,
     TokenSigner :> es,
-    AuthEventPublisher :> es,
     TokenGen :> es
   ) =>
   ShomeiConfig ->
@@ -97,28 +98,26 @@ issueSession ::
   UTCTime ->
   Eff es (SessionId, TokenPair)
 issueSession cfg user ts = do
-  session <-
-    createSession
+  rawToken <- generateOpaqueToken
+  tokHash <- hashRefreshToken rawToken
+  (session, _token) <-
+    persistNewSession
       NewSession
         { userId = user.userId,
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
           actor = Nothing
         }
-  rawToken <- generateOpaqueToken
-  tokHash <- hashRefreshToken rawToken
-  _ <-
-    createRefreshToken
-      NewRefreshToken
-        { sessionId = session.sessionId,
-          tokenHash = tokHash,
-          parentTokenId = Nothing,
+      NewSessionToken
+        { tokenHash = tokHash,
           createdAt = ts,
           expiresAt = addUTCTime cfg.refreshTokenTTL ts
         }
+      \sid ->
+        [ Event.LoginSucceeded (Event.LoginSucceededData user.userId sid ts),
+          Event.SessionStarted (Event.SessionStartedData sid user.userId ts)
+        ]
   access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
-  publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData user.userId session.sessionId ts))
-  publishAuthEvent (Event.SessionStarted (Event.SessionStartedData session.sessionId user.userId ts))
   pure
     ( session.sessionId,
       TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}

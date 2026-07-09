@@ -61,6 +61,7 @@ library
     Shomei.Domain.VerificationToken
     Shomei.Effect.AuthEventPublisher
     Shomei.Effect.AuthEventReader
+    Shomei.Effect.AuthUnitOfWork
     Shomei.Effect.Clock
     Shomei.Effect.CredentialStore
     Shomei.Effect.InMemory
