@@ -7,6 +7,44 @@ tagged release.
 
 ## Unreleased
 
+### Added — MasterPlan 7 (Interop Wave), EP-1: persistent roles and claims enrichment
+
+- **Roles have a source of truth.** A `shomei_roles` registry (seeded with `admin`) and a
+  `shomei_role_grants` table, behind a new `RoleStore` port with PostgreSQL and in-memory
+  interpreters. Grants and revocations are audited (`role_granted` / `role_revoked`).
+- **The `roles` claim is finally populated.** Every user-session token mint — signup, login, MFA
+  completion, passwordless login, refresh — builds its claims through the new
+  `Shomei.Workflow.Session.buildEnrichedClaims`, which reads the subject's roles from the store.
+  A role change takes effect at the **next mint** (login or refresh), never on an outstanding
+  access token; revoke the user's sessions when you need it to bite immediately.
+- **A claims-enrichment hook for embedding hosts.** The new `ClaimsEnricher` effect lets a host
+  add roles, scopes, and custom claims at mint time, exactly as `Notifier` lets it deliver mail.
+  The delta is merged, never substituted: reserved claims (`sub`, `iss`, `roles`, …) cannot be
+  forged through it.
+- **`shomei-admin roles define | list-defined | grant | revoke | list`.** The bootstrap path for
+  the first administrator. Granting a role absent from the registry fails loudly rather than
+  minting a role nothing checks (`roles grant --role adminn` → exit 1).
+- **Default roles for new users.** `defaultRoles` in the Dhall config, or
+  `SHOMEI_DEFAULT_ROLES=member,beta-tester`. Applied inside the signup workflow before the first
+  token is minted, audited with no acting admin. The server refuses to start — and
+  `shomei-admin users create` refuses to run — when a configured role is not in the registry.
+
+### Fixed — MasterPlan 7 EP-1
+
+- **`RequireRole` / `RequireScope` now enforce.** They were phantom types with no `HasServer`
+  instance: a route type that carried one compiled and enforced *nothing*, so a route author who
+  wrote the type but forgot the in-handler guard shipped a silently unprotected route. They are
+  now real combinators that authenticate the caller and reject a principal lacking the role or
+  scope with `403`, with no handler code at all. They **replace** `Authenticated` on a route
+  rather than accompanying it.
+- **`GET /admin/audit/events` is reachable.** It was gated on an `admin` role that no production
+  flow could mint — the endpoint was unsatisfiable outside of tests. It now carries
+  `RequireRole "admin"`, and `shomei-admin roles grant` mints the role. The OpenAPI document is
+  unchanged: the route was, and remains, documented as bearer-secured.
+- **`shomei-admin users create` honors `SHOMEI_DEFAULT_ROLES`.** Its config loader built a
+  `defaultShomeiConfig` directly and ignored the variable, so a CLI-created user silently
+  differed from an API-created one.
+
 ### Added — MasterPlan 2 (Production Hardening, Account Lifecycle, and Adoption)
 
 - **Account lifecycle (EP-1):** email verification and password reset/change behind a pluggable

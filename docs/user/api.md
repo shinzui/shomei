@@ -179,7 +179,10 @@ all optional: `user` (UUID), `session` (UUID), `type` (repeatable — `?type=log
 1000), and `before` (an opaque cursor from a previous page's `nextCursor`). → `200`
 `{"events":[{"eventId","eventType","userId","sessionId","createdAt","payload"},…],"nextCursor":"…|null"}`;
 page by passing `nextCursor` back as `?before=`. → `400` on a malformed UUID/timestamp/cursor.
-Gated by `requireRole (Role "admin")`: → `403` for a non-admin token, `401` with no token.
+Gated by the `RequireRole "admin"` route combinator: → `401` with no token, `403` for a token
+whose principal lacks the role. Grant it with `shomei-admin roles grant --user <id> --role admin`
+(see [security.md](security.md#granting-roles)); the role reaches the token at the next login or
+refresh, not on one already issued.
 
 > **Admin-role limitation.** Signup/login do not issue roles, so no production flow yields an
 > admin token yet; this endpoint is exercised by tests and out-of-band-minted tokens. The

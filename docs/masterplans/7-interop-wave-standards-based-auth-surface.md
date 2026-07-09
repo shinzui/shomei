@@ -101,7 +101,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | In Progress |
+| 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | Complete |
 | 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Not Started |
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Not Started |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Not Started |
@@ -319,6 +319,22 @@ field to `ShomeiConfig` therefore cannot break an existing deployment's config f
 (service-account config migration) and **EP-8** (SMTP/webhook notifier config) can add
 `ShomeiConfig` fields freely; they only need a matching optional `FileConfig` field and env
 override.
+
+**2026-07-09 (EP-1) — `shomei-admin` has its OWN config loader, and it is partial.**
+`Shomei.Admin.Env.loadAdminEnv` does not call `loadConfigFromEnv`; it builds a `ShomeiConfig` from
+`defaultShomeiConfig` plus a few `SHOMEI_*` reads. EP-1 shipped `defaultRoles` and every unit test
+passed while `shomei-admin users create` silently ignored it — caught only by the live transcript.
+**Any plan adding a `ShomeiConfig` field that a `shomei-admin` subcommand depends on must add it
+to `loadAdminEnv` too, and must supply whatever validation the server performs at boot** (the CLI
+has no boot). **EP-4** (service accounts, `service-accounts create/rotate/revoke`), **EP-8**
+(notifier config), and **EP-9** (grant-expiry flags) are all exposed to this. Driving the same
+workflow does not mean loading the same configuration; an end-to-end run is what closes the gap.
+
+**2026-07-09 (EP-1) — `shomei-server-test`'s `SupervisorSpec` is flaky under `cabal test all`.**
+Two timing-based tests ("a crashing cycle is retried", "backoff resets after a clean cycle")
+intermittently fail when suites run concurrently. Verified pre-existing at commit `9b46c5b`, and
+they pass 8/8 in isolation. Do not mistake this for your plan's breakage; run the suite alone to
+confirm.
 
 
 ## Decision Log

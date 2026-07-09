@@ -155,12 +155,16 @@ Milestone 4 — Enforcing combinators: **done 2026-07-09**
 - [x] Prove the test is not vacuous: temporarily replacing `RequireRole "admin"` with `Authenticated` in the test API makes the non-admin request return **200 instead of 403**, i.e. the suite genuinely detects an unprotected route. Reverted.
 - [x] `cabal test all` green (11 suites).
 
-Milestone 5 — Live proof and docs:
+Milestone 5 — Live proof and docs: **done 2026-07-09**
 
-- [ ] Live transcript: CLI grant → login → `curl /admin/audit/events` 200 → revoke + refresh → 403; plus the typo-grant refusal (recorded below).
-- [ ] Rewrite the "Known limitation — the `admin` role" section of `docs/user/security.md`; document staleness semantics, the role registry, default roles, and the enrichment hook; update `docs/user/api.md`; CHANGELOG entry.
-- [ ] The rewritten `docs/user/security.md` section states the **two-tier authorization story**: built-in flat roles as the self-contained/bootstrap/coarse tier, en (`docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`) as the recommended tier for fine-grained/relationship-based authorization with live revocation.
-- [ ] Update MasterPlan 7 registry/progress for EP-1.
+- [x] Live transcript against a real server + real PostgreSQL: CLI grant → login → `curl /admin/audit/events` 200 → revoke + refresh → 403; plus the typo-grant refusal, the unknown-user refusal, idempotent re-grant/re-revoke, the staleness demonstration, `defaultRoles` on a first token, and the boot refusal. Recorded verbatim in Validation and Acceptance below.
+- [x] **Bug found and fixed by the transcript:** `shomei-admin users create` ignored `SHOMEI_DEFAULT_ROLES` (see Surprises), contradicting this plan's own Decision Log. `Shomei.Server.Config.defaultRolesFromEnv` is now exported and used by `Shomei.Admin.Env.loadAdminEnv`, and `createUserAction` validates the roles against the registry before writing anything (the CLI has no boot at which to validate). Two regression tests added.
+- [x] Rewrite `docs/user/security.md`: the "Known limitation — the `admin` role" paragraph is replaced by a "Roles and authorization" section covering the two-tier story, the role registry, granting/bootstrap, default roles, the enforcing combinators, staleness semantics, and the `ClaimsEnricher` hook (with the no-live-decision-mirroring warning).
+- [x] The section states the **two-tier authorization story** and points at plan 47 (en, tier 2) and plan 46 (tier-1 growth), noting the built-in tier is never deprecated in favor of en.
+- [x] Update `docs/user/api.md`'s audit-endpoint paragraph (`RequireRole "admin"`, 401 vs 403, how to grant the role, staleness).
+- [x] Correct the `Justfile`: `new-migration`'s slug is positional (the `name=` form in its own comment never worked), and adding a `.sql` file requires editing `Shomei.Migrations` — not touching the `.cabal`.
+- [x] CHANGELOG entry under Unreleased (Added + Fixed).
+- [x] Update MasterPlan 7 registry/progress/discoveries for EP-1.
 
 
 ## Surprises & Discoveries
@@ -219,6 +223,39 @@ never at verification) and is a single indexed lookup on `shomei_role_grants`'s 
 prefix; both constants and their explanatory haddocks were updated rather than the design.
 **Any later plan that adds a store read to a mint path will trip these tests** — that is what
 they are for.
+
+**2026-07-09 — `shomei-admin users create` silently ignored `SHOMEI_DEFAULT_ROLES`.** Found only
+by running the live transcript; every unit test passed. `Shomei.Admin.Env.loadAdminEnv` does not
+call the server's `loadConfigFromEnv` — it builds its own `ShomeiConfig` from
+`defaultShomeiConfig` plus a handful of `SHOMEI_*` reads. So `cfg.defaultRoles` was always empty
+for the CLI, and a CLI-created user got no default roles, directly contradicting this plan's
+Decision Log ("`shomei-admin users create` drives the same `signup` workflow, so CLI-created
+users receive default roles too — no special-casing"). Driving the same *workflow* is not enough
+when the two entry points load *different config*.
+
+Fixed by exporting `Shomei.Server.Config.defaultRolesFromEnv` and reading it in `loadAdminEnv`.
+Because the CLI has no boot at which to validate, `createUserAction` now also calls
+`undefinedDefaultRoles` before doing any work — otherwise a typo in the variable surfaces as a
+raw foreign-key violation *after* the user row is written. Two regression tests
+(`testUserCreateAppliesDefaultRoles`, `testUserCreateRefusesUndefinedDefaultRoles`) pin both.
+
+**The general lesson for MasterPlan 7:** `loadAdminEnv` is a second, partial config loader. Any
+plan adding a `ShomeiConfig` field that a `shomei-admin` subcommand depends on must add it there
+too, and must supply the validation the server does at boot.
+
+**2026-07-09 — `POST /auth/signup` requires `displayName` to be present and non-null.** Not an
+EP-1 change, but it cost time while writing the transcript: `{"email":…,"password":…}` returns
+`400 key "displayName" not found`, and `"displayName":null` returns
+`400 parsing Text failed, expected String, but encountered Null`. The plan's own transcript for
+`/auth/login` (which does accept just email+password) does not generalize to signup. Worth a
+DTO fix in a later plan; recorded here so the next author does not rediscover it.
+
+**2026-07-09 — `shomei-server/test`'s `SupervisorSpec` is flaky under parallel test load.**
+`cabal test all` runs suites concurrently and two timing-based supervisor tests ("a crashing
+cycle is retried", "backoff resets after a clean cycle") intermittently see one loop iteration
+instead of several. Verified **pre-existing**: the same two tests fail under `cabal test all` at
+commit `9b46c5b`, before any EP-1 change, and pass 8/8 in isolation on both revisions. Not
+addressed here; noted so it is not mistaken for EP-1 breakage.
 
 **2026-07-09 — `Shomei.Prelude` re-exports `Control.Lens`, which collides with Servant twice.**
 `Authz.hs` needs `import Shomei.Prelude hiding (Context)` (lens's
@@ -483,10 +520,55 @@ Record every decision made while working on the plan.
 
 ## Outcomes & Retrospective
 
-Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
-Compare the result against the original purpose.
+**Completed 2026-07-09.** All five milestones landed; `cabal build all` and `cabal test all` are
+green (one pre-existing, unrelated `SupervisorSpec` flake under parallel test load — see
+Surprises). Every acceptance criterion in Validation and Acceptance was demonstrated against a
+real server and a real PostgreSQL, not only in tests.
 
-(To be filled during and after implementation.)
+Measured against the Purpose, all seven promises hold:
+
+1. **Persistent source of truth** — `shomei_roles` + `shomei_role_grants`, a `RoleStore` port
+   with PostgreSQL and in-memory interpreters, exercised by three postgres integration tests.
+2. **Declared catalog** — the registry, seeded with `admin`, with an FK from the grant table.
+   `roles grant --role adminn` now exits 1 instead of silently minting a dead role.
+3. **Claims populated at every mint** — `buildEnrichedClaims` is the one construction point for
+   signup, login, MFA completion, passwordless login, and refresh.
+4. **Default roles** — config field, Dhall + env, applied inside `signup` before the first mint,
+   boot-validated.
+5. **Bootstrap from the box** — `shomei-admin roles define|list-defined|grant|revoke|list`.
+6. **Enforcing combinators** — `RequireRole`/`RequireScope` have real `HasServer` instances; the
+   audit route is the first user and its handler guard is gone.
+7. **Audited** — `role_granted`/`role_revoked`, published only on real state changes.
+
+The headline result: `GET /admin/audit/events` was gated on a role no production flow could
+mint. `docs/user/security.md` said so out loud. That paragraph is now a section describing how to
+grant the role, and the live transcript shows the endpoint returning 200.
+
+**What the plan got wrong.** Three of its own claims were false and were corrected in place:
+`just new-migration name=<slug>` never worked; touching the `.cabal` has not forced the migration
+re-embed since cabal moved to content-hash change detection; and `signup` did not already carry
+the `AuthEventPublisher` constraint that `applyDefaultRoles` needs. A fourth, more interesting
+one — "`shomei-admin users create` drives the same `signup` workflow, so CLI-created users receive
+default roles too — no special-casing" — was true about the *workflow* and false about the
+*config*, because `loadAdminEnv` is a second, partial loader. Only the live transcript caught it;
+every unit test passed. That is the retrospective's real lesson: **driving the same workflow does
+not mean loading the same configuration**, and an end-to-end run is what closes that gap.
+
+**Cost.** One database round-trip per token mint (login 7 → 8, refresh 3 → 4), pinned by the
+budget guard tests with the reason written into their haddocks. That is the price of a populated
+`roles` claim, and it buys never re-reading roles at verification time.
+
+**What is deliberately not here.** Scopes get no persistence (they remain per-request, minted by
+the service-token flow and the enrichment hook). The `ServiceToken` and `Impersonation` workflows
+were left untouched — EP-4 and EP-6 replace them. The registry is append-only: no `roles undefine`
+until a consumer needs one. Nothing resource-scoped, relationship-derived, or live-revocable: that
+boundary is en's, and `docs/user/security.md` now says where it lies.
+
+**Handoff.** `buildEnrichedClaims` is the claims-construction integration point EP-5 and EP-6 must
+call. `RequireRole`'s "replaces `Authenticated`, does not accompany it" rule and the
+three-instances-per-combinator cost apply to every later plan that adds routes. Both are recorded
+in MasterPlan 7's Surprises & Discoveries, alongside the migration re-embed trap that EP-4, EP-7,
+and EP-9 will each hit.
 
 
 ## Context and Orientation
@@ -1352,8 +1434,115 @@ docs(user): replace the admin-role known-limitation with the granting path (EP-1
 
 ## Validation and Acceptance
 
-Beyond the suites above, the end-to-end proof (Milestone 5). Start the dev stack (server on
-:8080; `process-compose` or `cabal run shomei-server` with the dev env), then:
+### The recorded run (2026-07-09)
+
+Actual output, `nix develop` + the dev PostgreSQL, server on `:8099` (`:8080` was occupied).
+Two invocation details differ from the idealized transcript below and are corrected here:
+`cabal run shomei-server:exe:shomei-server` (the package has two executables, so the bare name is
+ambiguous), and `shomei-admin` reads `DATABASE_URL` rather than `PG_CONNECTION_STRING`.
+
+```bash
+$ cabal run -v0 shomei-admin -- users create --email root@example.com --password 'Str0ng-Pass-123!'
+created user user_01kx4byd60ejhtbc2y8cpw7c2x <root@example.com>
+```
+
+Before any grant: the token is valid, `roles` is empty, and `/admin` is closed. Note the 401 vs
+403 split — the combinator authenticates first, then authorizes.
+
+```text
+roles claim: []
+GET /admin/audit/events with token -> 403
+GET /admin/audit/events no token   -> 401
+403 body: {"error":"missing_role","message":"missing required role"}
+```
+
+The registry refuses a typo'd role and an unknown user; a real grant succeeds and is idempotent:
+
+```text
+$ shomei-admin roles grant --user user_01kx4byd… --role adminn
+shomei-admin: role not defined: adminn (define it first: shomei-admin roles define adminn)
+exit=1
+
+$ shomei-admin roles list-defined
+admin — Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes
+
+$ shomei-admin roles grant --user user_01kx4byd… --role admin
+granted admin to user_01kx4byd60ejhtbc2y8cpw7c2x           exit=0
+$ shomei-admin roles grant --user user_01kx4byd… --role admin
+user already had role admin                                exit=0
+
+$ shomei-admin roles grant --user 11111111-1111-1111-1111-111111111111 --role admin
+shomei-admin: user not found
+exit=1
+```
+
+Log in again (a fresh mint) and the previously unsatisfiable endpoint answers:
+
+```text
+roles claim: ["admin"]
+GET /admin/audit/events -> 200
+newest event types: session_started, login_succeeded, role_granted, login_succeeded, session_started
+
+$ shomei-admin audit events --type role_granted
+2026-07-09T21:18:48.319391Z  role_granted  019f48bf-34c0-74a3-a5b0-5e432dc3b05d  -  297fd9d5-…
+```
+
+Revoke. The **outstanding** access token still works — a JWT is self-contained — while the token
+minted by `POST /auth/refresh` has no role. This is the staleness contract, demonstrated:
+
+```text
+$ shomei-admin roles revoke --user user_01kx4byd… --role admin
+revoked admin from user_01kx4byd60ejhtbc2y8cpw7c2x         exit=0
+$ shomei-admin roles revoke --user user_01kx4byd… --role admin
+no such grant                                              exit=0
+
+GET /admin/audit/events with the pre-revoke token -> 200
+refresh → roles claim: []
+GET /admin/audit/events with the refreshed token  -> 403
+
+$ shomei-admin audit events --type role_revoked
+2026-07-09T21:19:12.17047Z  role_revoked  019f48bf-34c0-74a3-a5b0-5e432dc3b05d  -  3561e302-…
+```
+
+Default roles. The server refuses to boot on a name absent from the registry; once defined, a
+fresh signup's **first** access token already carries it, granted with no acting admin:
+
+```text
+$ SHOMEI_DEFAULT_ROLES=nosuchrole cabal run -v0 shomei-server:exe:shomei-server
+shomei-server: defaultRoles names undefined roles: nosuchrole
+define them first: shomei-admin roles define nosuchrole
+
+$ shomei-admin roles define member --description "an ordinary user"
+defined role member
+# restart with SHOMEI_DEFAULT_ROLES=member, then POST /auth/signup:
+roles claim on the FIRST token: ["member"]
+
+# grants + audit
+newbie@example.com -> member  granted_by_null=true
+role_granted role=member grantedBy=null
+```
+
+And the CLI path, after the fix in Surprises (this is what exposed the bug):
+
+```text
+$ SHOMEI_DEFAULT_ROLES=member shomei-admin users create --email cli4@example.com --password …
+created user user_01kx4c61nke90b6at33f6wxf93 <cli4@example.com>
+$ shomei-admin roles list --user user_01kx4c61…
+member
+
+$ shomei-admin users create --email cli5@example.com --password …    # no env var
+$ shomei-admin roles list --user user_01kx4c62…                      # (no output: no roles)
+
+$ SHOMEI_DEFAULT_ROLES=nosuchrole shomei-admin users create --email cli6@example.com --password …
+shomei-admin: SHOMEI_DEFAULT_ROLES names undefined roles: nosuchrole (define them first: shomei-admin roles define <name>)
+exit=1
+# and no user row was written:
+cli6 rows: 0
+```
+
+### The idealized transcript
+
+Start the dev stack (server on :8080; `process-compose` or `cabal run shomei-server` with the dev env), then:
 
 ```bash
 # 1. create a user and capture their id

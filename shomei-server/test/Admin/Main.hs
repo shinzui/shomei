@@ -42,7 +42,7 @@ import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepRepor
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginId (loginIdFromEmail)
@@ -141,7 +141,9 @@ main =
           testSweepCommand,
           testRolesLifecycle,
           testRolesGrantOfUndefinedRoleFails,
-          testRolesGrantToUnknownUserFails
+          testRolesGrantToUnknownUserFails,
+          testUserCreateAppliesDefaultRoles,
+          testUserCreateRefusesUndefinedDefaultRoles
         ]
     )
 
@@ -471,6 +473,48 @@ testRolesLifecycle =
     revokeEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_revoked'"
     grantEvents @?= 1
     revokeEvents @?= 1
+
+-- | @users create@ drives the same 'Shomei.Workflow.signup' the HTTP route does, so a
+-- CLI-created user must receive the configured default roles — audited, with no acting admin.
+-- (Regression: 'Shomei.Admin.Env.loadAdminEnv' builds its own 'ShomeiConfig' rather than running
+-- the server's loader, so it once ignored @SHOMEI_DEFAULT_ROLES@ entirely.)
+testUserCreateAppliesDefaultRoles :: TestTree
+testUserCreateAppliesDefaultRoles =
+  testCase "users create applies config.defaultRoles, audited with no actor" $ withDb \pool connStr -> do
+    let cfgWithDefaults = cfg {defaultRoles = Set.singleton (Role "member")}
+        env = AdminEnv {config = cfgWithDefaults, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+        registryEnv = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    runRoles registryEnv (RolesDefine "member" Nothing)
+    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    granted <-
+      scalarInt
+        pool
+        """
+        SELECT count(*) FROM shomei.shomei_role_grants g
+        JOIN shomei.shomei_users u USING (user_id)
+        WHERE u.email = 'alice@example.com' AND g.role = 'member' AND g.granted_by IS NULL
+        """
+    granted @?= 1
+    events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_granted'"
+    events @?= 1
+
+-- | The CLI has no boot-time validation, so it checks the registry itself: a default role that
+-- was never defined aborts before any row is written, rather than surfacing a raw FK violation.
+testUserCreateRefusesUndefinedDefaultRoles :: TestTree
+testUserCreateRefusesUndefinedDefaultRoles =
+  testCase "users create refuses an undefined default role and writes nothing" $ withDb \pool connStr -> do
+    let env =
+          AdminEnv
+            { config = cfg {defaultRoles = Set.singleton (Role "nosuchrole")},
+              pool = pool,
+              connStr = connStr,
+              argon2 = testArgon2Params
+            }
+    expectExitFailure
+      "users create with an undefined default role"
+      (createUserAction env "alice@example.com" "correct horse battery staple" Nothing)
+    users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users"
+    users @?= 0
 
 -- | The typo guard: @roles grant --role adminn@ must fail loudly rather than mint a role no
 -- gate will ever check. This is the failure mode the role registry exists to close.

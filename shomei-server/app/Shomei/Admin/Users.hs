@@ -6,6 +6,7 @@ module Shomei.Admin.Users
   )
 where
 
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Effectful (Eff, IOE, runEff)
@@ -14,6 +15,8 @@ import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Crypto (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
+import Shomei.Config (ShomeiConfig (..))
+import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
@@ -40,12 +43,17 @@ import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Workflow (signup)
+import Shomei.Workflow.Roles (undefinedDefaultRoles)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 createUserAction :: AdminEnv -> Text -> Text -> Maybe Text -> IO ()
 createUserAction env emailArg pwArg mDisplay = do
   email <- either (\e -> die ("invalid email: " <> show e)) pure (mkEmail emailArg)
+  -- The server validates 'defaultRoles' against the registry at boot; the CLI has no boot, so it
+  -- checks here. Without this, a typo in SHOMEI_DEFAULT_ROLES surfaces as a raw foreign-key
+  -- violation from deep inside 'signup', after the user row has already been written.
+  checkDefaultRoles env
   let cmd =
         SignupCommand
           { loginId = loginIdFromEmail email,
@@ -105,6 +113,29 @@ runSignup pool limiter argon2 =
     . runCredentialStorePostgres
     . runRoleStorePostgres
     . runUserStorePostgres
+
+-- | Refuse to create a user when @SHOMEI_DEFAULT_ROLES@ names a role missing from the registry,
+-- with the same message the server prints at boot.
+checkDefaultRoles :: AdminEnv -> IO ()
+checkDefaultRoles env
+  | Set.null env.config.defaultRoles = pure ()
+  | otherwise = do
+      outcome <-
+        runEff
+          . runErrorNoCallStack @AuthError
+          . runDatabasePool env.pool
+          . runRoleStorePostgres
+          $ undefinedDefaultRoles env.config
+      case outcome of
+        Left e -> die ("could not validate defaultRoles: " <> show e)
+        Right missing
+          | Set.null missing -> pure ()
+          | otherwise ->
+              die
+                ( "SHOMEI_DEFAULT_ROLES names undefined roles: "
+                    <> Text.unpack (Text.intercalate ", " [r | Role r <- Set.toList missing])
+                    <> " (define them first: shomei-admin roles define <name>)"
+                )
 
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFake = interpret_ \case

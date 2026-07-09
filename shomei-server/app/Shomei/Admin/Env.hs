@@ -1,22 +1,30 @@
 -- | The minimal environment-variable configuration/assembly for @shomei-admin@ (EP-4).
 --
 -- A single stable entry point ('loadAdminEnv') that reads @DATABASE_URL@ (required),
--- @SHOMEI_ISSUER@/@SHOMEI_AUDIENCE@ (optional, defaulted), builds a 'ShomeiConfig' with
--- 'defaultShomeiConfig', and acquires a @hasql@ pool. EP-5's typed Dhall/env loader (IP-6) is
--- expected to supersede the body of this function without changing its name or type.
+-- @SHOMEI_ISSUER@/@SHOMEI_AUDIENCE@/@SHOMEI_DEFAULT_ROLES@ (optional, defaulted), builds a
+-- 'ShomeiConfig' with 'defaultShomeiConfig', and acquires a @hasql@ pool. EP-5's typed Dhall/env
+-- loader (IP-6) is expected to supersede the body of this function without changing its name or
+-- type.
+--
+-- Note that this is deliberately NOT the server's full loader: the CLI has no Dhall file and no
+-- listen port. But every field @shomei-admin@'s commands actually /use/ must be read here, or
+-- the CLI silently behaves differently from the running server. @defaultRoles@ is one such
+-- field: @users create@ drives the same @Shomei.Workflow.signup@ the HTTP route does.
 module Shomei.Admin.Env
   ( AdminEnv (..),
     loadAdminEnv,
   )
 where
 
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Hasql.Pool (Pool)
-import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Server.Config (defaultRolesFromEnv)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 
@@ -35,7 +43,9 @@ loadAdminEnv = do
   cs <- requireEnv "DATABASE_URL"
   iss <- envOr "SHOMEI_ISSUER" "shomei"
   aud <- envOr "SHOMEI_AUDIENCE" "shomei-clients"
-  let cfg = defaultShomeiConfig (Issuer iss) (Audience aud)
+  roles <- defaultRolesFromEnv
+  let base = defaultShomeiConfig (Issuer iss) (Audience aud)
+      cfg = base {defaultRoles = fromMaybe base.defaultRoles roles}
   params <- argon2FromEnv
   p <- acquirePool 4 10 cs
   pure AdminEnv {config = cfg, pool = p, connStr = cs, argon2 = params}

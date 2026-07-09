@@ -340,6 +340,143 @@ flow. There is deliberately no Dhall-file key for it: enabling it must be an exp
 per-process decision, not a line that lingers unnoticed in a committed config file. Anyone who
 can read the log of a server running with it can take over any account mid-reset.
 
+## Roles and authorization
+
+Shōmei has a **two-tier authorization story**, and it matters which tier you are in.
+
+**Tier 1 — Shōmei's built-in roles.** Flat, `(user, role)` grants stored in Shōmei's own
+database and copied into the `roles` claim of every access token it mints. They need no extra
+infrastructure, they are what gates Shōmei's own `/admin` surface, and they are the right tool
+for coarse questions: *is this principal an administrator? a support agent? a paying member?*
+
+**Tier 2 — fine-grained authorization.** Questions of the form *is this user an editor **of
+this project**?* — resource-scoped permissions, access derived from relationships, revocation
+that takes effect immediately, conditional access. Shōmei deliberately does **not** grow into
+this, because a JWT claim is the wrong transport for it (see [Staleness](#staleness-role-changes-apply-at-the-next-mint)).
+The recommended graduation path is **en**, the sibling Zanzibar-style ReBAC toolkit. Its
+integration guide will live at `docs/user/authorization.md`; until it lands, the design is in
+[plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
+
+Within tier 1, permission indirection (so services never hard-code role names) and time-bound
+grants are planned in
+[plan 46](../plans/46-role-definitions-permissions-and-time-bound-grants.md). The built-in tier
+grows; it is not deprecated in favor of en.
+
+The two tiers compose rather than compete. Even a deployment that adopts en keeps Shōmei's flat
+roles: en's server authenticates its callers by verifying Shōmei JWTs, so *something* outside en
+has to say who the administrator is. Shōmei's built-in tier is that something, and it is never
+removed in favor of en.
+
+### The role registry
+
+A role must be **declared** before it can be granted. The registry is the `shomei_roles` table,
+seeded with `admin` when you migrate:
+
+```text
+$ shomei-admin roles list-defined
+admin — Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes
+
+$ shomei-admin roles define auditor --description "read the audit trail"
+defined role auditor
+```
+
+This exists to close a silent failure mode. Without a catalog, `roles grant --role adminn` (a
+typo) would succeed and mint a role nothing ever checks — the request looks like it worked, and
+the account quietly has no access. With one, it fails loudly:
+
+```text
+$ shomei-admin roles grant --user user_01ABC… --role adminn
+shomei-admin: role not defined: adminn (define it first: shomei-admin roles define adminn)
+$ echo $?
+1
+```
+
+A foreign key from `shomei_role_grants.role` into the registry enforces the same invariant for
+any code that bypasses the workflow. The registry is append-only: there is no `roles undefine`.
+
+### Granting roles
+
+```text
+$ shomei-admin roles grant  --user user_01ABC… --role admin     # or a bare UUID
+granted admin to user_01ABC…
+$ shomei-admin roles list   --user user_01ABC…
+admin
+$ shomei-admin roles revoke --user user_01ABC… --role admin
+revoked admin from user_01ABC…
+```
+
+This is the **bootstrap path for your first administrator**: `/admin` is gated on the `admin`
+role, so the first grant has to come from outside HTTP. Grants and revocations are audited as
+`role_granted` / `role_revoked`; a CLI grant records no acting admin (there is no authenticated
+principal on the box), while an HTTP grant records the admin who performed it. Both `grant` and
+`revoke` are idempotent, and only a real state change publishes an audit event.
+
+### Default roles for new users
+
+Set `defaultRoles` in the Dhall config (or `SHOMEI_DEFAULT_ROLES=member,beta-tester`) and every
+new user receives them at signup — applied *inside* the signup workflow, before the first token
+is minted, so that token already carries them. `shomei-admin users create` drives the same
+workflow and behaves identically.
+
+Every name must already be in the registry. The server **refuses to start** otherwise, rather
+than failing at each signup:
+
+```text
+shomei-server: defaultRoles names undefined roles: nosuchrole
+define them first: shomei-admin roles define nosuchrole
+```
+
+### Enforcing a role or scope on a route
+
+`RequireRole` and `RequireScope` are Servant combinators that authenticate the caller and check
+the claim before the handler runs:
+
+```haskell
+type AdminAPI = RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [User]
+```
+
+No token → `401`. Token without the role → `403`. The handler receives the `AuthUser` and needs
+no authorization code of its own — which is the point: a guard you can forget to call is a
+route that silently ships unprotected.
+
+`RequireRole` **replaces** `Authenticated`; do not write both. For a condition a single symbol
+cannot express (role `admin` *or* scope `shomei:admin`), the handler guards `requireRole` and
+`requireScope` remain available.
+
+### Staleness: role changes apply at the next mint
+
+An access token is self-contained. Shōmei does **not** re-read the role store when it verifies
+one, which is exactly why verification needs no database round-trip. So:
+
+> **A granted or revoked role takes effect on the next token mint — the next login or refresh —
+> never on an access token that has already been issued.**
+
+The access-token TTL (15 minutes by default) bounds the window. If you have just revoked a role
+from a compromised account and cannot wait, **revoke its sessions**: that kills the refresh path
+so no further tokens can be minted, and the outstanding access token expires on its own.
+
+This is also the reason not to mirror a live authorization decision into a claim: a copied
+decision is stale the moment the underlying fact changes, silently granting revoked access until
+the token expires. Check fine-grained permissions live, in the handler.
+
+### The claims-enrichment hook (embedding hosts)
+
+Hosts that embed Shōmei can add claims to every user-session token through the `ClaimsEnricher`
+effect, the same way they supply a `Notifier`:
+
+```haskell
+runClaimsEnricherPure \userId rolesFromStore ->
+  emptyClaimsDelta { extraClaims = KeyMap.fromList [("tenant", toJSON tenantId)] }
+```
+
+The hook returns a *delta* — extra roles, extra scopes, an extra-claims object — which Shōmei
+merges into the standard claims. It cannot rewrite them: the object is filtered through
+`mkExtraClaims`, so `iss`, `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, and `act` can
+never be forged through it. The standalone server uses `runClaimsEnricherNull` and adds nothing.
+
+Use it for coarse, slow-moving facts: tenant ids, plan tiers, extra scopes. **Do not** use it to
+mirror per-resource permissions from a live authorization system — see the staleness note above.
+
 ## Reading the audit trail (EP-7)
 
 Every security-significant action is written as one row in the append-only
@@ -373,16 +510,9 @@ pull in opposite directions, and only you can resolve that. See
 - **HTTP — `GET /admin/audit/events`.** The same filters as query parameters
   (`?user=&session=&type=&type=&since=&until=&limit=&before=`), returning
   `{ "events": [ … ], "nextCursor": … }`; pass `nextCursor` back as `?before=` to page. The
-  endpoint is gated by `requireRole (Role "admin")`: a non-admin token gets `403`, no token
-  `401`.
-
-**Known limitation — the `admin` role.** Shōmei's signup/login workflows do **not** issue roles
-in tokens, so there is currently no production flow that mints an `admin`-roled token. The HTTP
-endpoint is therefore exercised today only by tests (and by deployments that mint admin tokens
-out of band); the **CLI is the working operator retrieval path**. The endpoint is gated
-correctly now so it is safe and immediately usable the moment a role-granting mechanism exists —
-a natural follow-up (e.g. a `shomei-admin users grant-role` command and a claim source), not
-implemented here.
+  route type carries `RequireRole "admin"`, so a request with no token gets `401` and one whose
+  token lacks the role gets `403` — before the handler runs. Grant the role with
+  [`shomei-admin roles grant`](#granting-roles).
 
 ### Operator runbook: investigate a suspected brute-force attempt
 

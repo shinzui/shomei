@@ -18,6 +18,7 @@ module Shomei.Server.Config
     toSweepConfig,
     loadConfig,
     loadConfigFromEnv,
+    defaultRolesFromEnv,
     FileConfig (..),
   )
 where
@@ -529,7 +530,7 @@ overlayCoreFromEnv base = do
   cookieSecure' <- boolEnv "SHOMEI_COOKIE_SECURE"
   cookieSameSite' <- sameSiteEnv
   csrfOrigins <- csrfOriginsEnv
-  defaultRoles' <- defaultRolesEnv
+  defaultRoles' <- defaultRolesFromEnv
   pure
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
@@ -838,10 +839,16 @@ csrfOriginsEnv = do
     Just v | not (null v) -> Just (filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v))))
     _ -> Nothing
 
--- | A comma-separated role list, e.g. @member,beta-tester@, granted to every new user at
--- signup. The names are validated against the @shomei_roles@ registry at boot, not here.
-defaultRolesEnv :: IO (Maybe (Set Role))
-defaultRolesEnv = do
+-- | Read @SHOMEI_DEFAULT_ROLES@: a comma-separated role list, e.g. @member,beta-tester@, granted
+-- to every new user at signup. 'Nothing' when unset or empty. The names are validated against
+-- the @shomei_roles@ registry at boot (see @Shomei.Server.Boot.validateDefaultRoles@), not here.
+--
+-- Exported because @shomei-admin@ assembles its own minimal 'ShomeiConfig' rather than running
+-- this whole loader, and @shomei-admin users create@ drives the same @signup@ workflow the HTTP
+-- route does — so it must see the same default roles, or a CLI-created user would silently
+-- differ from an API-created one.
+defaultRolesFromEnv :: IO (Maybe (Set Role))
+defaultRolesFromEnv = do
   m <- lookupEnv "SHOMEI_DEFAULT_ROLES"
   pure case m of
     Just v | not (null v) -> Just (roleSet (Text.splitOn "," (Text.pack v)))
