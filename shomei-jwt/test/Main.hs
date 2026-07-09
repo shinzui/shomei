@@ -2,6 +2,7 @@ module Main (main) where
 
 import Shomei.Jwt.InterpreterSpec qualified as InterpreterSpec
 import Shomei.Jwt.JwksSpec qualified as JwksSpec
+import Shomei.Jwt.KeyProtectionSpec qualified as KeyProtectionSpec
 import Shomei.Jwt.KeySpec qualified as KeySpec
 import Shomei.Jwt.RotationSpec qualified as RotationSpec
 import Shomei.Jwt.RsaCustomClaimSpec qualified as RsaCustomClaimSpec
@@ -14,6 +15,7 @@ main =
     testGroup
       "shomei-jwt"
       [ KeySpec.tests,
+        KeyProtectionSpec.tests,
         SignVerifySpec.tests,
         JwksSpec.tests,
         InterpreterSpec.tests,
