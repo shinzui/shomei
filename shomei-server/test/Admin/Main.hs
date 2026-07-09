@@ -40,6 +40,7 @@ import Shomei.Admin.Keys
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Crypto (Argon2Params (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
@@ -82,6 +83,11 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 cfg :: ShomeiConfig
 cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+
+-- | Cheap Argon2 parameters for tests. @users create@ hashes a real password, and the
+-- production cost (~100 ms) would dominate this suite. Strength is irrelevant here.
+testArgon2Params :: Argon2Params
+testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}
 
 withDb :: (Pool -> Text -> IO a) -> IO a
 withDb action = withShomeiMigratedDatabase \connStr -> do
@@ -340,7 +346,7 @@ testReloadKeepsLastGoodMaterial = testCase "a failed reload keeps the previous k
 -- explicitly passes @--auth-event-retention-days@.
 testSweepCommand :: TestTree
 testSweepCommand = testCase "sweep deletes dead rows; audit events need an explicit window" $ withDb \pool connStr -> do
-  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr}
+  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
   execSql
     pool
     """
@@ -393,7 +399,7 @@ testSweepCommand = testCase "sweep deletes dead rows; audit events need an expli
 
 testUserCreate :: TestTree
 testUserCreate = testCase "users create persists a user + credential whose hash verifies" $ withDb \pool connStr -> do
-  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr}
+  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
   createUserAction env "alice@example.com" "correct horse battery staple" (Just "Alice")
   users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email = 'alice@example.com'"
   creds <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_credentials"

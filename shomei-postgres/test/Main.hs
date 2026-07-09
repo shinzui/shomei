@@ -11,6 +11,7 @@ import Data.Int (Int64)
 import Data.List (sort)
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
@@ -22,7 +23,15 @@ import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
-import Shomei.Crypto (runPasswordHasherCrypto, runTokenGenCrypto)
+import Shomei.Crypto
+  ( Argon2Params (..),
+    defaultArgon2Params,
+    dummyHashFor,
+    hashPasswordArgon2id,
+    runPasswordHasherCrypto,
+    runTokenGenCrypto,
+    verifyPasswordArgon2id,
+  )
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -43,7 +52,7 @@ import Shomei.Domain.Passkey
     UserHandle (..),
     WebAuthnCredentialId (..),
   )
-import Shomei.Domain.Password (PlainPassword (..))
+import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
 import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
@@ -145,7 +154,7 @@ import Shomei.Workflow.Account
     requestPasswordReset,
   )
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | The full interpreter stack used by every test. The store interpreters are peeled
 -- first (Database/IOE/Error remain available to them); @TokenSigner@ is a trivial fake
@@ -189,7 +198,7 @@ runAppWithNotifications ref pool action = do
       . runDatabasePool pool
       . runClockIO
       . runTokenGenCrypto
-      . runPasswordHasherCrypto
+      . runPasswordHasherCrypto defaultArgon2Params
       . runPasswordBreachCheckerFake wref
       . runTokenSignerFake
       . runSigningKeyStorePostgres
@@ -221,7 +230,7 @@ runAppAtTime t pool action = do
       . runDatabasePool pool
       . runClockFixed t
       . runTokenGenCrypto
-      . runPasswordHasherCrypto
+      . runPasswordHasherCrypto defaultArgon2Params
       . runPasswordBreachCheckerFake wref
       . runTokenSignerFake
       . runSigningKeyStorePostgres
@@ -364,6 +373,11 @@ tests =
     testPasskeyUpdateCountDelete,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
+    testArgon2NewHashesArePhcFormatted,
+    testArgon2LegacyFixtureStillVerifies,
+    testArgon2ParamsChangeLeavesOldHashesVerifiable,
+    testArgon2MalformedHashesVerifyFalse,
+    testArgon2DummyHashTracksConfiguredParams,
     testSweepDeletesExpiredRows,
     testSweepIsIdempotent,
     testSweepAuthEventRetention,
@@ -978,6 +992,99 @@ testPendingCeremonyExpired = testCase "pending ceremony store: expired ceremony 
   taken @?= (Nothing :: Maybe PendingCeremony)
   remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies"
   remaining @?= 0
+
+-- Argon2 parameters ----------------------------------------------------------
+
+-- | A hash produced by the pre-plan code, whose format recorded no parameters.
+--
+-- Captured from the interpreter before the PHC format landed, of the password
+-- @"correct horse battery staple"@. It is the compatibility contract: if this test ever
+-- fails, every user hashed by an older Shōmei is locked out. Do not regenerate it.
+legacyFixtureHash :: PasswordHash
+legacyFixtureHash =
+  PasswordHash "argon2id$4gw0llx5tfM4Dfi23hUsTA==$8zWIeRIFVtmuSuMdAv4MW13Fsw1BCjfREVf4eaHwp+I="
+
+legacyFixturePassword :: Text
+legacyFixturePassword = "correct horse battery staple"
+
+-- | Cheap parameters, so the parameter tests do not each pay the ~100 ms production cost.
+cheapParams :: Argon2Params
+cheapParams = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}
+
+testArgon2NewHashesArePhcFormatted :: TestTree
+testArgon2NewHashesArePhcFormatted =
+  testCase "argon2: new hashes are PHC-formatted and verify" do
+    PasswordHash stored <- hashPasswordArgon2id defaultArgon2Params "hunter2"
+    assertBool
+      ("expected a PHC prefix carrying the default params, got " <> Text.unpack stored)
+      ("$argon2id$v=19$m=65536,t=3,p=1$" `Text.isPrefixOf` stored)
+    verifyPasswordArgon2id "hunter2" (PasswordHash stored) @?= True
+    verifyPasswordArgon2id "wrong" (PasswordHash stored) @?= False
+
+testArgon2LegacyFixtureStillVerifies :: TestTree
+testArgon2LegacyFixtureStillVerifies =
+  testCase "argon2: a legacy-format hash still verifies" do
+    verifyPasswordArgon2id legacyFixturePassword legacyFixtureHash @?= True
+    verifyPasswordArgon2id "wrong" legacyFixtureHash @?= False
+
+testArgon2ParamsChangeLeavesOldHashesVerifiable :: TestTree
+testArgon2ParamsChangeLeavesOldHashesVerifiable =
+  testCase "argon2: changing params leaves old hashes verifiable" do
+    -- A hash made with the defaults, and one made with different params, coexist.
+    defaultHash <- hashPasswordArgon2id defaultArgon2Params "hunter2"
+    cheapHash <- hashPasswordArgon2id cheapParams "hunter2"
+    assertBool "the two hashes differ" (defaultHash /= cheapHash)
+
+    -- Each verifies with the parameters IT carries, not with any ambient configuration.
+    verifyPasswordArgon2id "hunter2" defaultHash @?= True
+    verifyPasswordArgon2id "hunter2" cheapHash @?= True
+    -- ...and the legacy fixture still verifies alongside both.
+    verifyPasswordArgon2id legacyFixturePassword legacyFixtureHash @?= True
+
+testArgon2MalformedHashesVerifyFalse :: TestTree
+testArgon2MalformedHashesVerifyFalse =
+  testCase "argon2: malformed hashes verify False without crashing" do
+    let malformed =
+          [ "$argon2id$v=19$m=notanumber,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA==$AAAA",
+            "$argon2id$v=99$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA==$AAAA",
+            "$argon2id$v=19$m=65536,t=3$AAAAAAAAAAAAAAAAAAAAAA==$AAAA",
+            "$argon2id$v=19$m=0,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA==$AAAA",
+            "$argon2i$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA==$AAAA",
+            "not-a-hash",
+            ""
+          ]
+    forM_ malformed \h ->
+      assertBool
+        ("expected False for " <> Text.unpack h)
+        (not (verifyPasswordArgon2id "hunter2" (PasswordHash h)))
+
+-- | The login timing oracle, at the level where it is actually created.
+--
+-- A login that never reaches a stored hash burns 'dummyHashFor' instead. That must cost what
+-- verifying a real hash costs, or response time reveals whether an account exists. This is
+-- asserted structurally — same embedded parameters — rather than with a stopwatch, because
+-- equal parameters mean equal Argon2 work by construction, and a wall-clock assertion would
+-- be flaky. ('Shomei.Workflow.TimingSpec' asserts the complementary property: that every
+-- login path performs exactly one such operation.)
+testArgon2DummyHashTracksConfiguredParams :: TestTree
+testArgon2DummyHashTracksConfiguredParams =
+  testCase "argon2: the dummy hash carries the configured params, so a miss costs what a hit costs" do
+    forM_ [defaultArgon2Params, cheapParams, Argon2Params 19456 2 1] \params -> do
+      real <- hashPasswordArgon2id params "hunter2"
+      let dummy = dummyHashFor params
+      assertEqual
+        ("the dummy must derive with the same params as a real hash, for " <> show params)
+        (costFields real)
+        (costFields dummy)
+      -- It must be well-formed: a malformed dummy would return False WITHOUT hashing (~9 µs
+      -- versus ~100 ms), silently reopening the oracle it exists to close. Verifying against
+      -- it does full Argon2 work and then fails the comparison, which is exactly the point.
+      verifyPasswordArgon2id "hunter2" dummy @?= False
+  where
+    -- The version and parameter fields of a PHC string: everything that decides the cost.
+    costFields (PasswordHash t) = case Text.splitOn "$" t of
+      ("" : "argon2id" : version : params : _) -> Just (version, params)
+      _ -> Nothing
 
 -- Maintenance sweep ----------------------------------------------------------
 

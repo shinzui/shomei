@@ -22,6 +22,8 @@ module Shomei.Server.Config
   )
 where
 
+-- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Crypto".
+
 import Data.Aeson (eitherDecodeStrict')
 import Data.Char (isHexDigit)
 import Data.Foldable (traverse_)
@@ -47,6 +49,7 @@ import Shomei.Config
     WebAuthnConfig (..),
     defaultShomeiConfig,
   )
+import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (parseId)
@@ -70,7 +73,10 @@ data ServerSettings = ServerSettings
     -- | how long a request waits for a free pooled connection before failing
     serverDbPoolAcquisitionTimeoutMs :: !Int,
     -- | the background expired-data sweeper
-    serverSweep :: !SweepSettings
+    serverSweep :: !SweepSettings,
+    -- | Argon2id cost parameters for hashing /new/ passwords. Existing hashes carry the
+    --     parameters they were made with, so changing these never invalidates a credential.
+    serverArgon2 :: !Argon2Params
   }
   deriving stock (Show, Generic)
 
@@ -155,6 +161,10 @@ data FileConfig = FileConfig
     loginAttemptRetentionDays :: !(Maybe Int),
     -- | absent retains the audit trail forever; a value of 0 or less also means "forever"
     authEventRetentionDays :: !(Maybe Int),
+    -- | Argon2id memory cost in KiB for newly hashed passwords
+    argon2MemoryKiB :: !(Maybe Int),
+    argon2Iterations :: !(Maybe Int),
+    argon2Parallelism :: !(Maybe Int),
     accessTokenTtlSeconds :: !(Maybe Int),
     refreshTokenTtlSeconds :: !(Maybe Int),
     sessionTtlSeconds :: !(Maybe Int),
@@ -253,7 +263,8 @@ baseDefaults =
           serverConnStr = "",
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
-          serverSweep = defaultSweepSettings
+          serverSweep = defaultSweepSettings,
+          serverArgon2 = defaultArgon2Params
         }
     )
 
@@ -322,9 +333,21 @@ baseFromFile (Just fc) = do
             serverDbPoolSize = fromMaybe defaultDbPoolSize fc.dbPoolSize,
             serverDbPoolAcquisitionTimeoutMs =
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
-            serverSweep = mergeSweep defaultSweepSettings fc
+            serverSweep = mergeSweep defaultSweepSettings fc,
+            serverArgon2 = mergeArgon2 defaultArgon2Params fc
           }
   pure (cfg, settings)
+
+-- | Apply the optional @argon2*@ fields of a decoded Dhall 'FileConfig' onto the Argon2
+-- defaults. Constructed in full rather than record-updated, for the same
+-- @-Wambiguous-fields@ reason as 'mergeSweep'.
+mergeArgon2 :: Argon2Params -> FileConfig -> Argon2Params
+mergeArgon2 base fc =
+  Argon2Params
+    { memoryKiB = fromMaybe base.memoryKiB fc.argon2MemoryKiB,
+      iterations = fromMaybe base.iterations fc.argon2Iterations,
+      parallelism = fromMaybe base.parallelism fc.argon2Parallelism
+    }
 
 -- | Apply the optional @sweep*@ / @*RetentionDays@ fields of a decoded Dhall 'FileConfig' onto
 -- the sweeper defaults. A non-positive @authEventRetentionDays@ means "retain forever", the
@@ -361,6 +384,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   sweep <- overlaySweepFromEnv baseSettings.serverSweep
+  argon2 <- overlayArgon2FromEnv baseSettings.serverArgon2
   iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
   aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
@@ -380,6 +404,11 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requireNonNegative "SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS" "sweepDeadSessionGraceDays" sweep.sweepDeadSessionGraceDays
   requireNonNegative "SHOMEI_SWEEP_ONE_TIME_TOKEN_GRACE_DAYS" "sweepOneTimeTokenGraceDays" sweep.sweepOneTimeTokenGraceDays
   requireNonNegative "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" "sweepCeremonyGraceMinutes" sweep.sweepCeremonyGraceMinutes
+  -- crypton rejects non-positive Argon2 costs with a CryptoFailed deep inside a login; a
+  -- boot-time message naming the variable is kinder.
+  requirePositive "SHOMEI_ARGON2_MEMORY_KIB" "argon2MemoryKiB" argon2.memoryKiB
+  requirePositive "SHOMEI_ARGON2_ITERATIONS" "argon2Iterations" argon2.iterations
+  requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
   pure
     ( cfg,
       ServerSettings
@@ -387,7 +416,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverConnStr = connStr,
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
-          serverSweep = sweep
+          serverSweep = sweep,
+          serverArgon2 = argon2
         }
     )
   where
@@ -408,6 +438,20 @@ overlayFromEnvBoth baseCfg baseSettings = do
                   <> show n
               )
           )
+
+-- | Overlay the @SHOMEI_ARGON2_*@ environment variables onto the Argon2 cost parameters.
+-- These affect only newly hashed passwords; see 'Shomei.Crypto.hashPasswordArgon2id'.
+overlayArgon2FromEnv :: Argon2Params -> IO Argon2Params
+overlayArgon2FromEnv base = do
+  mem <- intEnvMaybe "SHOMEI_ARGON2_MEMORY_KIB"
+  iters <- intEnvMaybe "SHOMEI_ARGON2_ITERATIONS"
+  lanes <- intEnvMaybe "SHOMEI_ARGON2_PARALLELISM"
+  pure
+    Argon2Params
+      { memoryKiB = fromMaybe base.memoryKiB mem,
+        iterations = fromMaybe base.iterations iters,
+        parallelism = fromMaybe base.parallelism lanes
+      }
 
 -- | Overlay the @SHOMEI_SWEEP_*@ / @SHOMEI_*_RETENTION_DAYS@ environment variables onto the
 -- sweeper settings. As on the Dhall path, a non-positive @SHOMEI_AUTH_EVENT_RETENTION_DAYS@

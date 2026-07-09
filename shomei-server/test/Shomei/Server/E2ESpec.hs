@@ -38,6 +38,7 @@ import Network.HTTP.Client
 import Network.HTTP.Types (Header, statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Shomei.Config (defaultShomeiConfig)
+import Shomei.Crypto (Argon2Params (..))
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -58,7 +59,7 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params}
           testWithApplication (pure (application env)) (scenario pool)
     ]
 
@@ -208,3 +209,9 @@ hasKeyDeep k = go
     go (Object o) = any (\(kk, vv) -> K.toText kk == k || go vv) (KM.toList o)
     go (Array xs) = any go (toList xs)
     go _ = False
+
+-- | Cheap Argon2 parameters for tests. This suite hashes and verifies real passwords, and the
+-- production cost (~100 ms per hash) would dominate its runtime. Hash strength is irrelevant
+-- here; only that hashing round-trips.
+testArgon2Params :: Argon2Params
+testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}

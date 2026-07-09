@@ -5,6 +5,7 @@ title: "Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
 master_plan: "docs/masterplans/6-operational-and-performance-hardening.md"
+intention: intention_01kx2hqr6beeashgwvg5zwxtgc
 ---
 
 # Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning

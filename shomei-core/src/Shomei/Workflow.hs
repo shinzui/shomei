@@ -40,7 +40,7 @@ import Shomei.Domain.LoginAttempt
     NewLoginAttempt (..),
   )
 import Shomei.Domain.LoginId (LoginId)
-import Shomei.Domain.Password (PasswordContext (..), dummyPasswordHash, validatePassword)
+import Shomei.Domain.Password (PasswordContext (..), validatePassword)
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Domain.RefreshToken qualified as RT
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (SessionActive))
@@ -67,7 +67,7 @@ import Shomei.Effect.LoginAttemptStore
   )
 import Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
-import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword)
+import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore
   ( RefreshTokenStore,
@@ -214,15 +214,16 @@ login cfg ctx cmd = runErrorNoCallStack do
         when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) lockRow) (throwError InvalidCredentials)
         pure lockRow
       else pure Nothing
-  -- Every failure path below performs exactly one 'verifyPassword'. The paths that never
-  -- reach a stored hash verify against 'dummyPasswordHash' instead, so a miss costs the same
-  -- Argon2id work as a wrong password and cannot be told apart by response time.
+  -- Every failure path below performs exactly one password-hashing operation. The paths that
+  -- never reach a stored hash call 'verifyPasswordDummy' instead, which burns an equivalent
+  -- amount of Argon2id work, so a miss cannot be told apart from a wrong password by response
+  -- time.
   mCred <- findPasswordCredentialByLoginId cmd.loginId
   cred <- maybe (failLoginTimed rl ctx cmd ts) pure mCred
   mUser <- findUserById cred.userId
   user <- maybe (failLoginTimed rl ctx cmd ts) pure mUser
   when (user.status /= UserActive) do
-    _ <- verifyPassword cmd.password dummyPasswordHash
+    verifyPasswordDummy cmd.password
     throwError UserNotActive
   ok <- verifyPassword cmd.password cred.passwordHash
   unless ok (failLogin rl ctx cmd.loginId ts)
@@ -271,7 +272,7 @@ failLoginTimed ::
   UTCTime ->
   Eff es a
 failLoginTimed rl ctx cmd ts = do
-  _ <- verifyPassword cmd.password dummyPasswordHash
+  verifyPasswordDummy cmd.password
   failLogin rl ctx cmd.loginId ts
 
 -- | The shared failure path for 'login': record the failed attempt, publish 'LoginFailed',

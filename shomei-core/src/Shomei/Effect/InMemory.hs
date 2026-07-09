@@ -673,6 +673,9 @@ runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
   VerifyPassword (PlainPassword pw) (PasswordHash h) -> pure (h == "argon2-fake:" <> pw)
+  -- The fake does no work, so there is none to burn. Only the real Argon2 interpreter needs
+  -- this operation to cost anything.
+  VerifyPasswordDummy _ -> pure ()
 
 -- | EP-3 in-memory breach-checker fake: a password is 'Breached' iff its plaintext is in the
 -- 'World''s @breachedPasswords@ set; when @breachCheckAvailable@ is False it returns

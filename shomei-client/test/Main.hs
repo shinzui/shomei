@@ -10,6 +10,7 @@ import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
+import Shomei.Crypto (Argon2Params (..))
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -41,7 +42,7 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params}
           testWithApplication (pure (application env)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
@@ -71,3 +72,9 @@ expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pur
 -- the default bearer mode, where they are always present.
 requireBodyToken :: Maybe Text -> IO Text
 requireBodyToken = maybe (assertFailure "expected a body token in bearer mode") pure
+
+-- | Cheap Argon2 parameters for tests. This suite hashes and verifies real passwords, and the
+-- production cost (~100 ms per hash) would dominate its runtime. Hash strength is irrelevant
+-- here; only that hashing round-trips.
+testArgon2Params :: Argon2Params
+testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}

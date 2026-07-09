@@ -6,9 +6,15 @@
 -- The security property under test is "every login attempt invokes the password hasher
 -- exactly once". That is asserted with an invocation counter rather than a stopwatch:
 -- Argon2id at the production parameters costs ~100 ms, so a wall-clock assertion would be
--- both slow and flaky, while the counter is exact. Equal invocation counts imply equal cost
--- because 'Shomei.Domain.Password.dummyPasswordHash' carries the production parameters (see
--- its haddock).
+-- both slow and flaky, while the counter is exact.
+--
+-- Equal invocation counts imply equal cost because the two hashing operations a login can
+-- reach — 'VerifyPassword' on a stored hash, and 'VerifyPasswordDummy' on the paths that have
+-- no stored hash to check — are derived by the real interpreter
+-- ('Shomei.Crypto.runPasswordHasherCrypto') with the /same/ Argon2 parameters. That is why
+-- the dummy is a port operation rather than a constant hash: a constant would keep whatever
+-- parameters it was baked with, and an operator retuning the cost would silently make misses
+-- and hits take measurably different times again.
 module Shomei.Workflow.TimingSpec (tests) where
 
 import Control.Monad (void)
@@ -126,15 +132,17 @@ type Ports =
      IOE
    ]
 
--- | The in-memory fake hasher, counting every 'VerifyPassword'. 'dummyPasswordHash' does not
--- carry the fake's @argon2-fake:@ tag, so verifying against it returns 'False' — correct
--- here, because only the /invocation/ is observed, never the result.
+-- | The in-memory fake hasher, counting every password-hashing operation — both
+-- 'VerifyPassword' and 'VerifyPasswordDummy', because the two cost the same and the property
+-- under test is that each login performs exactly one of them. Only the /invocation/ is
+-- observed, never the result.
 runCountingPasswordHasher :: (IOE :> es) => IORef Int -> Eff (PasswordHasher : es) a -> Eff es a
 runCountingPasswordHasher counter = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
   VerifyPassword (PlainPassword pw) (PasswordHash h) -> do
     liftIO (atomicModifyIORef' counter \n -> (n + 1, ()))
     pure (h == "argon2-fake:" <> pw)
+  VerifyPasswordDummy _ -> liftIO (atomicModifyIORef' counter \n -> (n + 1, ()))
 
 -- | 'Shomei.Effect.InMemory.runInMemory' with the counting hasher in the 'PasswordHasher'
 -- slot. The interpreter order mirrors 'runInMemory'.

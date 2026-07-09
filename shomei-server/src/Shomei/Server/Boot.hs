@@ -23,6 +23,7 @@ where
 import Control.Concurrent (forkIO)
 import Data.Aeson ((.=))
 import Data.Aeson.Key qualified as Key
+import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
@@ -38,7 +39,7 @@ import Servant
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
-import Shomei.Crypto (sha256Hex)
+import Shomei.Crypto (argon2WarningFloor, sha256Hex)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
@@ -70,6 +71,11 @@ main = do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   (cfg, settings) <- loadConfig
+  -- Warn, never refuse: a resource-starved dev box legitimately wants cheap hashing, but an
+  -- operator must not weaken password storage without seeing it said out loud.
+  traverse_
+    (\w -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack w))
+    (argon2WarningFloor settings.serverArgon2)
   env <- buildEnv cfg settings
   installKeyReload cfg env
   installSweeper settings env
@@ -197,7 +203,15 @@ buildEnv cfg settings = do
   keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
-  pure Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = kek, envHttpManager = mgr}
+  pure
+    Env
+      { envPool = pool,
+        envConfig = cfg,
+        envKeys = keysRef,
+        envKek = kek,
+        envHttpManager = mgr,
+        envArgon2Params = settings.serverArgon2
+      }
 
 -- | Milliseconds to a 'DiffTime', exactly (a 'DiffTime' counts picoseconds, so this loses
 -- nothing). Used for the pool's acquisition timeout, which config carries as an integer count
