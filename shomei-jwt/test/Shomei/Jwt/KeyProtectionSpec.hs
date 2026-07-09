@@ -55,7 +55,7 @@ kekParsing =
     testCase "rejects non-base64" do
       case keyEncryptionKeyFromBase64 "not base64 !!!" of
         Right _ -> assertFailure "invalid base64 must be rejected"
-        Left err -> assertBool "names base64" ("base64" `Text.isInfixOf` err),
+        Left err -> assertBool ("names base64: " <> Text.unpack err) ("base64" `Text.isInfixOf` err),
     testCase "tolerates surrounding whitespace (a trailing newline from `| base64`)" do
       either (assertFailure . Text.unpack) (const (pure ())) (keyEncryptionKeyFromBase64 (kekText 32 <> "\n"))
   ]

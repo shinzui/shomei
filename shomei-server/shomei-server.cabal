@@ -112,6 +112,7 @@ executable shomei-admin
     , shomei-jwt
     , shomei-migrations
     , shomei-postgres
+    , shomei-server
     , text
     , time
     , uuid

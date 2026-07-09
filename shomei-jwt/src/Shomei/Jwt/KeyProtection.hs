@@ -54,8 +54,9 @@ import Shomei.Prelude
 -- error rather than a code-review question.
 newtype KeyEncryptionKey = KeyEncryptionKey BA.ScrubbedBytes
 
--- | Parse a KEK from the base64 text of @SHOMEI_KEY_ENCRYPTION_KEY@. Requires exactly 32
--- decoded bytes.
+-- | Parse a KEK from base64 text (the value of @SHOMEI_KEY_ENCRYPTION_KEY@). Requires
+-- exactly 32 decoded bytes. The 'Left' explains what was wrong and how to make a valid one;
+-- callers prefix it with the variable they read.
 keyEncryptionKeyFromBase64 :: Text -> Either Text KeyEncryptionKey
 keyEncryptionKeyFromBase64 raw =
   case convertFromBase Base64 (TE.encodeUtf8 (Text.strip raw)) :: Either String ByteString of
@@ -65,7 +66,7 @@ keyEncryptionKeyFromBase64 raw =
       | otherwise -> Left (badKek ("it decodes to " <> tshow (BS.length bs) <> " bytes, not 32"))
   where
     badKek reason =
-      "SHOMEI_KEY_ENCRYPTION_KEY is invalid: "
+      "is not a valid key-encryption key: "
         <> reason
         <> ". Generate one with: head -c 32 /dev/urandom | base64"
     tshow = Text.pack . show

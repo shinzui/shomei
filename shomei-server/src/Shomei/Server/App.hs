@@ -66,6 +66,7 @@ import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Prelude
+import Shomei.Jwt.KeyProtection (KeyEncryptionKey)
 import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Server.Keys (LoadedKeys (..))
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
@@ -111,6 +112,10 @@ data Env = Env
   { envPool :: !Pool,
     envConfig :: !ShomeiConfig,
     envKeys :: !(IORef LoadedKeys),
+    -- | the key-encryption key, when signing keys are encrypted at rest. Held so a reload
+    --     can decrypt the signer; deliberately not part of 'ShomeiConfig', which is 'Show'able
+    --     and serializable.
+    envKek :: !(Maybe KeyEncryptionKey),
     -- | shared TLS manager for the HIBP breach-check interpreter (EP-3)
     envHttpManager :: !Manager
   }

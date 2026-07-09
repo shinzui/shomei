@@ -102,11 +102,11 @@ testMigrateEmpty = testCase "after migration the keys table exists and is empty"
 testLifecycleOverlap :: TestTree
 testLifecycleOverlap = testCase "generate→activate→(generate→activate auto-retires)→overlap verifies→revoke breaks it" $ withDb \pool _ -> do
   -- First key: generate then activate.
-  keysGenerate ES256 pool
+  keysGenerate Nothing ES256 pool
   kid1 <- onlyPendingKid pool
   keysActivate pool kid1
   -- Second key: generate then activate; this auto-retires kid1.
-  keysGenerate ES256 pool
+  keysGenerate Nothing ES256 pool
   kid2 <- onlyPendingKid pool
   keysActivate pool kid2
 
@@ -137,14 +137,14 @@ testLifecycleOverlap = testCase "generate→activate→(generate→activate auto
 -- server never saw the rotation at all.
 testReloadPicksUpRotation :: TestTree
 testReloadPicksUpRotation = testCase "reloadKeys picks up an activation: new signer, both keys published" $ withDb \pool _ -> do
-  ref <- newIORef =<< bootstrapKeys ES256 pool
+  ref <- newIORef =<< bootstrapKeys Nothing ES256 pool
   kid1 <- signerKid <$> readIORef ref
 
-  keysGenerate ES256 pool
+  keysGenerate Nothing ES256 pool
   kid2 <- onlyPendingKid pool
   keysActivate pool kid2 -- auto-retires kid1
 
-  reloadKeys pool ref
+  reloadKeys Nothing pool ref
   reloaded <- readIORef ref
   signerKid reloaded @?= kid2
   Set.fromList (Keys.publishedKids reloaded) @?= Set.fromList [kid1, kid2]
@@ -160,12 +160,12 @@ testReloadPicksUpRotation = testCase "reloadKeys picks up an activation: new sig
 -- key is the operator mistake that produces this (there is then nothing to sign with).
 testReloadKeepsLastGoodMaterial :: TestTree
 testReloadKeepsLastGoodMaterial = testCase "a failed reload keeps the previous key material" $ withDb \pool _ -> do
-  ref <- newIORef =<< bootstrapKeys ES256 pool
+  ref <- newIORef =<< bootstrapKeys Nothing ES256 pool
   before <- readIORef ref
 
   keysRetire pool (signerKid before)
 
-  reloadKeys pool ref
+  reloadKeys Nothing pool ref
   after <- readIORef ref
   signerKid after @?= signerKid before
   Keys.publishedKids after @?= Keys.publishedKids before

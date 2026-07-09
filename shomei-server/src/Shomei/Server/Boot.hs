@@ -49,7 +49,7 @@ import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
-import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
@@ -118,7 +118,7 @@ installKeyReload cfg env = do
   void (installHandler sigHUP (Signals.Catch onHup) Nothing)
   where
     interval = cfg.signingKeyConfig.refreshIntervalSeconds
-    reload = reloadKeys env.envPool env.envKeys
+    reload = reloadKeys env.envKek env.envPool env.envKeys
     onHup = hPutStrLn stderr "[shomei] SIGHUP: reloading signing keys" >> reload
     periodic = forever do
       threadDelay (interval * 1_000_000)
@@ -133,10 +133,11 @@ buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
   _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
   pool <- acquirePool 10 settings.serverConnStr
-  keys <- bootstrapKeys (configSigningAlgorithm cfg) pool
+  kek <- loadKekFromEnv
+  keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
-  pure Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = mgr}
+  pure Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = kek, envHttpManager = mgr}
 
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 -- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification

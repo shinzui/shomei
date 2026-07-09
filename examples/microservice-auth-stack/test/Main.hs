@@ -53,10 +53,10 @@ tests =
     [ testCase "valid token → 200 (offline), tampered → 401, none → 401" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          keysRef <- newIORef =<< bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr}
           -- Boot the auth service in-process.
           testWithApplication (pure (application env)) \authPort -> do
             mgr <- newManager defaultManagerSettings

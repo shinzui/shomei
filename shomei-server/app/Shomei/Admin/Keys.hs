@@ -15,6 +15,8 @@ module Shomei.Admin.Keys
     keysRetire,
     keysRevoke,
     keysList,
+    keysEncryptAtRest,
+    keysRewrap,
     listPublishableSigningKeys,
     listAllKeys,
   )
@@ -22,6 +24,7 @@ where
 
 import Contravariant.Extras (contrazip2, contrazip8)
 import Control.Monad (forM_, unless)
+import Data.List (partition)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime, getCurrentTime)
@@ -34,24 +37,35 @@ import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Shomei.Domain.SigningKey (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
 import Shomei.Jwt.Key (generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.Jwt.KeyProtection
+  ( KeyEncryptionKey,
+    decryptPrivateJwk,
+    encryptPrivateJwk,
+    isEncryptedPrivateJwk,
+    protectStoredSigningKey,
+  )
 import Shomei.Postgres.Codec (signingKeyStatusFromText, signingKeyStatusToText, tshow)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 -- Public actions -------------------------------------------------------------
 
--- | Mint a new key for @alg@ in @pending@ status and print its @kid@.
-keysGenerate :: SigningAlgorithm -> Pool -> IO ()
-keysGenerate alg pool = do
+-- | Mint a new key for @alg@ in @pending@ status and print its @kid@. When a
+-- key-encryption key is configured, the private material is encrypted before it is written,
+-- so a rotation never introduces a plaintext row into an encrypted table.
+keysGenerate :: Maybe KeyEncryptionKey -> SigningAlgorithm -> Pool -> IO ()
+keysGenerate mKek alg pool = do
   now <- getCurrentTime
   jwk <- generateSigningKeyFor alg
   let stored = toStoredSigningKeyFor alg now jwk
-      pending =
-        stored
-          { status = KeyPending,
-            activatedAt = Nothing,
-            retiredAt = Nothing
-          }
+  pending <-
+    protectStoredSigningKey
+      mKek
+      stored
+        { status = KeyPending,
+          activatedAt = Nothing,
+          retiredAt = Nothing
+        }
   runSess pool (Session.statement (keyRow pending) insertKeyStmt)
   putStrLn ("generated pending " <> Text.unpack (signingAlgorithmToText alg) <> " key: " <> Text.unpack pending.keyId)
 
@@ -86,6 +100,57 @@ keysRevoke pool kid = do
   unless (key.status `elem` [KeyPending, KeyActive, KeyRetired]) (die ("key " <> Text.unpack kid <> " is already revoked"))
   runSess pool (Session.statement (kid, signingKeyStatusToText KeyRevoked) updateStatusStmt)
   putStrLn ("revoked " <> Text.unpack kid)
+
+-- | Encrypt every plaintext @private_key_jwk@ in place, under @kek@.
+--
+-- Idempotent: already-encrypted rows are skipped and their bytes are left untouched, so a
+-- re-run reports zero work rather than burning a fresh nonce on every row. Safe to run
+-- against a live server: each row is one atomic @UPDATE@, and a running server reads
+-- plaintext and encrypted rows alike.
+keysEncryptAtRest :: KeyEncryptionKey -> Pool -> IO ()
+keysEncryptAtRest kek pool = do
+  keys <- listAllKeys pool
+  let (encrypted, plaintext) = partition (isEncryptedPrivateJwk . (.privateKeyJwk)) keys
+  forM_ plaintext \k -> do
+    protected <- protectStoredSigningKey (Just kek) k
+    runSess pool (Session.statement (k.keyId, protected.privateKeyJwk) setPrivateKeyStmt)
+  putStrLn
+    ( "encrypted "
+        <> show (length plaintext)
+        <> " key(s), skipped "
+        <> show (length encrypted)
+        <> " already-encrypted"
+    )
+
+-- | Re-wrap every key under a new KEK: decrypt with @oldKek@, encrypt with @newKek@. Any
+-- row still in plaintext is simply encrypted under the new KEK, so this subsumes
+-- 'keysEncryptAtRest'.
+--
+-- All-or-nothing: the full decrypt pass runs in memory /before/ the first write, so a wrong
+-- @SHOMEI_KEY_ENCRYPTION_KEY_OLD@ aborts having modified nothing. (A half-rewrapped table
+-- would be unreadable by either KEK.)
+keysRewrap :: KeyEncryptionKey -> KeyEncryptionKey -> Pool -> IO ()
+keysRewrap oldKek newKek pool = do
+  keys <- listAllKeys pool
+  -- Pass 1: decrypt everything, or die before touching a row.
+  decrypted <- traverse decryptOne keys
+  -- Pass 2: re-encrypt and write.
+  forM_ decrypted \(k, plain) -> do
+    enc <- encryptPrivateJwk newKek k.keyId plain
+    runSess pool (Session.statement (k.keyId, enc) setPrivateKeyStmt)
+  putStrLn ("rewrapped " <> show (length decrypted) <> " key(s)")
+  where
+    decryptOne k =
+      case decryptPrivateJwk (Just oldKek) k.keyId k.privateKeyJwk of
+        Right plain -> pure (k, plain)
+        Left err ->
+          die
+            ( "cannot decrypt key "
+                <> Text.unpack k.keyId
+                <> " with SHOMEI_KEY_ENCRYPTION_KEY_OLD ("
+                <> show err
+                <> "); no rows were modified"
+            )
 
 -- | Print every key with kid / status / timestamps.
 keysList :: Pool -> IO ()
@@ -235,6 +300,15 @@ updateStatusStmt :: Statement (Text, Text) ()
 updateStatusStmt =
   preparable
     "UPDATE shomei.shomei_signing_keys SET status = $2 WHERE key_id = $1"
+    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.text)))
+    D.noResult
+
+-- | Replace a key's private material (encrypt-at-rest backfill and KEK rewrap). Never
+-- touches @public_key_jwk@ or @status@.
+setPrivateKeyStmt :: Statement (Text, Text) ()
+setPrivateKeyStmt =
+  preparable
+    "UPDATE shomei.shomei_signing_keys SET private_key_jwk = $2 WHERE key_id = $1"
     (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.text)))
     D.noResult
 

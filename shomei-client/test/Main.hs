@@ -38,10 +38,10 @@ tests =
     [ testCase "signup → login → me → refresh" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          keysRef <- newIORef =<< bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr}
           testWithApplication (pure (application env)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 

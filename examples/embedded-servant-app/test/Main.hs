@@ -46,10 +46,10 @@ tests =
     [ testCase "/projects is 401 without a token and 200 with one" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          keysRef <- newIORef =<< bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr}
           testWithApplication (pure (embeddedApplication env)) \port -> do
             mgr <- newManager defaultManagerSettings
 

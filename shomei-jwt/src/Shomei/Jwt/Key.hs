@@ -92,6 +92,11 @@ toStoredSigningKeyFor alg t k =
   (toStoredSigningKey t k) {algorithm = signingAlgorithmToText alg}
 
 -- | Parse a stored key's full (private) JWK JSON back into a live 'JWK'.
+--
+-- __Does not decrypt.__ A row whose private material is encrypted at rest (see
+-- "Shomei.Jwt.KeyProtection") will fail to parse here. Production code loading a signer must
+-- call 'Shomei.Jwt.KeyProtection.decryptStoredSigningKey', which handles both forms; this
+-- function remains for tests and for callers that know their row is plaintext.
 fromStoredSigningKey :: StoredSigningKey -> Either Text JWK
 fromStoredSigningKey sk =
   case Aeson.eitherDecodeStrict (Text.encodeUtf8 sk.privateKeyJwk) of

@@ -8,6 +8,7 @@
 module Shomei.Jwt.Rotation
   ( rotateSigningKey,
     rotateSigningKeyFor,
+    rotateSigningKeyForWith,
     currentJwks,
   )
 where
@@ -30,7 +31,8 @@ import Shomei.Effect.SigningKeyStore
     updateSigningKeyStatus,
   )
 import Shomei.Jwt.Jwks (jwksDocument)
-import Shomei.Jwt.Key (fromStoredSigningKey, generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.Jwt.Key (generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.Jwt.KeyProtection (KeyEncryptionKey, protectStoredSigningKey, publicJwkFromStored)
 import Shomei.Prelude
 
 -- | Generate a new active key and retire whatever was active. Returns the new
@@ -43,15 +45,29 @@ rotateSigningKey = rotateSigningKeyFor ES256
 -- | Like 'rotateSigningKey' but generates a key for the requested algorithm, so an
 -- operator can rotate onto RS256 (or back to ES256). 'rotateSigningKey' is the ES256
 -- alias kept for back-compat.
+--
+-- Stores the new private key in __plaintext__. A deployment that encrypts signing keys at
+-- rest must call 'rotateSigningKeyForWith' with its key-encryption key instead, or it will
+-- write a plaintext row into an otherwise-encrypted table.
 rotateSigningKeyFor ::
   (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
   SigningAlgorithm ->
   Eff es JWK
-rotateSigningKeyFor alg = do
+rotateSigningKeyFor = rotateSigningKeyForWith Nothing
+
+-- | 'rotateSigningKeyFor', encrypting the new private key under @mKek@ before it is
+-- persisted (see "Shomei.Jwt.KeyProtection"). 'Nothing' stores plaintext.
+rotateSigningKeyForWith ::
+  (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
+  Maybe KeyEncryptionKey ->
+  SigningAlgorithm ->
+  Eff es JWK
+rotateSigningKeyForWith mKek alg = do
   t <- now
   priorActive <- listActiveSigningKeys
   newJwk <- liftIO (generateSigningKeyFor alg)
-  insertSigningKey (toStoredSigningKeyFor alg t newJwk)
+  protected <- liftIO (protectStoredSigningKey mKek (toStoredSigningKeyFor alg t newJwk))
+  insertSigningKey protected
   forM_ priorActive \k -> updateSigningKeyStatus k.keyId KeyRetired t
   pure newJwk
 
@@ -59,9 +75,12 @@ rotateSigningKeyFor alg = do
 -- retired-but-still-trusted ones, so tokens signed just before a rotation keep verifying
 -- until they expire. @pending@ and @revoked@ keys are excluded by the store's
 -- 'listPublishableSigningKeys' contract.
+--
+-- Reads the __public__ column only, so it needs no key-encryption key and works unchanged
+-- against a table whose private material is encrypted at rest.
 currentJwks ::
   (SigningKeyStore :> es) =>
   Eff es BSL.ByteString
 currentJwks = do
   keys <- listPublishableSigningKeys
-  pure (jwksDocument (rights (map fromStoredSigningKey keys)))
+  pure (jwksDocument (rights (map publicJwkFromStored keys)))
