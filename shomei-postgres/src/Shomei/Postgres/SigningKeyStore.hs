@@ -31,6 +31,10 @@ runSigningKeyStorePostgres = interpret_ \case
     res <- runSession (Session.statement () listActiveStmt)
     rows <- either dbFail pure res
     traverse rebuild rows
+  ListPublishableSigningKeys -> do
+    res <- runSession (Session.statement () listPublishableStmt)
+    rows <- either dbFail pure res
+    traverse rebuild rows
   FindSigningKeyByKid kid -> do
     res <- runSession (Session.statement kid findByKidStmt)
     row <- either dbFail pure res
@@ -92,6 +96,22 @@ listActiveStmt =
            created_at, activated_at, retired_at
     FROM shomei.shomei_signing_keys
     WHERE status = 'active'
+    """
+    E.noParams
+    (D.rowList keyRowDecoder)
+
+-- | The keys that belong in the published JWKS and the verifier key set: @active@ plus
+-- @retired@ (still trusted so tokens minted before a rotation keep verifying). Ordered by
+-- @created_at@ for stable output.
+listPublishableStmt :: Statement () [KeyRow]
+listPublishableStmt =
+  preparable
+    """
+    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status,
+           created_at, activated_at, retired_at
+    FROM shomei.shomei_signing_keys
+    WHERE status IN ('active','retired')
+    ORDER BY created_at
     """
     E.noParams
     (D.rowList keyRowDecoder)

@@ -2,8 +2,8 @@
 -- 'SigningKeyStore' and 'Clock' port effects only (no IO key storage of its own).
 --
 -- Rotation is intentionally simple: generate a new active key, insert it, and mark
--- the previously-active key 'KeyRetired'. The published JWKS includes every stored
--- key that is not 'KeyRevoked', so tokens signed just before rotation keep
+-- the previously-active key 'KeyRetired'. The published JWKS includes every publishable
+-- key ('KeyActive' and 'KeyRetired'), so tokens signed just before rotation keep
 -- verifying until they expire (zero-downtime rotation).
 module Shomei.Jwt.Rotation
   ( rotateSigningKey,
@@ -18,7 +18,7 @@ import Data.Either (rights)
 import Effectful (Eff, IOE, (:>))
 import Shomei.Domain.SigningKey
   ( SigningAlgorithm (ES256),
-    SigningKeyStatus (KeyRetired, KeyRevoked),
+    SigningKeyStatus (KeyRetired),
     StoredSigningKey (..),
   )
 import Shomei.Effect.Clock (Clock, now)
@@ -26,6 +26,7 @@ import Shomei.Effect.SigningKeyStore
   ( SigningKeyStore,
     insertSigningKey,
     listActiveSigningKeys,
+    listPublishableSigningKeys,
     updateSigningKeyStatus,
   )
 import Shomei.Jwt.Jwks (jwksDocument)
@@ -54,17 +55,13 @@ rotateSigningKeyFor alg = do
   forM_ priorActive \k -> updateSigningKeyStatus k.keyId KeyRetired t
   pure newJwk
 
--- | Build the published JWKS from all stored keys that are not revoked.
---
--- Note: with the current 'listActiveSigningKeys' contract (which returns only
--- 'KeyActive' keys), this publishes the active key(s); including retired-but-valid
--- keys is deferred until the store gains a non-revoked query (see Decision Log).
+-- | Build the published JWKS from every publishable key: the active key(s) plus the
+-- retired-but-still-trusted ones, so tokens signed just before a rotation keep verifying
+-- until they expire. @pending@ and @revoked@ keys are excluded by the store's
+-- 'listPublishableSigningKeys' contract.
 currentJwks ::
   (SigningKeyStore :> es) =>
   Eff es BSL.ByteString
 currentJwks = do
-  keys <- listActiveSigningKeys
-  let live = rights (map fromStoredSigningKey (filter notRevoked keys))
-  pure (jwksDocument live)
-  where
-    notRevoked k = k.status /= KeyRevoked
+  keys <- listPublishableSigningKeys
+  pure (jwksDocument (rights (map fromStoredSigningKey keys)))

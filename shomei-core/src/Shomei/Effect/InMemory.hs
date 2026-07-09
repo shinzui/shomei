@@ -689,6 +689,8 @@ runSigningKeyStore :: (IOE :> es) => IORef World -> Eff (SigningKeyStore : es) a
 runSigningKeyStore ref = interpret_ \case
   ListActiveSigningKeys ->
     liftIO (activeKeys <$> readIORef ref)
+  ListPublishableSigningKeys ->
+    liftIO (publishableKeys <$> readIORef ref)
   FindSigningKeyByKid kid ->
     liftIO ((Map.lookup kid . (.signingKeys)) <$> readIORef ref)
   InsertSigningKey k ->
@@ -697,6 +699,7 @@ runSigningKeyStore ref = interpret_ \case
     liftIO (modifyWorld ref (#signingKeys %~ Map.adjust (#status .~ st) kid))
   where
     activeKeys w = [k | k <- Map.elems w.signingKeys, k.status == KeyActive]
+    publishableKeys w = [k | k <- Map.elems w.signingKeys, k.status `elem` [KeyActive, KeyRetired]]
 
 runClock :: (IOE :> es) => IORef World -> Eff (Clock : es) a -> Eff es a
 runClock ref = interpret_ \case

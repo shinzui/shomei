@@ -3,6 +3,7 @@ module Main (main) where
 import Shomei.Jwt.InterpreterSpec qualified as InterpreterSpec
 import Shomei.Jwt.JwksSpec qualified as JwksSpec
 import Shomei.Jwt.KeySpec qualified as KeySpec
+import Shomei.Jwt.RotationSpec qualified as RotationSpec
 import Shomei.Jwt.RsaCustomClaimSpec qualified as RsaCustomClaimSpec
 import Shomei.Jwt.SignVerifySpec qualified as SignVerifySpec
 import Test.Tasty (defaultMain, testGroup)
@@ -16,5 +17,6 @@ main =
         SignVerifySpec.tests,
         JwksSpec.tests,
         InterpreterSpec.tests,
+        RotationSpec.tests,
         RsaCustomClaimSpec.tests
       ]

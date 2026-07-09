@@ -7,6 +7,7 @@
 module Shomei.Effect.SigningKeyStore
   ( SigningKeyStore (..),
     listActiveSigningKeys,
+    listPublishableSigningKeys,
     findSigningKeyByKid,
     insertSigningKey,
     updateSigningKeyStatus,
@@ -20,6 +21,10 @@ import Shomei.Prelude
 
 data SigningKeyStore :: Effect where
   ListActiveSigningKeys :: SigningKeyStore m [StoredSigningKey]
+  -- | Every key that belongs in the published JWKS and the verifier key set:
+  -- @active@ and @retired@ (they overlap during a rotation window). Excludes
+  -- @pending@ (not yet trusted) and @revoked@ (explicitly distrusted).
+  ListPublishableSigningKeys :: SigningKeyStore m [StoredSigningKey]
   FindSigningKeyByKid :: Text -> SigningKeyStore m (Maybe StoredSigningKey)
   InsertSigningKey :: StoredSigningKey -> SigningKeyStore m ()
   UpdateSigningKeyStatus :: Text -> SigningKeyStatus -> UTCTime -> SigningKeyStore m ()
@@ -28,6 +33,9 @@ type instance DispatchOf SigningKeyStore = Dynamic
 
 listActiveSigningKeys :: (SigningKeyStore :> es) => Eff es [StoredSigningKey]
 listActiveSigningKeys = send ListActiveSigningKeys
+
+listPublishableSigningKeys :: (SigningKeyStore :> es) => Eff es [StoredSigningKey]
+listPublishableSigningKeys = send ListPublishableSigningKeys
 
 findSigningKeyByKid :: (SigningKeyStore :> es) => Text -> Eff es (Maybe StoredSigningKey)
 findSigningKeyByKid = send . FindSigningKeyByKid

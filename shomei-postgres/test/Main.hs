@@ -5,8 +5,10 @@
 -- PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
+import Control.Monad (forM_)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.List (sort)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
@@ -93,7 +95,7 @@ import Shomei.Effect.PasswordResetTokenStore
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
 import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
-import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys)
+import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, findUserByLoginId, markUserEmailVerified)
@@ -324,6 +326,7 @@ tests =
     testPasswordResetTokenRoundTrip,
     testMarkUserEmailVerified,
     testSigningKeys,
+    testPublishableSigningKeys,
     testPublishEvent,
     testAuditEventReader,
     testWorkflowSignup,
@@ -551,6 +554,36 @@ testSigningKeys = testCase "insert + list signing keys" $ withDb \pool -> do
   (active, byKid) <- expectApp result
   fmap (.keyId) active @?= ["kid-1"]
   fmap (.keyId) byKid @?= Just "kid-1"
+
+-- | @listPublishableSigningKeys@ returns exactly the active + retired keys (the JWKS
+-- contents), while @listActiveSigningKeys@ still returns only the signing key.
+testPublishableSigningKeys :: TestTree
+testPublishableSigningKeys = testCase "publishable signing keys are active + retired" $ withDb \pool -> do
+  result <- runApp pool do
+    t <- now
+    let key kid st =
+          StoredSigningKey
+            { keyId = kid,
+              algorithm = "ES256",
+              publicKeyJwk = "{\"kty\":\"EC\"}",
+              privateKeyJwk = "{\"kty\":\"EC\",\"d\":\"x\"}",
+              status = st,
+              createdAt = t,
+              activatedAt = Just t,
+              retiredAt = Nothing
+            }
+    -- Insert each row Pending, then drive it to its target status through the port, so
+    -- the test exercises updateSigningKeyStatus rather than trusting the insert.
+    forM_ [("k-active", KeyActive), ("k-retired", KeyRetired), ("k-revoked", KeyRevoked)] \(kid, st) -> do
+      insertSigningKey (key kid KeyPending)
+      updateSigningKeyStatus kid st t
+    insertSigningKey (key "k-pending" KeyPending)
+    publishable <- listPublishableSigningKeys
+    active <- listActiveSigningKeys
+    pure (publishable, active)
+  (publishable, active) <- expectApp result
+  sort (fmap (.keyId) publishable) @?= ["k-active", "k-retired"]
+  fmap (.keyId) active @?= ["k-active"]
 
 testPublishEvent :: TestTree
 testPublishEvent = testCase "publish auth event lands a row" $ withDb \pool -> do

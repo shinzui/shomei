@@ -57,11 +57,11 @@ envelope decryption without creating a second load path.
 Use a checklist to summarize granular steps. Every stopping point must be documented here,
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 
-- [ ] M1: `ListPublishableSigningKeys` added to the `SigningKeyStore` port; Postgres
+- [x] M1: `ListPublishableSigningKeys` added to the `SigningKeyStore` port; Postgres
       interpreter (`status IN ('active','retired')`) and in-memory interpreter implemented;
-      store tests pass.
-- [ ] M1: `Shomei.Jwt.Rotation.currentJwks` builds from publishable keys; its doc comment
-      updated; jwt tests pass.
+      store tests pass. (2026-07-08)
+- [x] M1: `Shomei.Jwt.Rotation.currentJwks` builds from publishable keys; its doc comment
+      updated; jwt tests pass. (2026-07-08)
 - [ ] M2: `Shomei.Server.Keys.loadKeyMaterial` centralizes load: picks the signer (active
       key), builds the verifier `JWKSet` and the precomputed JWKS `Value` from all
       publishable keys; `bootstrapKeys` reimplemented on top of it.
