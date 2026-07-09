@@ -1,6 +1,6 @@
 -- | @shomei-admin audit@ (EP-7, M3): read the append-only security audit trail without a
 -- @psql@ shell. The subcommands are thin wrappers over the shared
--- 'Shomei.Effect.AuthEventReader' query layer (the same one the HTTP @GET \/admin\/audit\/events@
+-- 'Shomei.Effect.AuthEventReader' query layer (the same one the HTTP @GET \/v1\/admin\/audit\/events@
 -- endpoint uses), run through the PostgreSQL interpreter over the admin pool:
 --
 -- @

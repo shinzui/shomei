@@ -22,7 +22,7 @@ document.getElementById("loginBtn").addEventListener("click", async () => {
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
 
-  const r = await postJSON("/auth/login", { email, password });
+  const r = await postJSON("/v1/auth/login", { email, password });
   if (!r.ok) { log("login failed: " + r.json); return; }
 
   if (r.json.status === "complete") {
@@ -32,10 +32,10 @@ document.getElementById("loginBtn").addEventListener("click", async () => {
     log("password ok — passkey required, running assertion…");
     // r.json.options is the WebAuthn get() options the server chose.
     const assertion = await get({ publicKey: r.json.options.publicKey });
-    const c = await postJSON("/auth/mfa/complete",
+    const c = await postJSON("/v1/auth/mfa/complete",
       { ceremonyId: r.json.ceremonyId, assertion });
     if (!c.ok) { log("mfa complete failed: " + c.json); return; }
-    // /auth/mfa/complete returns a token pair directly.
+    // /v1/auth/mfa/complete returns a token pair directly.
     accessToken = c.json.accessToken;
     log("MFA complete — tokens issued.");
   }
@@ -48,13 +48,13 @@ document.getElementById("enrollBtn").addEventListener("click", async () => {
   if (!accessToken) { log("log in first"); return; }
   const label = document.getElementById("label").value;
 
-  const b = await postJSON("/auth/passkeys/register/begin", {}, accessToken);
+  const b = await postJSON("/v1/auth/passkeys/register/begin", {}, accessToken);
   if (!b.ok) { log("register/begin failed: " + b.json); return; }
 
   // b.json.options is the WebAuthn create() options the server chose.
   const credential = await create({ publicKey: b.json.options.publicKey });
 
-  const c = await postJSON("/auth/passkeys/register/complete",
+  const c = await postJSON("/v1/auth/passkeys/register/complete",
     { ceremonyId: b.json.ceremonyId, credential, label }, accessToken);
   if (!c.ok) { log("register/complete failed: " + c.json); return; }
   log("passkey enrolled: " + c.json.passkeyId + " (" + (c.json.label ?? "no label") + ")");

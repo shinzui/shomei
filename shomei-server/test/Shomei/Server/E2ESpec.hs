@@ -69,7 +69,7 @@ scenario pool port = do
   mgr <- newManager defaultManagerSettings
 
   -- (a) signup: 200 with a token pair and an active user.
-  (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupBody
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupBody
   sStatus @?= 200
   sresp <- must "signup body" sBody
   (dig ["user", "email"] sresp >>= asText) @?= Just email
@@ -77,28 +77,28 @@ scenario pool port = do
   signupRefresh <- must "signup refreshToken" (dig ["token", "refreshToken"] sresp >>= asText)
 
   -- (b) login: a fresh token pair.
-  (lStatus, lBody) <- postJSON mgr port "/auth/login" loginBody
+  (lStatus, lBody) <- postJSON mgr port "/v1/auth/login" loginBody
   lStatus @?= 200
   lresp <- must "login body" lBody
   loginAccess <- must "login accessToken" (dig ["token", "accessToken"] lresp >>= asText)
 
   -- (c) me with Bearer → 200; (d) without → 401.
-  (meStatus, meBody) <- getJSON mgr port "/auth/me" (bearer loginAccess)
+  (meStatus, meBody) <- getJSON mgr port "/v1/auth/me" (bearer loginAccess)
   meStatus @?= 200
   meresp <- must "me body" meBody
   (dig ["email"] meresp >>= asText) @?= Just email
-  (noTokStatus, _) <- getJSON mgr port "/auth/me" []
+  (noTokStatus, _) <- getJSON mgr port "/v1/auth/me" []
   noTokStatus @?= 401
 
   -- (e) refresh rotates the signup token.
-  (rStatus, rBody) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= signupRefresh])
+  (rStatus, rBody) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= signupRefresh])
   rStatus @?= 200
   rresp <- must "refresh body" rBody
   rotatedRefresh <- must "rotated refreshToken" (dig ["refreshToken"] rresp >>= asText)
   assertBool "rotated refresh token differs" (rotatedRefresh /= signupRefresh)
 
   -- (f) replaying the OLD signup refresh token is detected as theft → 401.
-  (reuseStatus, _) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= signupRefresh])
+  (reuseStatus, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= signupRefresh])
   reuseStatus @?= 401
 
   -- reuse must have landed in PostgreSQL: the family's session is revoked and a
@@ -112,13 +112,13 @@ scenario pool port = do
   reuseEvents @?= 1
 
   -- (g) the rotated token is now dead too (the whole session was revoked).
-  (deadStatus, _) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= rotatedRefresh])
+  (deadStatus, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= rotatedRefresh])
   deadStatus @?= 401
 
   -- (h) logout the login session → 204.
-  (logoutStatus, _) <- postJSON mgr port "/auth/logout" (object [])
+  (logoutStatus, _) <- postJSON mgr port "/v1/auth/logout" (object [])
   -- logout needs a Bearer token; send it as a header-only POST.
-  logoutStatus' <- postNoBody mgr port "/auth/logout" (bearer loginAccess)
+  logoutStatus' <- postNoBody mgr port "/v1/auth/logout" (bearer loginAccess)
   logoutStatus @?= 401 -- no token → 401
   logoutStatus' @?= 204
 

@@ -532,12 +532,53 @@
                                 }
                             }
                         },
+                        "description": "",
+                        "headers": {
+                            "Cache-Control": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "operationId": "getHealth",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        },
                         "description": ""
                     }
                 }
             }
         },
-        "/admin/audit/events": {
+        "/ready": {
+            "get": {
+                "operationId": "getReady",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReadyResponse"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/v1/admin/audit/events": {
             "get": {
                 "operationId": "getAdminAuditEvents",
                 "parameters": [
@@ -624,7 +665,7 @@
                 ]
             }
         },
-        "/auth/impersonate": {
+        "/v1/auth/impersonate": {
             "delete": {
                 "operationId": "deleteAuthImpersonate",
                 "responses": {
@@ -671,7 +712,7 @@
                 ]
             }
         },
-        "/auth/login": {
+        "/v1/auth/login": {
             "post": {
                 "operationId": "createAuthLogin",
                 "requestBody": {
@@ -707,7 +748,7 @@
                 }
             }
         },
-        "/auth/login/passkey/begin": {
+        "/v1/auth/login/passkey/begin": {
             "post": {
                 "operationId": "createAuthLoginPasskeyBegin",
                 "responses": {
@@ -724,7 +765,7 @@
                 }
             }
         },
-        "/auth/login/passkey/complete": {
+        "/v1/auth/login/passkey/complete": {
             "post": {
                 "operationId": "createAuthLoginPasskeyComplete",
                 "requestBody": {
@@ -760,7 +801,7 @@
                 }
             }
         },
-        "/auth/logout": {
+        "/v1/auth/logout": {
             "post": {
                 "operationId": "createAuthLogout",
                 "responses": {
@@ -785,7 +826,7 @@
                 ]
             }
         },
-        "/auth/me": {
+        "/v1/auth/me": {
             "get": {
                 "operationId": "getAuthMe",
                 "responses": {
@@ -807,7 +848,7 @@
                 ]
             }
         },
-        "/auth/mfa/complete": {
+        "/v1/auth/mfa/complete": {
             "post": {
                 "operationId": "createAuthMfaComplete",
                 "requestBody": {
@@ -843,7 +884,7 @@
                 }
             }
         },
-        "/auth/passkeys": {
+        "/v1/auth/passkeys": {
             "get": {
                 "operationId": "getAuthPasskeys",
                 "responses": {
@@ -868,7 +909,7 @@
                 ]
             }
         },
-        "/auth/passkeys/register/begin": {
+        "/v1/auth/passkeys/register/begin": {
             "post": {
                 "operationId": "createAuthPasskeysRegisterBegin",
                 "responses": {
@@ -890,7 +931,7 @@
                 ]
             }
         },
-        "/auth/passkeys/register/complete": {
+        "/v1/auth/passkeys/register/complete": {
             "post": {
                 "operationId": "createAuthPasskeysRegisterComplete",
                 "requestBody": {
@@ -924,7 +965,7 @@
                 ]
             }
         },
-        "/auth/passkeys/{passkeyId}": {
+        "/v1/auth/passkeys/{passkeyId}": {
             "delete": {
                 "operationId": "deleteAuthPasskeysPasskeyId",
                 "parameters": [
@@ -955,7 +996,7 @@
                 ]
             }
         },
-        "/auth/password-reset/confirm": {
+        "/v1/auth/password-reset/confirm": {
             "post": {
                 "operationId": "createAuthPasswordResetConfirm",
                 "requestBody": {
@@ -980,7 +1021,7 @@
                 }
             }
         },
-        "/auth/password-reset/request": {
+        "/v1/auth/password-reset/request": {
             "post": {
                 "operationId": "createAuthPasswordResetRequest",
                 "requestBody": {
@@ -1005,7 +1046,7 @@
                 }
             }
         },
-        "/auth/password/change": {
+        "/v1/auth/password/change": {
             "post": {
                 "operationId": "createAuthPasswordChange",
                 "requestBody": {
@@ -1032,7 +1073,7 @@
                 ]
             }
         },
-        "/auth/refresh": {
+        "/v1/auth/refresh": {
             "post": {
                 "operationId": "createAuthRefresh",
                 "parameters": [
@@ -1094,7 +1135,7 @@
                 }
             }
         },
-        "/auth/service-token": {
+        "/v1/auth/service-token": {
             "post": {
                 "operationId": "createAuthServiceToken",
                 "requestBody": {
@@ -1123,7 +1164,7 @@
                 }
             }
         },
-        "/auth/session": {
+        "/v1/auth/session": {
             "get": {
                 "operationId": "getAuthSession",
                 "responses": {
@@ -1145,7 +1186,7 @@
                 ]
             }
         },
-        "/auth/signup": {
+        "/v1/auth/signup": {
             "post": {
                 "operationId": "createAuthSignup",
                 "requestBody": {
@@ -1181,7 +1222,7 @@
                 }
             }
         },
-        "/auth/verify-email/confirm": {
+        "/v1/auth/verify-email/confirm": {
             "post": {
                 "operationId": "createAuthVerifyEmailConfirm",
                 "requestBody": {
@@ -1206,7 +1247,7 @@
                 }
             }
         },
-        "/auth/verify-email/request": {
+        "/v1/auth/verify-email/request": {
             "post": {
                 "operationId": "createAuthVerifyEmailRequest",
                 "requestBody": {
@@ -1230,44 +1271,11 @@
                     }
                 }
             }
-        },
-        "/health": {
-            "get": {
-                "operationId": "getHealth",
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HealthResponse"
-                                }
-                            }
-                        },
-                        "description": ""
-                    }
-                }
-            }
-        },
-        "/ready": {
-            "get": {
-                "operationId": "getReady",
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ReadyResponse"
-                                }
-                            }
-                        },
-                        "description": ""
-                    }
-                }
-            }
         }
     },
     "servers": [
         {
+            "description": "Local development server",
             "url": "http://localhost:8080"
         }
     ]

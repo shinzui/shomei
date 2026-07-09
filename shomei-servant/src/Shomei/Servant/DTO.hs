@@ -67,7 +67,7 @@ import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 import Shomei.Workflow.ServiceToken (IssuedServiceToken (..))
 
--- | @POST /auth/signup@ body. The principal is @loginId@; @email@ is optional. For backward
+-- | @POST /v1/auth/signup@ body. The principal is @loginId@; @email@ is optional. For backward
 -- compatibility either field may be omitted: an email-only caller (no @loginId@) defaults the
 -- login id to the email text in the handler, and at least one of the two must be present.
 data SignupRequest = SignupRequest
@@ -118,7 +118,7 @@ data UserResponse = UserResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/signup@ response: the user + the token pair.
+-- | @POST /v1/auth/signup@ response: the user + the token pair.
 data SignupResponse = SignupResponse
   { user :: !UserResponse,
     token :: !TokenPairResponse
@@ -126,7 +126,7 @@ data SignupResponse = SignupResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login@ body. Log in by @loginId@ (the principal); @email@ is accepted for
+-- | @POST /v1/auth/login@ body. Log in by @loginId@ (the principal); @email@ is accepted for
 -- backward compatibility and, when @loginId@ is omitted, the login id defaults to the email text.
 data LoginRequest = LoginRequest
   { loginId :: !(Maybe Text),
@@ -136,7 +136,7 @@ data LoginRequest = LoginRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login@ response. Either a completed login (user + token, the legacy shape
+-- | @POST /v1/auth/login@ response. Either a completed login (user + token, the legacy shape
 -- under a @"complete"@ tag) or an MFA challenge (a ceremony id + WebAuthn @get()@ options, no
 -- token). The wire JSON is a flat, @status@-tagged object:
 --
@@ -176,7 +176,7 @@ instance FromJSON LoginResponse where
       "mfa_required" -> LoginMfaRequiredResponse <$> o .: "ceremonyId" <*> o .: "options"
       other -> fail ("unknown login status: " <> Text.unpack other)
 
--- | @POST /auth/mfa/complete@ body: the ceremony id from the login challenge + the assertion JSON.
+-- | @POST /v1/auth/mfa/complete@ body: the ceremony id from the login challenge + the assertion JSON.
 data MfaCompleteRequest = MfaCompleteRequest
   { ceremonyId :: !Text,
     assertion :: !Value
@@ -184,7 +184,7 @@ data MfaCompleteRequest = MfaCompleteRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login/passkey/begin@ response: the ceremony id + the @get()@ options.
+-- | @POST /v1/auth/login/passkey/begin@ response: the ceremony id + the @get()@ options.
 data PasskeyLoginBeginResponse = PasskeyLoginBeginResponse
   { ceremonyId :: !Text,
     options :: !Value
@@ -192,7 +192,7 @@ data PasskeyLoginBeginResponse = PasskeyLoginBeginResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/login/passkey/complete@ body: the ceremony id from begin + the assertion JSON.
+-- | @POST /v1/auth/login/passkey/complete@ body: the ceremony id from begin + the assertion JSON.
 data PasskeyLoginCompleteRequest = PasskeyLoginCompleteRequest
   { ceremonyId :: !Text,
     assertion :: !Value
@@ -200,7 +200,7 @@ data PasskeyLoginCompleteRequest = PasskeyLoginCompleteRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/refresh@ body: the opaque refresh token.
+-- | @POST /v1/auth/refresh@ body: the opaque refresh token.
 --
 -- Optional, because in cookie transport the token arrives in the @shomei_refresh@ cookie and
 -- a browser client posts @{}@. A present body value takes precedence, so bearer clients are
@@ -235,7 +235,7 @@ data ChangePasswordRequest = ChangePasswordRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @GET /auth/session@ response.
+-- | @GET /v1/auth/session@ response.
 data SessionResponse = SessionResponse
   { sessionId :: !Text,
     userId :: !Text,
@@ -259,7 +259,7 @@ data ReadyResponse = ReadyResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/passkeys/register/begin@ response: the ceremony id (echoed back at
+-- | @POST /v1/auth/passkeys/register/begin@ response: the ceremony id (echoed back at
 -- complete) and the WebAuthn creation options the browser feeds to
 -- @navigator.credentials.create()@.
 data PasskeyRegisterBeginResponse = PasskeyRegisterBeginResponse
@@ -269,7 +269,7 @@ data PasskeyRegisterBeginResponse = PasskeyRegisterBeginResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/passkeys/register/complete@ body: the ceremony id from begin, the
+-- | @POST /v1/auth/passkeys/register/complete@ body: the ceremony id from begin, the
 -- browser's credential JSON verbatim (the @webauthn-json@ registration response), and an
 -- optional label.
 data PasskeyRegisterCompleteRequest = PasskeyRegisterCompleteRequest
@@ -343,7 +343,7 @@ loginResultToResponse cfg = \case
   MfaRequired (MfaChallenge cid opts) ->
     LoginMfaRequiredResponse {ceremonyId = idText cid, options = opts}
 
--- | @POST /auth/impersonate@ body: the target user id, a required reason, and an
+-- | @POST /v1/auth/impersonate@ body: the target user id, a required reason, and an
 -- optional support ticket id.
 data ImpersonateRequest = ImpersonateRequest
   { userId :: !Text,
@@ -353,7 +353,7 @@ data ImpersonateRequest = ImpersonateRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/impersonate@ response: the delegated access token, the subject
+-- | @POST /v1/auth/impersonate@ response: the delegated access token, the subject
 -- (customer) and actor (operator) ids, and the token expiry as ISO-8601.
 data ImpersonateResponse = ImpersonateResponse
   { accessToken :: !Text,
@@ -364,7 +364,7 @@ data ImpersonateResponse = ImpersonateResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/service-token@ body: configured service account id, shared secret,
+-- | @POST /v1/auth/service-token@ body: configured service account id, shared secret,
 -- requested coarse scopes, and optional actor user id for @act@ attribution.
 data ServiceTokenRequest = ServiceTokenRequest
   { accountId :: !Text,
@@ -375,7 +375,7 @@ data ServiceTokenRequest = ServiceTokenRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/service-token@ response: refresh-less access token and lifetime.
+-- | @POST /v1/auth/service-token@ response: refresh-less access token and lifetime.
 data ServiceTokenResponse = ServiceTokenResponse
   { accessToken :: !Text,
     expiresIn :: !Int

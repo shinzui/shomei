@@ -21,6 +21,8 @@ module Shomei.Client
   ( Token (..),
     ShomeiClient,
     shomeiClient,
+    ShomeiRoutesClient,
+    shomeiRoutesClient,
     shomeiClientEnv,
     runClient,
     ClientEnv,
@@ -70,7 +72,7 @@ import Servant.Client.Core.HasClient (AsClientT, HasClient (..))
 import Servant.Client.Generic (genericClient)
 import Shomei.Id (PasskeyId)
 import Shomei.Prelude
-import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.API (ShomeiAPI, ShomeiRoutes)
 import Shomei.Servant.API qualified as API
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO
@@ -90,7 +92,7 @@ import Shomei.Servant.DTO
     UserResponse,
   )
 
--- | A Bearer access token (the signed JWT the server returned from @\/auth\/login@).
+-- | A Bearer access token (the signed JWT the server returned from @\/v1\/auth\/login@).
 newtype Token = Token {unToken :: Text}
   deriving stock (Eq, Show)
 
@@ -122,11 +124,21 @@ bearer tok =
   mkAuthenticatedRequest tok \(Token jwt) req ->
     addHeader "Authorization" ("Bearer " <> jwt) req
 
+-- | The client for the whole served tree: the @v1@ field carries the application client, and
+-- @jwks@\/@health@\/@ready@ reach the unversioned root endpoints.
+type ShomeiRoutesClient = ShomeiRoutes (AsClientT ClientM)
+
+shomeiRoutesClient :: ShomeiRoutesClient
+shomeiRoutesClient = genericClient
+
 -- | The record of client functions, derived from 'ShomeiAPI' (fields match the API).
 type ShomeiClient = ShomeiAPI (AsClientT ClientM)
 
+-- | The application client, reached through the @v1@ field of the root client. Each function
+-- it contains already carries the @\/v1@ segment, because the segment lives in the route type
+-- — so callers keep passing a bare base URL to 'shomeiClientEnv'.
 shomeiClient :: ShomeiClient
-shomeiClient = genericClient
+shomeiClient = API.v1 shomeiRoutesClient
 
 -- | Build a 'ClientEnv' from a base URL string, e.g. @"http:\/\/localhost:8080"@.
 shomeiClientEnv :: String -> IO ClientEnv

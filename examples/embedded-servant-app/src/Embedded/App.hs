@@ -1,11 +1,11 @@
 -- | The embedded deployment model: a host Servant application that mounts the whole
--- Shōmei auth API under @\/auth@ and adds its own business route @\/projects@ guarded by the
--- same 'Authenticated' combinator.
+-- Shōmei auth API and adds its own business route @\/projects@ guarded by the same
+-- 'Authenticated' combinator.
 --
 -- The host reuses the /real/ adapter assembly from @shomei-server@ — the same `Env`, the
--- same `seamEnv`/`authContext`, and the same `shomeiServer` handlers — so the mounted auth
+-- same `seamEnv`/`authContext`, and the same `shomeiRoutes` handlers — so the mounted auth
 -- routes and the app's own guard share one signing key, one verifier, and one effect stack.
--- A token minted by @\/auth\/login@ is therefore accepted by @\/projects@.
+-- A token minted by @\/v1\/auth\/login@ is therefore accepted by @\/projects@.
 module Embedded.App
   ( AppAPI,
     Project (..),
@@ -29,9 +29,9 @@ import Servant
 import Servant.Server (Handler)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
 import Shomei.Prelude
-import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, Authenticated)
-import Shomei.Servant.Handlers (shomeiServer)
+import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Server.App (Env)
 import Shomei.Server.Boot (authContext, seamEnv)
 
@@ -43,11 +43,12 @@ data Project = Project
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | The host application's API: every Shōmei auth route (they already live under
--- @\/auth@ in 'ShomeiAPI', so they are mounted directly, not under an extra prefix), plus
--- an app-owned @\/projects@ route guarded by the same 'Authenticated' combinator.
+-- | The host application's API: the whole Shōmei route tree ('ShomeiRoutes' already carries
+-- the @\/v1@ prefix on its application routes and serves @\/.well-known\/jwks.json@,
+-- @\/health@, @\/ready@ at the root, so it is mounted directly, not under an extra prefix),
+-- plus an app-owned @\/projects@ route guarded by the same 'Authenticated' combinator.
 type AppAPI =
-  NamedRoutes ShomeiAPI
+  NamedRoutes ShomeiRoutes
     :<|> Authenticated :> "projects" :> Get '[JSON] [Project]
     :<|> Raw -- static passkey-demo assets from ./www, served last so it cannot shadow the typed routes
 
@@ -63,7 +64,7 @@ embeddedApplicationWith wwwDir env =
   serveWithContext
     (Proxy @AppAPI)
     (authContext senv)
-    (shomeiServer senv :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
+    (shomeiRoutes senv :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
   where
     senv = seamEnv env
 

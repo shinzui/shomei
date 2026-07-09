@@ -192,7 +192,7 @@ data PasskeyRemovedData = PasskeyRemovedData
 
 -- | A password login succeeded for an account with a passkey, so a WebAuthn
 -- second factor is now demanded (no session issued yet). 'ceremonyId' is the
--- consume-once pending-MFA handle the client completes at @\/auth\/mfa\/complete@.
+-- consume-once pending-MFA handle the client completes at @\/v1\/auth\/mfa\/complete@.
 data MfaChallengedData = MfaChallengedData
   { userId :: !UserId,
     ceremonyId :: !CeremonyId,

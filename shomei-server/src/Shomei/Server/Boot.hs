@@ -55,10 +55,10 @@ import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
-import Shomei.Servant.API (shomeiAPI)
+import Shomei.Servant.API (shomeiRoutesAPI)
 import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Error (shomeiErrorFormatters)
-import Shomei.Servant.Handlers (shomeiServer)
+import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
@@ -295,11 +295,15 @@ millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 -- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification
 -- uses exactly the keys the server signs with.
--- | 'problemMiddleware' converts Servant's one un-formattable failure — the bare @405@ a method
+--
+-- The served tree is 'shomeiRoutesAPI' (EP-3): application routes under @\/v1@, JWKS and the
+-- probes at unversioned root paths.
+--
+-- 'problemMiddleware' converts Servant's one un-formattable failure — the bare @405@ a method
 -- mismatch raises below any 'ErrorFormatters' hook — into a problem document, so /every/ error
 -- the process emits carries the same envelope.
 application :: Env -> Application
-application env = problemMiddleware (serveWithContext shomeiAPI (authContext senv) (shomeiServer senv))
+application env = problemMiddleware (serveWithContext shomeiRoutesAPI (authContext senv) (shomeiRoutes senv))
   where
     senv = seamEnv env
 

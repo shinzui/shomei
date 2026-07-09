@@ -3,7 +3,7 @@
 -- Two cookies, set together by every response that issues a token pair:
 --
 -- * @shomei_session@ — the access token. @Path=\/@, @Max-Age@ = @accessTokenTTL@.
--- * @shomei_refresh@ — the refresh token. @Path=\/auth\/refresh@, @Max-Age@ =
+-- * @shomei_refresh@ — the refresh token. @Path=\/v1\/auth\/refresh@, @Max-Age@ =
 --   @refreshTokenTTL@. Scoping it to the one endpoint that consumes it means the browser
 --   never presents this long-lived credential anywhere else.
 --
@@ -69,12 +69,21 @@ sessionCookieName = "shomei_session"
 refreshCookieName :: ByteString
 refreshCookieName = "shomei_refresh"
 
+-- | The refresh cookie's @Path@ scope: the browser sends it to exactly one endpoint, so an
+-- XSS anywhere else in the origin cannot read or replay it.
+--
+-- This must track the served path of 'Shomei.Servant.API.ShomeiAPI'\'s @refresh@ route, which
+-- 'Shomei.Servant.API.ShomeiRoutes' mounts under @\/v1@. A host that mounts @ShomeiAPI@ at a
+-- different prefix breaks the match and with it cookie-mode refresh.
+refreshCookiePath :: ByteString
+refreshCookiePath = "/v1/auth/refresh"
+
 -- | The cookies that carry a freshly-issued token pair.
 tokenCookies :: ShomeiConfig -> TokenPair -> CookiePair
 tokenCookies cfg pair =
   CookiePair
     { sessionCookie = render (base sessionCookieName "/" cfg.accessTokenTTL) {setCookieValue = accessBytes},
-      refreshCookie = render (base refreshCookieName "/auth/refresh" cfg.refreshTokenTTL) {setCookieValue = refreshBytes}
+      refreshCookie = render (base refreshCookieName refreshCookiePath cfg.refreshTokenTTL) {setCookieValue = refreshBytes}
     }
   where
     AccessToken accessText = pair.accessToken
@@ -90,7 +99,7 @@ clearedCookies :: ShomeiConfig -> CookiePair
 clearedCookies cfg =
   CookiePair
     { sessionCookie = render (expire (cookieBase cfg sessionCookieName "/")),
-      refreshCookie = render (expire (cookieBase cfg refreshCookieName "/auth/refresh"))
+      refreshCookie = render (expire (cookieBase cfg refreshCookieName refreshCookiePath))
     }
   where
     expire c = c {setCookieValue = "", setCookieMaxAge = Just (secondsToDiffTime 0)}

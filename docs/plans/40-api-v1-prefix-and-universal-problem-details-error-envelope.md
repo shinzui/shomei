@@ -106,13 +106,15 @@ Milestone 1 — The universal problem-details envelope: **done 2026-07-09**
 - [x] Updated the two existing assertions that read `.error` (`email_not_verified`, `csrf_rejected`) to read `.code`.
 - [x] `grep -rn 'errBody = "' shomei-servant/src shomei-server/src` finds only the two base `err422`/`err429` constructors, which are never sent as-is. `cabal test all` green (12 suites).
 
-Milestone 2 — The `/v1` boundary:
+Milestone 2 — The `/v1` boundary: **done 2026-07-09**
 
-- [ ] Split `ShomeiAPI`: new root record `ShomeiRoutes` (`v1`, `jwks`, `health`, `ready`) in `API.hs`; `jwks`/`health`/`ready` removed from `ShomeiAPI`; `AppAPI` example updated.
-- [ ] Handlers: `shomeiRoutes :: Env -> ShomeiRoutes (AsServerT Handler)`; `Boot.application` serves the root record.
-- [ ] `shomei-client`: root `genericClient`, wrappers reach the nested v1 record; builds green.
-- [ ] Examples updated: `examples/embedded-servant-app` (mount + `www/passkeys.js` fetch paths), `examples/microservice-auth-stack` (any `/auth/...` path).
-- [ ] All servant/e2e tests moved to `/v1/...` paths; explicit test: old `/auth/login` → 404 problem document.
+- [x] Split `ShomeiAPI`: new root record `ShomeiRoutes` (`v1`, `jwks`, `health`, `ready`) in `API.hs`; `jwks`/`health`/`ready` removed from `ShomeiAPI`; `AppAPI` example updated. The JWKS route gained its `Cache-Control` `Headers` here, as planned.
+- [x] Handlers: `shomeiRoutes :: Env -> ShomeiRoutes (AsServerT Handler)`; `Boot.application` serves the root record.
+- [x] `shomei-client`: root `shomeiRoutesClient = genericClient`, and `shomeiClient = API.v1 shomeiRoutesClient` — plain selector application, no `(//)` needed. Every curated wrapper is unchanged.
+- [x] Examples updated: `examples/embedded-servant-app` (mounts `NamedRoutes ShomeiRoutes`; `www/passkeys.js` fetch paths), `examples/microservice-auth-stack` (`process-compose.yaml` curl hints; the JWKS URL is unchanged).
+- [x] **Three path-literal sites the plan did not name** — all found by grep, all silent failures if missed: the rate limiter's `throttledPath` list (`RateLimit.hs`), the refresh cookie's `Path` (`Cookie.hs`), and the metrics middleware's login/signup/refresh counters (`Metrics.hs`). Plus `Notify.hs`'s verification/reset links. See Surprises.
+- [x] All servant/e2e tests moved to `/v1/...`; new `scenarioVersionBoundary` asserts old paths → 404 problem doc, `/v1/auth/me` → 401 (so it routes), probes and JWKS at the root with `Cache-Control`, and `/v1/health`/`/v1/.well-known/jwks.json` → 404. New `testThrottledPathsAreVersioned` pins the limiter's list.
+- [x] `OpenApi.hs` generates from `ShomeiRoutes`; `servers` gained a description. `camel` drops the leading `v1` segment so `operationId`s are unchanged by the move (Decision Log). Spec regenerated: 24 paths, byte-for-byte reproducible. `cabal test all` green (11 suites, exit 0).
 
 Milestone 3 — Status-code corrections:
 
@@ -171,6 +173,48 @@ found them: `Shomei.Servant.Auth.csrfRejected` (a hand-written
 `{"error":"csrf_rejected","message":…}` JSON literal) and `refreshH`'s plain-text
 `"refreshToken required"` 400. Both are converted. The lesson: run the grep, do not trust the
 list — which is exactly what the plan's Concrete Steps tell you to do.
+
+**2026-07-09 (M2) — moving the routes silently disarmed the rate limiter, and nothing failed.**
+`Shomei.Server.Middleware.RateLimit.throttledPath` matches `pathInfo` against a literal list
+(`["auth","login"]`, …). It answers *before* Servant routes anything, so it cannot be derived
+from the route type; after the move it matched nothing, and every login, signup, and
+password-reset request sailed through unthrottled. The whole suite stayed green — brute-force
+protection has no positive test that a *request* is refused, only unit tests of `takeToken`.
+Fixed by versioning the list, exporting `throttledPath`, and adding `testThrottledPathsAreVersioned`.
+Confirmed live: 90 parallel `POST /v1/auth/login` → 32×401, 58×429 with `Retry-After: 60`.
+
+Two more path literals in the same class, neither named by this plan's Context section, both
+found only by grepping for the string rather than trusting the list:
+
+- `Shomei.Servant.Cookie` scopes the refresh cookie to `Path=/auth/refresh`. Unversioned, the
+  browser would never send it to `/v1/auth/refresh` and cookie-mode refresh would break for
+  every browser client while every bearer-mode test passed. Now a named `refreshCookiePath`
+  constant.
+- `Shomei.Server.Observability.Metrics.recordRequest` matches `("POST","/auth/login",200)` to
+  drive `shomei_logins_succeeded_total` / `shomei_tokens_issued_total`. Unversioned, the
+  domain counters would flatline at zero. Verified live after the fix: a signup + login moves
+  them to 2 and 1.
+- `Shomei.Notify` builds the `publicBaseUrl <> "/auth/verify-email/confirm"` link that lands in
+  a user's inbox. Verified live: the log line now reads `link=…/v1/auth/verify-email/confirm?token=…`.
+
+**The lesson generalizes to every later plan in MasterPlan 7 that adds or moves a route.** A
+Servant route type is not the only place a path is written down; the WAI layer (which runs
+before routing), the cookie scope, and the metrics vocabulary all hard-code strings that no
+type checks. `grep -rn '"/auth' --include='*.hs'` before declaring a path move done.
+
+**2026-07-09 (M2) — `operationId`s are stable across the move because `camel` drops the `v1`
+segment.** `withOperationIds` derives ids from the path, so `/v1/auth/me` would have become
+`getV1AuthMe`, renaming every method in every generated client — and renaming them all again at
+`/v2`. Dropping the version segment keeps `getAuthMe`, so the committed spec's diff is paths and
+the JWKS `Cache-Control` header only. The version still reaches clients through `paths`, which is
+where it belongs.
+
+**2026-07-09 (M2) — the client nests with plain selector application.** The plan hedged between
+`API.v1 shomeiRoutesClient` and servant's `(//)` helper. The selector works directly:
+`Client m (NamedRoutes api)` reduces to `api (AsClientT m)`, so the `v1` field of the root client
+*is* the `ShomeiAPI` client record. `shomeiClient = API.v1 shomeiRoutesClient` and no curated
+wrapper changed. `embedded-servant-app-test`, which drives signup/login through the real typed
+client, is the end-to-end proof that the derived paths carry `/v1`.
 
 **2026-07-09 — `RoleNotDefined`'s message was dynamic; it is now a `title` + `detail`.** The
 pre-7807 mapping produced `"Role not defined: " <> r`, folding a request-specific value into the
@@ -287,6 +331,32 @@ Record every decision made while working on the plan.
   condition — "your credential is not usable, re-authenticate". The titles differ because the
   causes do, and a human reading a log wants to know which. The drift-guard test (M4) must
   therefore assert code *membership*, not uniqueness.
+  Date: 2026-07-09
+
+- Decision: `withOperationIds` drops the leading `v1` path segment, so every `operationId` is
+  unchanged by the move (`getAuthMe`, not `getV1AuthMe`).
+  Rationale: an `operationId` names what an operation *does*; generated clients turn it into a
+  method name. Folding the version in renames every method the day routes move under `/v1`, and
+  renames them all again at `/v2` — churn that carries no information. The version reaches
+  clients through the `paths` keys, which is the part of the document that is *about* URLs.
+  Date: 2026-07-09
+
+- Decision: Three path literals outside the Servant route types move with the routes: the rate
+  limiter's `throttledPath` list, the refresh cookie's `Path` attribute, and the metrics
+  middleware's per-route counter table. The rate limiter's list gains a test.
+  Rationale: each is a string the type system cannot check, and each fails *silently* — an
+  unthrottled login endpoint, a refresh cookie the browser never sends, domain counters stuck at
+  zero. The limiter's is the dangerous one (it is a security control that reports success while
+  doing nothing), so it gets `testThrottledPathsAreVersioned` pinning both directions.
+  Date: 2026-07-09
+
+- Decision: `Shomei.Servant.Cookie` keeps hard-coding `/v1/auth/refresh` rather than deriving it
+  from the route type; a host that mounts the bare `ShomeiAPI` record at its own prefix is
+  documented as breaking cookie-mode refresh.
+  Rationale: deriving the served path of one field of a `NamedRoutes` record needs a type-level
+  path reifier that Servant does not export, and the embedded example — the only in-tree host —
+  mounts `ShomeiRoutes` unprefixed, where the constant is correct. The trade is a named constant
+  and a haddock warning against machinery no caller has asked for.
   Date: 2026-07-09
 
 - Decision: Future `/oauth/*` token-endpoint errors (RFC 6749 §5.2 —

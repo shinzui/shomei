@@ -2,12 +2,18 @@
 -- the embedded 'AppAPI' example proving the API and combinators compose inside a host
 -- Servant application.
 --
+-- The served tree is 'ShomeiRoutes': every application route lives under @\/v1@, while
+-- protocol and infrastructure endpoints keep unversioned root paths. 'ShomeiAPI' is the
+-- application record alone, mountable anywhere a host likes.
+--
 -- Public routes (@signup@/@login@/@refresh@) carry no auth. Routes that need a
 -- principal carry the 'Authenticated' combinator on the individual field, so only
 -- those handlers receive a leading 'Shomei.Servant.Auth.AuthUser'. The @jwks@ route
 -- returns an @aeson@ 'Value' (the public JWKS document, supplied at assembly time).
 module Shomei.Servant.API
-  ( ShomeiAPI (..),
+  ( ShomeiRoutes (..),
+    shomeiRoutesAPI,
+    ShomeiAPI (..),
     shomeiAPI,
     AppAPI,
     Project (..),
@@ -51,8 +57,9 @@ import Shomei.Servant.DTO
     VerifyEmailRequest,
   )
 
--- | The standalone API. @signup@/@login@/@refresh@/@logout@/@me@/@session@ live
--- under @\/auth@; @jwks@ under @\/.well-known@; @health@ at @\/health@.
+-- | The application API. @signup@/@login@/@refresh@/@logout@/@me@/@session@ live under
+-- @\/auth@; the audit trail under @\/admin@. Every route here is versioned: 'ShomeiRoutes'
+-- mounts the whole record under @\/v1@, so @signup@ answers at @\/v1\/v1\/auth\/signup@.
 data ShomeiAPI mode = ShomeiAPI
   { signup ::
       mode
@@ -174,7 +181,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> Verb 'DELETE 204 '[JSON] NoContent,
     -- | Finish a password-then-passkey step-up. Unauthenticated: completing the second
     --     factor is exactly how the caller obtains a session. (The challenge itself rides in the
-    --     @mfa_required@ arm of @POST \/auth\/login@, so there is no @\/auth\/mfa\/begin@.)
+    --     @mfa_required@ arm of @POST \/v1\/auth\/login@, so there is no @\/v1\/auth\/mfa\/begin@.)
     mfaComplete ::
       mode
         :- "auth"
@@ -201,7 +208,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> "complete"
           :> ReqBody '[JSON] PasskeyLoginCompleteRequest
           :> Post '[JSON] (WithCookies TokenPairResponse),
-    -- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
+    -- | @POST /v1/auth/impersonate@: exchange the caller's token for a short-lived delegated
     --     token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
     --     client IP for the audit record.
     impersonate ::
@@ -212,7 +219,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> RemoteHost
           :> ReqBody '[JSON] ImpersonateRequest
           :> Post '[JSON] ImpersonateResponse,
-    -- | @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session
+    -- | @DELETE /v1/auth/impersonate@: stop impersonating by revoking the delegated session
     --     named by the presented token. Authenticated.
     stopImpersonate ::
       mode
@@ -220,7 +227,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> "impersonate"
           :> Authenticated
           :> DeleteNoContent,
-    -- | @GET /admin/audit/events@ (EP-7): an admin-gated, filtered, keyset-paginated page
+    -- | @GET /v1/admin/audit/events@ (EP-7): an admin-gated, filtered, keyset-paginated page
     --     of the audit trail. Repeated @?type=@ collects into a list; @?before=@ takes an
     --     opaque cursor from a previous page's @nextCursor@.
     --
@@ -240,41 +247,67 @@ data ShomeiAPI mode = ShomeiAPI
           :> QueryParam "until" Text
           :> QueryParam "limit" Int
           :> QueryParam "before" Text
-          :> Get '[JSON] AuditEventsPage,
+          :> Get '[JSON] AuditEventsPage
+  }
+  deriving stock (Generic)
+
+-- | A 'Proxy' carrying the /application/ API type, for a host that mounts 'ShomeiAPI' at a
+-- prefix of its own choosing. The standalone server serves 'shomeiRoutesAPI' instead.
+shomeiAPI :: Proxy (NamedRoutes ShomeiAPI)
+shomeiAPI = Proxy
+
+-- | The served route tree (EP-3): application routes under @\/v1@; protocol and
+-- infrastructure endpoints at unversioned root paths.
+--
+-- The split is deliberate and permanent. @\/.well-known\/*@ is where OAuth2\/OIDC tooling
+-- looks by convention — versioning it would break the auto-configuration that makes Shōmei
+-- consumable by stock middleware — and @\/health@\/@\/ready@ are deployment contracts a load
+-- balancer is configured against, not API surface that evolves with the application. The
+-- future @\/oauth\/*@ endpoints join them at the root for the same reason. @\/metrics@ is a
+-- WAI middleware and never reaches Servant at all.
+--
+-- Everything else is versioned so the next breaking change has somewhere to go.
+data ShomeiRoutes mode = ShomeiRoutes
+  { v1 :: mode :- "v1" :> NamedRoutes ShomeiAPI,
+    -- | The public JWKS document. 'Cache-Control' bounds how long a verifier may keep a
+    --     revoked key's public half: key rotation is staged (@pending → active → retired →
+    --     revoked@), so a retiring key stays /trusted/ for verification far longer than five
+    --     minutes and a stale copy of this document can never reject a valid token.
     jwks ::
       mode
         :- ".well-known"
           :> "jwks.json"
-          :> Get '[JSON] Value,
-    health ::
-      mode
-        :- "health"
-          :> Get '[JSON] HealthResponse,
-    ready ::
-      mode
-        :- "ready"
-          :> Get '[JSON] ReadyResponse
+          :> Get '[JSON] (Headers '[Header "Cache-Control" Text] Value),
+    health :: mode :- "health" :> Get '[JSON] HealthResponse,
+    ready :: mode :- "ready" :> Get '[JSON] ReadyResponse
   }
   deriving stock (Generic)
 
--- | A 'Proxy' carrying the API type for 'Servant.serveWithContext'.
-shomeiAPI :: Proxy (NamedRoutes ShomeiAPI)
-shomeiAPI = Proxy
+-- | A 'Proxy' carrying the served route tree for 'Servant.serveWithContext'.
+shomeiRoutesAPI :: Proxy (NamedRoutes ShomeiRoutes)
+shomeiRoutesAPI = Proxy
 
 -- | A stand-in host resource for the embeddability example.
 newtype Project = Project {projectId :: Text}
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | Embeddability proof: mount the whole Shōmei API under @\/auth@ alongside a host route
--- protected by 'Authenticated', plus an admin route protected by 'RequireRole'. This
--- type-checks to show the API type and the combinators compose inside a host Servant app.
+-- | Embeddability proof: mount the whole served Shōmei tree alongside a host route protected
+-- by 'Authenticated', plus an admin route protected by 'RequireRole'. This type-checks to show
+-- the API type and the combinators compose inside a host Servant app.
+--
+-- Mounting 'ShomeiRoutes' (rather than 'ShomeiAPI') is what a host normally wants: it brings
+-- the @\/v1@ prefix, the JWKS document, and the probes along at the paths every Shōmei client,
+-- verifier, and load balancer already expects. A host that wants only the application routes,
+-- at a prefix of its own, mounts @NamedRoutes ShomeiAPI@ instead — but then the @\/v1@ segment
+-- and the refresh cookie's @Path@ ('Shomei.Servant.Cookie') no longer agree, so it must set
+-- @cookieTransport@ off or accept that cookie-mode refresh will not work.
 --
 -- Note that 'RequireRole' /replaces/ 'Authenticated' rather than accompanying it: it runs the
 -- same 'Shomei.Servant.Auth.authHandler' from the Servant context, then checks the role, and
 -- passes the resulting 'Shomei.Servant.Auth.AuthUser' to the handler. Both combinators enforce;
 -- neither is documentation.
 type AppAPI =
-  "auth" :> NamedRoutes ShomeiAPI
+  NamedRoutes ShomeiRoutes
     :<|> Authenticated :> "projects" :> Get '[JSON] [Project]
     :<|> RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [User]

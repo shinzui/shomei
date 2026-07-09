@@ -1,4 +1,4 @@
--- | EP-27 M4 — OpenAPI 3.1 conformance for 'Shomei.Servant.API.ShomeiAPI'.
+-- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.API.ShomeiRoutes'.
 --
 -- Two layers:
 --
@@ -22,7 +22,7 @@ import Data.Proxy (Proxy (..))
 import Servant.API (NamedRoutes, NoContent (..))
 import Data.OpenApi (NamedSchema (..), ToSchema (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
-import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.DTO
 import Shomei.Servant.OpenApi (shomeiOpenApi)
 import Test.Hspec
@@ -50,7 +50,7 @@ main = hspec spec
 spec :: Spec
 spec = do
   describe "OpenAPI 3.1 schema: ToJSON matches ToSchema" $
-    validateEveryToJSON (Proxy :: Proxy (NamedRoutes ShomeiAPI))
+    validateEveryToJSON (Proxy :: Proxy (NamedRoutes ShomeiRoutes))
 
   describe "shomeiOpenApi document" $ do
     it "declares OpenAPI version 3.1.0" $

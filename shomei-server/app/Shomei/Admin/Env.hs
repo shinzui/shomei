@@ -34,7 +34,7 @@ data AdminEnv = AdminEnv
     connStr :: !Text,
     -- | Argon2id cost parameters for @users create@. Read from the same @SHOMEI_ARGON2_*@
     --     variables the server uses, so a password seeded by the CLI is hashed exactly as one
-    --     created through @POST \/auth\/signup@ would be.
+    --     created through @POST \/v1\/auth\/signup@ would be.
     argon2 :: !Argon2Params
   }
 

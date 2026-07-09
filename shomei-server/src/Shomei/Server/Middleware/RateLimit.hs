@@ -41,6 +41,7 @@ module Shomei.Server.Middleware.RateLimit
     newRateLimiter,
     newRateLimiterWith,
     rateLimitMiddleware,
+    throttledPath,
     takeToken,
     bucketCount,
   )
@@ -155,16 +156,21 @@ rateLimitMiddleware rl app req respond
 
 -- | The unauthenticated POST endpoints the limiter guards. Authenticated routes (which carry
 -- a bearer token) are intentionally excluded.
+--
+-- The paths are matched literally, so they carry the @v1@ segment
+-- 'Shomei.Servant.API.ShomeiRoutes' mounts the application routes under. A mismatch here does
+-- not fail loudly — it silently lets every login attempt through — so any route move must
+-- update this list.
 throttledPath :: Request -> Bool
 throttledPath req =
   requestMethod req == methodPost && pathInfo req `elem` unauthPaths
   where
     unauthPaths =
-      [ ["auth", "login"],
-        ["auth", "signup"],
-        ["auth", "refresh"],
-        ["auth", "verify-email", "request"],
-        ["auth", "password-reset", "request"]
+      [ ["v1", "auth", "login"],
+        ["v1", "auth", "signup"],
+        ["v1", "auth", "refresh"],
+        ["v1", "auth", "verify-email", "request"],
+        ["v1", "auth", "password-reset", "request"]
       ]
 
 -- | The per-IP key: the client's host address WITHOUT the ephemeral source port (otherwise

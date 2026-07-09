@@ -8,9 +8,9 @@
 # auth service per request.
 #
 # Then, from another shell:
-#   curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+#   curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
 #     -d '{"email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
-#   TOKEN=$(curl -s -X POST localhost:8080/auth/login -H 'content-type: application/json' \
+#   TOKEN=$(curl -s -X POST localhost:8080/v1/auth/login -H 'content-type: application/json' \
 #     -d '{"email":"ms@example.com","password":"correct horse battery staple"}' \
 #     | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"]["accessToken"])')
 #   curl -i localhost:8090/projects -H "Authorization: Bearer $TOKEN"     # 200 (verified locally)

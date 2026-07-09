@@ -42,7 +42,7 @@ tests =
         let out = render True (EmailVerificationRequested email (OneTimeToken rawToken) expires)
         assertBool
           ("full link expected in: " <> out)
-          (("/auth/verify-email/confirm?token=" <> Text.unpack rawToken) `isInfixOf` out)
+          (("/v1/auth/verify-email/confirm?token=" <> Text.unpack rawToken) `isInfixOf` out)
         assertBool "no hash prefix in raw mode" (not ("token_sha256=" `isInfixOf` out))
     ]
   where

@@ -17,7 +17,7 @@
 --
 -- __Why the CSRF gate exists.__ A browser attaches cookies to a request automatically, even
 -- when the request was triggered by a page on someone else's site. So a malicious page can
--- make a logged-in victim's browser POST to @\/auth\/logout@ or @\/auth\/password\/change@,
+-- make a logged-in victim's browser POST to @\/v1\/auth\/logout@ or @\/v1\/auth\/password\/change@,
 -- and the cookie rides along. The attacker cannot read the response, but the side effect is
 -- the attack. Bearer tokens are immune — a foreign page cannot set an @Authorization@ header
 -- — which is why the gate applies only to cookie-sourced credentials, and only to methods

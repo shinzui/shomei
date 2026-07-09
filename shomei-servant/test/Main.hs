@@ -104,12 +104,12 @@ import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Prelude ((&), (.~), (^.))
-import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Error (shomeiErrorFormatters)
-import Shomei.Servant.Handlers (shomeiServer)
+import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Workflow qualified as Wf
@@ -133,20 +133,24 @@ servicePassword = "correct horse battery staple"
 ingestScope :: Scope
 ingestScope = Scope "kawa:ingest"
 
--- | The test API: the whole Shōmei API plus two host routes protected /only/ by the
+-- | The test API: the whole served Shōmei tree ('ShomeiRoutes', so application routes answer
+-- under @\/v1@ exactly as they do in production) plus two host routes protected /only/ by the
 -- 'RequireRole' and 'RequireScope' combinators. Their handlers contain no authorization code
 -- at all, so the 401/403/200 assertions below prove the route type alone enforces — which is
 -- the entire point of the combinators having 'HasServer' instances.
 --
+-- The two host routes are deliberately unversioned: they belong to the embedding application,
+-- not to Shōmei, and a host is free to shape its own paths.
+--
 -- The combinators sit where 'Authenticated' used to: they run the same auth handler themselves
 -- and pass the resulting 'AuthUser' through to the handler.
 type TestAPI =
-  NamedRoutes ShomeiAPI
+  NamedRoutes ShomeiRoutes
     :<|> RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [UserResponse]
     :<|> RequireScope "kawa:ingest" :> "ingest" :> Get '[JSON] [UserResponse]
 
 testServer :: Env -> Server TestAPI
-testServer env = shomeiServer env :<|> adminUsersH :<|> ingestH
+testServer env = shomeiRoutes env :<|> adminUsersH :<|> ingestH
   where
     adminUsersH :: AuthUser -> Handler [UserResponse]
     adminUsersH _user = pure []
@@ -358,13 +362,13 @@ scenarioProblemEnvelope port = do
   mgr <- newManager defaultManagerSettings
 
   -- (1) The auth handler: no credential at all. The commonest failure in any deployment.
-  r1 <- getRaw mgr port "/auth/me" []
+  r1 <- getRaw mgr port "/v1/auth/me" []
   assertProblem "missing token" 401 "missing_token" r1
   headerValue "WWW-Authenticate" (headersOf r1) @?= Just "Bearer"
 
   -- (2) The auth handler: a credential that fails verification. Deliberately indistinguishable
   --     from an expired one -- the code is the same.
-  r2 <- getRaw mgr port "/auth/me" (bearer "garbage.token.value")
+  r2 <- getRaw mgr port "/v1/auth/me" (bearer "garbage.token.value")
   assertProblem "invalid token" 401 "token_invalid" r2
   headerValue "WWW-Authenticate" (headersOf r2) @?= Just "Bearer"
 
@@ -376,7 +380,7 @@ scenarioProblemEnvelope port = do
             "password" .= ("correct horse battery staple" :: Text),
             "displayName" .= ("Envelope" :: Text)
           ]
-  (_, sBody) <- postJSON mgr port "/auth/signup" signupBody'
+  (_, sBody) <- postJSON mgr port "/v1/auth/signup" signupBody'
   sresp <- must "signup body" sBody
   access <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
   r3 <- getRaw mgr port "/admin/users" (bearer access)
@@ -384,12 +388,12 @@ scenarioProblemEnvelope port = do
   headerValue "WWW-Authenticate" (headersOf r3) @?= Nothing
 
   -- (4) A handler's own rejection, with the specific reason carried in `detail`.
-  r4 <- postRaw' mgr port "/auth/login" [] (object ["password" .= ("x" :: Text)])
+  r4 <- postRaw' mgr port "/v1/auth/login" [] (object ["password" .= ("x" :: Text)])
   assertProblem "handler bad request" 400 "bad_request" r4
   (bodyOf r4 >>= dig ["detail"] >>= asText) @?= Just "loginId or email required"
 
   -- (5) Servant's own body parser, via ErrorFormatters. The parse message rides in `detail`.
-  r5 <- postRawBytes mgr port "/auth/signup" "{"
+  r5 <- postRawBytes mgr port "/v1/auth/signup" "{"
   assertProblem "body parse error" 400 "body_parse_error" r5
   assertBool "body_parse_error carries a detail" (isJust (bodyOf r5 >>= dig ["detail"]))
 
@@ -398,8 +402,43 @@ scenarioProblemEnvelope port = do
   assertProblem "unknown route" 404 "not_found" r6
 
   -- (7) The method check -- below every Servant hook, rewritten by problemMiddleware.
-  r7 <- getRaw mgr port "/auth/login" []
+  r7 <- getRaw mgr port "/v1/auth/login" []
   assertProblem "method not allowed" 405 "method_not_allowed" r7
+
+-- | The versioning boundary: every application route answers only under @\/v1@, and the
+-- protocol/infrastructure endpoints answer only at the root. Both halves are asserted, because
+-- a record that accidentally nested the probes under @\/v1@ would still pass the first half.
+--
+-- The old unprefixed paths are gone outright — no redirect, no 410 — so an unmigrated client
+-- gets a 404 problem document naming nothing it can act on but the CHANGELOG. That is the
+-- declared cost of the pre-1.0 breaking window.
+scenarioVersionBoundary :: Int -> IO ()
+scenarioVersionBoundary port = do
+  mgr <- newManager defaultManagerSettings
+
+  -- The old paths are 404 -- and a 404 that is itself a problem document.
+  old <- postRaw' mgr port "/auth/login" [] (object ["loginId" .= ("someone" :: Text)])
+  assertProblem "old login path" 404 "not_found" old
+  oldMe <- getRaw mgr port "/auth/me" []
+  assertProblem "old me path" 404 "not_found" oldMe
+
+  -- ...and the versioned one routes: no token, so the auth handler answers 401, which is proof
+  -- the request reached the route rather than falling off the end of the tree.
+  newMe <- getRaw mgr port "/v1/auth/me" []
+  assertProblem "versioned me path routes" 401 "missing_token" newMe
+
+  -- Probes and JWKS stay at the root.
+  (healthStatus, _) <- getJSON mgr port "/health" []
+  healthStatus @?= 200
+  (jwksStatus, jwksHdrs, _) <- getRaw mgr port "/.well-known/jwks.json" []
+  jwksStatus @?= 200
+  headerValue "Cache-Control" jwksHdrs @?= Just "public, max-age=300"
+
+  -- ...and nothing bleeds into /v1: the version prefix covers the application record only.
+  v1Health <- getRaw mgr port "/v1/health" []
+  assertProblem "no /v1/health" 404 "not_found" v1Health
+  v1Jwks <- getRaw mgr port "/v1/.well-known/jwks.json" []
+  assertProblem "no /v1/.well-known/jwks.json" 404 "not_found" v1Jwks
 
 type RawResponse = (Int, [Header], Maybe Value)
 
@@ -460,6 +499,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioProblemEnvelope,
+      testCase "the /v1 boundary: application routes are versioned, probes and JWKS are not" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) scenarioVersionBoundary,
       testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
         testWithApplication (pure (app env)) (scenario ref adminToken impToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
@@ -498,12 +540,12 @@ scenarioNoEmail port = do
   mgr <- newManager defaultManagerSettings
   let pw = "correct horse battery staple" :: Text
       signupB = object ["loginId" .= ("agent-x" :: Text), "password" .= pw, "displayName" .= ("" :: Text)]
-  (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupB
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupB
   sStatus @?= 200
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just "agent-x"
   dig ["user", "email"] sresp @?= Just Null
-  (lStatus, lBody) <- postJSON mgr port "/auth/login" (object ["loginId" .= ("agent-x" :: Text), "password" .= pw])
+  (lStatus, lBody) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ("agent-x" :: Text), "password" .= pw])
   lStatus @?= 200
   lresp <- must "login body" lBody
   assertBool "login by identifier yields a token" (isJust (dig ["token", "accessToken"] lresp >>= asText))
@@ -516,7 +558,7 @@ scenarioEmailDefaultsLoginId port = do
   let em = "grace@example.com" :: Text
       pw = "correct horse battery staple" :: Text
       signupB = object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)]
-  (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupB
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupB
   sStatus @?= 200
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just em
@@ -532,26 +574,26 @@ scenarioEmailVerificationRequired ref port = do
   let em = "unverified@example.com" :: Text
       pw = "correct horse battery staple" :: Text
       loginBody = object ["loginId" .= em, "password" .= pw]
-  (sStatus, sBody) <- postJSON mgr port "/auth/signup" (object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
   sStatus @?= 200
   sresp <- must "signup body" sBody
   refreshTok <- must "signup refreshToken" (dig ["token", "refreshToken"] sresp >>= asText)
 
   -- Unverified: a correct password is refused, and so is a silent renewal.
-  (blockedLogin, blockedBody) <- postJSON mgr port "/auth/login" loginBody
+  (blockedLogin, blockedBody) <- postJSON mgr port "/v1/auth/login" loginBody
   blockedLogin @?= 403
   bresp <- must "blocked login body" blockedBody
   (dig ["code"] bresp >>= asText) @?= Just "email_not_verified"
-  (blockedRefresh, _) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= refreshTok])
+  (blockedRefresh, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= refreshTok])
   blockedRefresh @?= 403
 
   -- Verify the email, and both work again.
-  (reqStatus, _) <- postJSON mgr port "/auth/verify-email/request" (object ["email" .= em])
+  (reqStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= em])
   reqStatus @?= 202
   token <- latestVerificationToken ref
-  (confirmStatus, _) <- postJSON mgr port "/auth/verify-email/confirm" (object ["token" .= token])
+  (confirmStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= token])
   confirmStatus @?= 202
-  (okLogin, okBody) <- postJSON mgr port "/auth/login" loginBody
+  (okLogin, okBody) <- postJSON mgr port "/v1/auth/login" loginBody
   okLogin @?= 200
   okResp <- must "login body" okBody
   assertBool "verified login yields a token" (isJust (dig ["token", "accessToken"] okResp >>= asText))
@@ -577,7 +619,7 @@ foreignOrigin = ("Origin", "https://evil.example.com")
 -- | Sign up in cookie mode and return the two cookie values.
 cookieSignup :: Manager -> Int -> IO (Text, Text, Maybe Value)
 cookieSignup mgr port = do
-  (status, hdrs, body) <- postRaw mgr port "/auth/signup" [] cookieSignupBody
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
   status @?= 200
   let cookies = setCookies hdrs
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
@@ -595,7 +637,7 @@ refreshCookieHeader v = ("Cookie", Text.encodeUtf8 ("shomei_refresh=" <> v))
 scenarioCookieTransport :: Int -> IO ()
 scenarioCookieTransport port = do
   mgr <- newManager defaultManagerSettings
-  (status, hdrs, body) <- postRaw mgr port "/auth/signup" [] cookieSignupBody
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
   status @?= 200
   let cookies = setCookies hdrs
   length cookies @?= 2
@@ -611,7 +653,7 @@ scenarioCookieTransport port = do
   assertBool "session Path=/" ("Path=/;" `T.isInfixOf` sessionAttrs)
   assertBool "session Max-Age=900" ("Max-Age=900" `T.isInfixOf` sessionAttrs)
   -- The long-lived credential is presented to exactly one endpoint.
-  assertBool ("refresh Path: " <> T.unpack refreshAttrs) ("Path=/auth/refresh" `T.isInfixOf` refreshAttrs)
+  assertBool ("refresh Path: " <> T.unpack refreshAttrs) ("Path=/v1/auth/refresh" `T.isInfixOf` refreshAttrs)
   assertBool "refresh HttpOnly" ("HttpOnly" `T.isInfixOf` refreshAttrs)
   assertBool "refresh Max-Age=2592000" ("Max-Age=2592000" `T.isInfixOf` refreshAttrs)
 
@@ -622,11 +664,11 @@ scenarioCookieTransport port = do
   assertBool "expiresIn present" (isJust (dig ["token", "expiresIn"] resp))
 
   -- A GET authenticated only by the cookie works, and needs no Origin (safe method).
-  (meStatus, _) <- getJSON mgr port "/auth/me" [sessionCookieHeader sess]
+  (meStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader sess]
   meStatus @?= 200
 
   -- Logout clears both cookies: same names, empty values, Max-Age=0.
-  (outStatus, outHdrs, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess, allowedOrigin] Null
+  (outStatus, outHdrs, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, allowedOrigin] Null
   outStatus @?= 204
   let cleared = setCookies outHdrs
   length cleared @?= 2
@@ -640,38 +682,38 @@ scenarioCsrfMatrix port = do
   (sess, _, _) <- cookieSignup mgr port
 
   -- No Origin, no Referer: fail closed. This is the attack shape.
-  (noneStatus, _, noneBody) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess] Null
+  (noneStatus, _, noneBody) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess] Null
   noneStatus @?= 403
   nb <- must "csrf body" noneBody
   (dig ["code"] nb >>= asText) @?= Just "csrf_rejected"
 
   -- A foreign origin: refused.
-  (evilStatus, _, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess, foreignOrigin] Null
+  (evilStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, foreignOrigin] Null
   evilStatus @?= 403
 
   -- Referer fallback, for agents that omit Origin.
-  (refStatus, _, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess, ("Referer", "http://localhost:8080/app/settings")] Null
+  (refStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, ("Referer", "http://localhost:8080/app/settings")] Null
   refStatus @?= 204
 
   -- A Referer that merely *starts with* an allowed origin must not pass.
   (sess2, _, _) <- cookieSignupAs mgr port "csrf2@example.com"
-  (badRefStatus, _, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess2, ("Referer", "http://localhost:8080.evil.com/x")] Null
+  (badRefStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess2, ("Referer", "http://localhost:8080.evil.com/x")] Null
   badRefStatus @?= 403
 
   -- An allow-listed Origin: accepted.
-  (okStatus, _, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess2, allowedOrigin] Null
+  (okStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess2, allowedOrigin] Null
   okStatus @?= 204
 
   -- A bearer credential is never CSRF-gated, even from a foreign origin: a page cannot set
   -- the Authorization header, and gating it would break every non-browser client.
   (sess3, _, _) <- cookieSignupAs mgr port "csrf3@example.com"
-  (bearerStatus, _, _) <- postRaw mgr port "/auth/logout" [("Authorization", Text.encodeUtf8 ("Bearer " <> sess3)), foreignOrigin] Null
+  (bearerStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [("Authorization", Text.encodeUtf8 ("Bearer " <> sess3)), foreignOrigin] Null
   bearerStatus @?= 204
 
 -- | Sign up a distinct account in cookie mode.
 cookieSignupAs :: Manager -> Int -> Text -> IO (Text, Text, Maybe Value)
 cookieSignupAs mgr port email = do
-  (status, hdrs, body) <- postRaw mgr port "/auth/signup" [] (object ["email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] (object ["email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
   status @?= 200
   let cookies = setCookies hdrs
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
@@ -685,11 +727,11 @@ scenarioCookieRefresh port = do
   (_, refr, _) <- cookieSignup mgr port
 
   -- Without an Origin the cookie-borne refresh token is refused.
-  (noOrigin, _, _) <- postRaw mgr port "/auth/refresh" [refreshCookieHeader refr] (object [])
+  (noOrigin, _, _) <- postRaw mgr port "/v1/auth/refresh" [refreshCookieHeader refr] (object [])
   noOrigin @?= 403
 
   -- With an allow-listed Origin it rotates and hands back fresh cookies.
-  (okStatus, okHdrs, okBody) <- postRaw mgr port "/auth/refresh" [refreshCookieHeader refr, allowedOrigin] (object [])
+  (okStatus, okHdrs, okBody) <- postRaw mgr port "/v1/auth/refresh" [refreshCookieHeader refr, allowedOrigin] (object [])
   okStatus @?= 200
   let cookies = setCookies okHdrs
   newRefresh <- must "rotated shomei_refresh" (cookieValueOf "shomei_refresh" cookies)
@@ -698,7 +740,7 @@ scenarioCookieRefresh port = do
   assertBool "cookie mode omits body tokens on refresh" (isNothing (dig ["accessToken"] resp))
 
   -- Presenting the old token again is reuse: rotation already consumed it.
-  (reuseStatus, _, _) <- postRaw mgr port "/auth/refresh" [refreshCookieHeader refr, allowedOrigin] (object [])
+  (reuseStatus, _, _) <- postRaw mgr port "/v1/auth/refresh" [refreshCookieHeader refr, allowedOrigin] (object [])
   assertBool ("old refresh token must be rejected, got " <> show reuseStatus) (reuseStatus >= 400)
 
 -- | Bearer mode: no cookies emitted, body tokens present, and — the review's finding — a
@@ -706,7 +748,7 @@ scenarioCookieRefresh port = do
 scenarioBearerRejectsCookies :: Int -> IO ()
 scenarioBearerRejectsCookies port = do
   mgr <- newManager defaultManagerSettings
-  (status, hdrs, body) <- postRaw mgr port "/auth/signup" [] cookieSignupBody
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
   status @?= 200
   setCookies hdrs @?= []
   resp <- must "signup body" body
@@ -714,26 +756,26 @@ scenarioBearerRejectsCookies port = do
   assertBool "refreshToken present" (isJust (dig ["token", "refreshToken"] resp))
 
   -- The bearer token authenticates.
-  (bearerStatus, _) <- getJSON mgr port "/auth/me" [("Authorization", Text.encodeUtf8 ("Bearer " <> access))]
+  (bearerStatus, _) <- getJSON mgr port "/v1/auth/me" [("Authorization", Text.encodeUtf8 ("Bearer " <> access))]
   bearerStatus @?= 200
 
   -- The very same token presented as a shomei_session cookie does not. Before this plan the
   -- cookie fallback was unconditional and this returned 200.
-  (cookieStatus, _) <- getJSON mgr port "/auth/me" [sessionCookieHeader access]
+  (cookieStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader access]
   cookieStatus @?= 401
 
 -- | Both: cookies AND body tokens, for clients migrating between transports.
 scenarioBothTransport :: Int -> IO ()
 scenarioBothTransport port = do
   mgr <- newManager defaultManagerSettings
-  (status, hdrs, body) <- postRaw mgr port "/auth/signup" [] cookieSignupBody
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
   status @?= 200
   length (setCookies hdrs) @?= 2
   resp <- must "signup body" body
   assertBool "accessToken present in both mode" (isJust (dig ["token", "accessToken"] resp))
   assertBool "refreshToken present in both mode" (isJust (dig ["token", "refreshToken"] resp))
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" (setCookies hdrs))
-  (meStatus, _) <- getJSON mgr port "/auth/me" [sessionCookieHeader sess]
+  (meStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader sess]
   meStatus @?= 200
 
 scenarioServiceToken :: Int -> IO ()
@@ -746,7 +788,7 @@ scenarioServiceToken port = do
             "scopes" .= [scopeText ingestScope],
             "actorId" .= Null
           ]
-  (status, responseBody) <- postJSON mgr port "/auth/service-token" body
+  (status, responseBody) <- postJSON mgr port "/v1/auth/service-token" body
   status @?= 200
   response <- must "service-token body" responseBody
   access <- must "service-token accessToken" (dig ["accessToken"] response >>= asText)
@@ -758,7 +800,7 @@ scenarioServiceToken port = do
     postJSON
       mgr
       port
-      "/auth/service-token"
+      "/v1/auth/service-token"
       ( object
           [ "accountId" .= serviceAccountText,
             "secret" .= serviceSecret,
@@ -772,7 +814,7 @@ scenarioServiceToken port = do
     postJSON
       mgr
       port
-      "/auth/login"
+      "/v1/auth/login"
       (object ["loginId" .= serviceLoginId, "password" .= servicePassword])
   loginStatus @?= 200
   loginResp <- must "service login body" loginBody
@@ -792,7 +834,7 @@ scenario ref adminToken impToken port = do
   mgr <- newManager defaultManagerSettings
 
   -- (a) signup
-  (sStatus, sBody) <- postJSON mgr port "/auth/signup" signupBody
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupBody
   sStatus @?= 200
   sresp <- must "signup body" sBody
   (dig ["user", "email"] sresp >>= asText) @?= Just email
@@ -802,33 +844,33 @@ scenario ref adminToken impToken port = do
   assertBool "signup refresh token present" (isJust (dig ["token", "refreshToken"] sresp >>= asText))
 
   -- (a2) verify email via notifier-captured token
-  (verifyReqStatus, _) <- postJSON mgr port "/auth/verify-email/request" (object ["email" .= email])
+  (verifyReqStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= email])
   verifyReqStatus @?= 202
   emailVerificationToken <- latestVerificationToken ref
-  (verifyConfirmStatus, _) <- postJSON mgr port "/auth/verify-email/confirm" (object ["token" .= emailVerificationToken])
+  (verifyConfirmStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= emailVerificationToken])
   verifyConfirmStatus @?= 202
 
   -- (b) login
-  (lStatus, lBody) <- postJSON mgr port "/auth/login" loginBody
+  (lStatus, lBody) <- postJSON mgr port "/v1/auth/login" loginBody
   lStatus @?= 200
   lresp <- must "login body" lBody
   access <- must "login accessToken" (dig ["token", "accessToken"] lresp >>= asText)
   refreshTok <- must "login refreshToken" (dig ["token", "refreshToken"] lresp >>= asText)
 
   -- (c) me with Bearer
-  (meStatus, meBody) <- getJSON mgr port "/auth/me" (bearer access)
+  (meStatus, meBody) <- getJSON mgr port "/v1/auth/me" (bearer access)
   meStatus @?= 200
   meresp <- must "me body" meBody
   (dig ["email"] meresp >>= asText) @?= Just email
 
   -- (d) me without and with garbage token
-  (noTokStatus, _) <- getJSON mgr port "/auth/me" []
+  (noTokStatus, _) <- getJSON mgr port "/v1/auth/me" []
   noTokStatus @?= 401
-  (garbageStatus, _) <- getJSON mgr port "/auth/me" (bearer "garbage.token.value")
+  (garbageStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer "garbage.token.value")
   garbageStatus @?= 401
 
   -- (e) refresh rotates the token
-  (rStatus, rBody) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= refreshTok])
+  (rStatus, rBody) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= refreshTok])
   rStatus @?= 200
   rresp <- must "refresh body" rBody
   newRefresh <- must "rotated refreshToken" (dig ["refreshToken"] rresp >>= asText)
@@ -860,7 +902,7 @@ scenario ref adminToken impToken port = do
   -- the audited workflow, log in again, and the fresh token opens the same door. This is the
   -- whole loop the plan exists to close — before EP-1, no production flow could mint this token.
   grantAdminTo ref adaUserId
-  (grantedLoginStatus, grantedLoginBody) <- postJSON mgr port "/auth/login" loginBody
+  (grantedLoginStatus, grantedLoginBody) <- postJSON mgr port "/v1/auth/login" loginBody
   grantedLoginStatus @?= 200
   grantedResp <- must "post-grant login body" grantedLoginBody
   grantedAccess <- must "post-grant accessToken" (dig ["token", "accessToken"] grantedResp >>= asText)
@@ -876,7 +918,7 @@ scenario ref adminToken impToken port = do
   -- (This also restores the pre-grant state for the rest of the scenario, whose later logins
   -- mint fresh tokens for this very user and expect them to be non-admin.)
   revokeAdminFrom ref adaUserId
-  (revokedLoginStatus, revokedLoginBody) <- postJSON mgr port "/auth/login" loginBody
+  (revokedLoginStatus, revokedLoginBody) <- postJSON mgr port "/v1/auth/login" loginBody
   revokedLoginStatus @?= 200
   revokedResp <- must "post-revoke login body" revokedLoginBody
   revokedAccess <- must "post-revoke accessToken" (dig ["token", "accessToken"] revokedResp >>= asText)
@@ -891,7 +933,7 @@ scenario ref adminToken impToken port = do
   ingestForbiddenStatus @?= 403
 
   -- (h) password-reset request/confirm allows login with the new password.
-  (resetReqStatus, _) <- postJSON mgr port "/auth/password-reset/request" (object ["email" .= email])
+  (resetReqStatus, _) <- postJSON mgr port "/v1/auth/password-reset/request" (object ["email" .= email])
   resetReqStatus @?= 202
   resetToken <- latestResetToken ref
   let changedPassword = "correct horse battery staple two" :: Text
@@ -899,16 +941,16 @@ scenario ref adminToken impToken port = do
     postJSON
       mgr
       port
-      "/auth/password-reset/confirm"
+      "/v1/auth/password-reset/confirm"
       (object ["token" .= resetToken, "newPassword" .= changedPassword])
   resetConfirmStatus @?= 202
-  (newLoginStatus, newLoginBody) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
+  (newLoginStatus, newLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= changedPassword])
   newLoginStatus @?= 200
   newLoginResp <- must "new login body" newLoginBody
   access2 <- must "new login accessToken" (dig ["token", "accessToken"] newLoginResp >>= asText)
 
   -- (i) passkey: begin → complete → list → delete (authenticated with the fresh token)
-  (beginStatus, beginBody) <- postJSONAuth mgr port "/auth/passkeys/register/begin" (bearer access2) (object [])
+  (beginStatus, beginBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/begin" (bearer access2) (object [])
   beginStatus @?= 200
   bresp <- must "begin body" beginBody
   cid <- must "ceremonyId" (dig ["ceremonyId"] bresp >>= asText)
@@ -921,23 +963,23 @@ scenario ref adminToken impToken port = do
             "publicKey" .= PublicKeyBytes "passkey-pk-1"
           ]
       completeBody = object ["ceremonyId" .= cid, "credential" .= cred, "label" .= ("YubiKey" :: Text)]
-  (compStatus, compBody) <- postJSONAuth mgr port "/auth/passkeys/register/complete" (bearer access2) completeBody
+  (compStatus, compBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/complete" (bearer access2) completeBody
   compStatus @?= 200
   cresp <- must "complete body" compBody
   pkId <- must "passkeyId" (dig ["passkeyId"] cresp >>= asText)
   (dig ["label"] cresp >>= asText) @?= Just "YubiKey"
 
-  (listStatus, listBody) <- getJSON mgr port "/auth/passkeys" (bearer access2)
+  (listStatus, listBody) <- getJSON mgr port "/v1/auth/passkeys" (bearer access2)
   listStatus @?= 200
   listResp <- must "list body" listBody
   case listResp of
     Array xs -> assertBool "one passkey listed" (length xs == 1)
     _ -> assertFailure "expected a JSON array of passkeys"
 
-  (delStatus, _) <- deleteAuth mgr port ("/auth/passkeys/" <> T.unpack pkId) (bearer access2)
+  (delStatus, _) <- deleteAuth mgr port ("/v1/auth/passkeys/" <> T.unpack pkId) (bearer access2)
   delStatus @?= 204
 
-  (list2Status, list2Body) <- getJSON mgr port "/auth/passkeys" (bearer access2)
+  (list2Status, list2Body) <- getJSON mgr port "/v1/auth/passkeys" (bearer access2)
   list2Status @?= 200
   list2Resp <- must "list2 body" list2Body
   case list2Resp of
@@ -949,17 +991,17 @@ scenario ref adminToken impToken port = do
     postJSONAuth
       mgr
       port
-      "/auth/passkeys/register/complete"
+      "/v1/auth/passkeys/register/complete"
       (bearer access2)
       (object ["ceremonyId" .= cid, "credential" .= cred])
   badStatus @?= 404
 
   -- (k) a passkey route without a bearer token is a 401
-  (unauthStatus, _) <- getJSON mgr port "/auth/passkeys" []
+  (unauthStatus, _) <- getJSON mgr port "/v1/auth/passkeys" []
   unauthStatus @?= 401
 
   -- (l) re-enroll a passkey so the account now requires MFA at the next password login.
-  (rbStatus, rbBody) <- postJSONAuth mgr port "/auth/passkeys/register/begin" (bearer access2) (object [])
+  (rbStatus, rbBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/begin" (bearer access2) (object [])
   rbStatus @?= 200
   rbresp <- must "mfa enroll begin body" rbBody
   rbCid <- must "mfa enroll ceremonyId" (dig ["ceremonyId"] rbresp >>= asText)
@@ -975,13 +1017,13 @@ scenario ref adminToken impToken port = do
     postJSONAuth
       mgr
       port
-      "/auth/passkeys/register/complete"
+      "/v1/auth/passkeys/register/complete"
       (bearer access2)
       (object ["ceremonyId" .= rbCid, "credential" .= credAssertion rbChal, "label" .= ("MFA Key" :: Text)])
   rcStatus @?= 200
 
   -- (m) the password login now returns an MFA challenge and NO token.
-  (mfaLoginStatus, mfaLoginBody) <- postJSON mgr port "/auth/login" (object ["email" .= email, "password" .= changedPassword])
+  (mfaLoginStatus, mfaLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= changedPassword])
   mfaLoginStatus @?= 200
   mfaLoginResp <- must "mfa login body" mfaLoginBody
   (dig ["status"] mfaLoginResp >>= asText) @?= Just "mfa_required"
@@ -991,39 +1033,39 @@ scenario ref adminToken impToken port = do
 
   -- (n) completing MFA with a valid assertion yields a token pair.
   (mfaCompleteStatus, mfaCompleteBody) <-
-    postJSON mgr port "/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
   mfaCompleteStatus @?= 200
   mfaCompleteResp <- must "mfa complete body" mfaCompleteBody
   mfaAccess <- must "mfa complete accessToken" (dig ["accessToken"] mfaCompleteResp >>= asText)
 
   -- (o) the MFA-issued access token authenticates /auth/me.
-  (meMfaStatus, _) <- getJSON mgr port "/auth/me" (bearer mfaAccess)
+  (meMfaStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer mfaAccess)
   meMfaStatus @?= 200
 
   -- (p) re-submitting the now-consumed ceremony is a 404.
   (mfaStaleStatus, _) <-
-    postJSON mgr port "/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
   mfaStaleStatus @?= 404
 
   -- (q) passwordless login: begin → complete → me, no password.
-  (plBeginStatus, plBeginBody) <- postJSON mgr port "/auth/login/passkey/begin" (object [])
+  (plBeginStatus, plBeginBody) <- postJSON mgr port "/v1/auth/login/passkey/begin" (object [])
   plBeginStatus @?= 200
   plBeginResp <- must "passwordless begin body" plBeginBody
   plCid <- must "passwordless ceremonyId" (dig ["ceremonyId"] plBeginResp >>= asText)
   plChal <- must "passwordless challenge" (dig ["options", "challenge"] plBeginResp >>= asText)
   (plCompleteStatus, plCompleteBody) <-
-    postJSON mgr port "/auth/login/passkey/complete" (object ["ceremonyId" .= plCid, "assertion" .= credAssertion plChal])
+    postJSON mgr port "/v1/auth/login/passkey/complete" (object ["ceremonyId" .= plCid, "assertion" .= credAssertion plChal])
   plCompleteStatus @?= 200
   plResp <- must "passwordless complete body" plCompleteBody
   plAccess <- must "passwordless accessToken" (dig ["accessToken"] plResp >>= asText)
-  (mePlStatus, _) <- getJSON mgr port "/auth/me" (bearer plAccess)
+  (mePlStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer plAccess)
   mePlStatus @?= 200
 
   -- (r) impersonation: an operator holding the impersonate scope exchanges for a
   -- delegated token, sees the customer via /auth/me, is refused a credential change,
   -- and can stop.
   let impBody = object ["userId" .= adaUserId, "reason" .= ("Debugging support issue" :: Text), "ticketId" .= ("SUP-1234" :: Text)]
-  (impStatus, impRespBody) <- postJSONAuth mgr port "/auth/impersonate" (bearer impToken) impBody
+  (impStatus, impRespBody) <- postJSONAuth mgr port "/v1/auth/impersonate" (bearer impToken) impBody
   impStatus @?= 200
   impResp <- must "impersonate body" impRespBody
   (dig ["subjectUserId"] impResp >>= asText) @?= Just adaUserId
@@ -1031,7 +1073,7 @@ scenario ref adminToken impToken port = do
   impAccess <- must "delegated accessToken" (dig ["accessToken"] impResp >>= asText)
 
   -- the delegated token resolves the *customer's* identity on /auth/me
-  (meImpStatus, meImpBody) <- getJSON mgr port "/auth/me" (bearer impAccess)
+  (meImpStatus, meImpBody) <- getJSON mgr port "/v1/auth/me" (bearer impAccess)
   meImpStatus @?= 200
   meImpResp <- must "me (delegated) body" meImpBody
   (dig ["email"] meImpResp >>= asText) @?= Just email
@@ -1041,7 +1083,7 @@ scenario ref adminToken impToken port = do
     postJSONAuth
       mgr
       port
-      "/auth/password/change"
+      "/v1/auth/password/change"
       (bearer impAccess)
       (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
   impPwStatus @?= 403
@@ -1052,13 +1094,13 @@ scenario ref adminToken impToken port = do
     postJSONAuth
       mgr
       port
-      "/auth/password/change"
+      "/v1/auth/password/change"
       (bearer impToken)
       (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
   assertBool "operator's own token is not impersonation-blocked" (opPwStatus /= 403)
 
   -- stop impersonating revokes the delegated session
-  (stopStatus, _) <- deleteAuth mgr port "/auth/impersonate" (bearer impAccess)
+  (stopStatus, _) <- deleteAuth mgr port "/v1/auth/impersonate" (bearer impAccess)
   stopStatus @?= 204
   world <- readIORef ref
   let delegated = filter (\s -> isJust s.actor) (Map.elems world.sessions)
@@ -1068,11 +1110,11 @@ scenario ref adminToken impToken port = do
 
   -- (s) EP-7 audit retrieval: admin reads the trail; non-admin/no-token are refused;
   -- filters and keyset pagination behave.
-  (auditNoTokStatus, _) <- getJSON mgr port "/admin/audit/events" []
+  (auditNoTokStatus, _) <- getJSON mgr port "/v1/admin/audit/events" []
   auditNoTokStatus @?= 401
-  (auditForbiddenStatus, _) <- getJSON mgr port "/admin/audit/events" (bearer plAccess)
+  (auditForbiddenStatus, _) <- getJSON mgr port "/v1/admin/audit/events" (bearer plAccess)
   auditForbiddenStatus @?= 403
-  (auditStatus, auditBody) <- getJSON mgr port "/admin/audit/events" (bearer adminToken)
+  (auditStatus, auditBody) <- getJSON mgr port "/v1/admin/audit/events" (bearer adminToken)
   auditStatus @?= 200
   auditResp <- must "audit body" auditBody
   case dig ["events"] auditResp of
@@ -1080,7 +1122,7 @@ scenario ref adminToken impToken port = do
     _ -> assertFailure "expected an events array"
 
   -- type filter: every returned row is a login_succeeded (and there is at least one)
-  (auditTypeStatus, auditTypeBody) <- getJSON mgr port "/admin/audit/events?type=login_succeeded" (bearer adminToken)
+  (auditTypeStatus, auditTypeBody) <- getJSON mgr port "/v1/admin/audit/events?type=login_succeeded" (bearer adminToken)
   auditTypeStatus @?= 200
   auditTypeResp <- must "audit type body" auditTypeBody
   case dig ["events"] auditTypeResp of
@@ -1092,11 +1134,11 @@ scenario ref adminToken impToken port = do
     _ -> assertFailure "expected an events array"
 
   -- a malformed UUID filter is a 400
-  (auditBadStatus, _) <- getJSON mgr port "/admin/audit/events?user=not-a-uuid" (bearer adminToken)
+  (auditBadStatus, _) <- getJSON mgr port "/v1/admin/audit/events?user=not-a-uuid" (bearer adminToken)
   auditBadStatus @?= 400
 
   -- keyset pagination: limit=1, then follow nextCursor; the two pages are disjoint.
-  (p1Status, p1Body) <- getJSON mgr port "/admin/audit/events?limit=1" (bearer adminToken)
+  (p1Status, p1Body) <- getJSON mgr port "/v1/admin/audit/events?limit=1" (bearer adminToken)
   p1Status @?= 200
   p1Resp <- must "audit page1 body" p1Body
   p1Events <- case dig ["events"] p1Resp of
@@ -1106,7 +1148,7 @@ scenario ref adminToken impToken port = do
   cursor <- must "page1 nextCursor" (dig ["nextCursor"] p1Resp >>= asText)
   let p1Id = listToMaybe p1Events >>= field "eventId" >>= asText
   (p2Status, p2Body) <-
-    getJSON mgr port ("/admin/audit/events?limit=1&before=" <> urlEncodeText cursor) (bearer adminToken)
+    getJSON mgr port ("/v1/admin/audit/events?limit=1&before=" <> urlEncodeText cursor) (bearer adminToken)
   p2Status @?= 200
   p2Resp <- must "audit page2 body" p2Body
   p2Events <- case dig ["events"] p2Resp of

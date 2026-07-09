@@ -19,6 +19,7 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Word (Word64)
 import Network.HTTP.Types (statusCode)
 import Network.HTTP.Types.Status (status200)
@@ -26,7 +27,7 @@ import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultReque
 import Network.Wai.Internal (ResponseReceived (..))
 import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultRateLimitConfig)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
-import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken)
+import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
@@ -42,7 +43,8 @@ tests =
         "rate limiter"
         [ testIdleBucketsEvicted,
           testDrainedBucketSurvivesSweep,
-          testBucketMapStaysBounded
+          testBucketMapStaysBounded,
+          testThrottledPathsAreVersioned
         ],
       testGroup
         "metrics"
@@ -117,6 +119,33 @@ testBucketMapStaysBounded = testCase "10k one-shot IPs leave a bounded map" do
   assertBool
     ("expected at most " <> show (every + 1) <> " buckets, got " <> show n)
     (n <= every + 1)
+
+-- | The limiter matches request paths literally, so a route move that forgets this list does
+-- not fail loudly — brute-force protection just silently stops applying. Pin both directions:
+-- the versioned paths are guarded, and the pre-@\/v1@ ones (which now 404 anyway) are not
+-- special-cased. GET is never throttled, only the unauthenticated POST endpoints.
+testThrottledPathsAreVersioned :: TestTree
+testThrottledPathsAreVersioned = testCase "the throttled paths are the versioned auth endpoints" do
+  forM_ ["login", "signup", "refresh"] \endpoint ->
+    assertBool
+      ("POST /v1/auth/" <> T.unpack endpoint <> " must be throttled")
+      (throttledPath (post ["v1", "auth", endpoint]))
+  forM_ ["verify-email", "password-reset"] \endpoint ->
+    assertBool
+      ("POST /v1/auth/" <> T.unpack endpoint <> "/request must be throttled")
+      (throttledPath (post ["v1", "auth", endpoint, "request"]))
+  assertBool
+    "the unversioned login path is not throttled (it no longer exists)"
+    (not (throttledPath (post ["auth", "login"])))
+  assertBool
+    "authenticated routes are not throttled"
+    (not (throttledPath (post ["v1", "auth", "logout"])))
+  assertBool
+    "GET is not throttled"
+    (not (throttledPath (post ["v1", "auth", "login"]) {requestMethod = "GET"}))
+  where
+    post :: [Text] -> Request
+    post segments = defaultRequest {requestMethod = "POST", pathInfo = segments}
 
 ipKey :: Int -> ByteString
 ipKey i = BC.pack ("ip" <> show i)
@@ -216,7 +245,7 @@ testConcurrentWritersProduceIntactLines = testCase "200 concurrent writers produ
 -- | Warp's exception hook must produce the same structured shape as a request line.
 testServerErrorLineIsStructured :: TestTree
 testServerErrorLineIsStructured = testCase "the warp exception logger renders structured JSON" do
-  let req = defaultRequest {requestMethod = "POST", rawPathInfo = "/auth/login"}
+  let req = defaultRequest {requestMethod = "POST", rawPathInfo = "/v1/auth/login"}
       err = toException (ErrorCall "database is on fire")
       line = serverErrorLine (Just req) err
   case decodeStrict (BS.init line) :: Maybe (Map Text Text) of
@@ -225,7 +254,7 @@ testServerErrorLineIsStructured = testCase "the warp exception logger renders st
       Map.lookup "level" obj @?= Just "error"
       Map.lookup "msg" obj @?= Just "unhandled exception"
       Map.lookup "method" obj @?= Just "POST"
-      Map.lookup "path" obj @?= Just "/auth/login"
+      Map.lookup "path" obj @?= Just "/v1/auth/login"
       assertBool "the exception text is carried" (Map.member "error" obj)
   -- Without a request, the method/path fields are simply absent.
   let bare = serverErrorLine Nothing err

@@ -6,8 +6,12 @@
 -- resulting @(User, TokenPair)@. @me@/@session@ read the live record from the store
 -- port (a verified principal whose row is missing is a @404@). @jwks@ returns the
 -- precomputed public JWKS document from the 'Env'; @health@ is a static @200@.
+--
+-- 'shomeiRoutes' assembles the served tree ('Shomei.Servant.API.ShomeiRoutes'): the
+-- application record under @\/v1@ plus the unversioned JWKS and probe handlers.
 module Shomei.Servant.Handlers
-  ( shomeiServer,
+  ( shomeiRoutes,
+    shomeiServer,
   )
 where
 
@@ -18,7 +22,7 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Socket (SockAddr (..))
-import Servant (Handler, NoContent (..), ServerError (..), err503, errBody, errHeaders, noHeader, throwError)
+import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (AuthClaims (..), Scope (..))
@@ -52,7 +56,7 @@ import Shomei.Effect.UserStore (findUserById)
 import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid))
 import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Prelude
-import Shomei.Servant.API (ShomeiAPI (..))
+import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
 import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
@@ -108,7 +112,18 @@ import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
 
--- | Assemble the server record from the per-route handlers.
+-- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
+-- unversioned JWKS document and the liveness\/readiness probes.
+shomeiRoutes :: Env -> ShomeiRoutes (AsServerT Handler)
+shomeiRoutes env =
+  ShomeiRoutes
+    { v1 = shomeiServer env,
+      jwks = jwksH env,
+      health = healthH,
+      ready = readyH env
+    }
+
+-- | Assemble the application server record from the per-route handlers.
 shomeiServer :: Env -> ShomeiAPI (AsServerT Handler)
 shomeiServer env =
   ShomeiAPI
@@ -133,10 +148,7 @@ shomeiServer env =
       passkeyLoginComplete = passkeyLoginCompleteH env,
       impersonate = impersonateH env,
       stopImpersonate = stopImpersonateH env,
-      auditEvents = auditEventsH env,
-      jwks = jwksH env,
-      health = healthH,
-      ready = readyH env
+      auditEvents = auditEventsH env
     }
 
 signupH :: Env -> SignupRequest -> Handler (WithCookies SignupResponse)
@@ -195,7 +207,7 @@ clientIpText = \case
   SockAddrInet6 _ _ host _ -> Text.pack (show host)
   other -> Text.pack (show other)
 
--- | @POST /auth/refresh@. The token comes from the body, or — in cookie transport — from the
+-- | @POST /v1/auth/refresh@. The token comes from the body, or — in cookie transport — from the
 -- @shomei_refresh@ cookie. A cookie-borne token gets the same CSRF gate as any other
 -- cookie-authenticated mutation: the browser attaches it automatically, so a foreign page
 -- could otherwise rotate a victim's session.
@@ -341,7 +353,7 @@ passkeyDeleteH env user pid = do
   runAuth env (Passkey.removePasskey user.authUserId pid)
   pure NoContent
 
--- | @POST /auth/mfa/complete@: finish a step-up begun by @POST /auth/login@'s
+-- | @POST /v1/auth/mfa/complete@: finish a step-up begun by @POST /v1/auth/login@'s
 -- @mfa_required@ arm. Unauthenticated — completing the second factor is how a session is
 -- obtained. A malformed ceremony id is a 400 before the workflow runs; a missing/expired/
 -- consumed ceremony is a 404 and a failed assertion a 401 (via 'authErrorToServerError').
@@ -351,20 +363,20 @@ mfaCompleteH env req = do
   (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid req.assertion)
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
--- | @POST /auth/login/passkey/begin@: start a passwordless passkey login (no password).
+-- | @POST /v1/auth/login/passkey/begin@: start a passwordless passkey login (no password).
 passkeyLoginBeginH :: Env -> Handler PasskeyLoginBeginResponse
 passkeyLoginBeginH env = do
   (cid, options) <- runAuth env (Mfa.beginPasswordlessLogin env.config)
   pure PasskeyLoginBeginResponse {ceremonyId = idText cid, options = options}
 
--- | @POST /auth/login/passkey/complete@: finish a passwordless passkey login → token pair.
+-- | @POST /v1/auth/login/passkey/complete@: finish a passwordless passkey login → token pair.
 passkeyLoginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler (WithCookies TokenPairResponse)
 passkeyLoginCompleteH env req = do
   cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
--- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
+-- | @POST /v1/auth/impersonate@: exchange the caller's token for a short-lived delegated
 -- token acting on behalf of 'req.userId'. A malformed target id is a 400 before the workflow
 -- runs; the workflow enforces scope/freshness/target checks and audits the start.
 impersonateH :: Env -> AuthUser -> SockAddr -> ImpersonateRequest -> Handler ImpersonateResponse
@@ -384,14 +396,14 @@ impersonateH env caller peer req = do
           }
   pure (impersonateToResponse session access)
 
--- | @DELETE /auth/impersonate@: stop impersonating by revoking the delegated session named
+-- | @DELETE /v1/auth/impersonate@: stop impersonating by revoking the delegated session named
 -- by the presented token. A non-delegated token (no @act@ claim) is rejected by the workflow.
 stopImpersonateH :: Env -> AuthUser -> Handler NoContent
 stopImpersonateH env caller = do
   runAuth env (Imp.stopImpersonation caller.authClaims)
   pure NoContent
 
--- | @GET /admin/audit/events@ (EP-7): admin-gated, filtered, keyset-paginated audit-trail
+-- | @GET /v1/admin/audit/events@ (EP-7): admin-gated, filtered, keyset-paginated audit-trail
 -- read. The query params arrive in route order.
 --
 -- There is no authorization check here: the route's @RequireRole "admin"@ combinator
@@ -466,8 +478,13 @@ buildQuery mUser mSession types mSince mUntil mLimit mBefore = do
       Nothing -> Right Nothing
       Just t -> maybe (Left "invalid before cursor") (Right . Just) (decodeCursor t)
 
-jwksH :: Env -> Handler Value
-jwksH env = liftIO env.jwksJson
+-- | @GET /.well-known/jwks.json@. Five minutes of caching bounds how long a revoked key's
+-- public half lingers in a verifier's cache without ever risking a false rejection: a key
+-- being rotated out stays trusted for verification long past five minutes (see the staged
+-- lifecycle in @docs\/user\/security.md@), so a stale copy of this document is always a
+-- superset of the keys currently signing.
+jwksH :: Env -> Handler (Headers '[Header "Cache-Control" Text] Value)
+jwksH env = addHeader "public, max-age=300" <$> liftIO env.jwksJson
 
 healthH :: Handler HealthResponse
 healthH = pure HealthResponse {status = "ok"}

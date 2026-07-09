@@ -14,9 +14,9 @@
 --   * @http_request_duration_seconds@ — latency histogram (fixed buckets) with @_sum@/@_count@.
 --   * @shomei_logins_succeeded_total@ / @shomei_logins_failed_total@ /
 --     @shomei_tokens_issued_total@ — domain counters derived from the HTTP method/path/status
---     (a @POST /auth/login@ → 200 is a success and issues a token; → 401 is a failure;
---     @POST /auth/signup@ and @/auth/refresh@ → 200 issue a token). This HTTP-derived approach
---     avoids instrumenting the effect stack; see the Decision Log.
+--     (a @POST /v1/auth/login@ → 200 is a success and issues a token; → 401 is a failure;
+--     @POST /v1/auth/signup@ and @/v1/auth/refresh@ → 200 issue a token). This HTTP-derived
+--     approach avoids instrumenting the effect stack; see the Decision Log.
 module Shomei.Server.Observability.Metrics
   ( Metrics,
     newMetrics,
@@ -115,10 +115,10 @@ recordRequest m req status = do
       path = rawPathInfo req
   atomicModifyIORef' m.reqTotal (\mp -> (Map.insertWith (+) (method, status) 1 mp, ()))
   case (requestMethod req, path, status) of
-    ("POST", "/auth/login", 200) -> bumpInt m.loginsOk 1 >> bumpInt m.tokensIssued 1
-    ("POST", "/auth/login", 401) -> bumpInt m.loginsFail 1
-    ("POST", "/auth/signup", 200) -> bumpInt m.tokensIssued 1
-    ("POST", "/auth/refresh", 200) -> bumpInt m.tokensIssued 1
+    ("POST", "/v1/auth/login", 200) -> bumpInt m.loginsOk 1 >> bumpInt m.tokensIssued 1
+    ("POST", "/v1/auth/login", 401) -> bumpInt m.loginsFail 1
+    ("POST", "/v1/auth/signup", 200) -> bumpInt m.tokensIssued 1
+    ("POST", "/v1/auth/refresh", 200) -> bumpInt m.tokensIssued 1
     _ -> pure ()
 
 -- | Serve @GET /metrics@ directly (bypassing Servant); pass everything else through.

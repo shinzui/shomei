@@ -1,7 +1,7 @@
 -- | Embedded-demo test: serve the host 'Embedded.App.AppAPI' (mounted Shōmei auth routes
 -- + a guarded @\/projects@) in-process over an ephemeral PostgreSQL, then prove the embedded
 -- model — @\/projects@ is @401@ without a token and @200@ with a token minted by the mounted
--- @\/auth\/login@ route (obtained through the real typed @shomei-client@).
+-- @\/v1\/auth\/login@ route (obtained through the real typed @shomei-client@).
 module Main (main) where
 
 import Data.IORef (newIORef)

@@ -239,8 +239,8 @@ the other.
 - [x] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
 - [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
 - [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
-- [ ] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
-- [ ] EP-3: Universal problem-details envelope on every error path (including auth combinator 401s)
+- [x] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
+- [x] EP-3: Universal problem-details envelope on every error path (including auth combinator 401s)
 - [ ] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
 - [ ] EP-4: Service-account table, port, CLI; secrets hashed, rotatable, revocable at runtime
 - [ ] EP-4: `POST /oauth/token` with `client_credentials` grant and RFC 6749 error shape
@@ -329,6 +329,31 @@ to `loadAdminEnv` too, and must supply whatever validation the server performs a
 has no boot). **EP-4** (service accounts, `service-accounts create/rotate/revoke`), **EP-8**
 (notifier config), and **EP-9** (grant-expiry flags) are all exposed to this. Driving the same
 workflow does not mean loading the same configuration; an end-to-end run is what closes the gap.
+
+**2026-07-09 (EP-3) — a route's path is written down in four places, and three of them fail
+silently.** Moving the application routes under `/v1` compiled clean and left the whole suite
+green while it had *disarmed the rate limiter*: `Shomei.Server.Middleware.RateLimit.throttledPath`
+matches `pathInfo` against a literal `["auth","login"]` list, answers before Servant routes
+anything, and so cannot be derived from the route type. Every login and signup went unthrottled.
+Two siblings in the same class: the refresh cookie's `Path` attribute (`Shomei.Servant.Cookie` —
+wrong path means the browser never sends the cookie, breaking cookie-mode refresh while every
+bearer-mode test passes) and the metrics middleware's per-route counter table
+(`Shomei.Server.Observability.Metrics` — wrong path means `shomei_logins_succeeded_total`
+flatlines at zero). `Shomei.Notify`'s emailed confirmation links are a fourth, visible only to a
+real recipient.
+
+**Every later plan that adds or moves a route is affected**: EP-2 (admin routes), EP-4
+(`/oauth/token` — unversioned, and a *new* candidate for throttling), EP-5 (OIDC endpoints), EP-6,
+EP-7 (`/v1/auth/mfa/*`). Before declaring a route change done, run
+`grep -rn '"/auth\|"/v1\|\["auth"' --include='*.hs'` and check the WAI layer, the cookie scope, and
+the metrics table. EP-3 added `testThrottledPathsAreVersioned` to pin the limiter's list; a plan
+that adds a throttled endpoint must extend both the list and that test.
+
+**2026-07-09 (EP-3) — `operationId`s survived the `/v1` move, deliberately.**
+`Shomei.Servant.OpenApi.camel` drops a leading `v1` segment, so `GET /v1/auth/me` is still
+`getAuthMe`. Generated clients keep their method names across this migration and across a future
+`/v2`. **EP-4 and EP-5 add unversioned `/oauth/*` and `/.well-known/*` routes**, which fall
+through that rule untouched — no action needed, but do not "fix" the drop by removing it.
 
 **2026-07-09 (EP-1) — `shomei-server-test`'s `SupervisorSpec` is flaky under `cabal test all`.**
 Two timing-based tests ("a crashing cycle is retried", "backoff resets after a clean cycle")

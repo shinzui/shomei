@@ -12,12 +12,12 @@
 -- incoherence risk. See EP-27 Decision Log.
 {-# OPTIONS_GHC -Wno-orphans #-}
 
--- | The OpenAPI 3.1 description of 'Shomei.Servant.API.ShomeiAPI', derived
+-- | The OpenAPI 3.1 description of 'Shomei.Servant.API.ShomeiRoutes', derived
 -- directly from the Servant types (EP-27).
 --
 -- 'shomeiOpenApi' is the complete, enriched document; the @shomei-openapi@
 -- executable serialises it to @docs/api/openapi.json@. The instances below are
--- everything @toOpenApi (Proxy \@(NamedRoutes ShomeiAPI))@ needs to typecheck:
+-- everything @toOpenApi (Proxy \@(NamedRoutes ShomeiRoutes))@ needs to typecheck:
 -- a 'ToSchema' per DTO, a free-form 'ToSchema' for aeson 'Value', a hand-written
 -- 'ToSchema' for the tagged-union 'LoginResponse', a 'ToParamSchema' for the
 -- 'PasskeyId' capture, and 'HasOpenApi' instances for the custom combinators.
@@ -38,7 +38,7 @@ import GHC.TypeLits (Symbol)
 import Servant.API
 import Servant.OpenApi (HasOpenApi (..))
 import Shomei.Id (PasskeyId)
-import Shomei.Servant.API (ShomeiAPI)
+import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO
   ( AuditEventResponse,
@@ -222,21 +222,23 @@ requireBearer p =
 -- The assembled, enriched document
 -- ---------------------------------------------------------------------------
 
--- | The complete, enriched OpenAPI 3.1 document for the Shōmei auth service,
--- derived from 'ShomeiAPI'. Generated from @Proxy (NamedRoutes ShomeiAPI)@ — the
--- standalone contract @shomei-server@ actually serves.
+-- | The complete, enriched OpenAPI 3.1 document for the Shōmei auth service, generated from
+-- @Proxy (NamedRoutes ShomeiRoutes)@ — the served tree, so the documented paths are the ones a
+-- client calls: application routes under @\/v1@, JWKS and the probes at the root.
 shomeiOpenApi :: O.OpenApi
 shomeiOpenApi =
-  toOpenApi (Proxy :: Proxy (NamedRoutes ShomeiAPI))
+  toOpenApi (Proxy :: Proxy (NamedRoutes ShomeiRoutes))
     & O.info . O.title .~ "Shōmei Authentication API"
     & O.info . O.version .~ "0.1.0.0"
     & O.info . O.description
       ?~ "Authentication, session, passkey, MFA, impersonation, and token API for the Shōmei auth service."
-    & O.servers .~ ["http://localhost:8080"]
+    & O.servers .~ [localServer]
     & withOperationIds
+  where
+    localServer = ("http://localhost:8080" :: O.Server) & O.description ?~ "Local development server"
 
 -- | Assign a stable @operationId@ to every operation, derived from its HTTP
--- method and path (e.g. @GET \/auth\/me@ → @getAuthMe@). Operations clients
+-- method and path (e.g. @GET \/v1\/auth\/me@ → @getAuthMe@). Operations clients
 -- generate from these get readable method names. Mirrors the helper in
 -- @servant-openapi@'s reference generator.
 withOperationIds :: O.OpenApi -> O.OpenApi
@@ -251,10 +253,18 @@ withOperationIds = O.paths %~ imap setForPath
         key = camel path
     orSet v = Just . maybe v id
 
--- | Turn a path like @"\/auth\/passkeys\/{passkeyId}"@ into @"AuthPasskeysPasskeyId"@.
+-- | Turn a path like @"\/v1\/auth\/passkeys\/{passkeyId}"@ into @"AuthPasskeysPasskeyId"@.
+--
+-- The version segment is dropped: an @operationId@ names /what the operation does/, and
+-- generated clients turn it into a method name. Folding @v1@ in would rename every method the
+-- day the routes moved under @\/v1@, and rename them all again at @\/v2@ — churn that says
+-- nothing about the operation. The path in @paths@ still carries the version, which is where a
+-- client reads it from.
 camel :: FilePath -> T.Text
-camel = T.pack . concatMap capitalize . words . map keepAlnum
+camel = T.pack . concatMap capitalize . dropVersion . words . map keepAlnum
   where
     keepAlnum c = if isAlphaNum c then c else ' '
     capitalize [] = []
     capitalize (c : cs) = toUpper c : cs
+    dropVersion ("v1" : rest) = rest
+    dropVersion segments = segments

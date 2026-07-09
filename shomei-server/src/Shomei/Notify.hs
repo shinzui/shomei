@@ -49,9 +49,9 @@ runNotifierLog cfg = interpret_ \case
 renderNotification :: NotifierConfig -> Notification -> String
 renderNotification cfg = \case
   EmailVerificationRequested email token expires ->
-    line "email_verification" "/auth/verify-email/confirm" email token expires
+    line "email_verification" "/v1/auth/verify-email/confirm" email token expires
   PasswordResetRequested email token expires ->
-    line "password_reset" "/auth/password-reset/confirm" email token expires
+    line "password_reset" "/v1/auth/password-reset/confirm" email token expires
   where
     line kind path email token expires =
       "[shomei:log] "
