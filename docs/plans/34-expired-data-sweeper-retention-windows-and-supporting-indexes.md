@@ -5,6 +5,7 @@ title: "Expired-Data Sweeper, Retention Windows, and Supporting Indexes"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
 master_plan: "docs/masterplans/6-operational-and-performance-hardening.md"
+intention: intention_01kx2hqr6beeashgwvg5zwxtgc
 ---
 
 # Expired-Data Sweeper, Retention Windows, and Supporting Indexes
@@ -53,13 +54,18 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: new codd migration `…-shomei-sweeper-indexes.sql` created via `just new-migration`,
-      adding `expires_at` indexes (sessions, refresh tokens, verification tokens, reset
-      tokens), the composite audit index `(created_at DESC, event_id DESC)`, and dropping the
-      four dead single-column `status` indexes plus the superseded
-      `shomei_auth_events_created_at_idx`.
-- [ ] M1: migration applies cleanly to a fresh database (`just create-database`) and to an
-      already-migrated database (idempotent `IF EXISTS`/`IF NOT EXISTS` forms).
+- [x] M1 (2026-07-09): new codd migration
+      `shomei-migrations/sql-migrations/2026-07-09-13-51-07-sweeper-indexes-and-retention.sql`
+      created via `just new-migration sweeper-indexes-and-retention`, adding `expires_at`
+      indexes (sessions, verification tokens, reset tokens), the partial
+      `shomei_sessions_revoked_at_idx`, `shomei_login_attempts_occurred_at_idx`, the composite
+      audit index `(created_at DESC, event_id DESC)`, and dropping the four dead single-column
+      `status` indexes plus the superseded `shomei_auth_events_created_at_idx`. Two deviations
+      from the original index list are recorded in the Decision Log (no refresh-token
+      `expires_at` index; added a partial sessions `revoked_at` index).
+- [x] M1 (2026-07-09): migration applies cleanly (`just migrate` → `[1 found]`, applied in
+      9 ms) and is idempotent (`IF EXISTS`/`IF NOT EXISTS` forms; codd additionally records
+      the applied filename and will not re-run it).
 - [ ] M2: `Shomei.Postgres.Maintenance` module with batched-delete statements and
       `sweepOnce :: Pool -> SweepConfig -> UTCTime -> IO SweepReport`.
 - [ ] M2: `shomei-postgres` integration test: seed expired + fresh rows, run `sweepOnce`,
@@ -81,7 +87,45 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **`just new-migration name=<slug>` (as written in this plan's Concrete Steps) is wrong.**
+  The recipe takes the slug as a positional parameter, so the `name=` prefix is passed through
+  as part of the string and rejected by the slug validator:
+
+```text
+$ just new-migration name=sweeper-indexes-and-retention
+Invalid slug: name=sweeper-indexes-and-retention
+error: recipe `new-migration` failed on line 33 with exit code 1
+```
+
+  The correct invocation is `just new-migration sweeper-indexes-and-retention`. This plan's
+  Concrete Steps have been corrected.
+
+- **Touching the `.cabal` does not force the `embedDir` splice to re-run.** The `migrate`
+  recipe's `touch shomei-migrations/shomei-migrations.cabal` is a no-op for cabal, which
+  hashes file *content* rather than mtime. A freshly scaffolded migration is therefore
+  invisible — `just migrate` cheerfully reports `Looking for pending migrations... [0 found]`
+  and exits 0, which looks like success:
+
+```text
+$ just migrate
+Looking for pending migrations... [0 found]
+Successfully applied all migrations to shomei
+$ psql -d "$PGDATABASE" -tAc "SELECT indexname FROM pg_indexes WHERE schemaname='shomei' AND indexname LIKE '%expires_at%'"
+shomei_webauthn_pending_ceremonies_expires_at_idx     -- only the pre-existing one
+```
+
+  The real convention is visible in `shomei-migrations/src/Shomei/Migrations.hs`: the comment
+  block above `embeddedFiles` carries one line per migration wave, precisely so the module's
+  *content* changes and GHC recompiles the splice. Adding such a line fixed it:
+
+```text
+[1 of 1] Compiling Main ... [Shomei.Migrations changed]
+Looking for pending migrations... [1 found]
+Applying 2026-07-09-13-51-07-sweeper-indexes-and-retention.sql (9ms)
+```
+
+  **Any later plan that adds a migration must append a comment line to that block.** This is
+  the single most likely way for a contributor to silently ship a migration that never runs.
 
 
 ## Decision Log
@@ -165,6 +209,30 @@ Record every decision made while working on the plan.
   DESC)` strictly subsumes the old single-column `created_at` index for the reader's
   `ORDER BY created_at DESC, event_id DESC` keyset query.
   Date: 2026-07-07
+
+- Decision: **Do not** create `shomei_refresh_tokens_expires_at_idx`, despite this plan's
+  original M1 index list naming it.
+  Rationale: The plan's own Decision Log (above) settles that refresh tokens are swept via
+  their parent session and *never* by their own `expires_at`. Grepping every `preparable`
+  statement in `shomei-postgres/src` confirms `shomei_refresh_tokens.expires_at` appears only
+  in INSERT column lists and SELECT projections — never in a `WHERE` predicate. The index
+  would therefore have zero readers while adding write amplification to the single hottest
+  write path in the system (one INSERT per token refresh). Creating it would commit exactly
+  the sin this same migration cites when dropping the four dead `status` indexes.
+  Date: 2026-07-09
+
+- Decision: **Add** a partial index `shomei_sessions_revoked_at_idx ON shomei_sessions
+  (revoked_at) WHERE status = 'revoked'`, which the original M1 index list omitted.
+  Rationale: The session sweep predicate is a disjunction — `expires_at <= $1 OR (status =
+  'revoked' AND revoked_at <= $1)`. A single index on `expires_at` cannot serve an `OR`; with
+  only that index PostgreSQL must sequential-scan `shomei_sessions`, so this plan's own
+  Validation step 2 ("the plan must show an index scan … for sessions") was unsatisfiable as
+  originally specified. Indexing each branch lets the planner combine them with a `BitmapOr`.
+  The index is partial because `revoked_at` is non-NULL only for revoked rows, which keeps it
+  small — revoked sessions are the rare case. The second branch is load-bearing rather than
+  redundant: a session revoked long ago can still carry a far-future `expires_at`, and only
+  the `revoked_at` branch sweeps it promptly.
+  Date: 2026-07-09
 
 - Decision: Sweep configuration lives in `ServerSettings`
   (`shomei-server/src/Shomei/Server/Config.hs`), not core `ShomeiConfig`.
@@ -258,50 +326,32 @@ Scope: one new codd migration; nothing else. At the end, a fresh `just create-da
 produces a schema where every sweep predicate and the audit keyset query are index-served and
 the five dead indexes are gone.
 
-Scaffold it (the recipe stamps the current UTC timestamp):
+Scaffold it (the recipe stamps the current UTC timestamp; the slug is **positional**, not
+`name=<slug>`):
 
 ```bash
-just new-migration name=sweeper-indexes-and-retention
+just new-migration sweeper-indexes-and-retention
 ```
 
-Fill the generated file in `shomei-migrations/sql-migrations/` with:
+Fill the generated file in `shomei-migrations/sql-migrations/` with the contents now committed
+at `shomei-migrations/sql-migrations/2026-07-09-13-51-07-sweeper-indexes-and-retention.sql`:
+two session indexes (`expires_at`, plus a partial `revoked_at WHERE status = 'revoked'` so the
+sweep's `OR` predicate can be served by a `BitmapOr` instead of a sequential scan), an
+`expires_at` index on each of the two one-time-token tables, an `occurred_at` index on
+`shomei_login_attempts`, the composite `shomei_auth_events (created_at DESC, event_id DESC)`,
+and five `DROP INDEX IF EXISTS` statements. See the two 2026-07-09 Decision Log entries for why
+there is deliberately **no** `shomei_refresh_tokens_expires_at_idx` and why the partial
+`revoked_at` index was added.
 
-```sql
--- codd: in-txn
+The login-attempts sweep predicate is age-only (`occurred_at <= cutoff`), which the existing
+partial indexes (they lead on `account_key`/`client_ip`) cannot serve — hence the plain
+`occurred_at` index.
 
-SET search_path TO shomei, pg_catalog;
-
--- Sweep-supporting indexes (EP-2 of the operational-hardening MasterPlan).
--- The sweeper deletes by expiry cutoffs; without these it would seq-scan.
-CREATE INDEX IF NOT EXISTS shomei_sessions_expires_at_idx
-  ON shomei_sessions (expires_at);
-CREATE INDEX IF NOT EXISTS shomei_refresh_tokens_expires_at_idx
-  ON shomei_refresh_tokens (expires_at);
-CREATE INDEX IF NOT EXISTS shomei_email_verification_tokens_expires_at_idx
-  ON shomei_email_verification_tokens (expires_at);
-CREATE INDEX IF NOT EXISTS shomei_password_reset_tokens_expires_at_idx
-  ON shomei_password_reset_tokens (expires_at);
-CREATE INDEX IF NOT EXISTS shomei_login_attempts_occurred_at_idx
-  ON shomei_login_attempts (occurred_at);
-
--- Audit keyset pagination: ORDER BY created_at DESC, event_id DESC with a
--- (created_at, event_id) < ($cursor) predicate wants exactly this composite.
-CREATE INDEX IF NOT EXISTS shomei_auth_events_created_event_idx
-  ON shomei_auth_events (created_at DESC, event_id DESC);
-
--- Dead single-column status indexes: 3-4 distinct values, never queried alone,
--- pure write amplification. The composite above subsumes the old created_at index.
-DROP INDEX IF EXISTS shomei_sessions_status_idx;
-DROP INDEX IF EXISTS shomei_refresh_tokens_status_idx;
-DROP INDEX IF EXISTS shomei_email_verification_tokens_status_idx;
-DROP INDEX IF EXISTS shomei_password_reset_tokens_status_idx;
-DROP INDEX IF EXISTS shomei_auth_events_created_at_idx;
-```
-
-Note the login-attempts sweep predicate is age-only (`occurred_at < cutoff`), which the
-existing partial indexes (they lead on `account_key`/`client_ip`) cannot serve — hence the
-plain `occurred_at` index. Then apply and verify (the recipe touches the `.cabal` so the TH
-splice re-embeds):
+Then apply and verify. **Important:** the `migrate` recipe's `touch` of the `.cabal` does *not*
+force the compile-time `embedDir` splice to re-run (cabal hashes content, not mtime). Append a
+one-line comment to the block above `embeddedFiles` in
+`shomei-migrations/src/Shomei/Migrations.hs` — that is the repository's actual convention, and
+without it `just migrate` reports `[0 found]` and silently applies nothing.
 
 ```bash
 just migrate
@@ -482,13 +532,16 @@ PostgreSQL running and `just create-database` applied.
 
 ```bash
 # M1
-just new-migration name=sweeper-indexes-and-retention
+just new-migration sweeper-indexes-and-retention
 "$EDITOR" shomei-migrations/sql-migrations/*-sweeper-indexes-and-retention.sql
+# Append a comment line above `embeddedFiles` so the embedDir splice recompiles:
+"$EDITOR" shomei-migrations/src/Shomei/Migrations.hs
 just migrate
 psql -d "$PGDATABASE" -tc "SELECT indexname FROM pg_indexes WHERE schemaname='shomei' AND indexname LIKE '%expires_at%'"
 ```
 
-Expected: five `…_expires_at_idx` names plus the pre-existing ceremonies one; and
+Expected: three `…_expires_at_idx` names (sessions, verification tokens, reset tokens) plus the
+pre-existing ceremonies one; and
 
 ```bash
 psql -d "$PGDATABASE" -tc "SELECT indexname FROM pg_indexes WHERE schemaname='shomei' AND indexname IN ('shomei_sessions_status_idx','shomei_refresh_tokens_status_idx','shomei_email_verification_tokens_status_idx','shomei_password_reset_tokens_status_idx','shomei_auth_events_created_at_idx')"
@@ -594,8 +647,11 @@ No new external dependencies: `hasql`/`hasql-pool` (statements + `Pool.use`), `a
 
 Must exist at the end:
 
-- Migration `shomei-migrations/sql-migrations/<ts>-sweeper-indexes-and-retention.sql` with the
-  index set in M1 (five `expires_at`-family creates, one composite audit create, five drops).
+- Migration `shomei-migrations/sql-migrations/2026-07-09-13-51-07-sweeper-indexes-and-retention.sql`
+  with the index set in M1: five expiry-family creates (`shomei_sessions_expires_at_idx`, the
+  partial `shomei_sessions_revoked_at_idx`, `shomei_email_verification_tokens_expires_at_idx`,
+  `shomei_password_reset_tokens_expires_at_idx`, `shomei_login_attempts_occurred_at_idx`), one
+  composite audit create, and five drops.
 - `Shomei.Postgres.Maintenance` exporting `SweepConfig (..)`, `SweepReport (..)`,
   `defaultSweepConfig :: SweepConfig`, and
   `sweepOnce :: Pool -> SweepConfig -> UTCTime -> IO (Either UsageError SweepReport)`.

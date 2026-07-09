@@ -50,6 +50,8 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- The generalized login identifier (shomei_users.login_id / shomei_password_credentials.login_id,
 -- with email relaxed to nullable + partial-unique) was added on 2026-06-19 by SH-25,
 -- requiring another recompile of this splice.
+-- The sweeper's expiry indexes (and the drop of the four dead single-column status indexes)
+-- were added on 2026-07-09 by MasterPlan-6 EP-2, requiring another recompile of this splice.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 
