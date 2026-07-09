@@ -30,6 +30,7 @@ import Shomei.Domain.Password (PasswordPolicy (breachCheckTimeoutMs))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher, runClaimsEnricherNull)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -40,6 +41,7 @@ import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
@@ -64,6 +66,7 @@ import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
+import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
@@ -79,6 +82,7 @@ import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
 -- and surface failures through @Error AuthError@.
 type AppEffects =
   '[ UserStore,
+     RoleStore,
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
@@ -89,6 +93,7 @@ type AppEffects =
      PasskeyStore,
      PendingCeremonyStore,
      Notifier,
+     ClaimsEnricher,
      WebAuthnCeremony,
      PasswordBreachChecker,
      PasswordHasher,
@@ -154,6 +159,9 @@ runAppIO env action = do
     . runPasswordHasherCrypto env.envHashingLimiter env.envArgon2Params
     . runPasswordBreachCheckerHibp env.envHttpManager breachTimeoutMs
     . runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)
+    -- The standalone server adds no claims of its own. An embedding host swaps this for its
+    -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
+    . runClaimsEnricherNull
     . runNotifierFromConfig env.envConfig
     . runPendingCeremonyStorePostgres
     . runPasskeyStorePostgres
@@ -164,6 +172,7 @@ runAppIO env action = do
     . runRefreshTokenStorePostgres
     . runSessionStorePostgres
     . runCredentialStorePostgres
+    . runRoleStorePostgres
     . runUserStorePostgres
     $ action
   where

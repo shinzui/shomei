@@ -37,7 +37,7 @@ import Shomei.Crypto
     verifyPasswordArgon2id,
     withHashingPermit,
   )
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -76,6 +76,7 @@ import Shomei.Effect.AuthEventReader
     queryAuthEvents,
   )
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher, runClaimsEnricherNull)
 import Shomei.Effect.Clock (Clock (..), now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
 import Shomei.Effect.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
@@ -159,6 +160,7 @@ import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Workflow (login, refresh, signup)
 import Shomei.Workflow.Roles (grantRoleTo)
+import Shomei.Workflow.Session (buildEnrichedClaims)
 import Shomei.Workflow.Account
   ( ConfirmEmailVerification (..),
     ConfirmPasswordReset (..),
@@ -188,6 +190,7 @@ type AppEffects =
      PasskeyStore,
      PendingCeremonyStore,
      Notifier,
+     ClaimsEnricher,
      WebAuthnCeremony,
      AuthEventPublisher,
      AuthEventReader,
@@ -225,6 +228,7 @@ runAppWithNotifications ref pool action = do
       . runAuthEventReaderPostgres
       . runAuthEventPublisherPostgres
       . runWebAuthnCeremonyFake wref
+      . runClaimsEnricherNull
       . runNotifierRef ref
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
@@ -259,6 +263,7 @@ runAppAtTime t pool action = do
       . runAuthEventReaderPostgres
       . runAuthEventPublisherPostgres
       . runWebAuthnCeremonyFake wref
+      . runClaimsEnricherNull
       . runNotifierRef ref
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
@@ -412,7 +417,8 @@ tests =
     testSweepBatchesWholeTokenFamilies,
     testRoleRegistry,
     testRoleGrants,
-    testRoleGrantForeignKeys
+    testRoleGrantForeignKeys,
+    testGrantedRoleReachesEnrichedClaims
   ]
 
 -- | The registry: seeded with @admin@ by the migration, idempotent definition, sorted listing.
@@ -503,6 +509,25 @@ testRoleGrantForeignKeys =
       Left (InternalAuthError _) -> pure ()
       Left e -> assertFailure (what <> ": expected InternalAuthError, got " <> show e)
       Right _ -> assertFailure (what <> ": expected the foreign key to reject it")
+
+-- | The claims path end to end over the real store: a role granted through the workflow shows
+-- up in the claims 'buildEnrichedClaims' assembles, which is what every token mint signs.
+testGrantedRoleReachesEnrichedClaims :: TestTree
+testGrantedRoleReachesEnrichedClaims =
+  testCase "buildEnrichedClaims reads roles from the real PostgreSQL store" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      sid <- genSessionId
+      ts <- now
+      before <- buildEnrichedClaims cfg u.userId sid ts
+      _ <- grantRoleTo Nothing u.userId (Role "admin")
+      after' <- buildEnrichedClaims cfg u.userId sid ts
+      pure (before, after')
+    (before, after') <- expectApp result
+    before.roles @?= Set.empty
+    after'.roles @?= Set.singleton (Role "admin")
+    -- Shōmei persists no scopes; the null enricher adds none.
+    after'.scopes @?= Set.empty
 
 -- | The description the @shomei-role-grants@ migration seeds onto the @admin@ role.
 adminSeedDescription :: Text
@@ -843,7 +868,7 @@ countingDatabase counter = interpose \_env op -> do
     RunSession sess -> send (RunSession sess)
     RunTransaction t -> send (RunTransaction t)
 
--- | A successful password login costs exactly seven database round-trips:
+-- | A successful password login costs exactly eight database round-trips:
 --
 --   1. @countRecentFailuresByIp@   (per-IP throttle)
 --   2. @getAccountLockout@         (lockout gate)
@@ -852,38 +877,46 @@ countingDatabase counter = interpose \_env op -> do
 --   5. @recordLoginAttempt@        (success row)
 --   6. @countPasskeysByUser@       (MFA gate)
 --   7. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
+--   8. @listRolesForUser@          (the roles claim, via @buildEnrichedClaims@)
 --
 -- There is deliberately no @clearAccountLockout@: the lockout read at step 2 found nothing.
 -- Password verification and access-token signing are CPU-only and cost no round-trip.
 --
+-- Step 8 is the price of a populated @roles@ claim: every user-session mint reads the grant
+-- table once. It is a single-row indexed lookup on the primary key prefix, and it buys the
+-- alternative — re-reading roles on every /verification/ — never happening.
+--
 -- If this number drifts, something added a round-trip to the login path. Find it before
 -- changing the constant.
 testLoginRoundTripBudget :: TestTree
-testLoginRoundTripBudget = testCase "a successful login costs exactly 7 database round-trips" $ withDb \pool -> do
+testLoginRoundTripBudget = testCase "a successful login costs exactly 8 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
   loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
   _ <- expectApp loginRes >>= expectRight
-  readIORef counter >>= (@?= 7)
+  readIORef counter >>= (@?= 8)
 
--- | A token refresh costs exactly three database round-trips:
+-- | A token refresh costs exactly four database round-trips:
 --
 --   1. @findRefreshTokenByHash@
 --   2. @findSessionById@
 --   3. @rotateRefreshToken@  (ONE transaction: mark-used CAS + child insert + rotation event)
+--   4. @listRolesForUser@    (the roles claim, via @buildEnrichedClaims@)
 --
 -- The user row is not read because @emailVerificationRequired@ is off in 'cfg'; turning it on
--- adds a fourth round-trip by design.
+-- adds a fifth round-trip by design.
+--
+-- Step 4 is what makes a role change take effect on refresh rather than only at the next login.
 testRefreshRoundTripBudget :: TestTree
-testRefreshRoundTripBudget = testCase "a token refresh costs exactly 3 database round-trips" $ withDb \pool -> do
+testRefreshRoundTripBudget = testCase "a token refresh costs exactly 4 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   (_, pair) <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   refreshRes <- runApp pool (countingDatabase counter (refresh cfg (RefreshCommand pair.refreshToken)))
   _ <- expectApp refreshRes >>= expectRight
-  readIORef counter >>= (@?= 3)
+  readIORef counter >>= (@?= 4)
 
 testWorkflowRefreshRotation :: TestTree
 testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + inserts child" $ withDb \pool -> do

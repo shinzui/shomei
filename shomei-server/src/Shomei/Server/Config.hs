@@ -27,6 +27,7 @@ where
 import Data.Aeson (eitherDecodeStrict')
 import Data.Char (isHexDigit)
 import Data.Foldable (traverse_)
+import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
@@ -50,7 +51,7 @@ import Shomei.Config
     defaultShomeiConfig,
   )
 import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (parseId)
 import Shomei.Postgres.Maintenance (SweepConfig (..), defaultSweepConfig)
@@ -218,7 +219,10 @@ data FileConfig = FileConfig
     -- | @strict@ | @lax@ | @none@
     cookieSameSite :: !(Maybe Text),
     -- | origins allowed to make cookie-authenticated mutating requests
-    csrfAllowedOrigins :: !(Maybe [Text])
+    csrfAllowedOrigins :: !(Maybe [Text]),
+    -- | roles granted to every new user at signup. Each must already exist in the
+    --     @shomei_roles@ registry; the server refuses to boot otherwise.
+    defaultRoles :: !(Maybe [Text])
   }
   deriving stock (Show, Generic)
   deriving anyclass (FromJSON)
@@ -339,7 +343,8 @@ baseFromFile (Just fc) = do
                 { secure = fromMaybe cfg0.cookieConfig.secure fc.cookieSecure,
                   sameSite = fromMaybe cfg0.cookieConfig.sameSite sameSiteFile,
                   allowedOrigins = fromMaybe cfg0.cookieConfig.allowedOrigins fc.csrfAllowedOrigins
-                }
+                },
+            defaultRoles = maybe cfg0.defaultRoles roleSet fc.defaultRoles
           }
       settings =
         ServerSettings
@@ -524,9 +529,11 @@ overlayCoreFromEnv base = do
   cookieSecure' <- boolEnv "SHOMEI_COOKIE_SECURE"
   cookieSameSite' <- sameSiteEnv
   csrfOrigins <- csrfOriginsEnv
+  defaultRoles' <- defaultRolesEnv
   pure
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
+        defaultRoles = fromMaybe base.defaultRoles defaultRoles',
         notifierConfig =
           base.notifierConfig
             { logRawTokens = fromMaybe base.notifierConfig.logRawTokens logSecrets
@@ -830,6 +837,20 @@ csrfOriginsEnv = do
   pure case m of
     Just v | not (null v) -> Just (filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v))))
     _ -> Nothing
+
+-- | A comma-separated role list, e.g. @member,beta-tester@, granted to every new user at
+-- signup. The names are validated against the @shomei_roles@ registry at boot, not here.
+defaultRolesEnv :: IO (Maybe (Set Role))
+defaultRolesEnv = do
+  m <- lookupEnv "SHOMEI_DEFAULT_ROLES"
+  pure case m of
+    Just v | not (null v) -> Just (roleSet (Text.splitOn "," (Text.pack v)))
+    _ -> Nothing
+
+-- | Trim, drop blanks, and collect role names into a set. Shared by the Dhall and env paths so
+-- @"member, , staff"@ means the same thing from either.
+roleSet :: [Text] -> Set Role
+roleSet = Set.fromList . map Role . filter (not . Text.null) . map Text.strip
 
 -- | Read @SHOMEI_KEY_REFRESH_INTERVAL@ (seconds between signing-key reloads; 0 disables
 -- the periodic reload). Rejects a negative value, which would otherwise silently disable

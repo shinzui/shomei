@@ -54,6 +54,7 @@ import Shomei.Effect.AuthUnitOfWork
     persistNewSession,
     rotateRefreshToken,
   )
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByLoginId)
 import Shomei.Effect.LoginAttemptStore
@@ -75,6 +76,7 @@ import Shomei.Effect.RefreshTokenStore
     revokeRefreshTokenFamily,
     revokeSessionRefreshTokens,
   )
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.SessionStore (SessionStore, findSessionById, revokeSession)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
@@ -86,7 +88,8 @@ import Shomei.Id (CeremonyId)
 import Shomei.Prelude
 import Shomei.Workflow.Breach (enforceBreachPolicy)
 import Shomei.Workflow.Mfa (prepareMfaChallenge)
-import Shomei.Workflow.Session (buildClaims, ensureEmailVerified, issueSession)
+import Shomei.Workflow.Roles (applyDefaultRoles)
+import Shomei.Workflow.Session (buildEnrichedClaims, ensureEmailVerified, issueSession)
 
 -- | The WebAuthn step-up challenge handed back when an account with a passkey logs in with
 -- the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once pending-MFA
@@ -113,6 +116,12 @@ signup ::
     PasswordHasher :> es,
     PasswordBreachChecker :> es,
     TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
+    -- 'applyDefaultRoles' audits each grant it makes. Note that this workflow's own
+    -- UserRegistered/SessionStarted events go through 'persistNewSession' (inside its
+    -- transaction) instead, which is why signup carried no publisher constraint before.
+    AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -133,6 +142,9 @@ signup cfg cmd = runErrorNoCallStack do
   ts <- now
   user <- createUser NewUser {loginId = cmd.loginId, email = cmd.email, displayName = cmd.displayName}
   _ <- createPasswordCredential user.userId cmd.loginId cmd.email pwHash
+  -- Before the session (and therefore before the first token is minted), so the very first
+  -- access token already carries the configured default roles.
+  applyDefaultRoles cfg user.userId ts
   rawToken <- generateOpaqueToken
   tokHash <- hashRefreshToken rawToken
   -- Session row, refresh-token row, and both audit events in one transaction: a crash here
@@ -154,7 +166,7 @@ signup cfg cmd = runErrorNoCallStack do
         [ Event.UserRegistered (Event.UserRegisteredData user.userId cmd.loginId cmd.email ts),
           Event.SessionStarted (Event.SessionStartedData sid user.userId ts)
         ]
-  access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
+  access <- signAccessToken =<< buildEnrichedClaims cfg user.userId session.sessionId ts
   pure
     ( user,
       TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
@@ -178,6 +190,8 @@ login ::
     AuthUnitOfWork :> es,
     PasswordHasher :> es,
     TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
     AuthEventPublisher :> es,
     LoginAttemptStore :> es,
     PasskeyStore :> es,
@@ -315,6 +329,8 @@ refresh ::
     -- only consulted when 'emailVerificationRequired' is enabled
     UserStore :> es,
     TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
     AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
@@ -383,7 +399,9 @@ refresh cfg cmd = do
                     case outcome of
                       RotationConflict -> reuseDetected tok ts
                       Rotated _ -> do
-                        access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
+                        -- Re-running the enrichment here is what makes a role change take
+                        -- effect on refresh (the staleness contract in docs/user/security.md).
+                        access <- signAccessToken =<< buildEnrichedClaims cfg s.userId s.sessionId ts
                         pure
                           ( Right
                               TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}

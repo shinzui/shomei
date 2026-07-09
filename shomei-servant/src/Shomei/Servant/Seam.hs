@@ -27,6 +27,7 @@ import Shomei.Domain.LoginAttempt (AccountKey)
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
@@ -37,6 +38,7 @@ import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
@@ -54,6 +56,7 @@ import Shomei.Servant.Error (authErrorToServerError)
 -- in-memory and the real (EP-6) interpreter assemblies.
 type AppEffects =
   '[ UserStore,
+     RoleStore,
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
@@ -64,6 +67,7 @@ type AppEffects =
      PasskeyStore,
      PendingCeremonyStore,
      Notifier,
+     ClaimsEnricher,
      WebAuthnCeremony,
      PasswordBreachChecker,
      PasswordHasher,

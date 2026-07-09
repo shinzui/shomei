@@ -234,7 +234,8 @@ the other.
 ## Progress
 
 - [x] EP-1: Role/scope grant storage (migration) and port with Postgres + in-memory interpreters
-- [ ] EP-1: Claims population at token mint through an enrichment hook; `shomei-admin roles grant`
+- [x] EP-1: Claims population at token mint through an enrichment hook
+- [ ] EP-1: `shomei-admin roles grant`
 - [ ] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
 - [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
 - [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
@@ -275,6 +276,22 @@ so `signup` carries no `AuthEventPublisher :> es` constraint. Any plan that adds
 to `signup` widens its signature and therefore every interpreter chain that runs it — including
 the private one in `shomei-server/app/Shomei/Admin/Users.hs`. EP-1 hit this adding default-role
 grants; **EP-7** should expect the same when it touches signup-adjacent workflows.
+
+**2026-07-09 (EP-1) — two round-trip budget guards pin the exact database cost of login and
+refresh.** `shomei-postgres/test/Main.hs`'s `testLoginRoundTripBudget` and
+`testRefreshRoundTripBudget` count `Database` operations and assert an exact number (now 8 and
+4, raised from 7 and 3 by the one `listRolesForUser` read that `buildEnrichedClaims` performs
+per mint). **EP-5, EP-6, and EP-9 all add work to token-minting paths and will trip these
+tests.** That is intended: raise the constant only after finding and justifying the new
+round-trip, and update the haddock that enumerates them.
+
+**2026-07-09 (EP-1) — `Shomei.Workflow.Session.buildEnrichedClaims` is the claims-construction
+integration point, and it exists now.** Its signature is
+`(RoleStore :> es, ClaimsEnricher :> es) => ShomeiConfig -> UserId -> SessionId -> UTCTime -> Eff es AuthClaims`.
+Per this MasterPlan's Integration Points, **EP-5** (ID token, userinfo) and **EP-6** (exchanged
+tokens) must build their claims through it rather than re-reading stores in the HTTP layer.
+`Shomei.Effect.InMemory.runInMemoryWith` supplies a `ClaimsEnricher` hook for tests that need
+to observe a host delta.
 
 **2026-07-09 (EP-1) — `ShomeiConfig`'s `FromJSON` is not the config-file decoder.** The Dhall
 file is rendered to JSON and decoded into a *separate* flat, all-optional `FileConfig`

@@ -125,15 +125,19 @@ Milestone 1 — Role persistence (migration, registry, port, interpreters, audit
 - [x] Add the in-memory interpreter (`runRoleStore` + `roleGrants` and `definedRoles` fields in `World`, `definedRoles` pre-seeded with `admin` to mirror the migration) to `shomei-core/src/Shomei/Effect/InMemory.hs`; add `RoleStore` to `runInMemory`'s effect list.
 - [x] Postgres interpreter tests in `shomei-postgres/test/Main.hs` (`testRoleRegistry`, `testRoleGrants`, `testRoleGrantForeignKeys`) — `cabal test shomei-postgres` green (43 tests), `cabal test shomei-core` green (135 tests).
 
-Milestone 2 — Claims enrichment at every mint, and default roles at signup:
+Milestone 2 — Claims enrichment at every mint, and default roles at signup: **done 2026-07-09**
 
-- [ ] Add the `ClaimsEnricher` effect + `ClaimsDelta` (`shomei-core/src/Shomei/Effect/ClaimsEnricher.hs`) with `runClaimsEnricherNull` and `runClaimsEnricherPure`; module haddock carries the staleness warning (do **not** mirror live en/ReBAC decisions into JWT claims — see 2.1).
-- [ ] Add `buildEnrichedClaims` to `shomei-core/src/Shomei/Workflow/Session.hs`; switch `issueSession`, `Shomei.Workflow.signup`, and `Shomei.Workflow.refresh` to it.
-- [ ] Add `defaultRoles :: Set Role` to `ShomeiConfig` (`shomei-core/src/Shomei/Config.hs`, default empty in `defaultShomeiConfig`) and the `SHOMEI_DEFAULT_ROLES` env override in `shomei-server/src/Shomei/Server/Config.hs`.
-- [ ] Apply default roles in `Shomei.Workflow.signup` (via `Shomei.Workflow.Roles.applyDefaultRoles`, immediately after `createUser`) so the first minted token already carries them; audited as `role_granted` with `granted_by = NULL`.
-- [ ] Boot-time validation: the server (`shomei-server/src/Shomei/Server/Boot.hs`) refuses to start when `defaultRoles` names a role missing from `shomei_roles` (via `undefinedDefaultRoles`); embedded-host guidance documented on the helper's haddock.
-- [ ] Wire `RoleStore` + `ClaimsEnricher` into every effect stack: `Shomei.Servant.Seam.AppEffects`, `Shomei.Server.App.AppEffects` + `runAppIO`, `Shomei.Effect.InMemory.runInMemory`, `shomei-postgres/test/Main.hs`, `shomei-servant/test/Main.hs`, `shomei-server/app/Shomei/Admin/Users.hs`, and the admin test suite.
-- [ ] Core/postgres/servant tests proving a granted role appears in the next minted token (login and refresh), that a `ClaimsDelta` cannot smuggle reserved claim keys, and that a signup under a config with `defaultRoles = {"member"}` (defined) mints a `member`-roled first token and lands a `role_granted` audit row.
+- [x] Add the `ClaimsEnricher` effect + `ClaimsDelta` (`shomei-core/src/Shomei/Effect/ClaimsEnricher.hs`) with `runClaimsEnricherNull` and `runClaimsEnricherPure`; module haddock carries the staleness warning (do **not** mirror live en/ReBAC decisions into JWT claims — see 2.1).
+- [x] Add `buildEnrichedClaims` to `shomei-core/src/Shomei/Workflow/Session.hs`; switch `issueSession`, `Shomei.Workflow.signup`, and `Shomei.Workflow.refresh` to it. (`login` and both `Shomei.Workflow.Mfa` completions inherit the two new constraints through `issueSession`.)
+- [x] `defaultRoles :: Set Role` on `ShomeiConfig` (landed in Milestone 1); the `SHOMEI_DEFAULT_ROLES` env override **and** a `defaultRoles` Dhall-file field in `shomei-server/src/Shomei/Server/Config.hs`, plus `config/shomei-types.dhall` and `config/shomei.example.dhall`.
+- [x] Apply default roles in `Shomei.Workflow.signup` (via `Shomei.Workflow.Roles.applyDefaultRoles`, immediately after `createUser`) so the first minted token already carries them; audited as `role_granted` with `granted_by = NULL`. Required widening `signup` with `AuthEventPublisher :> es` (see Surprises).
+- [x] Boot-time validation: `validateDefaultRoles` in `shomei-server/src/Shomei/Server/Boot.hs` refuses to start when `defaultRoles` names a role missing from `shomei_roles` (via `undefinedDefaultRoles`); embedded-host guidance documented on the helper's haddock.
+- [x] Wire `RoleStore` + `ClaimsEnricher` into every effect stack: `Shomei.Servant.Seam.AppEffects`, `Shomei.Server.App.AppEffects` + `runAppIO`, `Shomei.Effect.InMemory.runInMemory`, `shomei-postgres/test/Main.hs`, `shomei-servant/test/Main.hs`, `shomei-core/test/Shomei/Workflow/TimingSpec.hs`, and `shomei-server/app/Shomei/Admin/Users.hs`.
+- [x] Factor `runInMemoryWith` out of `runInMemory` (and name the shared list `InMemoryPorts`) so a test can supply a `ClaimsEnricher` hook without restating the twenty-interpreter chain.
+- [x] Core tests (`shomei-core/test/Shomei/Workflow/RolesSpec.hs`, 7 cases): a grant reaches the next login's token but not the outstanding one; refresh picks up a grant; refresh drops a revoked role; a `ClaimsDelta` cannot forge `sub`/`roles`/`scopes`/`iss`/`act`; hook roles union with stored roles and hook scopes reach the token; `defaultRoles` land on the **first** token with a `role_granted` audit row and no actor; `undefinedDefaultRoles` reports exactly the missing names.
+- [x] Postgres test `testGrantedRoleReachesEnrichedClaims` proving the real store feeds `buildEnrichedClaims`.
+- [x] Update the two round-trip budget guards (`testLoginRoundTripBudget` 7 → 8, `testRefreshRoundTripBudget` 3 → 4) for the one `listRolesForUser` read per mint, documenting why (see Surprises).
+- [x] `cabal build all` and `cabal test all` green (core 142, postgres 44, servant 10, admin 14, all others unchanged).
 
 Milestone 3 — CLI granting path:
 
@@ -203,6 +207,22 @@ argument (the unit-of-work writes them inside the transaction), never through
 `publishAuthEvent`. Adding `applyDefaultRoles` therefore widens `signup`'s signature with
 `AuthEventPublisher :> es` — which in turn widens every call site's interpreter chain,
 including `shomei-server/app/Shomei/Admin/Users.hs`'s private one. Handled in Milestone 2.
+
+**2026-07-09 — enrichment costs one database round-trip per mint, and two guard tests pin it.**
+`shomei-postgres/test/Main.hs` carries `testLoginRoundTripBudget` and
+`testRefreshRoundTripBudget`, which count `Database` operations through an `interpose`d
+counting interpreter and assert an exact number. `buildEnrichedClaims`'s `listRolesForUser`
+made login 7 → 8 and refresh 3 → 4. The cost is inherent to the design (roles are read at mint,
+never at verification) and is a single indexed lookup on `shomei_role_grants`'s primary-key
+prefix; both constants and their explanatory haddocks were updated rather than the design.
+**Any later plan that adds a store read to a mint path will trip these tests** — that is what
+they are for.
+
+**2026-07-09 — the servant test forged an admin token by hand.** `shomei-servant/test/Main.hs`
+has `mkAdminToken`, whose comment reads "the workflows issue no roles, so this is the only way
+to get one". After Milestone 2 that is false; Milestone 4's tests grant the role through
+`Shomei.Workflow.Roles.grantRoleTo` and log in, which is what makes the combinator test prove
+something about the real path rather than about a hand-signed token.
 
 **2026-07-09 — `ShomeiConfig`'s new field does not break Dhall decoding.** The plan warned that
 adding a field to a `FromJSON`-deriving record breaks existing config files. It does not here:
@@ -369,6 +389,26 @@ Record every decision made while working on the plan.
   Milestone-1 deliverables per 1.5 — take a `ShomeiConfig` and read the field, so the field
   must exist for Milestone 1 to compile. Only the *loader* work (the `FileConfig` field, the
   `SHOMEI_DEFAULT_ROLES` override, boot validation) stays in Milestone 2, where it belongs.
+  Date: 2026-07-09
+
+- Decision: `defaultRoles` is configurable from the **Dhall file as well as** the environment,
+  and `config/shomei-types.dhall` gains a required `defaultRoles : List Text` field.
+  Rationale: 2.5 specified only `SHOMEI_DEFAULT_ROLES`, but "every new user is a member" is a
+  deployment-shaped setting that belongs in the committed config file next to
+  `emailVerificationRequired`, not only in an env var. Because the loader decodes a separate
+  all-optional `FileConfig` (see Surprises), the JSON key is optional and a deployment that
+  omits it is unaffected. The Dhall *schema* field is required, matching how every other field
+  in that file is declared; an operator upgrading gets a loud Dhall type error naming the
+  missing field, with `config/shomei.example.dhall` showing `[] : List Text`.
+  Date: 2026-07-09
+
+- Decision: `Shomei.Effect.InMemory` exports `runInMemoryWith` (a `ClaimsEnricher`-parameterized
+  `runInMemory`) and the named `InMemoryPorts` effect list.
+  Rationale: testing the enrichment hook needs a non-null interpreter, and the alternative was a
+  second copy of the twenty-interpreter chain in the test suite — the exact drift the existing
+  "keep the order aligned" comments warn about. `runInMemory` is now
+  `runInMemoryWith (\_ _ -> emptyClaimsDelta)`, so there is one chain. Embedding hosts get the
+  same seam for free.
   Date: 2026-07-09
 
 - Decision: The postgres FK-violation test asserts `InternalAuthError` from the **raw port**

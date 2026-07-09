@@ -79,6 +79,7 @@ import Shomei.Effect.InMemory
     runCredentialStore,
     runLoginAttemptStore,
     runNotifier,
+    runClaimsEnricherNull,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordHasher,
@@ -88,6 +89,7 @@ import Shomei.Effect.InMemory
     runSessionStore,
     runSigningKeyStore,
     runTokenGen,
+    runRoleStore,
     runUserStore,
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
@@ -160,6 +162,7 @@ runHybrid ref jwk jwkset cfg =
     . runPasswordHasher ref
     . runPasswordBreachCheckerFake ref
     . runWebAuthnCeremonyFake ref
+    . runClaimsEnricherNull
     . runNotifier ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
@@ -170,6 +173,7 @@ runHybrid ref jwk jwkset cfg =
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref
+    . runRoleStore ref
     . runUserStore ref
 
 -- | Mint an access token carrying the @admin@ role by signing claims directly with

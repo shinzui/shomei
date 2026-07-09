@@ -15,6 +15,7 @@
 module Shomei.Workflow.Session
   ( buildClaims,
     buildClaimsWith,
+    buildEnrichedClaims,
     issueSession,
     ensureEmailVerified,
   )
@@ -31,14 +32,14 @@ import Shomei.Domain.Session (NewSession (..), Session (..))
 import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork, NewSessionToken (..), persistNewSession)
+import Shomei.Effect.ClaimsEnricher (ClaimsDelta (..), ClaimsEnricher, enrichClaims)
+import Shomei.Effect.RoleStore (RoleStore, listRolesForUser)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Error (AuthError (EmailNotVerified))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
--- | Build the access-token claims for a freshly-authenticated session. The MVP issues no
--- scopes or roles.
 -- | The @emailVerificationRequired@ gate, called by every token-issuing path.
 --
 -- Blocks only an account that /has/ an email which is unverified. An account with no email
@@ -55,6 +56,10 @@ ensureEmailVerified cfg user
       Left EmailNotVerified
   | otherwise = Right ()
 
+-- | The /base/ claims for a freshly-authenticated session: no scopes, no roles. The standard
+-- workflows call 'buildEnrichedClaims', which fills those in from the role store and the host
+-- hook. 'Shomei.Workflow.ServiceToken' uses this directly, because it sets @scopes@ itself from
+-- the account's negotiated allow-list.
 buildClaims :: ShomeiConfig -> UserId -> SessionId -> UTCTime -> AuthClaims
 buildClaims cfg uid sid ts =
   AuthClaims
@@ -78,6 +83,34 @@ buildClaimsWith :: ShomeiConfig -> Object -> UserId -> SessionId -> UTCTime -> A
 buildClaimsWith cfg extra uid sid ts =
   (buildClaims cfg uid sid ts) {extraClaims = mkExtraClaims extra}
 
+-- | Build the access-token claims for a fresh user session: 'buildClaims' plus the roles the
+-- 'RoleStore' holds for the subject, plus whatever the host's 'ClaimsEnricher' adds.
+--
+-- This is the single claims-construction point for every user-session mint — signup, login,
+-- MFA completion, passwordless login, and refresh all reach it. Anything that needs the same
+-- claims (an OIDC ID token, a userinfo response, an exchanged token) must call this rather than
+-- re-reading the stores itself, or the two will drift.
+--
+-- The delta's extra claims run through 'mkExtraClaims', so the hook cannot forge a reserved
+-- claim. Roles are the union of stored and hook-supplied ones; scopes come only from the hook
+-- (Shōmei persists no scopes).
+buildEnrichedClaims ::
+  (RoleStore :> es, ClaimsEnricher :> es) =>
+  ShomeiConfig ->
+  UserId ->
+  SessionId ->
+  UTCTime ->
+  Eff es AuthClaims
+buildEnrichedClaims cfg uid sid ts = do
+  storeRoles <- listRolesForUser uid
+  delta <- enrichClaims uid storeRoles
+  pure
+    (buildClaims cfg uid sid ts)
+      { roles = storeRoles <> delta.extraRoles,
+        scopes = delta.extraScopes,
+        extraClaims = mkExtraClaims delta.extraClaims
+      }
+
 -- | Mint a fresh session + refresh token + signed access token for an authenticated user,
 -- publishing 'LoginSucceeded' and 'SessionStarted'. Returns the new session id alongside the
 -- token pair so a caller (e.g. 'Shomei.Workflow.Mfa.completeMfa') can name the session in its
@@ -91,7 +124,9 @@ buildClaimsWith cfg extra uid sid ts =
 issueSession ::
   ( AuthUnitOfWork :> es,
     TokenSigner :> es,
-    TokenGen :> es
+    TokenGen :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es
   ) =>
   ShomeiConfig ->
   User ->
@@ -117,7 +152,7 @@ issueSession cfg user ts = do
         [ Event.LoginSucceeded (Event.LoginSucceededData user.userId sid ts),
           Event.SessionStarted (Event.SessionStartedData sid user.userId ts)
         ]
-  access <- signAccessToken (buildClaims cfg user.userId session.sessionId ts)
+  access <- signAccessToken =<< buildEnrichedClaims cfg user.userId session.sessionId ts
   pure
     ( session.sessionId,
       TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}

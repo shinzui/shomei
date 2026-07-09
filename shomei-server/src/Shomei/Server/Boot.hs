@@ -27,7 +27,9 @@ import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
-import Effectful (Eff, inject)
+import Data.Set qualified as Set
+import Effectful (Eff, inject, runEff)
+import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Pool qualified as Pool
 import Network.HTTP.Client.TLS (newTlsManager)
@@ -40,11 +42,15 @@ import Servant
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
+import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
+import Shomei.Error (AuthError)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
+import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
@@ -60,6 +66,8 @@ import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
+import Shomei.Workflow.Roles (undefinedDefaultRoles)
+import System.Exit (exitFailure)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.Posix.Signals (installHandler, sigHUP, sigINT, sigTERM)
 import System.Posix.Signals qualified as Signals
@@ -78,6 +86,7 @@ main = do
     (\w -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack w))
     (argon2WarningFloor settings.serverArgon2)
   env <- buildEnv cfg settings
+  validateDefaultRoles cfg env
   installKeyReload cfg env
   installSweeper settings env
   rl <- newRateLimiter cfg.rateLimitConfig
@@ -125,6 +134,41 @@ main = do
   hPutStrLn stderr "[shomei] drain complete; closing connection pool"
   Pool.release env.envPool
   hPutStrLn stderr "[shomei] shutdown complete"
+
+-- | Refuse to start when @defaultRoles@ names a role missing from the @shomei_roles@ registry.
+--
+-- Validating once here rather than on every signup keeps the hot path free of catalog reads and
+-- turns a config typo into an immediate, obvious startup failure instead of a stream of 500s on
+-- an endpoint nobody is watching. The registry is append-only, so a role validated here cannot
+-- later disappear — which is why 'Shomei.Workflow.Roles.applyDefaultRoles' does not re-check.
+--
+-- An embedding host that sets @defaultRoles@ should call
+-- 'Shomei.Workflow.Roles.undefinedDefaultRoles' the same way where it assembles its ports.
+validateDefaultRoles :: ShomeiConfig -> Env -> IO ()
+validateDefaultRoles cfg env = do
+  outcome <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool env.envPool
+      . runRoleStorePostgres
+      $ undefinedDefaultRoles cfg
+  case outcome of
+    Left e -> die ("could not validate defaultRoles against the role registry: " <> show e)
+    Right missing
+      | Set.null missing -> pure ()
+      | otherwise -> do
+          let names = Text.intercalate ", " [r | Role r <- Set.toList missing]
+              first' = case Set.toList missing of
+                Role r : _ -> r
+                [] -> "<role>"
+          die
+            ( "defaultRoles names undefined roles: "
+                <> Text.unpack names
+                <> "\ndefine them first: shomei-admin roles define "
+                <> Text.unpack first'
+            )
+  where
+    die msg = hPutStrLn stderr ("shomei-server: " <> msg) >> exitFailure
 
 -- | Install the two triggers that refresh signing-key material on a running server, so
 -- @shomei-admin keys activate@ / @keys revoke@ take effect with no restart: a periodic

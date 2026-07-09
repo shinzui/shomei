@@ -62,6 +62,7 @@ library
     Shomei.Effect.AuthEventPublisher
     Shomei.Effect.AuthEventReader
     Shomei.Effect.AuthUnitOfWork
+    Shomei.Effect.ClaimsEnricher
     Shomei.Effect.Clock
     Shomei.Effect.CredentialStore
     Shomei.Effect.InMemory
@@ -133,6 +134,7 @@ test-suite shomei-core-test
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
+    Shomei.Workflow.RolesSpec
     Shomei.Workflow.ServiceTokenSpec
     Shomei.Workflow.TimingSpec
     Shomei.WorkflowSpec

@@ -15,6 +15,7 @@ module Shomei.Effect.InMemory
   ( World (..),
     emptyWorld,
     runInMemory,
+    runInMemoryWith,
 
     -- * Individual interpreters
 
@@ -35,6 +36,7 @@ module Shomei.Effect.InMemory
     runPasskeyStore,
     runPendingCeremonyStore,
     runNotifier,
+    runClaimsEnricherNull,
     runPasswordHasher,
     runPasswordBreachCheckerFake,
     runTokenSigner,
@@ -114,6 +116,7 @@ import Shomei.Effect.AuthEventReader
     clampLimit,
   )
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork (..), NewSessionToken (..), RotationOutcome (..))
+import Shomei.Effect.ClaimsEnricher (ClaimsDelta, ClaimsEnricher, emptyClaimsDelta, runClaimsEnricherNull, runClaimsEnricherPure)
 import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
@@ -916,36 +919,43 @@ fakeCompleteAuthentication blob StoredCredentialForVerify {credentialId = stored
                 cloneWarning = False
               }
 
--- | Run an 'Eff' computation that uses every port against a shared in-memory 'World'.
-runInMemory ::
-  IORef World ->
-  Eff
-    [ UserStore,
-      RoleStore,
-      CredentialStore,
-      SessionStore,
-      RefreshTokenStore,
-      AuthUnitOfWork,
-      VerificationTokenStore,
-      PasswordResetTokenStore,
-      LoginAttemptStore,
-      PasskeyStore,
-      PendingCeremonyStore,
-      Notifier,
-      WebAuthnCeremony,
-      PasswordBreachChecker,
-      PasswordHasher,
-      TokenSigner,
-      TokenVerifier,
-      AuthEventPublisher,
-      SigningKeyStore,
-      Clock,
-      TokenGen,
-      IOE
-    ]
-    a ->
-  IO a
-runInMemory ref =
+-- | Run an 'Eff' computation that uses every port against a shared in-memory 'World', with no
+-- claims enrichment. See 'runInMemoryWith' to supply a host hook.
+runInMemory :: IORef World -> Eff InMemoryPorts a -> IO a
+runInMemory = runInMemoryWith (\_ _ -> emptyClaimsDelta)
+
+-- | The effect list 'runInMemory' provides, in the order 'Shomei.Servant.Seam.AppEffects'
+-- fixes. (Named so the servant/core test harnesses can restate it without drift.)
+type InMemoryPorts =
+  [ UserStore,
+    RoleStore,
+    CredentialStore,
+    SessionStore,
+    RefreshTokenStore,
+    AuthUnitOfWork,
+    VerificationTokenStore,
+    PasswordResetTokenStore,
+    LoginAttemptStore,
+    PasskeyStore,
+    PendingCeremonyStore,
+    Notifier,
+    ClaimsEnricher,
+    WebAuthnCeremony,
+    PasswordBreachChecker,
+    PasswordHasher,
+    TokenSigner,
+    TokenVerifier,
+    AuthEventPublisher,
+    SigningKeyStore,
+    Clock,
+    TokenGen,
+    IOE
+  ]
+
+-- | 'runInMemory' with a caller-supplied 'ClaimsEnricher' hook, for tests (and embedding-host
+-- experiments) that need to observe what a host delta does to minted claims.
+runInMemoryWith :: (UserId -> Set Role -> ClaimsDelta) -> IORef World -> Eff InMemoryPorts a -> IO a
+runInMemoryWith enrich ref =
   runEff
     . runTokenGen ref
     . runClock ref
@@ -956,6 +966,7 @@ runInMemory ref =
     . runPasswordHasher ref
     . runPasswordBreachCheckerFake ref
     . runWebAuthnCeremonyFake ref
+    . runClaimsEnricherPure enrich
     . runNotifier ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref

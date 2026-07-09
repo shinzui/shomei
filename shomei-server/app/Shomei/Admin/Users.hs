@@ -20,19 +20,24 @@ import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
+import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher, runClaimsEnricherNull)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher)
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Error (AuthError)
+import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Workflow (signup)
 import System.Exit (exitFailure)
@@ -58,17 +63,25 @@ createUserAction env emailArg pwArg mDisplay = do
       putStrLn ("created user " <> show user.userId <> " <" <> Text.unpack (loginIdText user.loginId) <> ">")
 
 -- | Run a 'signup' over the PostgreSQL interpreters, with a fake signer.
+--
+-- 'signup' applies @config.defaultRoles@ (reading the real 'RoleStore' and auditing each grant
+-- through the real publisher), so a user created here receives exactly the roles an HTTP signup
+-- would — no special-casing. 'ClaimsEnricher' is the null interpreter because the token this
+-- path mints is the discarded fake one.
 runSignup ::
   Pool ->
   HashingLimiter ->
   Argon2Params ->
   Eff
     [ UserStore,
+      RoleStore,
       CredentialStore,
       AuthUnitOfWork,
       PasswordBreachChecker,
       PasswordHasher,
       TokenSigner,
+      ClaimsEnricher,
+      AuthEventPublisher,
       Clock,
       TokenGen,
       Database,
@@ -83,11 +96,14 @@ runSignup pool limiter argon2 =
     . runDatabasePool pool
     . runTokenGenCrypto
     . runClockIO
+    . runAuthEventPublisherPostgres
+    . runClaimsEnricherNull
     . runTokenSignerFake
     . runPasswordHasherCrypto limiter argon2
     . runPasswordBreachCheckerNoCheck
     . runAuthUnitOfWorkPostgres
     . runCredentialStorePostgres
+    . runRoleStorePostgres
     . runUserStorePostgres
 
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a

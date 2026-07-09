@@ -38,6 +38,10 @@ in    { issuer = "shomei"
       , webauthnCeremonyTimeoutSeconds = 300
       , webauthnPendingCeremonyTtlSeconds = 300
       , webauthnMfaRequired = True
+      -- Roles every new user receives at signup. Define them first with
+      -- `shomei-admin roles define <name>`; the server refuses to start if a name here is not
+      -- in the registry. The empty list (the default) grants nothing.
+      , defaultRoles = [] : List Text
       -- Service-token issuance for machine callers. Keep disabled until you create a Shōmei
       -- user for each account and replace the placeholder id/hash/scope values.
       , serviceToken =

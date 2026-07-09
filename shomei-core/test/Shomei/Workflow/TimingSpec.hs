@@ -45,6 +45,7 @@ import Shomei.Effect.InMemory
     runCredentialStore,
     runLoginAttemptStore,
     runNotifier,
+    runClaimsEnricherNull,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordResetTokenStore,
@@ -55,11 +56,13 @@ import Shomei.Effect.InMemory
     runTokenGen,
     runTokenSigner,
     runTokenVerifier,
+    runRoleStore,
     runUserStore,
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.PasskeyStore (PasskeyStore)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
@@ -67,6 +70,7 @@ import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
@@ -110,6 +114,7 @@ tests =
 -- | The 'runInMemory' effect list, which 'runCounting' must reproduce exactly.
 type Ports =
   '[ UserStore,
+     RoleStore,
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
@@ -120,6 +125,7 @@ type Ports =
      PasskeyStore,
      PendingCeremonyStore,
      Notifier,
+     ClaimsEnricher,
      WebAuthnCeremony,
      PasswordBreachChecker,
      PasswordHasher,
@@ -158,6 +164,7 @@ runCounting ref counter =
     . runCountingPasswordHasher counter
     . runPasswordBreachCheckerFake ref
     . runWebAuthnCeremonyFake ref
+    . runClaimsEnricherNull
     . runNotifier ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
@@ -168,6 +175,7 @@ runCounting ref counter =
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref
+    . runRoleStore ref
     . runUserStore ref
 
 withWorld :: (IORef World -> IORef Int -> IO (Either AuthError a)) -> IO (Either AuthError (), Int)

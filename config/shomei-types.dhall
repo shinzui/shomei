@@ -18,6 +18,10 @@
 , metricsEnabled : Bool
 , requestLoggingEnabled : Bool
 , gracefulShutdownTimeoutSeconds : Natural
+-- Roles granted to every new user at signup (MasterPlan 7 EP-1). Empty for none. Each name
+-- must already exist in the `shomei_roles` registry (`shomei-admin roles define <name>`) or
+-- the server refuses to start. Overridable with SHOMEI_DEFAULT_ROLES (comma-separated).
+, defaultRoles : List Text
 -- Password policy (MasterPlan 4). Length bounds plus toggles for the local common/contextual
 -- checks (EP-2) and the opt-in HIBP breach check (EP-3).
 , passwordMinLength : Natural

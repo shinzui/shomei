@@ -40,6 +40,7 @@ import Shomei.Domain.Token (TokenPair)
 import Shomei.Domain.User (User (..), UserStatus (UserActive))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.PasskeyStore
   ( PasskeyStore,
@@ -48,6 +49,7 @@ import Shomei.Effect.PasskeyStore
     updatePasskeySignCounter,
   )
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
+import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.UserStore (UserStore, findUserById)
@@ -112,6 +114,8 @@ completeMfa ::
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
     TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
     AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
@@ -177,6 +181,8 @@ completePasswordlessLogin ::
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
     TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
     AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
