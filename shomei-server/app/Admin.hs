@@ -10,6 +10,7 @@ import Options.Applicative
 import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysEncryptAtRest, keysGenerate, keysList, keysRetire, keysRevoke, keysRewrap)
+import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
 import Shomei.Jwt.KeyProtection (KeyEncryptionKey)
@@ -25,6 +26,7 @@ data Command
   | Keys KeysCommand
   | Users UsersCommand
   | Audit AuditCommand
+  | Sweep SweepOptions
 
 data KeysCommand
   = KeysGenerate SigningAlgorithm
@@ -48,6 +50,7 @@ commandParser =
         <> command "keys" (info (Keys <$> keysParser) (progDesc "Manage signing keys"))
         <> command "users" (info (Users <$> usersParser) (progDesc "Manage user accounts"))
         <> command "audit" (info (Audit <$> auditParser) (progDesc "Query the audit log / security events"))
+        <> command "sweep" (info (Sweep <$> sweepParser) (progDesc "Delete expired and dead rows once, then exit"))
     )
 
 keysParser :: Parser KeysCommand
@@ -122,6 +125,9 @@ run = \case
   Audit ac -> do
     env <- loadAdminEnv
     runAudit env ac
+  Sweep opts -> do
+    env <- loadAdminEnv
+    runSweep env opts
 
 -- | Demand a key-encryption key that the command cannot run without, naming the variable
 -- and how to make one rather than failing with a decryption error later.

@@ -82,7 +82,7 @@ unrelated verification strategies.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Transactional Auth Workflows and Configurable Connection Pool | docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md | None | None | Complete |
-| 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | In Progress |
+| 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | Complete |
 | 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | Not Started |
 | 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Not Started |
 | 5 | Resilient Downstream JWKS Cache Template | docs/plans/37-resilient-downstream-jwks-cache-template.md | None | None | Not Started |
@@ -128,12 +128,17 @@ MasterPlan's EP-2 (key-reload thread). EP-2 defines the supervised-background-th
 plans land additively in `Shomei.Server.Config`/`ServerSettings`
 (`shomei-server/src/Shomei/Server/Config.hs`), each plan adding its own fields with defaults.
 
-Migrations directory (`shomei-migrations/sql-migrations/`): EP-2 adds `expires_at`/retention
-indexes and drops the dead single-column `status` indexes. No other plan in this MasterPlan
+Migrations directory (`shomei-migrations/sql-migrations/`): EP-2 added `expires_at`/retention
+indexes and dropped the dead single-column `status` indexes (migration
+`2026-07-09-13-51-07-sweeper-indexes-and-retention.sql`). No other plan in this MasterPlan
 adds migrations, but the Interop MasterPlan adds new tables concurrently; codd migrations are
 timestamped files, so parallel additions do not conflict as long as each plan runs
 `just create-database` (or `shomei-admin migrate`) against a fresh database in its validation
-steps.
+steps. **Scaffolding the `.sql` file is not sufficient**: a new migration is embedded by a
+compile-time Template Haskell splice, and the `just migrate` recipe's `touch` of the `.cabal`
+does not force a recompile. Append a comment line above `embeddedFiles` in
+`shomei-migrations/src/Shomei/Migrations.hs` — otherwise `just migrate` reports `[0 found]` and
+applies nothing while exiting 0.
 
 Metrics module (`shomei-server/src/Shomei/Server/Observability/Metrics.hs`): EP-4 fixes the
 in-flight gauge; EP-3's load test reads these metrics for acceptance. EP-4's fix is
@@ -146,9 +151,10 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 - [x] EP-1: Login workflow tail batched into transactions; round-trips measured before/after (11 → 7)
 - [x] EP-1: Refresh workflow batched (mark-used + child insert + events in one transaction) (5 → 3)
 - [x] EP-1: `clearAccountLockout` made conditional (no unconditional DELETE per login)
-- [ ] EP-2: Supervised background-sweeper thread with per-table delete batches
-- [ ] EP-2: `expires_at` indexes added; dead `status` indexes dropped; audit composite index decision recorded
-- [ ] EP-2: Retention windows for `shomei_auth_events` and `shomei_login_attempts` (config + docs)
+- [x] EP-2: Supervised background-sweeper thread with per-table delete batches
+- [x] EP-2: `expires_at` indexes added; dead `status` indexes dropped; audit composite index decision recorded
+- [x] EP-2: Retention windows for `shomei_auth_events` and `shomei_login_attempts` (config + docs)
+- [x] EP-2: `shomei-admin sweep` CLI trigger for operators who schedule maintenance externally
 - [ ] EP-3: Semaphore bounding concurrent Argon2 hashing; parameters configurable
 - [ ] EP-3: Container-aware RTS flags in Dockerfile/entrypoint; deployment docs updated
 - [ ] EP-3: Concurrent-login load test demonstrating bounded latency impact on the hot path
@@ -195,6 +201,43 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   EP-5: commit each milestone as soon as it is green rather than accumulating a large
   uncommitted tree, and check `git log` before assuming your work is still uncommitted.
 
+- **Adding a migration requires editing `shomei-migrations/src/Shomei/Migrations.hs`, not just
+  dropping a `.sql` file in.** The `migrate` recipe's `touch` of the `.cabal` does not force the
+  compile-time `embedDir` splice to re-run — cabal hashes content, not mtime — so a new migration
+  is silently invisible and `just migrate` reports `[0 found]` and exits 0. The repository's real
+  convention is the comment block above `embeddedFiles`, which carries one line per migration
+  wave precisely so the module's content changes. **Any plan in any MasterPlan that adds a
+  migration must append a line there.** This is the single most likely way to ship a migration
+  that never runs.
+
+- **`Shomei.Server.Supervisor.supervisedLoop` now exists and has two consumers.** EP-2 owns it, as
+  the Integration Points below promised. `installSweeper` and `installKeyReload` (migrated off its
+  bespoke `forever`/`catch` loop) both use it. The Security MasterPlan's EP-2
+  (`docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md`) should import it
+  rather than invent a second pattern, and EP-4 of this MasterPlan should use it if it adds a
+  periodic rate-limiter eviction task. Two behaviors to know: the first cycle runs **immediately**
+  (no initial sleep), and asynchronous exceptions are re-thrown so the thread stays killable —
+  a loop that catches `SomeException` indiscriminately would hang process shutdown.
+  `supervisedLoopMicros` is exported so the crash/backoff path is unit-testable in milliseconds.
+
+- **`ServerSettings` grew `serverSweep :: SweepSettings`, and its `FileConfig` gained eight
+  optional Dhall fields.** EP-3 and EP-5 adding their own fields remains additive as planned.
+  One trap: `FileConfig` and `SweepSettings` deliberately share field names, so *record update*
+  syntax on either is a `-Wambiguous-fields` warning; construct the record in full (naming the
+  constructor) instead. `config/shomei-types.dhall` is a closed record type and still does not
+  list the new keys — pre-existing, documented, and unchanged by EP-2.
+
+- **`cabal run shomei-server` is ambiguous** (the package holds both `shomei-server` and
+  `shomei-admin`). Use `cabal run shomei-server:exe:shomei-server`. EP-3's load test will hit
+  this.
+
+- **EP-2's plan contained three real defects that were only found by running things**, the worst
+  being a batched `DELETE ... WHERE ctid IN (SELECT ... LIMIT n)` over `shomei_refresh_tokens`
+  that violates the `parent_token_id` self-referencing `NO ACTION` foreign key whenever a batch
+  boundary splits a rotation family — a bug that surfaces only under load. Later plans in this
+  MasterPlan should treat their own specified SQL as a hypothesis and check the schema's foreign
+  keys before trusting it. Details and reproductions are in plan 34's Surprises & Discoveries.
+
 
 ## Decision Log
 
@@ -223,6 +266,16 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   Rationale: Single-instance posture is documented in `docs/user/security.md`; multi-instance
   coordination is a scaling initiative with different requirements, not a hardening fix.
   Date: 2026-07-07
+
+- Decision: EP-2 also migrated the existing signing-key reload thread onto its new
+  `supervisedLoop`, rather than leaving that to the Security MasterPlan's EP-2 (plan 29).
+  Rationale: A TODO comment in `Shomei.Server.Boot.installKeyReload` explicitly asked for the
+  migration once this idiom landed, and a second consumer is what proves the abstraction is
+  general rather than sweeper-shaped. Plan 29 therefore inherits a key-reload loop that is
+  already supervised; it should extend that call site, not rebuild it. One behavior changed: the
+  first key reload now happens immediately at boot rather than after one interval (idempotent,
+  and `reloadKeys` keeps the last good material on failure).
+  Date: 2026-07-09
 
 
 ## Outcomes & Retrospective

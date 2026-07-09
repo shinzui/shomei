@@ -348,6 +348,12 @@ string, a JSONB `payload`, and `created_at`). There are two ways to read it back
 the same query layer (`Shomei.Effect.AuthEventReader`), so filtering, ordering, and pagination
 behave identically.
 
+The trail is **retained forever by default.** Shōmei's background sweeper deletes expired rows
+from every other table but will not touch audit history unless you set
+`SHOMEI_AUTH_EVENT_RETENTION_DAYS` — regulatory retention floors and data-minimization ceilings
+pull in opposite directions, and only you can resolve that. See
+[deployment.md](deployment.md#audit-event-retention-is-off-by-default).
+
 - **CLI — the supported operator path.** `shomei-admin audit …` queries the trail directly
   (no HTTP, no token), reading the same `DATABASE_URL`/`PG_CONNECTION_STRING` the other admin
   subcommands use:

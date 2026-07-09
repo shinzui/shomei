@@ -74,16 +74,31 @@ This section must always reflect the actual current state of the work.
       survivors; idempotent second sweep; audit retention on/off; batch loop drains 25 rows at
       `batchSize = 10`; a rotation family is never split at `batchSize = 1`). Full suite green
       at 31/31.
-- [ ] M3: `Shomei.Server.Supervisor` module defining `supervisedLoop` (the reusable idiom:
-      catch-crash, log JSON line, exponential backoff restart).
-- [ ] M3: sweeper thread forked in `Shomei.Server.Boot.main`, interval + retention windows in
-      `ServerSettings` (Dhall fields + `SHOMEI_SWEEP_*` env vars), off-switch honored.
-- [ ] M3: per-cycle structured log line verified against the running server.
-- [ ] M4: `shomei-admin sweep` subcommand (runs `sweepOnce`, prints the report, exits 0).
-- [ ] M4: retention windows and compliance caveats documented in `docs/user/`.
-- [ ] Validation: seeded-rows scenario transcript + `EXPLAIN` output captured in Outcomes.
-- [ ] `nix fmt` clean; `cabal build all` / `cabal test all` green; MasterPlan 6 Progress and
-      registry updated; supervision idiom cross-referenced for plan 29.
+- [x] M3 (2026-07-09): `Shomei.Server.Supervisor` module defining `supervisedLoop` (the reusable
+      idiom: catch-crash, log JSON line, exponential backoff restart, rethrow async exceptions),
+      plus `supervisedLoopMicros` so the behavior is unit-testable in milliseconds, and
+      `logJsonLine`.
+- [x] M3 (2026-07-09): sweeper thread forked in `Shomei.Server.Boot.main` via `installSweeper`;
+      `SweepSettings` in `ServerSettings` (Dhall fields + `SHOMEI_SWEEP_*` env vars), off-switch
+      honored, config validated. The pre-existing key-reload loop was moved onto
+      `supervisedLoop`, as the TODO in its comment asked.
+- [x] M3 (2026-07-09): per-cycle structured log line verified against the running server (first
+      cycle nonzero, second all zeros — transcript in Outcomes).
+- [x] M3 (2026-07-09): three supervisor unit tests (crash is retried; backoff resets after a
+      clean cycle; an async exception stops the loop) and three config assertions (defaults,
+      env overrides incl. "0 means forever", non-positive values rejected).
+- [x] M4 (2026-07-09): `shomei-admin sweep` subcommand (`Shomei.Admin.Sweep`) — runs `sweepOnce`,
+      prints the aligned report, exits 0; exits 1 with the database error on `Left`. Admin
+      integration test seeds a database and asserts the counts.
+- [x] M4 (2026-07-09): retention windows and compliance caveats documented in
+      `docs/user/deployment.md` (new "Data retention and the sweeper" section, env-var table
+      rows, Dhall field list) and cross-referenced from `docs/user/security.md`.
+- [x] Validation (2026-07-09): seeded-rows scenario transcript + `EXPLAIN` output captured in
+      Outcomes, including the counterfactual proving the partial `revoked_at` index is
+      load-bearing.
+- [x] `nix fmt` clean; `cabal build all` green (0 errors); `cabal test all -j1
+      --test-options="-j1"` fully green; MasterPlan 6 Progress and registry updated; supervision
+      idiom cross-referenced for plan 29.
 
 
 ## Surprises & Discoveries
@@ -173,6 +188,42 @@ DETAIL:  Key (id)=(...0002) is still referenced from table "rt".
   can be returned every time). The statement therefore carries an
   `AND EXISTS (SELECT 1 FROM shomei_refresh_tokens rt2 WHERE rt2.session_id = s.session_id)`
   guard, which makes every non-terminal batch delete at least one row.
+
+- **An index-usage demonstration is only meaningful at realistic selectivity, and this is easy
+  to fake accidentally.** The first `EXPLAIN` run seeded 20 000 rows per table with 90% of them
+  expired, and every sweep predicate came back `Seq Scan` — *correctly*, because a predicate
+  matching 18 000 of 20 000 rows should not use an index. That is not the state a sweeper runs
+  in: it runs hourly, so only a small minority of rows are newly sweepable. Reseeding 50 000
+  rows with ~2% expired produced index scans everywhere. Anyone re-running this validation must
+  seed a realistic expired *fraction*, not a realistic row count, or they will "discover" that
+  the indexes they just added are useless.
+
+- **`cabal run shomei-server` does not work** (this plan's M3 Concrete Steps specify it). The
+  `shomei-server` package contains two executables, so the target is ambiguous:
+
+```text
+Error: [Cabal-7070]
+The run command is for running a single executable at once. The target 'shomei-server' refers to
+the package shomei-server-0.1.0.0 which includes
+- executables: shomei-admin and shomei-server
+```
+
+  Use `cabal run shomei-server:exe:shomei-server` (and `…:exe:shomei-admin`).
+
+- **Record dot access on a type whose fields are shared with another record needs the fields in
+  scope.** `report.refreshTokensDeleted` in the admin test failed with `No instance for HasField
+  "refreshTokensDeleted" SweepReport` until `SweepReport (..)` was imported (importing the type
+  alone is not enough). Worth knowing before concluding, as an earlier plan did for
+  `WebAuthnConfig`, that `HasField` is "unreliable under `DuplicateRecordFields`" — in this case
+  it simply needed the import.
+
+- **One unreproduced transient failure of `shomei-core-test`.** A single `cabal test all -j1
+  --test-options="-j1"` run reported `Test suite shomei-core-test: FAIL` and (as `cabal test`
+  halts on first failure) stopped there. It did not reproduce: two subsequent full runs exited 0
+  with all twelve suites passing, and five isolated runs of `shomei-core-test` passed all 133
+  tests. The failing output was not captured, so the cause is unknown; `shomei-core` is a pure
+  package with no database, so this is *not* the ephemeral-PostgreSQL flakiness MasterPlan 6
+  documents. Recorded rather than dismissed, in case a later plan sees it again.
 
 
 ## Decision Log
@@ -319,13 +370,153 @@ Record every decision made while working on the plan.
   the same records).
   Date: 2026-07-07
 
+- Decision: `SHOMEI_AUTH_EVENT_RETENTION_DAYS=0` (or negative) means "retain forever", not
+  "delete everything".
+  Rationale: `authEventRetentionDays` is a `Maybe Int` whose `Nothing` means forever, and an
+  environment variable cannot spell `Nothing`. Without this rule an operator who set a window in
+  a Dhall file could never turn it back off from the environment. Choosing the *other* reading
+  of `0` — "keep zero days of history" — would make a plausible typo irreversibly destroy the
+  audit trail. Pinned by a config test.
+  Date: 2026-07-09
+
+- Decision: `supervisedLoop` re-throws asynchronous exceptions (anything wrapping
+  `SomeAsyncException`, which covers `ThreadKilled` and `async`'s `AsyncCancelled`) instead of
+  catching them as failed cycles.
+  Rationale: A loop that catches everything is unkillable — `killThread` would be absorbed as a
+  crash, backed off, and retried forever, hanging process shutdown. Pinned by the test
+  `an async exception stops the loop`, which fails if someone later "simplifies" the handler.
+  Date: 2026-07-09
+
+- Decision: Export `supervisedLoopMicros` and test the supervision behavior with unit tests,
+  instead of the manual sabotage/kill-test this plan's Validation section specified.
+  Rationale: The production backoff (5 s → 300 s) makes a real-time test impractical, so the
+  planned validation was a one-time manual ritual that would never run again. Parameterizing the
+  durations lets the same code path be asserted in 0.1 s, on every `cabal test`, forever. The
+  interval and backoff constants remain baked into the public `supervisedLoop`.
+  Date: 2026-07-09
+
+- Decision: Migrate the pre-existing signing-key reload thread onto `supervisedLoop` in this
+  plan, rather than leaving it for plan 29.
+  Rationale: The TODO comment in `Shomei.Server.Boot.installKeyReload` explicitly asked for it
+  once this plan landed the idiom, and having two consumers proves the abstraction is general
+  rather than a sweeper-shaped hole. Behavior change: the first reload now happens immediately at
+  boot instead of after one interval. It is idempotent and `reloadKeys` keeps the last good
+  material on failure, so this is harmless.
+  Date: 2026-07-09
+
+- Decision: Measure sweep-cycle duration with `GHC.Clock.getMonotonicTimeNSec`, while the sweep
+  cutoff still comes from `getCurrentTime`.
+  Rationale: Wall-clock time decides which rows are expired, but subtracting two wall-clock
+  readings to get an elapsed duration is wrong across an NTP step and can log a negative
+  `duration_ms`. The monotonic clock cannot go backwards. (It also avoids the float noise
+  `realToFrac` on a `NominalDiffTime` produced: `5.244000000000001`.)
+  Date: 2026-07-09
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete (2026-07-09).** Shōmei deletes data for the first time. The purpose stated at the top
+of this plan — "an operator can see rows disappear" — is met by both triggers.
+
+The server's background sweeper, run against a dev database seeded with a dead session, its
+three-token rotation family, and an expired ceremony (`SHOMEI_SWEEP_INTERVAL_SECONDS=5`):
+
+```text
+[shomei] sweeper: every 5s, audit retention disabled (retain forever)
+[shomei] listening on :8099
+{"auth_events":0,"ceremonies":1,"duration_ms":48.302,"level":"info","lockouts":0,"login_attempts":0,"msg":"sweep","refresh_tokens":3,"reset_tokens":1,"sessions":1,"verification_tokens":1}
+{"auth_events":0,"ceremonies":0,"duration_ms":5.244,"level":"info","lockouts":0,"login_attempts":0,"msg":"sweep","refresh_tokens":0,"reset_tokens":0,"sessions":0,"verification_tokens":0}
+```
+
+The first cycle removes exactly the graced-out rows; the second is a no-op, which is the
+idempotence property the whole design rests on. The CLI trigger:
+
+```text
+$ DATABASE_URL=… shomei-admin sweep
+refresh_tokens:      0
+sessions:            0
+verification_tokens: 0
+reset_tokens:        0
+ceremonies:          0
+lockouts:            0
+login_attempts:      0
+auth_events:         0 (retention disabled)
+$ echo $?
+0
+```
+
+and with PostgreSQL unreachable it prints the usage error and exits 1, as specified.
+
+**Index usage.** Against a throwaway migrated database with 50 000 rows per table and ~2% past
+their cutoff (see Surprises for why the fraction, not the count, is what matters):
+
+```text
+-- verification tokens
+Limit  (cost=0.29..201.91 rows=1000 width=6)
+  ->  Index Scan using shomei_email_verification_tokens_expires_at_idx on shomei_email_verification_tokens
+        Index Cond: (expires_at <= (now() - '7 days'::interval))
+
+-- login attempts
+Limit  (cost=0.29..176.36 rows=992 width=6)
+  ->  Index Scan using shomei_login_attempts_occurred_at_idx on shomei_login_attempts
+        Index Cond: (occurred_at <= (now() - '90 days'::interval))
+
+-- audit keyset pagination
+Limit  (cost=0.29..2.05 rows=50 width=24)
+  ->  Index Only Scan using shomei_auth_events_created_event_idx on shomei_auth_events
+```
+
+The sessions sweep, whose `OR` predicate motivated the extra partial index, plans as intended:
+
+```text
+Bitmap Heap Scan on shomei_sessions s2
+  Recheck Cond: ((expires_at <= …) OR ((revoked_at <= …) AND (status = 'revoked')))
+  ->  BitmapOr
+        ->  Bitmap Index Scan on shomei_sessions_expires_at_idx
+        ->  Bitmap Index Scan on shomei_sessions_revoked_at_idx
+```
+
+Dropping `shomei_sessions_revoked_at_idx` and re-planning the same query collapses it to a
+`Seq Scan on shomei_sessions`, which is the direct evidence that the index this plan added
+beyond its original list is load-bearing rather than defensive.
+
+**What was wrong with the plan as written.** Three of its specified artifacts were incorrect and
+would have shipped bugs: the refresh-token batch SQL violates a foreign key under load; the
+drain loop's termination condition cannot work with that statement; and the index list both
+included a dead index and omitted one its own acceptance criteria required. All three are
+recorded in Surprises & Discoveries with reproductions, and the plan body has been corrected so
+a future reader implementing from it gets the right thing. The lesson worth carrying: a plan's
+SQL is a hypothesis, and `parent_token_id`'s `NO ACTION` self-reference is the kind of schema
+detail that invalidates a hypothesis silently and only under load.
+
+**Deviation from the planned validation.** Validation step 3 asked for a manual kill-test —
+sabotage a cycle with `error "boom"`, watch `backoff_s` go 5 then 10, then remove the sabotage —
+and for stopping PostgreSQL under a running server. Both were replaced with three deterministic
+unit tests over `supervisedLoopMicros` (`shomei-server/test/Shomei/Server/SupervisorSpec.hs`),
+which assert the same properties in 0.1 s and, unlike a manual test, keep asserting them.
+Notably the async-exception test would fail if someone "simplified" the loop by catching
+`SomeException` without re-throwing — a change that looks harmless and would make the thread
+unkillable. The `Left UsageError` path (database unreachable) was exercised through
+`shomei-admin sweep` against a refused connection rather than by stopping the shared dev
+PostgreSQL.
+
+**Gaps.** `config/shomei-types.dhall` is a closed record type and still does not list the new
+`sweep*` keys, so a config file annotated with that schema cannot use them (the loader accepts
+them regardless — every field is optional at decode time). This is pre-existing and already
+documented in `docs/user/deployment.md`; widening the schema is a separate, mechanical change.
+`shomei_account_lockouts` rows with a NULL `locked_until` are intentionally never swept
+(Decision Log), so that table is bounded by "accounts that have ever failed a login" rather than
+by a retention window.
+
+**Handoff to plan 29.** `Shomei.Server.Supervisor.supervisedLoop` is the shared idiom this plan
+owed the Security MasterPlan's key-reload thread. It is already consumed by two call sites —
+`installSweeper` and `installKeyReload`, the latter migrated off its bespoke `forever`/`catch`
+loop as the TODO in its comment requested. Note that `supervisedLoop` runs its first cycle
+immediately rather than sleeping first, which changed key-reload's behavior to perform one
+(idempotent) reload right after `bootstrapKeys`.
 
 
 ## Context and Orientation
@@ -660,9 +851,10 @@ Expected excerpt:
 ```
 
 ```bash
-# M3 — live check with a short interval
+# M3 — live check with a short interval. Note the qualified target: the shomei-server
+# package holds two executables, so `cabal run shomei-server` is ambiguous and fails.
 PG_CONNECTION_STRING="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
-SHOMEI_SWEEP_INTERVAL_SECONDS=5 cabal run shomei-server
+SHOMEI_SWEEP_INTERVAL_SECONDS=5 cabal run shomei-server:exe:shomei-server
 ```
 
 Expected stderr within ~5 s (illustrative counts):
@@ -673,7 +865,8 @@ Expected stderr within ~5 s (illustrative counts):
 
 ```bash
 # M4
-cabal run shomei-admin -- sweep
+DATABASE_URL="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
+  cabal run shomei-server:exe:shomei-admin -- sweep
 ```
 
 Expected stdout:

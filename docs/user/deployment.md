@@ -47,6 +47,14 @@ twelve-factor — env always wins):
 | `SHOMEI_SERVICE_TOKEN_ENABLED` | enable `POST /auth/service-token` | `false` |
 | `SHOMEI_SERVICE_TOKEN_TTL` | service-token access-token lifetime, seconds | `300` |
 | `SHOMEI_SERVICE_ACCOUNTS_JSON` | JSON array of service account objects: `accountId`, `userId`, `secretSha256`, `allowedScopes` | unset |
+| `SHOMEI_SWEEP_ENABLED` | run the background expired-data sweeper in-process. Set `false` if you schedule `shomei-admin sweep` externally | `true` |
+| `SHOMEI_SWEEP_INTERVAL_SECONDS` | seconds between sweep cycles. Must be positive | `3600` |
+| `SHOMEI_SWEEP_BATCH_SIZE` | rows deleted per statement (sessions per statement, for refresh tokens). Must be positive | `1000` |
+| `SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS` | grace before an expired/revoked session and its refresh-token family are deleted | `30` |
+| `SHOMEI_SWEEP_ONE_TIME_TOKEN_GRACE_DAYS` | grace before expired verification/reset tokens and elapsed lockouts are deleted | `7` |
+| `SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES` | grace before expired WebAuthn ceremonies are deleted | `60` |
+| `SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS` | maximum age of `shomei_login_attempts` rows. Must be positive | `90` |
+| `SHOMEI_AUTH_EVENT_RETENTION_DAYS` | maximum age of audit events. **Unset, `0`, or negative retains the audit trail forever** | unset |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
 
 `SHOMEI_SERVICE_ACCOUNTS_JSON` replaces the configured service-account list when set. Example:
@@ -93,13 +101,17 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPool
 `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
 `webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
 `webauthnMfaRequired`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
-`cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, and `serviceToken` (see
+`cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, the sweeper keys `sweepEnabled`,
+`sweepIntervalSeconds`, `sweepBatchSize`, `sweepDeadSessionGraceDays`,
+`sweepOneTimeTokenGraceDays`, `sweepCeremonyGraceMinutes`, `loginAttemptRetentionDays`,
+`authEventRetentionDays`, and `serviceToken` (see
 [passkeys.md](passkeys.md) for WebAuthn and [service-tokens.md](service-tokens.md) for service
 accounts).
 
 > **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
 > newer keys (`signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`, `cookieSecure`,
-> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`). The
+> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`, and the
+> `sweep*` / `*RetentionDays` keys). The
 > loader accepts them regardless — every field is
 > optional at decode time — but a file that annotates itself `: ./shomei-types.dhall` cannot use
 > them until the schema is widened. Use the environment variables, or drop the annotation.
@@ -120,6 +132,8 @@ shomei-admin keys list                            # kid / status / timestamps
 shomei-admin keys encrypt-at-rest                 # encrypt plaintext private keys (idempotent)
 shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
 shomei-admin users create --email … --password … [--display-name …]
+shomei-admin audit events|user|session|count …     # read the security audit trail
+shomei-admin sweep [flags]                        # delete expired/dead rows once, then exit
 ```
 
 A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <kid>` → optionally
@@ -245,12 +259,101 @@ Point the container at your own managed PostgreSQL with `PG_CONNECTION_STRING`.
 > Verification status: the OCI image build was authored but not executed in the development
 > sandbox; run `nix build .#dockerImage` on a Nix+Docker build host or in CI to validate.
 
+## Data retention and the sweeper
+
+Shōmei's tables grow with use: a row per refresh, per login attempt, per audit event. The
+**sweeper** deletes rows that are past their expiry plus a grace period. It runs in-process by
+default — a background thread, every `SHOMEI_SWEEP_INTERVAL_SECONDS` — and logs one structured
+JSON line per cycle on stderr:
+
+```json
+{"level":"info","msg":"sweep","refresh_tokens":3,"sessions":1,"verification_tokens":0,"reset_tokens":0,"ceremonies":1,"lockouts":0,"login_attempts":0,"auth_events":0,"duration_ms":48.3}
+```
+
+If you would rather schedule maintenance yourself (cron, a Kubernetes CronJob), set
+`SHOMEI_SWEEP_ENABLED=false` and run the CLI instead. Both call the same code, and running both
+at once is harmless — every delete is idempotent, so a concurrent batch just finds fewer rows.
+
+```bash
+DATABASE_URL=… shomei-admin sweep
+```
+
+```text
+refresh_tokens:      0
+sessions:            0
+verification_tokens: 0
+reset_tokens:        0
+ceremonies:          0
+lockouts:            0
+login_attempts:      0
+auth_events:         0 (retention disabled)
+```
+
+It exits 0 on success and 1 with the database error if PostgreSQL is unreachable. Every flag
+mirrors an environment variable (`--batch-size`, `--dead-session-grace-days`,
+`--one-time-token-grace-days`, `--ceremony-grace-minutes`, `--login-attempt-retention-days`,
+`--auth-event-retention-days`); `shomei-admin sweep --help` lists them with their defaults.
+
+### What is deleted, and when
+
+| Table | Deleted when | Default grace |
+|---|---|---|
+| `shomei_refresh_tokens` | their session expired or was revoked longer ago than the grace period | 30 days |
+| `shomei_sessions` | expired, or revoked, longer ago than the grace period | 30 days |
+| `shomei_email_verification_tokens` | expired longer ago than the grace period | 7 days |
+| `shomei_password_reset_tokens` | expired longer ago than the grace period | 7 days |
+| `shomei_account_lockouts` | the lock elapsed longer ago than the grace period | 7 days |
+| `shomei_webauthn_pending_ceremonies` | expired longer ago than the grace period | 60 minutes |
+| `shomei_login_attempts` | older than the retention window | 90 days |
+| `shomei_auth_events` | older than the retention window | **never** (opt-in) |
+
+Two of these deserve explanation.
+
+**Refresh tokens are swept via their session, never on their own expiry.** Reuse detection
+recognizes a replayed token by finding its `used` row still in the table; deleting those rows
+early would silently downgrade "token reuse — revoke the whole family" to "unknown token". The
+30-day grace on dead sessions keeps the entire detection window intact, because by then every
+token in the family is unusable anyway. Lowering `SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS` below
+your refresh-token TTL narrows that window; do not.
+
+**Rows in `shomei_account_lockouts` with no active lock are never swept.** They carry the
+running failure count for an account that is not currently locked, and deleting one would reset
+a brute-force counter mid-attack. They are bounded by the number of accounts that have ever
+failed a login, and a successful login clears them.
+
+### Audit-event retention is off by default
+
+`shomei_auth_events` is the security audit trail, and it grows forever unless you say otherwise.
+That is the only conservative default: Shōmei cannot know your obligations, and deleting audit
+history is not something a default should do quietly.
+
+Setting `SHOMEI_AUTH_EVENT_RETENTION_DAYS` (or the Dhall `authEventRetentionDays`) turns on
+deletion. **Before you set it, check both directions.** Retention *floors* — SOC 2, PCI DSS, and
+many sector regulators expect authentication logs to be retained for a year or more — and
+retention *ceilings*: data-minimization regimes such as the GDPR expect personal data, which an
+authentication event is, not to be kept longer than necessary for its purpose. These pull in
+opposite directions and the resolution is specific to your jurisdiction, industry, and the
+purpose you have documented. Take a backup before enabling it for the first time; the deletion
+is not reversible.
+
+A value of `0` or less means "retain forever", so an operator can turn deletion back off with an
+environment variable alone, without editing a config file.
+
+### If a sweep misbehaves
+
+Set `SHOMEI_SWEEP_ENABLED=false` and restart. The system returns to its previous
+grow-forever behavior; nothing else depends on the sweeper. A sweep that fails — most often
+because PostgreSQL was briefly unreachable — logs the error and retries on the next cycle. It
+never takes the server down, and `GET /health` keeps answering throughout.
+
 ## Operations
 
 - **Liveness** `GET /health` (restart decisions); **readiness** `GET /ready` (traffic gating).
 - **Metrics** `GET /metrics` (Prometheus); scrape it from your monitoring stack.
 - **Logs** are one structured JSON line per request on stdout, each with an `X-Request-Id`
-  correlation id that is also returned to the client.
+  correlation id that is also returned to the client. Background tasks (the sweeper, key
+  reloads) log JSON lines on stderr.
+- **Data retention** is handled by the sweeper; audit-event deletion is opt-in (see above).
 - **Key rotation** is zero-downtime — see [security.md](security.md).
 
 ## CI

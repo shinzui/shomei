@@ -12,10 +12,10 @@ import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf)
 import Data.Maybe (mapMaybe)
-import Data.Text.Encoding qualified as TE
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Time (addUTCTime, getCurrentTime)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
@@ -37,6 +37,7 @@ import Shomei.Admin.Keys
     listAllKeys,
     listPublishableSigningKeys,
   )
+import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..))
@@ -69,10 +70,12 @@ import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.Maintenance (SweepReport (..))
 import Shomei.Postgres.Pool (acquirePool)
 -- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
-import Shomei.Server.Keys qualified as Keys
+
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
+import Shomei.Server.Keys qualified as Keys
 import System.Exit (ExitCode)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -94,6 +97,12 @@ scalarInt pool sql = do
     fromI :: Int64 -> Int
     fromI = fromIntegral
 
+-- | Run a (possibly multi-statement) SQL script directly against the pool, for seeding.
+execSql :: Pool -> Text -> IO ()
+execSql pool sql = do
+  res <- Pool.use pool (Session.script sql)
+  either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
+
 main :: IO ()
 main =
   defaultMain
@@ -111,7 +120,8 @@ main =
           testRewrapRotatesTheKek,
           testRewrapWithWrongOldKekModifiesNothing,
           testUserCreate,
-          testAuditQuery
+          testAuditQuery,
+          testSweepCommand
         ]
     )
 
@@ -292,7 +302,6 @@ testReloadPicksUpRotation = testCase "reloadKeys picks up an activation: new sig
   keysGenerate Nothing ES256 pool
   kid2 <- onlyPendingKid pool
   keysActivate pool kid2 -- auto-retires kid1
-
   reloadKeys Nothing pool ref
   reloaded <- readIORef ref
   signerKid reloaded @?= kid2
@@ -323,6 +332,64 @@ testReloadKeepsLastGoodMaterial = testCase "a failed reload keeps the previous k
   token <- signWith after.signingKey
   v <- verifyToken after.verifierJwks cfg token
   assertBool "server still signs and verifies after a failed reload" (isRight v)
+
+-- Sweep ----------------------------------------------------------------------
+
+-- | @shomei-admin sweep@ against a seeded database: the CLI trigger must delete exactly what
+-- the server's background sweeper would, and audit events must survive unless the operator
+-- explicitly passes @--auth-event-retention-days@.
+testSweepCommand :: TestTree
+testSweepCommand = testCase "sweep deletes dead rows; audit events need an explicit window" $ withDb \pool connStr -> do
+  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr}
+  execSql
+    pool
+    """
+    INSERT INTO shomei.shomei_users (user_id, email, display_name, status, created_at, updated_at, login_id) VALUES
+      ('11111111-1111-1111-1111-111111111111', 'sweep@example.com', 'Sweep', 'active', now(), now(), 'sweep@example.com');
+
+    -- One session expired 40 days ago carrying a two-generation rotation family, one live.
+    INSERT INTO shomei.shomei_sessions (session_id, user_id, status, created_at, expires_at, revoked_at) VALUES
+      ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'active', now() - interval '60 days', now() - interval '40 days', NULL),
+      ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'active', now(), now() + interval '30 days', NULL);
+
+    INSERT INTO shomei.shomei_refresh_tokens
+      (refresh_token_id, session_id, token_hash, parent_token_id, status, created_at, expires_at, used_at, revoked_at) VALUES
+      ('bbbbbbbb-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'h1', NULL,                                   'used',   now(), now() - interval '40 days', now(), NULL),
+      ('bbbbbbbb-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', 'h2', 'bbbbbbbb-0000-0000-0000-000000000001', 'active', now(), now() - interval '40 days', NULL, NULL),
+      ('bbbbbbbb-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000002', 'h3', NULL,                                   'active', now(), now() + interval '30 days', NULL, NULL);
+
+    INSERT INTO shomei.shomei_webauthn_pending_ceremonies (ceremony_id, user_id, kind, options_blob, created_at, expires_at) VALUES
+      ('ffffffff-0000-0000-0000-000000000001', NULL, 'authentication', '\\x00'::bytea, now() - interval '3 hours', now() - interval '2 hours');
+
+    INSERT INTO shomei.shomei_login_attempts (attempt_id, account_key, client_ip, outcome, occurred_at) VALUES
+      ('99999999-0000-0000-0000-000000000001', 'acct', '10.0.0.1', 'failure', now() - interval '100 days');
+
+    INSERT INTO shomei.shomei_auth_events (event_id, user_id, session_id, event_type, payload, created_at) VALUES
+      ('88888888-0000-0000-0000-000000000001', NULL, NULL, 'login_succeeded', '{}'::jsonb, now() - interval '400 days');
+    """
+
+  report <- runSweepReport env defaultSweepOptions >>= expectSweep
+  report.refreshTokensDeleted @?= 2
+  report.sessionsDeleted @?= 1
+  report.ceremoniesDeleted @?= 1
+  report.loginAttemptsDeleted @?= 1
+  -- Retention is off by default, so the 400-day-old audit event survives.
+  report.authEventsDeleted @?= 0
+
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 1)
+
+  -- Asking for a window deletes it; a second run finds nothing left.
+  let retaining = defaultSweepOptions {optAuthEventRetentionDays = Just 365}
+  withWindow <- runSweepReport env retaining >>= expectSweep
+  withWindow.authEventsDeleted @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 0)
+
+  again <- runSweepReport env retaining >>= expectSweep
+  again.authEventsDeleted @?= 0
+  where
+    expectSweep = either (\e -> assertFailure ("sweep failed: " <> show e)) pure
 
 testUserCreate :: TestTree
 testUserCreate = testCase "users create persists a user + credential whose hash verifies" $ withDb \pool connStr -> do

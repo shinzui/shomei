@@ -96,6 +96,7 @@ executable shomei-admin
     Shomei.Admin.Audit
     Shomei.Admin.Env
     Shomei.Admin.Keys
+    Shomei.Admin.Sweep
     Shomei.Admin.Users
 
   build-depends:
@@ -143,6 +144,7 @@ test-suite shomei-admin-test
     Shomei.Admin.Audit
     Shomei.Admin.Env
     Shomei.Admin.Keys
+    Shomei.Admin.Sweep
     Shomei.Admin.Users
 
   build-depends:
