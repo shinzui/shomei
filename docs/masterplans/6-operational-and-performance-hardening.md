@@ -84,7 +84,7 @@ unrelated verification strategies.
 | 1 | Transactional Auth Workflows and Configurable Connection Pool | docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md | None | None | Complete |
 | 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | Complete |
 | 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | Complete |
-| 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Not Started |
+| 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Complete |
 | 5 | Resilient Downstream JWKS Cache Template | docs/plans/37-resilient-downstream-jwks-cache-template.md | None | None | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -162,8 +162,10 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 - [x] EP-3: Container-aware RTS flags in Dockerfile/entrypoint; deployment docs updated
 - [x] EP-3: Concurrent-login load test (`scripts/argon2-load-test.sh`) demonstrating bounded
       latency impact on the hot path (p50 degradation 1.83× → 1.09×, peak RSS 618 → 239 MB)
-- [ ] EP-4: Rate-limiter bucket eviction (idle sweep) and contention note
-- [ ] EP-4: In-flight gauge exception-safe; Warp `setOnException` routed to structured logger
+- [x] EP-4: Rate-limiter bucket eviction (idle sweep) and contention note
+- [x] EP-4: In-flight gauge exception-safe; Warp `setOnException` routed to structured logger
+- [x] EP-4: Log lines written as one strict `BS.hPut` (no interleaving); `setServerName`;
+      1 MiB request-body cap answering 413
 - [ ] EP-5: Example JWKS cache rewritten: lock-free reads, single-flight refresh, refresh-ahead, stale-on-error
 - [ ] EP-5: `docs/user/client-and-examples.md` updated to describe the pattern as the recommended template
 
@@ -271,6 +273,36 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   `testArgon2Params`. EP-4 and EP-5 should not "fix" this back to the defaults: at ~100 ms per
   hash the production parameters dominated six suites' runtime for no coverage benefit.
 
+- **EP-4's plan prescribed the wrong fix for the in-flight gauge, and the prescription was the
+  only wrong thing in it.** `onException` plus a decrement inside the response continuation
+  double-decrements whenever the application throws *after* its continuation returned (an async
+  exception during graceful shutdown), drifting the gauge negative — a worse failure than the
+  positive drift it replaced, because a negative gauge is legal Prometheus and looks fine.
+  `finally`, with no decrement in the continuation, is exactly-once. This is the second time in
+  this MasterPlan that a plan's specified code was itself the defect (EP-2's batched `DELETE`
+  violating a foreign key was the first). **Later plans should treat prescribed code as a
+  hypothesis and prove each fix by reverting it and watching its test go red** — EP-4 did this
+  for all four milestones, and it is what caught the double-decrement.
+
+- **The live `/metrics` in-flight gauge reads `1`, not `0`, and always will.** `metricsMiddleware`
+  wraps `metricsEndpointMiddleware`, so a scrape counts itself. EP-3's load test reads these
+  metrics: expect `1`, and read *stability* rather than zero as the health signal.
+
+- **`Shomei.Server.Boot.main`'s WAI stack gained a fourth middleware.** Outermost first:
+  `requestLoggingMiddleware` → `metricsMiddleware` → `metricsEndpointMiddleware` →
+  `bodyLimitMiddleware 1MiB` → `rateLimitMiddleware` → the Servant application. The 1 MiB cap
+  rejects `Content-Length`-declared bodies only; chunked bodies pass through by design.
+  `Shomei.Server.Observability.Logging` now also exports `renderLogLine`, `emitLine`,
+  `logServerError` and `serverErrorLine` — EP-5 and any plan wanting a structured line on stdout
+  should use `emitLine`/`renderLogLine` rather than a fresh `BL.hPut` (note
+  `Shomei.Server.Supervisor.logJsonLine` remains the **stderr** equivalent for background tasks).
+
+- **Restarting this repo's dev PostgreSQL after `pg_ctl stop` needs explicit flags.** A second,
+  unrelated PostgreSQL holds TCP 5432 on this machine, and the dev cluster's default
+  `listen_addresses` collides with it, so a plain `pg_ctl start -D "$PGDATA"` fails with
+  `could not create any TCP/IP sockets`. The dev cluster is reached over its unix socket; restart
+  it with `pg_ctl start -D "$PGDATA" -o "-c listen_addresses='' -k $PGHOST"`.
+
 
 ## Follow-up work (recorded for a later plan)
 
@@ -351,6 +383,21 @@ MasterPlan 5 already recorded. The loader accepts them all, but a file annotated
   The original throughput criterion assumed "the CPU work is identical", which is false when core
   count exceeds the concurrency bound. Confirmed with the repository owner, who asked that the open
   question live outside the child plan so a follow-up can pick it up.
+  Date: 2026-07-09
+
+- Decision: EP-4 replaced its own plan's `onException` gauge fix with `finally`, and moved the
+  decrement out of the response continuation entirely.
+  Rationale: The planned shape double-decrements when the application throws after its
+  continuation returned, drifting the gauge negative. Recorded here rather than only in the child
+  plan because the Integration Points note that EP-3's load test reads this gauge.
+  Date: 2026-07-09
+
+- Decision: EP-4 kept the piggybacked (amortized, in-`takeToken`) bucket eviction rather than
+  adopting EP-2's `supervisedLoop`, as its Decision Log anticipated.
+  Rationale: EP-2's idiom had indeed landed first, but eviction needs no thread and no clock read
+  beyond the one `takeToken` already performs; a periodic thread would be strictly more moving
+  parts for the same bound. `supervisedLoop` remains the right answer for work that must happen
+  whether or not requests arrive — which eviction, by construction, does not.
   Date: 2026-07-09
 
 - Decision: EP-2 also migrated the existing signing-key reload thread onto its new

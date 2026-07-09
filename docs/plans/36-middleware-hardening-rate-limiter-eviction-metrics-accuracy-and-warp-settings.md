@@ -55,28 +55,42 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: amortized idle-bucket eviction in
+All four milestones are complete and committed (`d3e0817`). Nothing remains.
+
+- [x] M1: amortized idle-bucket eviction in
       `shomei-server/src/Shomei/Server/Middleware/RateLimit.hs` (prune fully-refilled buckets
       every `sweepEvery` throttled requests, inside the existing STM transaction).
-- [ ] M1: `bucketCount` accessor + `newRateLimiterWith` test seam exported; unit tests: idle
+- [x] M1: `bucketCount` accessor + `newRateLimiterWith` test seam exported; unit tests: idle
       buckets evicted, active (non-refilled) buckets retained, bounded-size property.
-- [ ] M1: STM-contention note added to the module haddock (single-TVar, single-instance
+- [x] M1: STM-contention note added to the module haddock (single-TVar, single-instance
       posture, sharding as the future escape hatch).
-- [ ] M2: exception-safe in-flight gauge in
-      `shomei-server/src/Shomei/Server/Observability/Metrics.hs` (`onException` decrement).
-- [ ] M2: test: a throwing handler leaves `http_requests_in_flight 0` in `exportMetrics`.
-- [ ] M3: strict single-write log emission in
+- [x] M2: exception-safe in-flight gauge in
+      `shomei-server/src/Shomei/Server/Observability/Metrics.hs` (`finally`, not `onException` —
+      see the Decision Log).
+- [x] M2: test: a throwing handler leaves `http_requests_in_flight 0` in `exportMetrics`.
+- [x] M3: strict single-write log emission in
       `shomei-server/src/Shomei/Server/Observability/Logging.hs`
       (`renderLogLine` pure + one `BS.hPut`); control characters stripped in plain format.
-- [ ] M3: concurrency test: 200 threads × 5 lines through a shared temp-file `Handle`, every
+- [x] M3: concurrency test: 200 threads × 5 lines through a shared temp-file `Handle`, every
       line parses as a single JSON object.
-- [ ] M4: `setOnException` routed to a structured error line; `setServerName`;
+- [x] M4: `setOnException` routed to a structured error line; `setServerName`;
       request-body cap middleware (413 above 1 MiB) inserted into the stack; final middleware
-      order recorded here.
-- [ ] M4: unit test of the exception logger's output shape; live transcript of a killed
-      handler producing the structured line; 413 transcript.
-- [ ] `nix fmt` clean; `cabal build all` / `cabal test all` green; MasterPlan 6 Progress and
-      registry updated.
+      order recorded below.
+- [x] M4: unit test of the exception logger's output shape; live transcript of a 500-producing
+      handler emitting the structured line on stdout; 413 transcript.
+- [x] `nix fmt` clean; `cabal build all --enable-tests` and `cabal test all -j1` green (12/12
+      suites); MasterPlan 6 Progress and registry updated.
+
+Final middleware order, as composed in `Shomei.Server.Boot.main`, outermost first:
+
+```text
+requestLoggingMiddleware obs
+  . metricsMiddleware metrics
+  . metricsEndpointMiddleware metrics
+  . bodyLimitMiddleware defaultBodyLimitBytes   -- 1 MiB
+  . rateLimitMiddleware rl
+  $ application env
+```
 
 
 ## Surprises & Discoveries
@@ -84,7 +98,53 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The plan's prescribed `onException` fix for the gauge was wrong, and would have introduced
+  the opposite defect.** The proposed shape keeps the decrement inside the response
+  continuation and adds an `onException` decrement around the whole thing. But
+  `app req respond` can complete the continuation and *then* throw — most realistically, an
+  asynchronous exception (a graceful-shutdown `killThread`, a `timeout`) delivered between the
+  continuation returning and `app` returning. Both decrements then run and the gauge drifts
+  *negative*, which is worse than drifting positive because Prometheus gauges are allowed to be
+  negative and nothing looks obviously broken. Moving the decrement out of the continuation
+  entirely and into a `finally` is exactly-once on every path. The plan's stated reason for
+  rejecting `bracket` ("the release cannot see whether the continuation already ran") only
+  applies if you keep a decrement in the continuation, which there is no reason to do — the
+  latency histogram needs to be there, the gauge does not.
+
+- **`renderLogLine`'s `LogPlain` branch was silently lossy before this plan and the plan did not
+  notice.** The original `render LogPlain` went through `BC.pack . Text.unpack`, and
+  `Data.ByteString.Char8.pack` truncates each `Char` to its low 8 bits — so any non-Latin-1
+  character in a path or request-id was mangled. Rewriting the branch as `encodeUtf8` fixes it
+  in passing. The JSON branch was never affected (aeson escapes to ASCII).
+
+- **The three defect-detecting tests were verified to fail against the pre-fix code**, which is
+  the only way to know a passing test proves anything. Reverting just the `HM.filter` prune and
+  just the `finally` placement, then re-running: `idle buckets are evicted after a sweep` FAIL,
+  `10k one-shot IPs leave a bounded map` FAIL, `a throwing handler leaves in-flight at 0` FAIL,
+  and the other nine still pass. `a drained bucket survives a sweep (lossless)` passes on both
+  builds, as it must — it is a non-regression assertion, not a defect detector.
+
+- **The gauge reads `1`, not `0`, on a live `/metrics` scrape, and always did.** `metricsMiddleware`
+  wraps `metricsEndpointMiddleware`, so the scrape counts itself as in flight. The plan's
+  acceptance text ("`curl … | grep http_requests_in_flight` prints `http_requests_in_flight 0`")
+  is therefore unachievable by construction. What was actually verified is that the value is
+  *stable at 1* across five handler exceptions and a recovery, where before the fix it would
+  have climbed to 6. The `0` assertion still holds where the plan really wanted it — in the unit
+  test, which calls the middleware directly and then reads `exportMetrics`.
+
+- **`ResponseReceived`'s constructor is not exported from `Network.Wai`**, only the type. Tests
+  that supply their own `respond` continuation must import it from `Network.Wai.Internal`.
+
+- **Two `-Wunused-top-binds` warnings on `Bucket`'s `tokens`/`lastRefill` field names predate this
+  plan** (confirmed by building the stashed tree: 2 warnings before, 2 after). The fields are
+  only ever matched positionally. Left alone as out of scope.
+
+- **`pg_ctl start -D "$PGDATA"` fails on this machine after the plan's `pg_ctl stop`**, because a
+  second, unrelated PostgreSQL already holds TCP 5432 and the dev cluster's default
+  `listen_addresses` collides with it. The dev cluster is reached over its unix socket
+  (`PGHOST=<repo>/db`), so restart it with
+  `pg_ctl start -D "$PGDATA" -o "-c listen_addresses='' -k $PGHOST"`. The plan's Step 2 transcript
+  omits this and leaves the reader with a dead database.
 
 
 ## Decision Log
@@ -120,7 +180,8 @@ Record every decision made while working on the plan.
   approximations.
   Date: 2026-07-07
 
-- Decision: Fix the gauge with `Control.Exception.onException` around the
+- Decision (**superseded 2026-07-09 by the `finally` decision above**): Fix the gauge with
+  `Control.Exception.onException` around the
   application call (decrement-on-exception), keeping the normal-path decrement in the
   response continuation where the latency observation already lives.
   Rationale: The middleware must decrement exactly once whether the inner app (a) responds
@@ -159,6 +220,35 @@ Record every decision made while working on the plan.
   the real API; the chunked caveat is recorded in the module haddock and below.
   Date: 2026-07-07
 
+- Decision: Fix the gauge with `Control.Exception.finally` and **no** decrement in the response
+  continuation, superseding this plan's `onException` decision below.
+  Rationale: `onException` + a continuation decrement double-decrements whenever the inner
+  application throws *after* its continuation returned — an async exception delivered during
+  graceful shutdown is the realistic case — leaving the gauge negative. Moving the decrement
+  wholly into the release action is exactly-once on every path (normal return, sync throw, async
+  throw), and the plan's objection to `bracket` evaporates once the continuation no longer
+  decrements. The latency histogram and request counter stay in the continuation, as the
+  superseded decision intended, because an exception-aborted request has no response status to
+  label. Verified: reverting to the continuation-only decrement makes
+  `a throwing handler leaves in-flight at 0` fail.
+  Date: 2026-07-09
+
+- Decision: Export `serverErrorLine :: Maybe Request -> SomeException -> ByteString` alongside
+  `logServerError`, and unit-test the former.
+  Rationale: The plan asked for a unit test of "the exception logger's output shape", but
+  `logServerError` writes to the process's stdout, so testing it means capturing and restoring a
+  global handle from inside a test suite that is itself logging. Splitting the pure rendering out
+  tests the actual bytes with no global state. `logServerError` remains exported and is what
+  `Boot.main` installs.
+  Date: 2026-07-09
+
+- Decision: `bodyLimitMiddleware` takes a `Word64`, not the `Int64` this plan specified, and the
+  cap is a named export `defaultBodyLimitBytes` rather than a literal at the call site.
+  Rationale: `Network.Wai.RequestBodyLength`'s `KnownLength` carries a `Word64`; an `Int64`
+  parameter would need a conversion at every comparison for no benefit. Naming the constant lets
+  the haddock explain the 1 MiB choice once, where it is defined.
+  Date: 2026-07-09
+
 - Decision: Add an explicit STM-contention **note** (documentation, not code): the limiter is
   one `TVar (HashMap ip Bucket)` whose root every throttled request rewrites; under very high
   concurrency STM retries make it a serialization point. Accepted for the documented
@@ -174,7 +264,40 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+All four defects named in Purpose / Big Picture are gone, each demonstrated twice — once by a
+unit test that fails against the pre-fix code, and once against a live server.
+
+| Defect | Before | After |
+|---|---|---|
+| Limiter bucket map | grew without bound, one entry per IP forever | 10,000 one-shot IPs leave ≤ 9 buckets; throttling behavior bit-identical (60×`400` then 10×`429` on a live burst) |
+| `http_requests_in_flight` | permanently +1 per handler exception | stable across 5 exceptions and a recovery |
+| Log line writes | lazy multi-chunk `BL.hPut` | one strict `BS.hPut`; 200 concurrent writers → 1000 intact JSON lines; 89/89 live request lines parse |
+| Warp settings | default exception prose on stderr, no body cap, warp version advertised | `{"level":"error","msg":"unhandled exception",…}` on stdout, `413` on a 2 MiB body, `Server: shomei` |
+
+The live exception transcript is worth quoting, because it is the whole point of M4 — a database
+failure that used to vanish into stderr prose now lands in the JSON stream operators tail:
+
+```json
+{"error":"user error (shomei infrastructure error: InternalAuthError \"database error: …\")","level":"error","method":"POST","msg":"unhandled exception","path":"/auth/login"}
+```
+
+with `grep -c 'unhandled exception' server.err` returning `0`.
+
+Gaps, all deliberate and documented in the code:
+
+- Chunked request bodies still bypass the size cap (`Shomei.Server.Middleware.BodyLimit`'s
+  haddock names `wai-extra`'s `RequestSizeLimit` as the upgrade path).
+- The limiter is still a single `TVar` and therefore still a serialization point under extreme
+  concurrency; sharding is named in the haddock, not built.
+- An idle server never prunes, by construction. Harmless — no requests means no new buckets.
+
+Lessons. The plan was unusually specific about *how* to fix the gauge, and that specificity was
+the one thing in it that was wrong: `onException` with a continuation decrement trades a
+positive drift for a negative one. Prescribed code in a plan deserves the same suspicion as
+prescribed SQL did in plan 34 — treat it as a hypothesis and check it. The cheap way to check,
+which is now the habit worth keeping, is to revert each fix in turn and confirm its test goes
+red; three of the twelve did, and the nine that stayed green told me which assertions were
+non-regression guards rather than defect detectors.
 
 
 ## Context and Orientation
