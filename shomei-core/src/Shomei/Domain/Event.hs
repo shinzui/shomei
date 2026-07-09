@@ -35,12 +35,14 @@ module Shomei.Domain.Event
     ImpersonationStoppedData (..),
     ImpersonationActionBlockedData (..),
     ServiceTokenIssuedData (..),
+    RoleGrantedData (..),
+    RoleRevokedData (..),
   )
 where
 
 import Data.Set (Set)
 import Shomei.Config (ServiceAccountId)
-import Shomei.Domain.Claims (Scope)
+import Shomei.Domain.Claims (Role, Scope)
 import Shomei.Domain.Email (Email)
 import Shomei.Domain.LoginAttempt (AccountKey, ClientIp)
 import Shomei.Domain.LoginId (LoginId)
@@ -268,6 +270,30 @@ data ServiceTokenIssuedData = ServiceTokenIssuedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | A role was granted to a user. 'grantedBy' is the acting admin, or 'Nothing' for a CLI
+-- bootstrap grant and for a default role applied at signup (the "system" actor).
+--
+-- Role /definitions/ are not audit events: they are rare, low-sensitivity catalog metadata.
+-- Grants and revocations — the security-relevant facts — are.
+data RoleGrantedData = RoleGrantedData
+  { userId :: !UserId,
+    role :: !Role,
+    grantedBy :: !(Maybe UserId),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A role grant was removed. 'revokedBy' is 'Nothing' for a CLI revocation.
+data RoleRevokedData = RoleRevokedData
+  { userId :: !UserId,
+    role :: !Role,
+    revokedBy :: !(Maybe UserId),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -294,5 +320,7 @@ data AuthEvent
   | ImpersonationStopped ImpersonationStoppedData
   | ImpersonationActionBlocked ImpersonationActionBlockedData
   | ServiceTokenIssued ServiceTokenIssuedData
+  | RoleGranted RoleGrantedData
+  | RoleRevoked RoleRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

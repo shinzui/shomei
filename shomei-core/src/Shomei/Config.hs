@@ -41,8 +41,9 @@ module Shomei.Config
 where
 
 import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Time (NominalDiffTime)
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
 import Shomei.Id (UserId)
@@ -308,7 +309,16 @@ data ShomeiConfig = ShomeiConfig
     webauthnConfig :: !WebAuthnConfig,
     impersonationConfig :: !ImpersonationConfig,
     serviceTokenConfig :: !ServiceTokenConfig,
-    cookieConfig :: !CookieConfig
+    cookieConfig :: !CookieConfig,
+    -- | roles granted to every user created through @Shomei.Workflow.signup@ (the HTTP signup
+    --     route and @shomei-admin users create@ alike), applied before the first token is minted
+    --     so it already carries them. Empty by default.
+    --
+    --     Every name here must exist in the @shomei_roles@ registry. The standalone server
+    --     validates this at boot (see @Shomei.Workflow.Roles.undefinedDefaultRoles@) and refuses
+    --     to start otherwise; embedding hosts should call the same check where they assemble
+    --     their ports.
+    defaultRoles :: !(Set Role)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -376,5 +386,6 @@ defaultShomeiConfig iss aud =
       webauthnConfig = defaultWebAuthnConfig,
       impersonationConfig = defaultImpersonationConfig,
       serviceTokenConfig = defaultServiceTokenConfig,
-      cookieConfig = defaultCookieConfig
+      cookieConfig = defaultCookieConfig,
+      defaultRoles = Set.empty
     }

@@ -52,6 +52,12 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- requiring another recompile of this splice.
 -- The sweeper's expiry indexes (and the drop of the four dead single-column status indexes)
 -- were added on 2026-07-09 by MasterPlan-6 EP-2, requiring another recompile of this splice.
+-- The role registry and grant table (shomei_roles, shomei_role_grants) were added on
+-- 2026-07-09 by MasterPlan-7 EP-1, requiring another recompile of this splice.
+--
+-- NB: touching the .cabal file (as the @migrate@ recipe does) does NOT force this rebuild —
+-- cabal detects changes by content hash, not mtime. Editing THIS module is what does; that is
+-- why every migration wave above appended a line here.
 embeddedFiles :: [(FilePath, ByteString)]
 embeddedFiles = $(embedDir "sql-migrations")
 

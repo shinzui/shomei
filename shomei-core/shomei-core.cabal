@@ -73,6 +73,7 @@ library
     Shomei.Effect.PasswordResetTokenStore
     Shomei.Effect.PendingCeremonyStore
     Shomei.Effect.RefreshTokenStore
+    Shomei.Effect.RoleStore
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
     Shomei.Effect.TokenGen
@@ -90,6 +91,7 @@ library
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
     Shomei.Workflow.Passkey
+    Shomei.Workflow.Roles
     Shomei.Workflow.ServiceToken
     Shomei.Workflow.Session
 

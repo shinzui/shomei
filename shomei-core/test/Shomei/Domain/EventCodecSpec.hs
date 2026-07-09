@@ -16,7 +16,7 @@ import Data.Text qualified as Text
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Data.UUID qualified as UUID
 import Shomei.Config (ServiceAccountId (..))
-import Shomei.Domain.Claims (Scope (..))
+import Shomei.Domain.Claims (Role (..), Scope (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
@@ -115,7 +115,10 @@ roundTrips =
     let d = ImpersonationStartedData uid2 uid sid "support ticket" (Just "TICKET-1") (Just "1.2.3.4") t0 in check "impersonation_started" d (ImpersonationStarted d),
     let d = ImpersonationStoppedData uid2 uid sid t0 in check "impersonation_stopped" d (ImpersonationStopped d),
     let d = ImpersonationActionBlockedData uid2 uid sid "password_change" t0 in check "impersonation_action_blocked" d (ImpersonationActionBlocked d),
-    let d = ServiceTokenIssuedData uid sid (ServiceAccountId "connector:rei") (Set.singleton (Scope "kawa:ingest")) (Just uid2) t0 in check "service_token_issued" d (ServiceTokenIssued d)
+    let d = ServiceTokenIssuedData uid sid (ServiceAccountId "connector:rei") (Set.singleton (Scope "kawa:ingest")) (Just uid2) t0 in check "service_token_issued" d (ServiceTokenIssued d),
+    -- An HTTP grant records the acting admin; a CLI bootstrap grant / default role records none.
+    let d = RoleGrantedData uid (Role "admin") (Just uid2) t0 in check "role_granted" d (RoleGranted d),
+    let d = RoleRevokedData uid (Role "admin") Nothing t0 in check "role_revoked" d (RoleRevoked d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -126,7 +129,7 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 25).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 27).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 25 AuthEvent constructors" (length roundTrips @?= 25)
+  testCase "covers all 27 AuthEvent constructors" (length roundTrips @?= 27)

@@ -111,17 +111,19 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Role persistence (migration, registry, port, interpreters, audit events):
+Milestone 1 — Role persistence (migration, registry, port, interpreters, audit events): **done 2026-07-09**
 
-- [ ] Add migration `shomei-migrations/sql-migrations/<ts>-shomei-role-grants.sql` (via `just new-migration name=shomei-role-grants`) creating `shomei_roles` (seeded with `admin`) and `shomei_role_grants` (with the `role` FK into `shomei_roles`).
-- [ ] Add `UserNotFound` and `RoleNotDefined` to `AuthError` (`shomei-core/src/Shomei/Error.hs`) and their mappings in `shomei-servant/src/Shomei/Servant/Error.hs` (404 `user_not_found`; 422 `role_not_defined`).
-- [ ] Add `RoleGranted`/`RoleRevoked` constructors + `RoleGrantedData`/`RoleRevokedData` to `shomei-core/src/Shomei/Domain/Event.hs`.
-- [ ] Extend `projectAuthEvent`/`reconstructAuthEvent` in `shomei-core/src/Shomei/Domain/EventCodec.hs` (`role_granted`, `role_revoked`) and bump the constructor-count guard in `shomei-core/test/Shomei/Domain/EventCodecSpec.hs` from 25 to 27 with round-trip cases. (Role *definitions* are not audit events — Decision Log.)
-- [ ] Add the `RoleStore` effect (`shomei-core/src/Shomei/Effect/RoleStore.hs`) with grant/revoke/list **and** `DefineRole`/`ListDefinedRoles` + the `RoleDefinition` record; export it from the cabal file.
-- [ ] Add `Shomei.Workflow.Roles` (`grantRoleTo`, `revokeRoleFrom`, `rolesOf`, `applyDefaultRoles`, `undefinedDefaultRoles`) publishing the audit events; `grantRoleTo` refuses undefined roles with `RoleNotDefined`.
-- [ ] Add the PostgreSQL interpreter `shomei-postgres/src/Shomei/Postgres/RoleStore.hs` (`runRoleStorePostgres`, five statements).
-- [ ] Add the in-memory interpreter (`runRoleStore` + `roleGrants` and `definedRoles` fields in `World`, `definedRoles` pre-seeded with `admin` to mirror the migration) to `shomei-core/src/Shomei/Effect/InMemory.hs`.
-- [ ] Postgres interpreter test in `shomei-postgres/test/Main.hs` (define/duplicate-define/list-defined; grant/duplicate-grant/list/revoke; grant of an undefined role → `RoleNotDefined`; FK failure) — suite green.
+- [x] Add migration `shomei-migrations/sql-migrations/2026-07-09-20-34-28-shomei-role-grants.sql` (via `just new-migration shomei-role-grants` — see Surprises: the documented `name=` form is wrong) creating `shomei_roles` (seeded with `admin`) and `shomei_role_grants` (with the `role` FK into `shomei_roles`).
+- [x] Append a comment line to `shomei-migrations/src/Shomei/Migrations.hs` so the `embedDir` Template Haskell splice re-embeds the new `.sql` file (see Surprises — the Justfile's `touch` of the `.cabal` does **not** do this).
+- [x] Add `UserNotFound` and `RoleNotDefined` to `AuthError` (`shomei-core/src/Shomei/Error.hs`) and their mappings in `shomei-servant/src/Shomei/Servant/Error.hs` (404 `user_not_found`; 422 `role_not_defined`, with a locally defined `err422`).
+- [x] Add `RoleGranted`/`RoleRevoked` constructors + `RoleGrantedData`/`RoleRevokedData` to `shomei-core/src/Shomei/Domain/Event.hs`.
+- [x] Extend `projectAuthEvent`/`reconstructAuthEvent` in `shomei-core/src/Shomei/Domain/EventCodec.hs` (`role_granted`, `role_revoked`) and bump the constructor-count guard in `shomei-core/test/Shomei/Domain/EventCodecSpec.hs` from 25 to 27 with round-trip cases. (Role *definitions* are not audit events — Decision Log.)
+- [x] Add the `RoleStore` effect (`shomei-core/src/Shomei/Effect/RoleStore.hs`) with grant/revoke/list **and** `DefineRole`/`ListDefinedRoles` + the `RoleDefinition` record; export it from the cabal file.
+- [x] Add `Shomei.Workflow.Roles` (`grantRoleTo`, `revokeRoleFrom`, `rolesOf`, `applyDefaultRoles`, `undefinedDefaultRoles`) publishing the audit events; `grantRoleTo` refuses undefined roles with `RoleNotDefined`.
+- [x] Add `defaultRoles :: Set Role` to `ShomeiConfig` (pulled forward from Milestone 2.5: `Shomei.Workflow.Roles` cannot compile without it).
+- [x] Add the PostgreSQL interpreter `shomei-postgres/src/Shomei/Postgres/RoleStore.hs` (`runRoleStorePostgres`, five statements); add `containers` to `shomei-postgres`'s library `build-depends`.
+- [x] Add the in-memory interpreter (`runRoleStore` + `roleGrants` and `definedRoles` fields in `World`, `definedRoles` pre-seeded with `admin` to mirror the migration) to `shomei-core/src/Shomei/Effect/InMemory.hs`; add `RoleStore` to `runInMemory`'s effect list.
+- [x] Postgres interpreter tests in `shomei-postgres/test/Main.hs` (`testRoleRegistry`, `testRoleGrants`, `testRoleGrantForeignKeys`) — `cabal test shomei-postgres` green (43 tests), `cabal test shomei-core` green (135 tests).
 
 Milestone 2 — Claims enrichment at every mint, and default roles at signup:
 
@@ -160,7 +162,54 @@ Milestone 5 — Live proof and docs:
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-09 — `just new-migration name=<slug>` does not work.** The Justfile's own comment
+documents `just new-migration name=add-something`, and this plan's Concrete Steps copied it.
+`just` treats recipe parameters positionally, so `name=shomei-role-grants` is passed *as the
+slug* and fails the slug regex:
+
+```text
+$ just new-migration name=shomei-role-grants
+Invalid slug: name=shomei-role-grants
+error: recipe `new-migration` failed on line 33 with exit code 1
+```
+
+The working form is `just new-migration shomei-role-grants`. The stale comment in `Justfile`
+is corrected in Milestone 5's docs pass.
+
+**2026-07-09 — touching the `.cabal` no longer forces the migration re-embed; editing
+`Shomei.Migrations` does.** `embeddedFiles = $(embedDir "sql-migrations")` is a compile-time
+splice, so a brand-new `.sql` file is invisible until that module recompiles. The `migrate`
+Justfile recipe (and this module's own comment) claim `touch shomei-migrations/shomei-migrations.cabal`
+forces it. Under cabal 3.16 it does not — cabal detects changes by content hash, not mtime:
+
+```text
+$ touch shomei-migrations/shomei-migrations.cabal && cabal build shomei-migrations
+Up to date
+$ cabal build shomei-migrations --ghc-options=-fforce-recomp
+Up to date
+```
+
+and the postgres suite failed with `relation "shomei.shomei_roles" does not exist`. What
+actually works — and what every previous migration wave silently relied on — is *editing*
+`shomei-migrations/src/Shomei/Migrations.hs`: the module carries a growing comment block, one
+line per migration wave, appended for exactly this reason. This plan appends its own line and
+records the real mechanism in the module haddock. The `Justfile` comment is corrected in
+Milestone 5.
+
+**2026-07-09 — `Shomei.Workflow.signup` has no `AuthEventPublisher` constraint.** Milestone
+2.5 asserts "`signup` already has every constraint `applyDefaultRoles` needs". It does not:
+`signup` publishes `UserRegistered`/`SessionStarted` through `persistNewSession`'s event-list
+argument (the unit-of-work writes them inside the transaction), never through
+`publishAuthEvent`. Adding `applyDefaultRoles` therefore widens `signup`'s signature with
+`AuthEventPublisher :> es` — which in turn widens every call site's interpreter chain,
+including `shomei-server/app/Shomei/Admin/Users.hs`'s private one. Handled in Milestone 2.
+
+**2026-07-09 — `ShomeiConfig`'s new field does not break Dhall decoding.** The plan warned that
+adding a field to a `FromJSON`-deriving record breaks existing config files. It does not here:
+`shomei-server/src/Shomei/Server/Config.hs` decodes a *separate* flat `FileConfig` of all-optional
+scalars and merges it onto `defaultShomeiConfig`. `ShomeiConfig`'s own `FromJSON` is never used
+to read a config file. Adding `defaultRoles` is therefore safe, and the loader needs only a new
+optional `FileConfig` field plus the env override.
 
 
 ## Decision Log
@@ -304,6 +353,33 @@ Record every decision made while working on the plan.
   TTL (default short) bounds the staleness window, and `revokeAllUserSessions` is the
   documented immediate lever. Operators are told this explicitly in `docs/user/security.md`.
   Date: 2026-07-07
+
+- Decision: The in-memory `World` stores `definedRoles :: Map Role RoleDefinition` (the real
+  record, with the `createdAt` the caller passed) rather than the planned
+  `Map Role (Maybe Text)` with a fabricated timestamp.
+  Rationale: it costs nothing, and a fabricated `createdAt` would let a test pass against the
+  in-memory stack that fails against PostgreSQL. The seed row uses `emptyWorld`'s own fixed
+  clock, so the fresh in-memory world and the freshly migrated database agree on both the
+  `admin` role and its description (which the migration and `InMemory.adminRoleDescription`
+  now state identically).
+  Date: 2026-07-09
+
+- Decision: `ShomeiConfig.defaultRoles` landed in Milestone 1, not Milestone 2.
+  Rationale: `Shomei.Workflow.Roles.applyDefaultRoles`/`undefinedDefaultRoles` — both
+  Milestone-1 deliverables per 1.5 — take a `ShomeiConfig` and read the field, so the field
+  must exist for Milestone 1 to compile. Only the *loader* work (the `FileConfig` field, the
+  `SHOMEI_DEFAULT_ROLES` override, boot validation) stays in Milestone 2, where it belongs.
+  Date: 2026-07-09
+
+- Decision: The postgres FK-violation test asserts `InternalAuthError` from the **raw port**
+  and the typed `RoleNotDefined`/`UserNotFound` from the **workflow**, for both the role FK and
+  the user FK.
+  Rationale: 1.8 left the choice open ("assert whichever the port does"). Asserting both halves
+  pins the actual contract: the workflow pre-checks and never reaches the table, while the
+  database is genuine defense in depth for a caller that bypasses the workflow. The test also
+  asserts exactly one `role_granted` audit row after a grant followed by a re-grant, proving
+  the publish-only-on-change rule.
+  Date: 2026-07-09
 
 - Decision: The CLI accepts a user reference as either the typed id (`user_...`, the
   KindID text) or a bare UUID.

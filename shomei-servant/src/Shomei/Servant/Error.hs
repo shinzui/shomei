@@ -19,6 +19,7 @@ import Servant
     err409,
     err500,
   )
+import Shomei.Domain.Claims (Role (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Prelude
 
@@ -29,6 +30,16 @@ err429 =
   ServerError
     { errHTTPCode = 429,
       errReasonPhrase = "Too Many Requests",
+      errBody = "",
+      errHeaders = []
+    }
+
+-- | HTTP 422 Unprocessable Content. Servant ships no @err422@ constant either.
+err422 :: ServerError
+err422 =
+  ServerError
+    { errHTTPCode = 422,
+      errReasonPhrase = "Unprocessable Content",
       errBody = "",
       errHeaders = []
     }
@@ -68,6 +79,10 @@ authErrorToServerError = \case
   ServiceAccountSecretInvalid -> json err403 "service_account_invalid" "Service account is invalid"
   ServiceTokenScopeDenied -> json err403 "service_token_scope_denied" "Requested scopes are not allowed"
   ServiceTokenActorInvalid -> json err400 "service_token_actor_invalid" "Invalid service-token actor"
+  UserNotFound -> json err404 "user_not_found" "User not found"
+  -- 422, not 404: the request is well-formed but names a role the deployment never declared.
+  -- Naming it back is safe — only an authorized admin surface can reach this error.
+  RoleNotDefined (Role r) -> json err422 "role_not_defined" ("Role not defined: " <> r)
   InternalAuthError _ -> json err500 "internal" "Internal authentication error"
   where
     json base code msg =

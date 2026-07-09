@@ -53,6 +53,7 @@ library
     Shomei.Postgres.PendingCeremonyStore
     Shomei.Postgres.Pool
     Shomei.Postgres.RefreshTokenStore
+    Shomei.Postgres.RoleStore
     Shomei.Postgres.SessionStore
     Shomei.Postgres.SigningKeyStore
     Shomei.Postgres.UserStore
@@ -62,6 +63,7 @@ library
     , aeson
     , base                  >=4.18  && <5
     , bytestring
+    , containers
     , contravariant-extras
     , crypton               >=1.1.0
     , effectful

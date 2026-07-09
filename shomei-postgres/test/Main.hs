@@ -11,6 +11,7 @@ import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort)
 import Data.Maybe (isJust)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
@@ -36,7 +37,7 @@ import Shomei.Crypto
     verifyPasswordArgon2id,
     withHashingPermit,
   )
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
+import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -108,6 +109,15 @@ import Shomei.Effect.PasswordResetTokenStore
   )
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
+import Shomei.Effect.RoleStore
+  ( RoleDefinition (..),
+    RoleStore,
+    defineRole,
+    grantRole,
+    listDefinedRoles,
+    listRolesForUser,
+    revokeRole,
+  )
 import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
@@ -120,7 +130,7 @@ import Shomei.Effect.VerificationTokenStore
     markVerificationTokenConsumed,
   )
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
-import Shomei.Error (AuthError (InvalidCredentials, RefreshTokenReuseDetected))
+import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Id (PasskeyId, genCeremonyId, genSessionId, genUserId, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
@@ -142,11 +152,13 @@ import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgr
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
+import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Workflow (login, refresh, signup)
+import Shomei.Workflow.Roles (grantRoleTo)
 import Shomei.Workflow.Account
   ( ConfirmEmailVerification (..),
     ConfirmPasswordReset (..),
@@ -165,6 +177,7 @@ import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=)
 -- because real signing is EP-4.
 type AppEffects =
   '[ UserStore,
+     RoleStore,
      CredentialStore,
      SessionStore,
      RefreshTokenStore,
@@ -222,6 +235,7 @@ runAppWithNotifications ref pool action = do
       . runRefreshTokenStorePostgres
       . runSessionStorePostgres
       . runCredentialStorePostgres
+      . runRoleStorePostgres
       . runUserStorePostgres
     )
     action
@@ -255,6 +269,7 @@ runAppAtTime t pool action = do
       . runRefreshTokenStorePostgres
       . runSessionStorePostgres
       . runCredentialStorePostgres
+      . runRoleStorePostgres
       . runUserStorePostgres
     )
     action
@@ -394,8 +409,104 @@ tests =
     testSweepIsIdempotent,
     testSweepAuthEventRetention,
     testSweepBatchesUntilDrained,
-    testSweepBatchesWholeTokenFamilies
+    testSweepBatchesWholeTokenFamilies,
+    testRoleRegistry,
+    testRoleGrants,
+    testRoleGrantForeignKeys
   ]
+
+-- | The registry: seeded with @admin@ by the migration, idempotent definition, sorted listing.
+testRoleRegistry :: TestTree
+testRoleRegistry =
+  testCase "role registry: seeded with admin; define is idempotent; list is sorted" $ withDb \pool -> do
+    result <- runApp pool do
+      seeded <- listDefinedRoles
+      ts <- now
+      firstDefine <- defineRole (Role "auditor") (Just "read the audit trail") ts
+      secondDefine <- defineRole (Role "auditor") (Just "a different description") ts
+      after' <- listDefinedRoles
+      pure (seeded, firstDefine, secondDefine, after')
+    (seeded, firstDefine, secondDefine, after') <- expectApp result
+    map (.role) seeded @?= [Role "admin"]
+    firstDefine @?= True
+    -- Re-defining is a no-op: it reports no change and does NOT overwrite the description.
+    secondDefine @?= False
+    map (.role) after' @?= [Role "admin", Role "auditor"]
+    map (.description) after' @?= [Just adminSeedDescription, Just "read the audit trail"]
+
+-- | Grants: idempotent insert, listing, revocation, and the "nothing to revoke" report.
+testRoleGrants :: TestTree
+testRoleGrants =
+  testCase "role grants: idempotent grant/revoke round-trip" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      ts <- now
+      _ <- defineRole (Role "auditor") Nothing ts
+      firstGrant <- grantRole u.userId (Role "admin") Nothing ts
+      secondGrant <- grantRole u.userId (Role "admin") Nothing ts
+      _ <- grantRole u.userId (Role "auditor") (Just u.userId) ts
+      granted <- listRolesForUser u.userId
+      firstRevoke <- revokeRole u.userId (Role "admin")
+      secondRevoke <- revokeRole u.userId (Role "admin")
+      remaining <- listRolesForUser u.userId
+      pure (firstGrant, secondGrant, granted, firstRevoke, secondRevoke, remaining)
+    (firstGrant, secondGrant, granted, firstRevoke, secondRevoke, remaining) <- expectApp result
+    firstGrant @?= True
+    secondGrant @?= False
+    granted @?= Set.fromList [Role "admin", Role "auditor"]
+    firstRevoke @?= True
+    secondRevoke @?= False
+    remaining @?= Set.singleton (Role "auditor")
+
+-- | The database enforces both foreign keys, so code that bypasses 'Shomei.Workflow.Roles'
+-- still cannot create a dangling grant. The raw port surfaces the violation as
+-- 'InternalAuthError'; the workflow catches both cases first and returns a typed error.
+testRoleGrantForeignKeys :: TestTree
+testRoleGrantForeignKeys =
+  testCase "role grants: FKs reject undefined roles and unknown users; workflow pre-checks" $ withDb \pool -> do
+    setup <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      pure u.userId
+    uid <- expectApp setup
+
+    -- Raw port, undefined role: the shomei_role_grants.role FK fires.
+    rawUndefinedRole <- runApp pool do
+      ts <- now
+      grantRole uid (Role "nosuchrole") Nothing ts
+    expectInternalError "grant of an undefined role" rawUndefinedRole
+
+    -- Raw port, unknown user: the shomei_role_grants.user_id FK fires.
+    ghost <- genUserId
+    rawUnknownUser <- runApp pool do
+      ts <- now
+      grantRole ghost (Role "admin") Nothing ts
+    expectInternalError "grant to a nonexistent user" rawUnknownUser
+
+    -- The workflow refuses both BEFORE touching the table, with typed errors.
+    workflowUndefinedRole <- runApp pool (grantRoleTo Nothing uid (Role "nosuchrole"))
+    expectApp workflowUndefinedRole >>= \r -> r @?= Left (RoleNotDefined (Role "nosuchrole"))
+
+    workflowUnknownUser <- runApp pool (grantRoleTo Nothing ghost (Role "admin"))
+    expectApp workflowUnknownUser >>= \r -> r @?= Left UserNotFound
+
+    -- And the happy path still lands a row plus exactly one role_granted audit event.
+    ok <- runApp pool (grantRoleTo Nothing uid (Role "admin"))
+    expectApp ok >>= \r -> r @?= Right True
+    again <- runApp pool (grantRoleTo Nothing uid (Role "admin"))
+    expectApp again >>= \r -> r @?= Right False
+    grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
+    grants @?= 1
+    events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_granted'"
+    events @?= 1
+  where
+    expectInternalError what = \case
+      Left (InternalAuthError _) -> pure ()
+      Left e -> assertFailure (what <> ": expected InternalAuthError, got " <> show e)
+      Right _ -> assertFailure (what <> ": expected the foreign key to reject it")
+
+-- | The description the @shomei-role-grants@ migration seeds onto the @admin@ role.
+adminSeedDescription :: Text
+adminSeedDescription = "Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes"
 
 testUserRoundTrip :: TestTree
 testUserRoundTrip = testCase "create + find user round-trips" $ withDb \pool -> do

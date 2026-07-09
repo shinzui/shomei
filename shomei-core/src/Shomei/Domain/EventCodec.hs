@@ -57,6 +57,8 @@ reconstructAuthEvent etype payload = case etype of
   "impersonation_stopped" -> ImpersonationStopped <$> parse payload
   "impersonation_action_blocked" -> ImpersonationActionBlocked <$> parse payload
   "service_token_issued" -> ServiceTokenIssued <$> parse payload
+  "role_granted" -> RoleGranted <$> parse payload
+  "role_revoked" -> RoleRevoked <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -125,3 +127,9 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_action_blocked", toJSON d, d.occurredAt)
   ServiceTokenIssued d ->
     (Just (userIdToUUID d.userId), Just (sessionIdToUUID d.sessionId), "service_token_issued", toJSON d, d.occurredAt)
+  -- The row's user_id is the grant's SUBJECT; the granting admin (when there is one) lives in
+  -- the JSONB payload, mirroring how the impersonation events name the subject.
+  RoleGranted d ->
+    (Just (userIdToUUID d.userId), Nothing, "role_granted", toJSON d, d.occurredAt)
+  RoleRevoked d ->
+    (Just (userIdToUUID d.userId), Nothing, "role_revoked", toJSON d, d.occurredAt)

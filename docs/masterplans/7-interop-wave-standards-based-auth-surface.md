@@ -101,7 +101,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | Not Started |
+| 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | In Progress |
 | 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Not Started |
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Not Started |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Not Started |
@@ -233,7 +233,7 @@ the other.
 
 ## Progress
 
-- [ ] EP-1: Role/scope grant storage (migration) and port with Postgres + in-memory interpreters
+- [x] EP-1: Role/scope grant storage (migration) and port with Postgres + in-memory interpreters
 - [ ] EP-1: Claims population at token mint through an enrichment hook; `shomei-admin roles grant`
 - [ ] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
 - [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
@@ -259,7 +259,30 @@ the other.
 
 ## Surprises & Discoveries
 
-(None yet.)
+**2026-07-09 (EP-1) — Adding a migration requires editing `shomei-migrations/src/Shomei/Migrations.hs`,
+not touching its `.cabal`.** `embeddedFiles = $(embedDir "sql-migrations")` is a compile-time
+Template Haskell splice; under cabal 3.16 (content-hash change detection) neither
+`touch shomei-migrations/shomei-migrations.cabal` — what the `Justfile`'s `migrate` recipe does —
+nor `--ghc-options=-fforce-recomp` forces the re-splice. Only a content change to that module
+does. **Every later plan in this MasterPlan that adds a migration is affected**: EP-4
+(service accounts), EP-7 (TOTP secrets and recovery codes), and EP-9 (`shomei_role_permissions`,
+`expires_at`). Each must append a line to that module's comment block, as EP-1 did. The symptom
+otherwise is an integration suite failing with `relation "shomei.<new_table>" does not exist`.
+
+**2026-07-09 (EP-1) — `Shomei.Workflow.signup` publishes no events through `AuthEventPublisher`.**
+Its `UserRegistered`/`SessionStarted` events are written inside `persistNewSession`'s transaction,
+so `signup` carries no `AuthEventPublisher :> es` constraint. Any plan that adds an audited step
+to `signup` widens its signature and therefore every interpreter chain that runs it — including
+the private one in `shomei-server/app/Shomei/Admin/Users.hs`. EP-1 hit this adding default-role
+grants; **EP-7** should expect the same when it touches signup-adjacent workflows.
+
+**2026-07-09 (EP-1) — `ShomeiConfig`'s `FromJSON` is not the config-file decoder.** The Dhall
+file is rendered to JSON and decoded into a *separate* flat, all-optional `FileConfig`
+(`shomei-server/src/Shomei/Server/Config.hs`), then merged onto `defaultShomeiConfig`. Adding a
+field to `ShomeiConfig` therefore cannot break an existing deployment's config file. **EP-4**
+(service-account config migration) and **EP-8** (SMTP/webhook notifier config) can add
+`ShomeiConfig` fields freely; they only need a matching optional `FileConfig` field and env
+override.
 
 
 ## Decision Log

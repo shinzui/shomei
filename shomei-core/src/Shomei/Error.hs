@@ -11,6 +11,7 @@ module Shomei.Error
   )
 where
 
+import Shomei.Domain.Claims (Role)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnError)
 import Shomei.Prelude
 
@@ -108,6 +109,17 @@ data AuthError
     ServiceTokenScopeDenied
   | -- | The configured service-account user or requested actor user is missing or inactive. Maps to 400.
     ServiceTokenActorInvalid
+  | -- | The named user does not exist. Raised by the role grant/revoke workflows, which
+    -- resolve the subject before touching the grant table. Maps to 404.
+    --
+    -- Deliberately NOT used by any authentication path: 'InvalidCredentials' stays the single
+    -- generic answer there, so account existence is never disclosed to an unauthenticated
+    -- caller. This constructor is only reachable from already-authorized admin surfaces.
+    UserNotFound
+  | -- | A grant named a role absent from the @shomei_roles@ registry. Maps to 422: the request
+    -- was well-formed but names a role the deployment never declared. Guards against
+    -- @roles grant --role adminn@ silently minting a role no gate will ever check.
+    RoleNotDefined Role
   | InternalAuthError Text
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

@@ -27,6 +27,7 @@ module Shomei.Effect.InMemory
     runCredentialStore,
     runSessionStore,
     runRefreshTokenStore,
+    runRoleStore,
     runAuthUnitOfWork,
     runVerificationTokenStore,
     runPasswordResetTokenStore,
@@ -67,7 +68,7 @@ import Data.Text.Lazy.Encoding qualified as TLE
 import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
-import Shomei.Domain.Claims (AuthClaims)
+import Shomei.Domain.Claims (AuthClaims, Role (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (projectAuthEvent)
@@ -123,6 +124,7 @@ import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore (..))
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
+import Shomei.Effect.RoleStore (RoleDefinition (..), RoleStore (..))
 import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
 import Shomei.Effect.TokenGen (TokenGen (..))
@@ -169,6 +171,14 @@ data World = World
     passwordResetTokens :: !(Map PasswordResetTokenId PersistedPasswordResetToken),
     passwordResetByHash :: !(Map OneTimeTokenHash PasswordResetTokenId),
     signingKeys :: !(Map Text StoredSigningKey),
+    -- | the role registry, pre-seeded with @admin@ to mirror the migration's seed row so a
+    --     fresh in-memory world and a freshly migrated database agree
+    definedRoles :: !(Map Role RoleDefinition),
+    -- | durable @(user, role)@ grants. Unlike PostgreSQL, this map enforces no foreign key
+    --     into 'definedRoles': the registry check lives in 'Shomei.Workflow.Roles.grantRoleTo',
+    --     which is the tested path. The database FK is defense in depth for code that bypasses
+    --     the workflow, and has no in-memory analogue.
+    roleGrants :: !(Map UserId (Set Role)),
     -- | newest-first append-only attempt log (EP-2 brute-force protection)
     loginAttempts :: ![LoginAttempt],
     accountLockouts :: !(Map AccountKey AccountLockout),
@@ -204,6 +214,8 @@ emptyWorld t =
       passwordResetTokens = Map.empty,
       passwordResetByHash = Map.empty,
       signingKeys = Map.empty,
+      definedRoles = Map.singleton adminRole (RoleDefinition adminRole (Just adminRoleDescription) t),
+      roleGrants = Map.empty,
       loginAttempts = [],
       accountLockouts = Map.empty,
       passkeys = Map.empty,
@@ -216,6 +228,14 @@ emptyWorld t =
       breachedPasswords = Set.empty,
       breachCheckAvailable = True
     }
+
+-- | The role the @shomei_role_grants@ migration seeds into the registry, and its description.
+-- Kept in lockstep with @shomei-migrations\/sql-migrations\/*-shomei-role-grants.sql@.
+adminRole :: Role
+adminRole = Role "admin"
+
+adminRoleDescription :: Text
+adminRoleDescription = "Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes"
 
 -- | Strict, /atomic/ world update. Every store shares one 'IORef' 'World', and the
 -- concurrency regression tests run workflows from many green threads, so the plain
@@ -410,6 +430,39 @@ mkPersisted rid nrt =
       usedAt = Nothing,
       revokedAt = Nothing
     }
+
+-- | In-memory interpreter for the role registry and grant table.
+--
+-- @DefineRole@ and @GrantRole@ are idempotent and report whether they changed anything, so a
+-- caller publishes an audit event only on a real state change. Re-defining an existing role
+-- does not overwrite its description, matching the PostgreSQL @ON CONFLICT DO NOTHING@.
+runRoleStore :: (IOE :> es) => IORef World -> Eff (RoleStore : es) a -> Eff es a
+runRoleStore ref = interpret_ \case
+  DefineRole r desc ts ->
+    liftIO
+      ( casWorld ref \w ->
+          if Map.member r w.definedRoles
+            then Nothing
+            else Just (w & #definedRoles %~ Map.insert r (RoleDefinition r desc ts))
+      )
+  ListDefinedRoles ->
+    liftIO (Map.elems . (.definedRoles) <$> readIORef ref)
+  GrantRole uid r _by _ts ->
+    liftIO
+      ( casWorld ref \w ->
+          if r `Set.member` Map.findWithDefault Set.empty uid w.roleGrants
+            then Nothing
+            else Just (w & #roleGrants %~ Map.insertWith Set.union uid (Set.singleton r))
+      )
+  RevokeRole uid r ->
+    liftIO
+      ( casWorld ref \w ->
+          if r `Set.member` Map.findWithDefault Set.empty uid w.roleGrants
+            then Just (w & #roleGrants %~ Map.adjust (Set.delete r) uid)
+            else Nothing
+      )
+  ListRolesForUser uid ->
+    liftIO (Map.findWithDefault Set.empty uid . (.roleGrants) <$> readIORef ref)
 
 -- | In-memory interpreter for the transactional unit-of-work port.
 --
@@ -868,6 +921,7 @@ runInMemory ::
   IORef World ->
   Eff
     [ UserStore,
+      RoleStore,
       CredentialStore,
       SessionStore,
       RefreshTokenStore,
@@ -912,4 +966,5 @@ runInMemory ref =
     . runRefreshTokenStore ref
     . runSessionStore ref
     . runCredentialStore ref
+    . runRoleStore ref
     . runUserStore ref
