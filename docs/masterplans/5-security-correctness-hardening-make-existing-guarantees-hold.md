@@ -85,7 +85,7 @@ verifiable behaviors.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | In Progress |
+| 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | Complete |
 | 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Not Started |
 | 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Not Started |
 | 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Not Started |
@@ -145,9 +145,9 @@ rename existing ones.
 
 ## Progress
 
-- [ ] EP-1: Session absolute-expiry enforced in `refresh` and `verifyToken`, with regression tests
-- [ ] EP-1: Refresh-token mark-used converted to compare-and-swap; lost race treated as reuse
-- [ ] EP-1: One-time token consumption (password reset, email verification) made atomic
+- [x] EP-1: Session absolute-expiry enforced in `refresh` and `verifyToken`, with regression tests (2026-07-08)
+- [x] EP-1: Refresh-token mark-used converted to compare-and-swap; lost race treated as reuse (2026-07-08)
+- [x] EP-1: One-time token consumption (password reset, email verification) made atomic (2026-07-08)
 - [ ] EP-2: `ListPublishableSigningKeys` port operation and interpreters (Postgres, in-memory)
 - [ ] EP-2: JWKS built from active + retired keys; served document and verifier key set agree
 - [ ] EP-2: Periodic (or signal-driven) key reload without restart; rotation runbook re-verified end-to-end
@@ -163,7 +163,35 @@ rename existing ones.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- **EP-1 changed the guard order in `refresh`, which every later plan touching that function
+  must preserve (affects EP-3 here and plan 33 in the Operational MasterPlan).** `refresh` now
+  looks the session up *before* checking the presented token's own expiry, and evaluates
+  `session.expiresAt` → `session.status` → `token.expiresAt`. This was forced by EP-1's own
+  cap (a rotated token expires exactly when its session does), which would otherwise have made
+  `SessionExpired` unreachable. Do not reorder these guards back.
+
+- **The in-memory interpreter's `World` is now mutated exclusively through atomic helpers
+  (`modifyWorld` / `casWorld` in `shomei-core/src/Shomei/Effect/InMemory.hs`), and
+  `Data.IORef.modifyIORef'` is no longer imported there.** Any later plan adding an in-memory
+  handler must use these helpers, or it silently reintroduces lost updates under the
+  concurrency tests. This is a repository-wide convention now, not an EP-1 detail.
+
+- **Three port operations changed signature from `()` to `Bool`:** `MarkRefreshTokenUsed`,
+  `MarkPasswordResetTokenConsumed`, `MarkVerificationTokenConsumed`. Plans that add new
+  interpreters of `RefreshTokenStore`, `PasswordResetTokenStore`, or `VerificationTokenStore`
+  (notably EP-5's key work does not, but the Operational MasterPlan's transactional wrapper
+  does) must implement the compare-and-swap semantics, not merely return `True`.
+
+- **`cabal test all` run in parallel is flaky for `shomei-postgres` — unrelated to any plan
+  here.** Under twelve suites building and running at once, the ephemeral-pg harness times out
+  starting a database (60 s `ConnectionTimeout`), failing tests that were never touched. Use
+  `cabal test all -j1`, or `cabal test shomei-postgres` alone, when validating. Bounding the
+  harness's startup concurrency is a candidate item for
+  `docs/masterplans/6-operational-and-performance-hardening.md`.
+
+- **The email-verification table is `shomei.shomei_email_verification_tokens`.** EP-1's plan
+  text called it `shomei.shomei_verification_tokens`; plans writing SQL against it should use
+  the real name.
 
 
 ## Decision Log
