@@ -62,19 +62,19 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
       store tests pass. (2026-07-08)
 - [x] M1: `Shomei.Jwt.Rotation.currentJwks` builds from publishable keys; its doc comment
       updated; jwt tests pass. (2026-07-08)
-- [ ] M2: `Shomei.Server.Keys.loadKeyMaterial` centralizes load: picks the signer (active
+- [x] M2: `Shomei.Server.Keys.loadKeyMaterial` centralizes load: picks the signer (active
       key), builds the verifier `JWKSet` and the precomputed JWKS `Value` from all
-      publishable keys; `bootstrapKeys` reimplemented on top of it.
-- [ ] M2: `Shomei.Server.App.Env` holds an `IORef LoadedKeys`; signer/verifier interpreters
+      publishable keys; `bootstrapKeys` reimplemented on top of it. (2026-07-08)
+- [x] M2: `Shomei.Server.App.Env` holds an `IORef LoadedKeys`; signer/verifier interpreters
       and the seam read through it; `Seam.Env.jwksJson` becomes `IO Value`; all assemblies
-      (server, servant tests, demos) compile and pass.
-- [ ] M3: periodic reload thread (interval from `SigningKeyConfig.refreshIntervalSeconds`,
+      (server, servant tests, demos) compile and pass. (2026-07-08)
+- [x] M3: periodic reload thread (interval from `SigningKeyConfig.refreshIntervalSeconds`,
       env `SHOMEI_KEY_REFRESH_INTERVAL`, 0 = disabled) and `SIGHUP` handler wired in
-      `Shomei.Server.Boot`; reload failures log and keep the last good material.
-- [ ] M4: rotation runbook verified end-to-end against a live server (transcript captured
+      `Shomei.Server.Boot`; reload failures log and keep the last good material. (2026-07-08)
+- [x] M4: rotation runbook verified end-to-end against a live server (transcript captured
       in Validation); server E2E test extended; `docs/user/security.md` /
-      `docs/user/deployment.md` note the reload mechanism.
-- [ ] Living sections of this plan updated; Outcomes & Retrospective written.
+      `docs/user/deployment.md` note the reload mechanism. (2026-07-08)
+- [x] Living sections of this plan updated; Outcomes & Retrospective written. (2026-07-08)
 
 
 ## Surprises & Discoveries
@@ -82,7 +82,36 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The dev database's active key had `activated_at = NULL`.** `shomei-admin keys list`
+  showed `OcnLm3J… KeyActive activated=Nothing`, i.e. a key written by an older code path
+  (`toStoredSigningKey` sets `activatedAt = Just t`, but `ensureActiveKey`-era rows and
+  hand-migrated rows need not). The signer-selection rule "greatest `activatedAt`, `Nothing`
+  sorts lowest" handles it because it is the *only* active key, but a rule of
+  `maximum . mapMaybe activatedAt` would have crashed or silently found no signer. Any plan
+  touching signer selection must keep treating `activatedAt` as genuinely optional.
+
+- **`bootstrapKeys` changed shape from `IO (JWK, JWKSet)` to `IO LoadedKeys`, and
+  `Shomei.Server.App.Env` lost `envKey`/`envJwks` in favor of `envKeys :: IORef LoadedKeys`.**
+  Four out-of-tree-ish assemblies construct `Env` directly and had to change:
+  `shomei-client/test/Main.hs`, `shomei-server/test/Shomei/Server/E2ESpec.hs`,
+  `examples/microservice-auth-stack/test/Main.hs`, `examples/embedded-servant-app/test/Main.hs`.
+  Any future plan adding an assembly must build the `IORef`, not a bare key.
+
+- **`Shomei.Admin.Keys` already exports a function named `listPublishableSigningKeys`** (its
+  own raw-SQL helper), which now collides with the port helper of the same name when both are
+  imported. `shomei-server/test/Admin/Main.hs` imports `Shomei.Server.Keys` qualified to
+  resolve it. The duplication is deliberate (the CLI avoids the effect stack) but the name
+  clash is a trap.
+
+- **`kill -HUP $(pgrep -f exe:shomei-server)` kills the `cabal run` wrapper, not the server.**
+  The runbook step as written in this plan fails under `cabal run`; the signal must go to the
+  binary from `cabal list-bin exe:shomei-server`. Worth noting in any future signal-driven
+  runbook.
+
+- **The reload-failure log line embeds the whole failing SQL statement** (it is
+  `show AuthError`, and `AuthError`'s payload carries hasql's rendered statement). Verbose but
+  harmless — no key material appears in it. Trimming it would be an operational-polish item,
+  not a security one.
 
 
 ## Decision Log
@@ -168,13 +197,77 @@ Record every decision made while working on the plan.
   a second load path. Keep `fromStoredSigningKey` the single stored→live conversion point.
   Date: 2026-07-07
 
+- Decision: A corrupt key row (unparseable stored JWK JSON) fails the whole load rather than
+  being skipped.
+  Rationale: the plan's sketch already said so; implementation confirmed it is the right call.
+  Skipping would silently publish a key set missing a key that downstreams still hold tokens
+  for — precisely the outage this plan removes. The error names the offending `kid`. At boot
+  this is fatal; on reload it takes the keep-last-good path.
+  Date: 2026-07-08
+
+- Decision: `Shomei.Server.Keys` also exports `publishedKids :: LoadedKeys -> [Text]`.
+  Rationale: the "kid set changed" reload log needs it, and the tests assert on it. Deriving
+  the kid list from the already-built `jwksBody` keeps `LoadedKeys` at the three fields the
+  plan's Interfaces section pins, rather than growing cached kid fields that could drift from
+  the document actually served.
+  Date: 2026-07-08
+
+- Decision: `SHOMEI_KEY_REFRESH_INTERVAL` rejects a negative value instead of clamping.
+  Rationale: `0` already means "disabled", so a negative value is a typo, not an intent. A
+  clamp would silently disable the refresh an operator was trying to tighten; the boot fails
+  loudly instead, matching how `SHOMEI_SIGNING_ALG` rejects a bad algorithm.
+  Date: 2026-07-08
+
+- Decision: The periodic reload is a hand-rolled `forkIO` loop with a per-cycle exception
+  guard, as the plan's fallback branch allowed.
+  Rationale: `Shomei.Server.Supervisor.supervisedLoop` does not exist yet (plan 34 has not
+  landed; `rg supervisedLoop` finds nothing). `Shomei.Server.Boot.installKeyReload` carries a
+  comment directing plan 34 to migrate this loop onto `supervisedLoop` when that module
+  arrives.
+  Date: 2026-07-08
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Delivered, against the stated purpose.** The JWKS document and the server's verifier key
+set are now built from all publishable keys (`active` + `retired`) by one function,
+`Shomei.Server.Keys.loadKeyMaterial`. The server reloads that material periodically (default
+60 s, `SHOMEI_KEY_REFRESH_INTERVAL`, `0` disables) and immediately on `SIGHUP`, and the
+reload swaps the **signer** too — so `keys activate` moves signing to the new key on a live
+server while the just-retired key stays published and trusted, and `keys revoke` removes a
+key from publication and trust within one reload. All four claims were observed against a
+running server (transcript in Validation), not just unit-tested. `cabal test all` is green
+across all 12 suites.
+
+The precomputed-JSON property survived: `jwksH` does one `readIORef`, never a per-request
+`jose` encode. The seam's `jwksJson` became `IO Value` to allow that, which is the only
+API-shape change outside `shomei-server`.
+
+**The finding was worse than "no hot reload".** The review framed this as two defects (no
+reload; JWKS missing retired keys), but they compound: before this change a rotation was
+guaranteed-downtime *even with* a restart, because the restarted server loaded only the
+active key and rejected every token minted minutes earlier. The baseline step of the runbook
+shows the fix on its own — the dev database's pre-existing retired key was published
+immediately, where the old code published one key.
+
+**Gaps and follow-ups, none blocking:**
+
+- The periodic loop is hand-rolled pending `Shomei.Server.Supervisor.supervisedLoop`
+  (plan 34). `Shomei.Server.Boot.installKeyReload` carries the migration note.
+- Reload-failure log lines embed the failing SQL (`show AuthError`). Verbose, no key material
+  leaked; operational polish for MasterPlan 6.
+- Signal delivery itself is exercised manually (M4), not in CI — the tests drive `reloadKeys`,
+  the function the handler calls. Testing signal delivery would need a subprocess harness.
+- `Shomei.Admin.Keys` still carries its own `listPublishableSigningKeys` raw-SQL helper,
+  deliberately (the CLI avoids the effect stack) but now name-colliding with the port helper.
+  Collapsing the CLI onto the port is a candidate cleanup, out of scope here.
+
+**Lesson.** The plan's instruction to keep `fromStoredSigningKey` the single stored→live
+conversion point paid off immediately: `loadKeyMaterial` funnels every row through it, so
+plan 32's envelope decryption has exactly one place to hook, as designed.
 
 
 ## Context and Orientation
@@ -602,6 +695,95 @@ server from Concrete Steps running and `PG_CONNECTION_STRING` exported for `shom
 
 Paste the actual transcript into this section when executed. Acceptance = steps 1–5
 observed as described, plus a green `cabal test all`.
+
+### Executed transcript (2026-07-08)
+
+`cabal test all -j1`: all 12 suites PASS.
+
+Run against the dev database, which already held one active and one retired key — so the
+baseline itself shows the fix (the old code published only the active key). The server was
+run from `cabal list-bin exe:shomei-server` directly rather than under `cabal run`, because
+`pgrep -f shomei-server` matches the `cabal run` wrapper and `kill -HUP` then kills the
+wrapper instead of reaching the server. Port 8099 (8080 was occupied by an unrelated
+service).
+
+Step 1 — baseline. Three publishable keys (one active `KoWT…`, two retired), signup token
+signed by the active key, `/auth/me` → `200`:
+
+```text
+$ curl -s $B/.well-known/jwks.json | jq -r '.keys[].kid'
+KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis
+nuGfPxoxeWe0NrtegJiTvJcB37YYXLAgMi10xC3T36Q
+OcnLm3JqGVfCbNnOGz6ViK4lwCwUFIwrNEw5tqOkv4s
+old token kid: KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis
+GET /auth/me with old token: 200
+```
+
+Step 2 — rotate, and confirm the running server has *not* yet applied it (so step 3 proves
+the reload is what applies it):
+
+```text
+$ shomei-admin keys generate
+generated pending ES256 key: T2KaW0mBIQa2nsKamZXTUKkWlNQ6D-M1aFUg59EyFkQ
+$ shomei-admin keys activate T2KaW0mBIQa2nsKamZXTUKkWlNQ6D-M1aFUg59EyFkQ
+activated T2KaW0mBIQa2nsKamZXTUKkWlNQ6D-M1aFUg59EyFkQ
+retired (auto) KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis
+
+== JWKS BEFORE reload ==  contains NEWKID? false
+```
+
+Step 3 — `kill -HUP` applies it; zero downtime holds in both directions:
+
+```text
+== JWKS AFTER reload ==   contains NEWKID? true
+  T2KaW0mBIQa2nsKamZXTUKkWlNQ6D-M1aFUg59EyFkQ   (new active)
+  nuGfPxoxeWe0NrtegJiTvJcB37YYXLAgMi10xC3T36Q
+  OcnLm3JqGVfCbNnOGz6ViK4lwCwUFIwrNEw5tqOkv4s
+  KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis   (just retired, still published)
+
+pre-rotation token (kid=KoWTZm…)  GET /auth/me -> 200   (retired key still trusted)
+fresh login token kid = T2KaW0mBIQa2nsKamZXTUKkWlNQ6D-M1aFUg59EyFkQ
+  equals NEWKID? YES                                    (server now SIGNS with the new key)
+
+[shomei] SIGHUP: reloading signing keys
+[shomei] signing keys reloaded: active=T2KaW0m… published=T2KaW0m…,nuGfPxo…,OcnLm3J…,KoWTZm_…
+```
+
+Step 4 — revocation is the emergency lever:
+
+```text
+$ shomei-admin keys revoke KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis && kill -HUP <pid>
+revoked KoWTZm_hUX0T-zRuwbakDebK3fw_-5td-7ygtLrSIis
+still contains revoked kid? false
+/auth/me with the revoked key's token -> 401
+/auth/me with the current token       -> 200
+```
+
+Step 5 — degraded reload. PostgreSQL stopped, then `SIGHUP`:
+
+```text
+server alive? yes
+JWKS still served (3 kids, unchanged)
+[shomei] SIGHUP: reloading signing keys
+[shomei] key reload failed: InternalAuthError "database error: SessionUsageError
+  (ConnectionSessionError \"no connection to the server\\n\")"; keeping previous key material
+```
+
+(`/auth/me` returns `500` in this window — the *session* lookup needs the database. The key
+path is unaffected, which is the property under test.) After restarting PostgreSQL, the next
+reload succeeds and `/auth/me` → `200`.
+
+Extra — the **periodic** reload, with no signal at all
+(`SHOMEI_KEY_REFRESH_INTERVAL=3`, `keys activate`, no `SIGHUP`):
+
+```text
+immediately: contains new kid? false
+after ~5s:   contains new kid? true
+[shomei] signing keys reloaded: active=LAJ3hT4… published=LAJ3hT4…,nuGfPxo…,OcnLm3J…,T2KaW0m…
+```
+
+All five steps observed as described, plus the periodic path. Note the runbook mutates the
+dev database (extra keys, two `rot@`/`rot2@` users).
 
 
 ## Idempotence and Recovery

@@ -86,7 +86,7 @@ verifiable behaviors.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | Complete |
-| 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | In Progress |
+| 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Complete |
 | 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Not Started |
 | 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Not Started |
 | 5 | Encrypt Signing Private Keys at Rest | docs/plans/32-encrypt-signing-private-keys-at-rest.md | None | EP-2 | Not Started |
@@ -148,9 +148,9 @@ rename existing ones.
 - [x] EP-1: Session absolute-expiry enforced in `refresh` and `verifyToken`, with regression tests (2026-07-08)
 - [x] EP-1: Refresh-token mark-used converted to compare-and-swap; lost race treated as reuse (2026-07-08)
 - [x] EP-1: One-time token consumption (password reset, email verification) made atomic (2026-07-08)
-- [ ] EP-2: `ListPublishableSigningKeys` port operation and interpreters (Postgres, in-memory)
-- [ ] EP-2: JWKS built from active + retired keys; served document and verifier key set agree
-- [ ] EP-2: Periodic (or signal-driven) key reload without restart; rotation runbook re-verified end-to-end
+- [x] EP-2: `ListPublishableSigningKeys` port operation and interpreters (Postgres, in-memory) (2026-07-08)
+- [x] EP-2: JWKS built from active + retired keys; served document and verifier key set agree (2026-07-08)
+- [x] EP-2: Periodic (or signal-driven) key reload without restart; rotation runbook re-verified end-to-end (2026-07-08)
 - [ ] EP-3: Dummy-hash verification on unknown-account login path; timing test
 - [ ] EP-3: `emailVerificationRequired` enforced at login/token issuance
 - [ ] EP-3: `LogNotifier` redacts one-time tokens (hash prefix only)
@@ -192,6 +192,46 @@ rename existing ones.
 - **The email-verification table is `shomei.shomei_email_verification_tokens`.** EP-1's plan
   text called it `shomei.shomei_verification_tokens`; plans writing SQL against it should use
   the real name.
+
+- **EP-2 replaced `Shomei.Server.App.Env`'s `envKey :: JWK` / `envJwks :: JWKSet` with a
+  single `envKeys :: IORef LoadedKeys`, and `bootstrapKeys` now returns `IO LoadedKeys`.**
+  Every assembly that builds an `Env` by hand must create the `IORef`: `shomei-client/test`,
+  `shomei-server/test/Shomei/Server/E2ESpec.hs`, and both `examples/*/test/Main.hs`. Any later
+  plan adding an assembly (or a demo) inherits this. `runAppIO` reads the ref once per
+  invocation, so a reload reaches the next request with no application rebuild.
+
+- **`Shomei.Servant.Seam.Env.jwksJson` changed type from `Value` to `IO Value`** (and
+  `Seam.verifier` now closes over a `readIORef`). Plans touching the seam — notably EP-4
+  (cookie transport), which extends the same record — must construct `jwksJson` with `pure …`
+  in test assemblies. This is the only seam-shape change EP-2 makes.
+
+- **EP-5's decryption hook is ready and has exactly one place to go.**
+  `Shomei.Server.Keys.loadKeyMaterial` is now the single stored→live load path, and it funnels
+  every row through `Shomei.Jwt.Key.fromStoredSigningKey`. EP-5 should make that function (or
+  a successor in the same module) perform envelope decryption and must not add a second place
+  that parses `privateKeyJwk`. Note `loadKeyMaterial` treats a row that fails conversion as a
+  hard error, not a skip — EP-5's "cannot decrypt this row" must therefore surface as a
+  `Left`, which on reload takes the keep-last-good path and at boot is fatal.
+
+- **`activated_at` is genuinely nullable in practice, not just in the schema.** The dev
+  database holds an `active` key with `activated_at = NULL`. EP-2's signer selection ("greatest
+  `activatedAt`, `Nothing` sorts lowest") tolerates it; any plan that sorts or filters on that
+  column must not assume `Just`.
+
+- **`SigningKeyConfig` grew from a newtype to a two-field record**
+  (`algorithm`, `refreshIntervalSeconds`). EP-3, EP-4, and EP-5 all extend `ShomeiConfig`
+  records per IP-3; construction sites of `SigningKeyConfig` itself are now
+  `shomei-core/src/Shomei/Config.hs` and `shomei-jwt/test/Shomei/Jwt/RsaCustomClaimSpec.hs`.
+
+- **`shomei-admin-test` now depends on the `shomei-server` library** (it exercises
+  `loadKeyMaterial`/`reloadKeys` beside the CLI's key actions). Also: `Shomei.Admin.Keys`
+  exports its own `listPublishableSigningKeys` raw-SQL helper, which now collides by name with
+  the new port helper — import one qualified.
+
+- **`kill -HUP $(pgrep -f exe:shomei-server)` signals the `cabal run` wrapper, not the
+  server.** Any runbook in any plan that sends signals must target the binary from
+  `cabal list-bin exe:shomei-server`. Related: port 8080 may be held by an unrelated local
+  service; `SHOMEI_PORT` moves the server.
 
 
 ## Decision Log

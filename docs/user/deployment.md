@@ -22,6 +22,7 @@ twelve-factor — env always wins):
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both` | `bearer` |
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
+| `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |
 | `SHOMEI_PASSWORD_REJECT_COMMON` | reject passwords from the built-in common-password dictionary | `true` |
 | `SHOMEI_PASSWORD_REJECT_CONTEXTUAL` | reject passwords equal to the login email/local-part/display name | `true` |
@@ -99,7 +100,8 @@ accept RS256. The choice shows up in the generated key, the JWT header's `alg`, 
 published JWKS. First-boot key generation is **guarded on "no active key"**, so changing
 `SHOMEI_SIGNING_ALG` on an already-keyed database has no effect until you rotate: run
 `keys generate --alg <desired>` then `keys activate <kid>` (zero-downtime — both keys publish
-during the overlap).
+during the overlap). A running server applies the rotation at its next key reload — within
+`SHOMEI_KEY_REFRESH_INTERVAL` seconds, or immediately on `kill -HUP <pid>` — with no restart.
 
 ## Local development/test stack (`process-compose`)
 

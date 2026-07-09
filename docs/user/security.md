@@ -64,6 +64,27 @@ keys during the overlap window. Rotation is also how you **switch signing algori
 deployment: `shomei-admin keys generate --alg RS256` then `keys activate <kid>` moves signing to
 RS256 while the retired ES256 key keeps verifying its outstanding tokens until they expire.
 
+`shomei-admin` writes to the database; a running server picks the change up by reloading its key
+material — the signer, the verifier's key set, and the served JWKS together. It reloads on two
+triggers:
+
+- **periodically**, every `SHOMEI_KEY_REFRESH_INTERVAL` seconds (default `60`; `0` disables the
+  periodic reload); and
+- **on `SIGHUP`** (`kill -HUP <pid>`), for a deterministic "apply now" in a runbook.
+
+So `keys activate` and `keys revoke` take effect on a live server with **no restart**: within one
+reload the server signs with the new key while still trusting the retired one, and a revoked key
+leaves the JWKS and stops verifying. Because a retired key stays trusted anyway, the only latency
+that matters operationally is revocation — tighten the interval or send `SIGHUP` when that
+matters.
+
+If a reload fails (the database is unreachable, or an operator retired the only active key so
+there is nothing left to sign with), the server logs the failure and **keeps the last good key
+material** rather than crashing or serving an empty JWKS. It keeps signing and verifying
+meanwhile; the `/ready` probe, which checks for an active key, starts failing so orchestration
+notices. Fix the key table with `shomei-admin` and send `SIGHUP` (or wait one interval) to
+recover.
+
 ## No account-existence leakage
 
 Login returns a single generic `401 invalid_login` for a wrong password, an unknown account, and
