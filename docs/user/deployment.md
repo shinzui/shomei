@@ -16,6 +16,8 @@ twelve-factor — env always wins):
 | `PG_CONNECTION_STRING` | libpq connection string (required for the server) | — |
 | `SHOMEI_CONFIG` | path to a Dhall config file (optional) | unset |
 | `SHOMEI_PORT` | warp listen port | `8080` |
+| `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
+| `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
@@ -60,6 +62,16 @@ twelve-factor — env always wins):
 ]
 ```
 
+### Sizing the connection pool
+
+`SHOMEI_DB_POOL_SIZE` bounds how many requests can touch PostgreSQL at once; a request that
+finds every connection busy waits up to `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` and then fails.
+Token verification on the authenticated hot path is pure in-memory work and takes no connection
+at all, so the pool only has to cover the write workflows (signup, login, refresh, logout) plus
+`shomei-admin`. Size it against the database's own `max_connections` budget shared across every
+replica, not against request concurrency, and prefer shedding load with a short acquisition
+timeout over queueing behind a saturated pool.
+
 ### Dhall config file
 
 The schema is `config/shomei-types.dhall`; a worked example is `config/shomei.example.dhall`.
@@ -70,7 +82,8 @@ SHOMEI_CONFIG=config/shomei.dhall PG_CONNECTION_STRING=… cabal run exe:shomei-
 ```
 
 Every field is optional; an absent field falls back to the default, and any `SHOMEI_*` env var
-overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `accessTokenTtlSeconds`,
+overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPoolSize`,
+`dbPoolAcquisitionTimeoutMs`, `accessTokenTtlSeconds`,
 `refreshTokenTtlSeconds`, `sessionTtlSeconds`, `publicBaseUrl`, `emailVerificationRequired`,
 `rateLimitEnabled`, `maxFailedLoginsPerAccount`, `perIpRequestsPerMinute`, `metricsEnabled`,
 `requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`, password policy fields
@@ -86,7 +99,8 @@ accounts).
 
 > **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
 > newer keys (`signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`, `cookieSecure`,
-> `cookieSameSite`, `csrfAllowedOrigins`). The loader accepts them regardless — every field is
+> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`). The
+> loader accepts them regardless — every field is
 > optional at decode time — but a file that annotates itself `: ./shomei-types.dhall` cannot use
 > them until the schema is widened. Use the environment variables, or drop the annotation.
 

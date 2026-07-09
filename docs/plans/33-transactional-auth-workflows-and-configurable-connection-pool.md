@@ -56,16 +56,23 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `acquirePool` in `shomei-postgres/src/Shomei/Postgres/Pool.hs` extended to accept an
-      acquisition timeout; signature change propagated to all call sites.
-- [ ] M1: `ServerSettings` in `shomei-server/src/Shomei/Server/Config.hs` gains
-      `serverDbPoolSize` and `serverDbPoolAcquisitionTimeoutMs` with defaults 10 / 10000.
-- [ ] M1: `FileConfig` gains optional `dbPoolSize` / `dbPoolAcquisitionTimeoutMs` Dhall fields;
+- [x] M1: `acquirePool` in `shomei-postgres/src/Shomei/Postgres/Pool.hs` extended to accept an
+      acquisition timeout; signature change propagated to all seven call sites (2026-07-08).
+- [x] M1: `ServerSettings` in `shomei-server/src/Shomei/Server/Config.hs` gains
+      `serverDbPoolSize` and `serverDbPoolAcquisitionTimeoutMs` with defaults 10 / 10000
+      (2026-07-08).
+- [x] M1: `FileConfig` gains optional `dbPoolSize` / `dbPoolAcquisitionTimeoutMs` Dhall fields;
       env overrides `SHOMEI_DB_POOL_SIZE` / `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` wired in
-      `overlayFromEnvBoth`.
-- [ ] M1: `Shomei.Server.Boot.buildEnv` uses the configured values; boot log line prints them.
-- [ ] M1: `docs/user/` configuration documentation updated with the new knobs and defaults.
-- [ ] M1: `cabal build all` and `cabal test all` green; boot transcript captured.
+      `overlayFromEnvBoth`, with non-positive values rejected there (2026-07-08).
+- [x] M1: `Shomei.Server.Boot.buildEnv` uses the configured values; boot log line prints them
+      (2026-07-08).
+- [x] M1: `docs/user/deployment.md` documents both knobs, their defaults, the Dhall fields, and
+      a pool-sizing note (2026-07-08).
+- [x] M1: `cabal build all` green; `cabal test shomei-server-config-test` green with new cases
+      for the Dhall fields, the env overrides, the defaults, and the non-positive rejection
+      (2026-07-08).
+- [ ] M1 (remaining): full `cabal test all` against a live database, and the boot transcript
+      showing the configured pool values, captured into Outcomes.
 - [ ] M2: `clearAccountLockout` call in `shomei-core/src/Shomei/Workflow.hs` made conditional
       on a lockout row actually existing (uses the `getAccountLockout` result already read).
 - [ ] M2: workflow test asserting no `ClearAccountLockout` op is issued on a lockout-free login.
@@ -88,7 +95,52 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The Security MasterPlan's EP-1 (plan 28) has already landed.** This plan was written for a
+  world where the mark-used statement might still be an unconditional `UPDATE` with a
+  `D.noResult` decoder, and instructed the implementer to change only its decoder if so. That
+  branch is moot: `markUsedStmt` in
+  `shomei-postgres/src/Shomei/Postgres/RefreshTokenStore.hs` is already the compare-and-swap,
+  and the port operation already returns `Bool`:
+
+  ```haskell
+  MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m Bool
+  ```
+
+  ```sql
+  UPDATE shomei.shomei_refresh_tokens
+  SET status = 'used', used_at = $2
+  WHERE refresh_token_id = $1
+    AND status = 'active'
+  RETURNING refresh_token_id
+  ```
+
+  `Shomei.Workflow.refresh` already branches on `won <- markRefreshTokenUsed …` and takes the
+  reuse path when it loses the race. Consequence for M3: the rotation transaction lifts
+  `markUsedStmt` **verbatim** (statement text and `Maybe UUID` decoder untouched) via
+  `Hasql.Transaction.statement`, and `RotationConflict` is exactly `Nothing` from that decoder.
+  No decoder change, no re-read. The cross-MasterPlan boundary is honored by construction.
+
+- **`shomei-core`'s in-memory `World` already models the CAS** (`casWorld` in
+  `shomei-core/src/Shomei/Effect/InMemory.hs`), so the in-memory `AuthUnitOfWork` interpreter
+  M3 adds can compose the existing store interpreters without inventing new atomicity.
+
+- **A concurrent process committed and pushed this plan's M1 code under another plan's
+  message.** Commit `cd7deec` ("docs: propagate the new transport and token shapes to the
+  remaining user guides"), which carries MasterPlan 5's trailers and intention
+  `intention_01kx25bwnqecss3zgjtj70zpce`, swept the uncommitted M1 working tree into itself:
+  `Pool.hs`, `Boot.hs`, `Config.hs`, all `acquirePool` call sites, and this plan's own
+  frontmatter. It was pushed to `origin/master` before the mix-up was noticed. Nothing was
+  lost — the committed content matches what M1 intended — and per the operator's decision the
+  history was left alone rather than rewritten (a force-push over a published commit). The
+  remaining M1 work (the `ConfigSpec` cases and `docs/user/deployment.md`) is committed
+  separately with this plan's correct trailers. The lesson for later milestones: commit each
+  milestone promptly rather than accumulating a large uncommitted tree.
+
+- **`nix fmt` formats the whole repository, not just changed files.** Running it after the M1
+  edits reordered imports in a dozen untouched modules (`shomei-servant/*`,
+  `Shomei/Server/App.hs`, `Shomei/Workflow/Session.hs`) that had drifted from the formatter's
+  canonical output. Those reverts were discarded to keep this plan's diff focused; expect the
+  same drift to reappear on any future `nix fmt` and revert it the same way.
 
 
 ## Decision Log
@@ -174,12 +226,53 @@ Record every decision made while working on the plan.
   Date: 2026-07-07
 
 
+- Decision: Validate the two pool knobs **once, after the env overlay** in `overlayFromEnvBoth`,
+  rather than separately in `baseFromFile` and in the env readers.
+  Rationale: The plan called for rejecting non-positive values but did not say where. A single
+  post-overlay check covers every layer that can supply a value (default, Dhall file, env) with
+  one code path, so a bad Dhall `dbPoolSize` fails the boot exactly as a bad
+  `SHOMEI_DB_POOL_SIZE` does. The error names both the env var and the Dhall field, since the
+  loader cannot tell which layer won. The acquisition timeout is rejected at zero as well as
+  below it: a zero timeout fails every checkout, so it is not a survivable "disable" value.
+  Date: 2026-07-08
+
+- Decision: Exercise the new `ConfigSpec` cases **inline, at the end of the existing sequential
+  test case**, instead of adding them as sibling `testCase`s in a `testGroup`.
+  Rationale: Every one of these assertions mutates process-wide environment variables via
+  `setEnv`/`unsetEnv`, and tasty runs the members of a test group concurrently by default. As
+  siblings they would race — `poolRejectsNonPositive` setting `SHOMEI_DB_POOL_SIZE=0` while
+  `poolDefaults` asserts the default is 10. Sequencing them inside one test case makes the
+  ordering explicit and total.
+  Date: 2026-07-08
+
+
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**M1 (configurable pool) — complete.** `acquirePool` now takes an acquisition timeout;
+`ServerSettings` carries `serverDbPoolSize` / `serverDbPoolAcquisitionTimeoutMs`, sourced from
+defaults (10 / 10000 ms, reproducing the previously hardcoded behavior), then the Dhall fields
+`dbPoolSize` / `dbPoolAcquisitionTimeoutMs`, then `SHOMEI_DB_POOL_SIZE` /
+`SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS`. A non-positive value at any layer fails the boot with
+an error naming both the variable and the Dhall field. `buildEnv` logs the values it acquired
+the pool with. Evidence:
+
+```text
+$ cabal test shomei-server-config-test
+Dhall file is loaded and env vars override it: OK (0.14s)
+All 1 tests passed (0.14s)
+```
+
+The test case asserts the Dhall file's `dbPoolSize = 25` / `dbPoolAcquisitionTimeoutMs = 2500`
+beat the defaults, that `SHOMEI_DB_POOL_SIZE=33` / `…TIMEOUT_MS=2000` then beat the file, that
+an unset environment with no file yields 10 / 10000, and that `SHOMEI_DB_POOL_SIZE=0` and
+`SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS=-1` each raise a `userError` naming the offending
+variable.
+
+Still outstanding for M1: the live boot transcript and a full `cabal test all` against a
+running PostgreSQL, both of which need the dev database up. Milestones M2–M4 remain.
 
 
 ## Context and Orientation
