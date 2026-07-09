@@ -22,7 +22,9 @@ import Shomei.Prelude
 data PasswordResetTokenStore :: Effect where
   CreatePasswordResetToken :: NewPasswordResetToken -> PasswordResetTokenStore m PersistedPasswordResetToken
   FindPasswordResetTokenByHash :: OneTimeTokenHash -> PasswordResetTokenStore m (Maybe PersistedPasswordResetToken)
-  MarkPasswordResetTokenConsumed :: PasswordResetTokenId -> UTCTime -> PasswordResetTokenStore m ()
+  -- | Transition a token @active → consumed@ as one atomic compare-and-swap. 'True' means
+  -- this call performed the transition; 'False' means it was already spent or revoked.
+  MarkPasswordResetTokenConsumed :: PasswordResetTokenId -> UTCTime -> PasswordResetTokenStore m Bool
   RevokeUserPasswordResetTokens :: UserId -> UTCTime -> PasswordResetTokenStore m ()
 
 type instance DispatchOf PasswordResetTokenStore = Dynamic
@@ -33,7 +35,7 @@ createPasswordResetToken = send . CreatePasswordResetToken
 findPasswordResetTokenByHash :: (PasswordResetTokenStore :> es) => OneTimeTokenHash -> Eff es (Maybe PersistedPasswordResetToken)
 findPasswordResetTokenByHash = send . FindPasswordResetTokenByHash
 
-markPasswordResetTokenConsumed :: (PasswordResetTokenStore :> es) => PasswordResetTokenId -> UTCTime -> Eff es ()
+markPasswordResetTokenConsumed :: (PasswordResetTokenStore :> es) => PasswordResetTokenId -> UTCTime -> Eff es Bool
 markPasswordResetTokenConsumed i t = send (MarkPasswordResetTokenConsumed i t)
 
 revokeUserPasswordResetTokens :: (PasswordResetTokenStore :> es) => UserId -> UTCTime -> Eff es ()

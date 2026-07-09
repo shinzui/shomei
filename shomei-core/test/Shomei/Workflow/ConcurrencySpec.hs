@@ -22,7 +22,10 @@ import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.Notification (Notification (..))
+import Shomei.Domain.OneTimeToken (OneTimeToken)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshToken)
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
@@ -31,6 +34,12 @@ import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
 -- Qualified: several 'AuthError' constructors share names with 'SessionStatus' constructors.
 import Shomei.Error qualified as Err
 import Shomei.Workflow (refresh, signup)
+import Shomei.Workflow.Account
+  ( ConfirmPasswordReset (..),
+    RequestPasswordReset (..),
+    confirmPasswordReset,
+    requestPasswordReset,
+  )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -49,8 +58,9 @@ cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
 aliceEmail :: Email
 aliceEmail = mkEmail' "alice@example.com"
 
-strongPw :: PlainPassword
+strongPw, newPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
+newPw = PlainPassword "correct horse battery staple two"
 
 mkEmail' :: Text -> Email
 mkEmail' t = case mkEmail t of
@@ -64,17 +74,30 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Workflow.Concurrency"
-    [ testConcurrentRefreshHasOneWinner
+    [ testConcurrentRefreshHasOneWinner,
+      testConcurrentPasswordResetHasOneWinner
     ]
 
--- | Sign up, then present the resulting refresh token from 'racers' threads at once.
+signupCmd :: Email -> SignupCommand
+signupCmd e =
+  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = strongPw, displayName = Nothing}
+
+-- | Sign up, then hand back the refresh token every racer will present.
 signupThenRace :: IORef World -> IO RefreshToken
 signupThenRace ref = do
-  (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail))
+  (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupCmd aliceEmail))
   pure pair.refreshToken
-  where
-    signupEmail e =
-      SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = strongPw, displayName = Nothing}
+
+-- | Sign up and request a password reset, then hand back the raw one-time token from the
+-- notification the in-memory 'Shomei.Effect.Notifier' captured.
+resetRequestedWorld :: IORef World -> IO OneTimeToken
+resetRequestedWorld ref = do
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupCmd aliceEmail))
+  _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  w <- readIORef ref
+  case w.sentNotifications of
+    PasswordResetRequested {token = raw} : _ -> pure raw
+    _ -> assertFailure "expected a password-reset notification carrying a token"
 
 testConcurrentRefreshHasOneWinner :: TestTree
 testConcurrentRefreshHasOneWinner =
@@ -101,3 +124,26 @@ testConcurrentRefreshHasOneWinner =
       assertBool
         "session was not revoked by the reuse response"
         (all (\s -> s.status == SessionRevoked) (Map.elems w.sessions))
+
+testConcurrentPasswordResetHasOneWinner :: TestTree
+testConcurrentPasswordResetHasOneWinner =
+  testCase (show racers <> " concurrent password-reset confirms: exactly one winner") do
+    mapM_ (const oneRound) [1 .. rounds]
+  where
+    oneRound = do
+      ref <- newIORef (emptyWorld fixedTime)
+      raw <- resetRequestedWorld ref
+      results <-
+        mapConcurrently
+          (const (runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset raw newPw))))
+          [1 .. racers]
+      let (failures, winners) = partitionEithers results
+      length winners @?= 1
+      assertBool
+        ("unexpected failure among losers: " <> show failures)
+        (all (== Err.PasswordResetTokenInvalid) failures)
+      -- The sharper assertion: the password was changed exactly once, not 100 times.
+      w <- readIORef ref
+      length (filter isCompleted w.publishedEvents) @?= 1
+    isCompleted (Event.PasswordResetCompleted _) = True
+    isCompleted _ = False

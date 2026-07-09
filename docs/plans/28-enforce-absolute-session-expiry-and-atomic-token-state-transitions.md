@@ -83,16 +83,23 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 - [x] M2: Concurrency regression test `Shomei.Workflow.ConcurrencySpec` (100 parallel
       refreshes × 10 rounds; exactly one winner, ≤1 child, session revoked) passes; observed
       failing with **7 winners** against the pre-fix interpreter (2026-07-08).
-- [ ] M3: `MarkPasswordResetTokenConsumed` / `MarkVerificationTokenConsumed` return `Bool`;
-      Postgres statements gain `AND status = 'active' RETURNING`; in-memory interpreters use
-      the same atomic CAS.
-- [ ] M3: `confirmPasswordReset` / `confirmEmailVerification` consume the token *before*
-      acting and abort when the CAS is lost; core tests pass.
-- [ ] M3: Concurrency regression test for one-time tokens passes.
-- [ ] M4: `cabal test all` green (core, postgres, servant, jwt, server); Postgres
-      integration test for the CAS statements passes; docs (`docs/user/security.md`,
-      `docs/user/api.md`) updated to state the absolute-lifetime guarantee.
-- [ ] Living sections of this plan updated; Outcomes & Retrospective written.
+- [x] M3: `MarkPasswordResetTokenConsumed` / `MarkVerificationTokenConsumed` return `Bool`;
+      Postgres statements gained `AND status = 'active' RETURNING`; in-memory interpreters use
+      the same `casWorld` CAS (2026-07-08).
+- [x] M3: `confirmPasswordReset` / `confirmEmailVerification` consume the token *before*
+      acting and abort when the CAS is lost; the pre-existing `testRejectConsumedReset` /
+      `testRejectConsumedVerification` cases in `shomei-core/test/Shomei/AccountSpec.hs`
+      already covered the sequential double-confirm and still pass unchanged (2026-07-08).
+- [x] M3: Concurrency regression test for one-time tokens passes (100 concurrent
+      `confirmPasswordReset`: exactly one `Right`, exactly one `PasswordResetCompleted`
+      event); observed failing with **2 winners** against the pre-fix interpreter
+      (2026-07-08).
+- [x] M4: `cabal test all -j1` green — all 12 suites (core 121, postgres 23, servant, jwt,
+      server, admin, client, webauthn, openapi, config, and both examples). Postgres CAS
+      statement tests pass for all three stores. Docs updated: `docs/user/security.md`
+      (compare-and-swap rotation + absolute session lifetime) and `docs/user/api.md`
+      (`401 session_expired` on `POST /auth/refresh`) (2026-07-08).
+- [x] Living sections of this plan updated; Outcomes & Retrospective written (2026-07-08).
 
 
 ## Surprises & Discoveries
@@ -153,6 +160,34 @@ implementation. Provide concise evidence.
   token as `active` *before* another loser's reuse response revoked the session, and reached
   `findSessionById` *after* it, gets `SessionRevoked`. Both are 401s and both mean "the family
   is dead"; the concurrency test accepts either.
+
+- **The one-time-token race is narrower but real: 2 winners out of 100 (M3, confirmed).** With
+  the in-memory `MarkPasswordResetTokenConsumed` reverted to the unconditional adjust, the new
+  test reports `expected: 1 / but got: 2`. The window is small (find → validate → hash →
+  consume) but two threads did change the password and publish two `PasswordResetCompleted`
+  events.
+
+- **The email-verification table is `shomei.shomei_email_verification_tokens`,** not
+  `shomei.shomei_verification_tokens` as this plan's M3 sketch stated. No schema change was
+  needed — the statement was rewritten in place against the real table name.
+
+- **The sequential double-confirm regression anchors already existed.** M3's first test bullet
+  asked for them; `testRejectConsumedReset` and `testRejectConsumedVerification` in
+  `AccountSpec` already assert exactly that, and they still pass after the workflows moved the
+  consume ahead of the act. No new sequential cases were written.
+
+- **`cabal test all` (parallel) is flaky for `shomei-postgres`, independent of this change.**
+  Under the load of twelve suites building and running at once, ephemeral-pg times out:
+
+  ```text
+  create session + revoke:                                     FAIL
+    Exception: Failed to start ephemeral PostgreSQL: TimeoutError
+      (ConnectionTimeout {durationSeconds = 60, host = "…/T/pg--1f8cec1a…", port = 52057})
+  ```
+
+  Note the first casualty is a test this plan never touched. `cabal test shomei-postgres` alone
+  is 23/23, and `cabal test all -j1` is green across all twelve suites. Validation was done
+  serially; a future operational plan may want to bound the harness's startup concurrency.
 
 - **`Shomei.Error.SessionExpired` and `Shomei.Domain.Session.SessionExpired` collide.** The
   `AuthError` constructor and the `SessionStatus` constructor share a name; test modules that
@@ -272,7 +307,40 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+Delivered the purpose in full. All three findings are closed, each with a regression test that
+was **observed red against the pre-fix code**:
+
+1. *Absolute session lifetime.* `refresh` and `verifyToken` now consult `session.expiresAt`.
+   A session that keeps refreshing dies at its deadline with `401 session_expired`, and rotated
+   refresh tokens are capped at `min (now + refreshTokenTTL) session.expiresAt` so stored state
+   can never outlive the session. Pre-fix, day-31 refresh happily minted a fresh access token.
+2. *Refresh rotation.* `MarkRefreshTokenUsed` is a compare-and-swap in both interpreters
+   (`UPDATE … AND status = 'active' RETURNING` / `atomicModifyIORef'`), and the workflow routes
+   a lost race into the existing reuse path. Pre-fix, 100 concurrent refreshes of one token
+   produced **7** winners and a 7-way forked family with no reuse detection; now exactly 1.
+3. *One-time tokens.* Password-reset and email-verification consumption is the same CAS, and
+   both workflows consume before acting. Pre-fix, 100 concurrent reset confirmations produced
+   **2** winners and two `PasswordResetCompleted` events; now exactly 1.
+
+Deviations from the plan, all recorded above: (a) `refresh` checks the session's guards before
+the presented token's own expiry — without that reordering the new cap made `SessionExpired`
+dead code; (b) every in-memory `World` mutation became atomic, not just the three CAS
+operations, because read-modify-write neighbours would otherwise clobber the CAS under the very
+concurrency the tests create; (c) a CAS loser may observe `SessionRevoked` rather than
+`RefreshTokenReuseDetected` when another loser's revocation lands first — both are 401s on a
+dead family; (d) the sequential double-confirm cases M3 asked for already existed.
+
+Scope held: no schema migration, no new production dependency (only `async` in the core test
+suite), and the refresh tail is still not transactional — that remains
+`docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md`'s job, which
+must preserve the CAS statement shape this plan introduced.
+
+Gaps worth naming: the concurrency proofs live at the in-memory interpreter, while PostgreSQL's
+guarantee is pinned only *sequentially* (first mark `True`, second `False`, winner's timestamp
+preserved). That is the deliberate trade from the Decision Log — a scheduler race against real
+Postgres would be flaky — but it means the SQL row-lock reasoning is argued, not executed. And
+`cabal test all` run in parallel is flaky for reasons unrelated to this plan (see Surprises);
+validation used `-j1`.
 
 
 ## Context and Orientation

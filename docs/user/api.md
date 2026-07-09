@@ -19,7 +19,7 @@ Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-
 Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped.
 
 ### `POST /auth/refresh`
-Body `{"refreshToken"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`).
+Body `{"refreshToken"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again.
 
 ### `POST /auth/service-token`
 Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:

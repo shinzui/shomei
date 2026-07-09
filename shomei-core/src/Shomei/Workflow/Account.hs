@@ -127,7 +127,11 @@ confirmEmailVerification _cfg cmd = runErrorNoCallStack do
   -- email here means the token cannot belong to a verifiable account.
   email <- maybe (throwError VerificationTokenInvalid) pure user.email
   when (isJust user.emailVerifiedAt) (throwError EmailAlreadyVerified)
-  markVerificationTokenConsumed tok.verificationTokenId ts
+  -- Consume before acting: the compare-and-swap is the linearization point, so of two
+  -- concurrent confirmations of one token exactly one proceeds. The loser sees precisely what
+  -- a stale-token presenter sees.
+  won <- markVerificationTokenConsumed tok.verificationTokenId ts
+  unless won (throwError VerificationTokenInvalid)
   markUserEmailVerified user.userId ts
   publishAuthEvent (Event.EmailVerified (Event.EmailVerifiedData user.userId email ts))
 
@@ -191,8 +195,13 @@ confirmPasswordReset cfg cmd = runErrorNoCallStack do
   either (throwError . WeakPassword) pure (validatePassword cfg.passwordPolicy pwContext cmd.newPassword)
   enforceBreachPolicy cfg.passwordPolicy cmd.newPassword
   newHash <- hashPassword cmd.newPassword
+  -- Consume before acting, but after validating the new password: the compare-and-swap is the
+  -- linearization point (exactly one of two concurrent confirmations proceeds), while a
+  -- pure-read policy check ahead of it cannot widen the race and spares the user's token when
+  -- the new password is merely too weak.
+  won <- markPasswordResetTokenConsumed tok.passwordResetTokenId ts
+  unless won (throwError PasswordResetTokenInvalid)
   updatePasswordHash tok.userId newHash
-  markPasswordResetTokenConsumed tok.passwordResetTokenId ts
   revokeAllUserSessions tok.userId ts
   revokeAllUserRefreshTokens tok.userId ts
   publishAuthEvent (Event.PasswordResetCompleted (Event.PasswordResetCompletedData tok.userId ts))

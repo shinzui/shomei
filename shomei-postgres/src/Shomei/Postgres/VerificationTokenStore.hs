@@ -57,7 +57,7 @@ runVerificationTokenStorePostgres = interpret_ \case
     traverse rebuild row
   MarkVerificationTokenConsumed tid t -> do
     res <- runSession (Session.statement (verificationTokenIdToUUID tid, t) markConsumedStmt)
-    either dbFail (const (pure ())) res
+    either dbFail (pure . isJust) res
   RevokeUserVerificationTokens uid t -> do
     res <- runSession (Session.statement (userIdToUUID uid, t) revokeUserTokensStmt)
     either dbFail (const (pure ())) res
@@ -141,16 +141,21 @@ findByHashStmt =
     (E.param (E.nonNullable E.text))
     (D.rowMaybe tokenRowDecoder)
 
-markConsumedStmt :: Statement (UUID, UTCTime) ()
+-- | Compare-and-swap: the @status = 'active'@ guard and the write are one statement, so two
+-- concurrent confirmations of the same one-time token cannot both consume it. The loser
+-- matches zero rows and returns no @RETURNING@ row.
+markConsumedStmt :: Statement (UUID, UTCTime) (Maybe UUID)
 markConsumedStmt =
   preparable
     """
     UPDATE shomei.shomei_email_verification_tokens
     SET status = 'consumed', consumed_at = $2
     WHERE verification_token_id = $1
+      AND status = 'active'
+    RETURNING verification_token_id
     """
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
-    D.noResult
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 revokeUserTokensStmt :: Statement (UUID, UTCTime) ()
 revokeUserTokensStmt =

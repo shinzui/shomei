@@ -22,7 +22,9 @@ import Shomei.Prelude
 data VerificationTokenStore :: Effect where
   CreateVerificationToken :: NewVerificationToken -> VerificationTokenStore m PersistedVerificationToken
   FindVerificationTokenByHash :: OneTimeTokenHash -> VerificationTokenStore m (Maybe PersistedVerificationToken)
-  MarkVerificationTokenConsumed :: VerificationTokenId -> UTCTime -> VerificationTokenStore m ()
+  -- | Transition a token @active → consumed@ as one atomic compare-and-swap. 'True' means
+  -- this call performed the transition; 'False' means it was already spent or revoked.
+  MarkVerificationTokenConsumed :: VerificationTokenId -> UTCTime -> VerificationTokenStore m Bool
   RevokeUserVerificationTokens :: UserId -> UTCTime -> VerificationTokenStore m ()
 
 type instance DispatchOf VerificationTokenStore = Dynamic
@@ -33,7 +35,7 @@ createVerificationToken = send . CreateVerificationToken
 findVerificationTokenByHash :: (VerificationTokenStore :> es) => OneTimeTokenHash -> Eff es (Maybe PersistedVerificationToken)
 findVerificationTokenByHash = send . FindVerificationTokenByHash
 
-markVerificationTokenConsumed :: (VerificationTokenStore :> es) => VerificationTokenId -> UTCTime -> Eff es ()
+markVerificationTokenConsumed :: (VerificationTokenStore :> es) => VerificationTokenId -> UTCTime -> Eff es Bool
 markVerificationTokenConsumed i t = send (MarkVerificationTokenConsumed i t)
 
 revokeUserVerificationTokens :: (VerificationTokenStore :> es) => UserId -> UTCTime -> Eff es ()

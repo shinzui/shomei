@@ -466,7 +466,7 @@ testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is 
   fmap (.status) afterSecond @?= Just RefreshTokenUsed
 
 testVerificationTokenRoundTrip :: TestTree
-testVerificationTokenRoundTrip = testCase "create verification token + consume" $ withDb \pool -> do
+testVerificationTokenRoundTrip = testCase "verification token: consume is a compare-and-swap" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
@@ -480,15 +480,20 @@ testVerificationTokenRoundTrip = testCase "create verification token + consume" 
             expiresAt = addUTCTime 3600 t
           }
     before <- findVerificationTokenByHash h
-    markVerificationTokenConsumed persisted.verificationTokenId t
+    firstConsume <- markVerificationTokenConsumed persisted.verificationTokenId t
     after <- findVerificationTokenByHash h
-    pure (before, after)
-  (before, after) <- expectApp result
+    secondConsume <- markVerificationTokenConsumed persisted.verificationTokenId (addUTCTime 60 t)
+    afterSecond <- findVerificationTokenByHash h
+    pure (before, after, firstConsume, secondConsume, afterSecond)
+  (before, after, firstConsume, secondConsume, afterSecond) <- expectApp result
   fmap (.status) before @?= Just OneTimeTokenActive
   fmap (.status) after @?= Just OneTimeTokenConsumed
+  firstConsume @?= True
+  secondConsume @?= False
+  fmap (.consumedAt) afterSecond @?= fmap (.consumedAt) after
 
 testPasswordResetTokenRoundTrip :: TestTree
-testPasswordResetTokenRoundTrip = testCase "create password reset token + consume" $ withDb \pool -> do
+testPasswordResetTokenRoundTrip = testCase "password reset token: consume is a compare-and-swap" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
@@ -502,12 +507,17 @@ testPasswordResetTokenRoundTrip = testCase "create password reset token + consum
             expiresAt = addUTCTime 3600 t
           }
     before <- findPasswordResetTokenByHash h
-    markPasswordResetTokenConsumed persisted.passwordResetTokenId t
+    firstConsume <- markPasswordResetTokenConsumed persisted.passwordResetTokenId t
     after <- findPasswordResetTokenByHash h
-    pure (before, after)
-  (before, after) <- expectApp result
+    secondConsume <- markPasswordResetTokenConsumed persisted.passwordResetTokenId (addUTCTime 60 t)
+    afterSecond <- findPasswordResetTokenByHash h
+    pure (before, after, firstConsume, secondConsume, afterSecond)
+  (before, after, firstConsume, secondConsume, afterSecond) <- expectApp result
   fmap (.status) before @?= Just OneTimeTokenActive
   fmap (.status) after @?= Just OneTimeTokenConsumed
+  firstConsume @?= True
+  secondConsume @?= False
+  fmap (.consumedAt) afterSecond @?= fmap (.consumedAt) after
 
 testMarkUserEmailVerified :: TestTree
 testMarkUserEmailVerified = testCase "mark user email verified sets the timestamp" $ withDb \pool -> do

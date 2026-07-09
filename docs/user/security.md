@@ -30,6 +30,18 @@ logs. The minimum-length / policy check runs before hashing.
   reveals a usable token. Refresh tokens rotate on every use; presenting an already-used token is
   treated as theft and **revokes the entire token family and the session**. The one-time tokens
   are single-use with a TTL.
+- **Rotation is a compare-and-swap.** Marking a refresh token used is a single conditional
+  statement (`UPDATE … WHERE … AND status = 'active' RETURNING`), so two concurrent
+  presentations of the same refresh token can **never both succeed**: exactly one rotates, and
+  the loser is treated as reuse — family and session revoked, `401 token_reuse`. The same
+  single-winner guarantee holds for the one-time password-reset and email-verification tokens:
+  of two concurrent confirmations, exactly one changes the password (or verifies the email);
+  the other is rejected as an invalid token.
+- **Sessions have an absolute lifetime.** A session dies at `sessionTTL` (default 30 days) after
+  it was created, no matter how often it is refreshed: refreshing extends nothing past
+  `session.expiresAt`, and every rotated refresh token's expiry is capped at that deadline. Past
+  it, `POST /auth/refresh` returns `401 session_expired` and — when `sessionCheckMode` is
+  `VerifyTokenAndSession` — so does access-token verification. There is no sliding session.
 - **Service tokens** are short-lived access tokens minted through a separate machine-credential
   endpoint. Service account secrets are configured as SHA-256 hex digests, request secrets are
   compared in constant time, requested scopes must be a subset of the account allow-list, and no

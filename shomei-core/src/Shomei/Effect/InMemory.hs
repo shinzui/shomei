@@ -423,7 +423,13 @@ runVerificationTokenStore ref = interpret_ \case
   FindVerificationTokenByHash h ->
     liftIO (lookupVerification h <$> readIORef ref)
   MarkVerificationTokenConsumed tid t ->
-    liftIO (modifyWorld ref (#verificationTokens %~ Map.adjust (consume t) tid))
+    liftIO
+      ( casWorld ref \w -> case Map.lookup tid w.verificationTokens of
+          Just tok
+            | tok.status == OneTimeTokenActive ->
+                Just (w & #verificationTokens %~ Map.adjust (consume t) tid)
+          _ -> Nothing
+      )
   RevokeUserVerificationTokens uid t ->
     liftIO (modifyWorld ref (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
   where
@@ -462,7 +468,13 @@ runPasswordResetTokenStore ref = interpret_ \case
   FindPasswordResetTokenByHash h ->
     liftIO (lookupReset h <$> readIORef ref)
   MarkPasswordResetTokenConsumed tid t ->
-    liftIO (modifyWorld ref (#passwordResetTokens %~ Map.adjust (consume t) tid))
+    liftIO
+      ( casWorld ref \w -> case Map.lookup tid w.passwordResetTokens of
+          Just tok
+            | tok.status == OneTimeTokenActive ->
+                Just (w & #passwordResetTokens %~ Map.adjust (consume t) tid)
+          _ -> Nothing
+      )
   RevokeUserPasswordResetTokens uid t ->
     liftIO (modifyWorld ref (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
   where
