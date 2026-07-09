@@ -58,21 +58,23 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `JwksCache` rewritten in
+- [x] M1: `JwksCache` rewritten in
       `examples/microservice-auth-stack/src/Downstream/Service.hs`: `IORef` entry for
       lock-free reads, `MVar ()` try-lock for single-flight, refresh-ahead at 80% TTL,
       stale-on-error, `JwksUnavailable` fail-closed past max staleness, `Cache-Control:
       max-age` honored; `currentJwks` and the config record exported for tests.
-- [ ] M1: `newJwksCache` signature extended (TTL + max staleness); `app/Main.hs` reads
+- [x] M1: `newJwksCache` signature extended (TTL + max staleness); `app/Main.hs` reads
       `DOWNSTREAM_JWKS_TTL_SECONDS` / `DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS`;
       `localAuthHandler` maps `JwksUnavailable` to 503 (still 401 for bad tokens).
-- [ ] M2: stub JWKS server harness (fetch counter + scriptable ok/fail/delay modes) in the
+- [x] M2: stub JWKS server harness (fetch counter + scriptable ok/fail/delay modes) in the
       example's test suite.
-- [ ] M2: cache tests green — cold-start single flight, cached reads fetch nothing,
+- [x] M2: cache tests green — cold-start single flight, cached reads fetch nothing,
       refresh-ahead without latency spike, stale-on-error, fail-closed after max staleness,
       single-flight under failure burst, `max-age` override.
-- [ ] M2: pre-existing end-to-end test (valid/tampered/missing token against the real auth
+- [x] M2: pre-existing end-to-end test (valid/tampered/missing token against the real auth
       server) still green with the new cache.
+- [x] M2: each property proved by mutation — six mutations of `Downstream.Service`, each
+      killing exactly its own test (transcript in Surprises & Discoveries).
 - [ ] M3: `docs/user/client-and-examples.md` rewritten to present the cache as the
       recommended template with its property list, configuration, and the
       server-side `Cache-Control` follow-up note.
@@ -85,7 +87,60 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **`http-client`'s `parseRequest` does not check the response status**, so the old
+  `fetchJwks` would not have failed on a `500` — it would have fallen through to
+  `eitherDecode` and reported a *parse* error. (`parseRequest` builds on `defaultRequest`,
+  whose `checkResponse` is `\_ _ -> return ()`; only `parseUrlThrow` /
+  `setRequestCheckStatus` install `throwErrorStatusCodes`.) The rewritten `fetchJwks`
+  therefore tests `statusIsSuccessful` explicitly. Without this, the stub server's `Serve500`
+  mode would exercise the wrong failure path and every stale-on-error test would still pass
+  for the wrong reason.
+
+- **The plan's Milestone-M2 test 3 as specified could not distinguish a background refresh
+  from a blocking one.** It warms the cache against an instantly-responding stub and then
+  asserts the refresh-window read returns in under 100 ms — but a *synchronous* refresh
+  against that same instant stub also returns in under 100 ms. Fixed by scripting the stub to
+  `ServeDelayed 400` immediately before the refresh-window read: now only a genuinely
+  backgrounded fetch can satisfy the bound. Confirmed by mutation M-B below, which fails this
+  test only after the strengthening.
+
+- **Every property was proved by breaking it** (the MasterPlan's standing instruction to treat
+  prescribed code as a hypothesis). Six mutations of `Downstream.Service`, each run against
+  the full suite; each killed exactly the tests that own its property, and nothing else:
+
+  ```text
+  M-A  refreshAheadFactor 0.8 -> 1.0        refresh-ahead                         FAIL (1/8)
+  M-B  refresh synchronous + rethrow        refresh-ahead, stale-on-error,
+       (i.e. the pre-plan behavior)         failure-burst single-flight           FAIL (3/8)
+  M-C  `if age < maxStaleness` -> `if True` past-max-staleness fails closed (503) FAIL (1/8)
+  M-D  effectiveTtl ignores parseMaxAge     Cache-Control max-age override        FAIL (1/8)
+  M-E  tryTakeMVar -> pure (Just ())        failure burst stays single-flight     FAIL (1/8)
+  M-F  coldStart withMVar -> no lock        cold start is single-flight           FAIL (1/8)
+  ```
+
+  M-B failing three tests is the point: it *is* the old cache, and the three tests it kills
+  are the three defects this plan set out to remove.
+
+- **Mutation M-E produced visibly interleaved, character-shredded stderr**, because GHC's
+  `stderr` is `NoBuffering` and `hPutStrLn` writes character by character — so twenty
+  concurrent refreshers' log lines shredded each other. Single-flight means the shipped code
+  never has two refreshers, so this could not occur in production; but the refresh log now
+  goes out as one strict `BS8.hPut` of a pre-assembled line anyway, matching the convention
+  MasterPlan 6's EP-4 established for `Shomei.Server.Observability.Logging`. A copier who
+  runs several caches in one process gets the property for free.
+
+- **`Test.Tasty.sequentialTestGroup` is deprecated in tasty 1.5.4** in favor of
+  `dependentTestGroup` (same signature, same `DependencyType`). The timing-sensitive cache
+  tests each drive one stub server's mode from the outside, so they must not interleave;
+  `dependentTestGroup … AllFinish` is how this suite serializes them, independently of
+  whatever `--test-options=-j` the caller passes.
+
+- **The suite now boots the auth service and logs in *before* `defaultMain`**, not inside a
+  test case. The cache tests need a genuinely valid JWKS document and a genuinely valid token
+  (otherwise the 503 assertion could not distinguish "keys unavailable" from "bad token"), and
+  paying for a PostgreSQL cluster + Argon2 login once beats paying per test. `defaultMain`
+  exits by throwing `ExitCode`, which unwinds `testWithApplication` and
+  `withShomeiMigratedDatabase` normally, so nothing leaks.
 
 
 ## Decision Log
@@ -152,6 +207,31 @@ Record every decision made while working on the plan.
   ±300 ms margins and "eventually within 3 s" polling keep the suite fast and robust on
   loaded CI machines; any residual flake gets recorded in Surprises with the margin bumped.
   Date: 2026-07-07
+
+- Decision: `fetchJwks` rejects any non-2xx response explicitly rather than relying on
+  `http-client` to throw.
+  Rationale: `parseRequest` installs no `checkResponse`, so a `500` arrives as an ordinary
+  response and would have been misreported as a JWKS *parse* failure. A template must
+  distinguish "the auth service answered with an error" from "the auth service answered with
+  something I cannot read".
+  Date: 2026-07-09
+
+- Decision: The refresh-failure log line is written with a single strict `BS8.hPut` rather
+  than `hPutStrLn`.
+  Rationale: `stderr` is unbuffered, so `hPutStrLn` emits one write per character and
+  interleaves with any concurrent writer (observed directly under mutation M-E). Single-flight
+  already guarantees one refresher, so this is defense in depth for copiers — and it matches
+  the one-strict-write convention EP-4 established elsewhere in the repository.
+  Date: 2026-07-09
+
+- Decision: The cache tests run under `dependentTestGroup … AllFinish`, and the auth server /
+  JWKS document / access token are obtained once in `main` before `defaultMain`.
+  Rationale: Each test mutates its own stub server's mode from the outside while asserting on
+  wall-clock behavior, so concurrent execution would make them read each other's timing; the
+  dependency chain serializes them regardless of the caller's `-j`. Hoisting the fixture out
+  of the test tree pays for PostgreSQL and one Argon2 login once, and gives the fail-closed
+  test a token that would genuinely have verified — which is what makes its `503` meaningful.
+  Date: 2026-07-09
 
 
 ## Outcomes & Retrospective

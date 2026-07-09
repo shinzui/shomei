@@ -8,6 +8,10 @@
 -- * @DOWNSTREAM_PORT@    TCP port to listen on (default 8090).
 -- * @SHOMEI_ISSUER@\/@SHOMEI_AUDIENCE@  must match what the auth service signs with
 --                       (defaults @shomei@ \/ @shomei-clients@).
+-- * @DOWNSTREAM_JWKS_TTL_SECONDS@  how long a fetched JWKS is considered fresh
+--                       (default 900). A background refresh is kicked at 80% of it.
+-- * @DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS@  how long the last good JWKS keeps serving
+--                       while refreshes fail (default 86400). Past it, requests get 503.
 module Main (main) where
 
 import Data.Text qualified as Text
@@ -25,8 +29,10 @@ main = do
   port <- maybe 8090 id . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_PORT"
   iss <- maybe "shomei" id <$> lookupEnv "SHOMEI_ISSUER"
   aud <- maybe "shomei-clients" id <$> lookupEnv "SHOMEI_AUDIENCE"
+  ttl <- maybe 900 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_TTL_SECONDS"
+  maxStale <- maybe 86400 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS"
   mgr <- HTTP.newManager HTTP.defaultManagerSettings
-  cache <- newJwksCache mgr jwksUrl 900 -- 15-minute refetch TTL
+  cache <- newJwksCache mgr jwksUrl ttl maxStale
   let cfg = defaultShomeiConfig (Issuer (Text.pack iss)) (Audience (Text.pack aud))
   putStrLn ("[example-project-service] listening on :" <> show port)
   Warp.run port (downstreamApplication cache cfg)
