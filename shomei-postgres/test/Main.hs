@@ -11,7 +11,7 @@ import Data.Int (Int64)
 import Data.List (sort)
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
@@ -117,6 +117,13 @@ import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database (..), runDatabasePool)
 import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
+import Shomei.Postgres.Maintenance
+  ( SweepConfig (..),
+    SweepReport (..),
+    defaultSweepConfig,
+    emptySweepReport,
+    sweepOnce,
+  )
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
@@ -300,6 +307,16 @@ expectApp = either (\e -> assertFailure ("interpreter error: " <> show e)) pure
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
 
+-- | Run a (possibly multi-statement) SQL script directly against the pool, for seeding.
+execSql :: Pool -> Text -> IO ()
+execSql pool sql = do
+  res <- Pool.use pool (Session.script sql)
+  either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
+
+-- | Unwrap the @Either UsageError@ that 'sweepOnce' returns.
+expectSweep :: Either Pool.UsageError SweepReport -> IO SweepReport
+expectSweep = either (\e -> assertFailure ("sweep failed: " <> show e)) pure
+
 -- | A scalar @count(*)@ (or any single-bigint) query, run directly against the pool.
 scalarInt :: Pool -> Text -> IO Int
 scalarInt pool sql = do
@@ -346,7 +363,12 @@ tests =
     testPasskeyCreateAndFind,
     testPasskeyUpdateCountDelete,
     testPendingCeremonyConsumeOnce,
-    testPendingCeremonyExpired
+    testPendingCeremonyExpired,
+    testSweepDeletesExpiredRows,
+    testSweepIsIdempotent,
+    testSweepAuthEventRetention,
+    testSweepBatchesUntilDrained,
+    testSweepBatchesWholeTokenFamilies
   ]
 
 testUserRoundTrip :: TestTree
@@ -956,6 +978,190 @@ testPendingCeremonyExpired = testCase "pending ceremony store: expired ceremony 
   taken @?= (Nothing :: Maybe PendingCeremony)
   remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies"
   remaining @?= 0
+
+-- Maintenance sweep ----------------------------------------------------------
+
+-- | A database with one row on each side of every sweep cutoff.
+--
+-- Ages are expressed relative to the database's @now()@; 'sweepOnce' is handed Haskell's
+-- 'getCurrentTime'. The two clocks differ by milliseconds while every offset here is hours or
+-- days, so no row sits near a boundary.
+--
+-- Three sessions: one expired 40 days ago (dead by @expires_at@, holding a three-token
+-- rotation family so the sweep must respect @parent_token_id@'s self-referencing foreign
+-- key); one revoked 40 days ago but with a far-future @expires_at@ (dead only by the
+-- @revoked_at@ branch of the sweep's OR predicate); and one live session that must survive
+-- with both of its tokens.
+seedSweepFixture :: Pool -> IO ()
+seedSweepFixture pool =
+  execSql
+    pool
+    """
+    INSERT INTO shomei.shomei_users (user_id, email, display_name, status, created_at, updated_at, login_id) VALUES
+      ('11111111-1111-1111-1111-111111111111', 'sweep1@example.com', 'Sweep One', 'active', now() - interval '90 days', now(), 'sweep1@example.com'),
+      ('22222222-2222-2222-2222-222222222222', 'sweep2@example.com', 'Sweep Two', 'active', now() - interval '90 days', now(), 'sweep2@example.com');
+
+    INSERT INTO shomei.shomei_sessions (session_id, user_id, status, created_at, expires_at, revoked_at) VALUES
+      ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'active',  now() - interval '60 days', now() - interval '40 days', NULL),
+      ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'revoked', now() - interval '60 days', now() + interval '30 days', now() - interval '40 days'),
+      ('aaaaaaaa-0000-0000-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'active',  now() - interval '1 day',   now() + interval '30 days', NULL);
+
+    -- A three-generation rotation family on the expired session, then a single token on the
+    -- revoked one, then two live tokens that must survive.
+    INSERT INTO shomei.shomei_refresh_tokens
+      (refresh_token_id, session_id, token_hash, parent_token_id, status, created_at, expires_at, used_at, revoked_at) VALUES
+      ('bbbbbbbb-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'hash-dead-1', NULL,                                   'used',   now() - interval '60 days', now() - interval '40 days', now() - interval '59 days', NULL),
+      ('bbbbbbbb-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', 'hash-dead-2', 'bbbbbbbb-0000-0000-0000-000000000001', 'used',   now() - interval '59 days', now() - interval '40 days', now() - interval '58 days', NULL),
+      ('bbbbbbbb-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'hash-dead-3', 'bbbbbbbb-0000-0000-0000-000000000002', 'active', now() - interval '58 days', now() - interval '40 days', NULL, NULL),
+      ('bbbbbbbb-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000002', 'hash-revk-1', NULL,                                   'revoked', now() - interval '60 days', now() + interval '30 days', NULL, now() - interval '40 days'),
+      ('cccccccc-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000003', 'hash-live-1', NULL,                                   'used',   now() - interval '1 day', now() + interval '30 days', now() - interval '1 hour', NULL),
+      ('cccccccc-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000003', 'hash-live-2', 'cccccccc-0000-0000-0000-000000000001', 'active', now() - interval '1 hour', now() + interval '30 days', NULL, NULL);
+
+    -- One expired past the 7-day grace, one still live.
+    INSERT INTO shomei.shomei_email_verification_tokens
+      (verification_token_id, user_id, token_hash, status, created_at, expires_at, consumed_at, revoked_at) VALUES
+      ('dddddddd-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'vhash-old', 'active', now() - interval '11 days', now() - interval '10 days', NULL, NULL),
+      ('dddddddd-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'vhash-new', 'active', now(), now() + interval '1 day', NULL, NULL);
+
+    INSERT INTO shomei.shomei_password_reset_tokens
+      (password_reset_token_id, user_id, token_hash, status, created_at, expires_at, consumed_at, revoked_at) VALUES
+      ('eeeeeeee-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'phash-old', 'active', now() - interval '11 days', now() - interval '10 days', NULL, NULL),
+      ('eeeeeeee-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'phash-new', 'active', now(), now() + interval '1 day', NULL, NULL);
+
+    -- Expired 2 hours ago (past the 60-minute grace); expired 30 minutes ago (inside it); live.
+    INSERT INTO shomei.shomei_webauthn_pending_ceremonies (ceremony_id, user_id, kind, options_blob, created_at, expires_at) VALUES
+      ('ffffffff-0000-0000-0000-000000000001', NULL, 'authentication', '\\x00'::bytea, now() - interval '3 hours',  now() - interval '2 hours'),
+      ('ffffffff-0000-0000-0000-000000000002', NULL, 'authentication', '\\x00'::bytea, now() - interval '90 minutes', now() - interval '30 minutes'),
+      ('ffffffff-0000-0000-0000-000000000003', NULL, 'registration',   '\\x00'::bytea, now(), now() + interval '1 hour');
+
+    -- Elapsed past the 7-day grace; elapsed yesterday (inside it); not locked at all.
+    INSERT INTO shomei.shomei_account_lockouts (account_key, failed_count, locked_until, updated_at) VALUES
+      ('lockout-elapsed', 5, now() - interval '10 days', now() - interval '10 days'),
+      ('lockout-recent',  5, now() - interval '1 day',   now() - interval '1 day'),
+      ('lockout-counting', 2, NULL, now());
+
+    -- Past the 90-day retention window; inside it.
+    INSERT INTO shomei.shomei_login_attempts (attempt_id, account_key, client_ip, outcome, occurred_at) VALUES
+      ('99999999-0000-0000-0000-000000000001', 'acct', '10.0.0.1', 'failure', now() - interval '100 days'),
+      ('99999999-0000-0000-0000-000000000002', 'acct', '10.0.0.1', 'failure', now() - interval '10 days');
+
+    -- Audit events are retained forever by default; the 400-day-old one only goes when an
+    -- explicit retention window is configured.
+    INSERT INTO shomei.shomei_auth_events (event_id, user_id, session_id, event_type, payload, created_at) VALUES
+      ('88888888-0000-0000-0000-000000000001', NULL, NULL, 'login_succeeded', '{}'::jsonb, now() - interval '400 days'),
+      ('88888888-0000-0000-0000-000000000002', NULL, NULL, 'login_succeeded', '{}'::jsonb, now());
+    """
+
+testSweepDeletesExpiredRows :: TestTree
+testSweepDeletesExpiredRows =
+  testCase "maintenance sweep: deletes exactly the expired rows and spares the rest" $ withDb \pool -> do
+    seedSweepFixture pool
+    t <- getCurrentTime
+    report <- sweepOnce pool defaultSweepConfig t >>= expectSweep
+    report
+      @?= SweepReport
+        { -- three from the expired session's rotation family, one from the revoked session
+          refreshTokensDeleted = 4,
+          -- the expired one and the revoked one; the live session stays
+          sessionsDeleted = 2,
+          verificationTokensDeleted = 1,
+          resetTokensDeleted = 1,
+          ceremoniesDeleted = 1,
+          lockoutsDeleted = 1,
+          loginAttemptsDeleted = 1,
+          -- retention disabled by default
+          authEventsDeleted = 0
+        }
+
+    -- The survivors are exactly the rows on the live side of each cutoff.
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions" >>= (@?= 1)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens" >>= (@?= 2)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_email_verification_tokens" >>= (@?= 1)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_password_reset_tokens" >>= (@?= 1)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies" >>= (@?= 2)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts" >>= (@?= 2)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_login_attempts" >>= (@?= 1)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 2)
+    -- Users are never swept.
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_users" >>= (@?= 2)
+    -- The live session kept its whole token chain, parent link intact.
+    scalarInt
+      pool
+      "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE session_id = 'aaaaaaaa-0000-0000-0000-000000000003'"
+      >>= (@?= 2)
+
+testSweepIsIdempotent :: TestTree
+testSweepIsIdempotent =
+  testCase "maintenance sweep: a second sweep is a no-op" $ withDb \pool -> do
+    seedSweepFixture pool
+    t <- getCurrentTime
+    _ <- sweepOnce pool defaultSweepConfig t >>= expectSweep
+    second <- sweepOnce pool defaultSweepConfig t >>= expectSweep
+    second @?= emptySweepReport
+
+testSweepAuthEventRetention :: TestTree
+testSweepAuthEventRetention =
+  testCase "maintenance sweep: audit events go only when a retention window is configured" $ withDb \pool -> do
+    seedSweepFixture pool
+    t <- getCurrentTime
+    -- Default config leaves both events in place.
+    def <- sweepOnce pool defaultSweepConfig t >>= expectSweep
+    def.authEventsDeleted @?= 0
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 2)
+
+    -- A 365-day window takes the 400-day-old event and nothing else.
+    let retaining = defaultSweepConfig {authEventRetentionDays = Just 365}
+    withWindow <- sweepOnce pool retaining t >>= expectSweep
+    withWindow @?= emptySweepReport {authEventsDeleted = 1}
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 1)
+
+testSweepBatchesUntilDrained :: TestTree
+testSweepBatchesUntilDrained =
+  testCase "maintenance sweep: batches until drained" $ withDb \pool -> do
+    -- 25 expired ceremonies with a batch size of 10 needs three passes of the drain loop.
+    execSql
+      pool
+      """
+      INSERT INTO shomei.shomei_webauthn_pending_ceremonies (ceremony_id, user_id, kind, options_blob, created_at, expires_at)
+      SELECT gen_random_uuid(), NULL, 'authentication', '\\x00'::bytea, now() - interval '3 hours', now() - interval '2 hours'
+      FROM generate_series(1, 25);
+      """
+    t <- getCurrentTime
+    report <- sweepOnce pool defaultSweepConfig {batchSize = 10} t >>= expectSweep
+    report.ceremoniesDeleted @?= 25
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies" >>= (@?= 0)
+
+-- | A whole rotation family must be deleted by one statement: @parent_token_id@ is a
+-- self-referencing foreign key with no @ON DELETE@ action, so a row-bounded batch that split
+-- a family would fail with a foreign-key violation. 'sweepOnce' batches by /session/ to avoid
+-- this, which a batch size of 1 exercises directly — one session per statement, five tokens.
+testSweepBatchesWholeTokenFamilies :: TestTree
+testSweepBatchesWholeTokenFamilies =
+  testCase "maintenance sweep: a batch never splits a refresh-token rotation family" $ withDb \pool -> do
+    execSql
+      pool
+      """
+      INSERT INTO shomei.shomei_users (user_id, email, display_name, status, created_at, updated_at, login_id) VALUES
+        ('11111111-1111-1111-1111-111111111111', 'fam@example.com', 'Fam', 'active', now(), now(), 'fam@example.com');
+
+      INSERT INTO shomei.shomei_sessions (session_id, user_id, status, created_at, expires_at, revoked_at) VALUES
+        ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'active', now() - interval '60 days', now() - interval '40 days', NULL),
+        ('aaaaaaaa-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'active', now() - interval '60 days', now() - interval '40 days', NULL);
+
+      INSERT INTO shomei.shomei_refresh_tokens
+        (refresh_token_id, session_id, token_hash, parent_token_id, status, created_at, expires_at, used_at, revoked_at) VALUES
+        ('bbbbbbbb-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'h1', NULL,                                   'used',   now(), now() - interval '40 days', now(), NULL),
+        ('bbbbbbbb-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001', 'h2', 'bbbbbbbb-0000-0000-0000-000000000001', 'used',   now(), now() - interval '40 days', now(), NULL),
+        ('bbbbbbbb-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001', 'h3', 'bbbbbbbb-0000-0000-0000-000000000002', 'active', now(), now() - interval '40 days', NULL, NULL),
+        ('bbbbbbbb-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000002', 'h4', NULL,                                   'used',   now(), now() - interval '40 days', now(), NULL),
+        ('bbbbbbbb-0000-0000-0000-000000000012', 'aaaaaaaa-0000-0000-0000-000000000002', 'h5', 'bbbbbbbb-0000-0000-0000-000000000011', 'active', now(), now() - interval '40 days', NULL, NULL);
+      """
+    t <- getCurrentTime
+    report <- sweepOnce pool defaultSweepConfig {batchSize = 1} t >>= expectSweep
+    report.refreshTokensDeleted @?= 5
+    report.sessionsDeleted @?= 2
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens" >>= (@?= 0)
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions" >>= (@?= 0)
 
 latestVerificationToken :: [Notification] -> IO OneTimeToken
 latestVerificationToken = \case

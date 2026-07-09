@@ -66,10 +66,14 @@ This section must always reflect the actual current state of the work.
 - [x] M1 (2026-07-09): migration applies cleanly (`just migrate` → `[1 found]`, applied in
       9 ms) and is idempotent (`IF EXISTS`/`IF NOT EXISTS` forms; codd additionally records
       the applied filename and will not re-run it).
-- [ ] M2: `Shomei.Postgres.Maintenance` module with batched-delete statements and
-      `sweepOnce :: Pool -> SweepConfig -> UTCTime -> IO SweepReport`.
-- [ ] M2: `shomei-postgres` integration test: seed expired + fresh rows, run `sweepOnce`,
-      assert exact deletion counts and survivors.
+- [x] M2 (2026-07-09): `Shomei.Postgres.Maintenance` module with batched-delete statements and
+      `sweepOnce :: Pool -> SweepConfig -> UTCTime -> IO (Either UsageError SweepReport)`,
+      plus `emptySweepReport`, `sweepReportCounts`, `sweepReportTotal`. The refresh-token
+      statement batches by *session*, not by row — see Surprises & Discoveries.
+- [x] M2 (2026-07-09): `shomei-postgres` integration test: five cases (exact deletion counts +
+      survivors; idempotent second sweep; audit retention on/off; batch loop drains 25 rows at
+      `batchSize = 10`; a rotation family is never split at `batchSize = 1`). Full suite green
+      at 31/31.
 - [ ] M3: `Shomei.Server.Supervisor` module defining `supervisedLoop` (the reusable idiom:
       catch-crash, log JSON line, exponential backoff restart).
 - [ ] M3: sweeper thread forked in `Shomei.Server.Boot.main`, interval + retention windows in
@@ -126,6 +130,49 @@ Applying 2026-07-09-13-51-07-sweeper-indexes-and-retention.sql (9ms)
 
   **Any later plan that adds a migration must append a comment line to that block.** This is
   the single most likely way for a contributor to silently ship a migration that never runs.
+
+- **This plan's own M2 SQL for refresh tokens was unsafe, and would have failed in production
+  the first time a rotation family straddled a batch boundary.** The specified shape was
+  `DELETE FROM shomei_refresh_tokens WHERE ctid IN (SELECT rt.ctid … JOIN … LIMIT $2)`. Because
+  `parent_token_id` is a self-referencing foreign key with **no `ON DELETE` action**, checked at
+  end of statement, a row-bounded batch that deletes a parent while its child survives into the
+  next batch violates the constraint. The plan's Decision Log asserted this was safe on the
+  grounds that "all members of a rotation family share one `session_id`" — true, but irrelevant
+  to a batch bounded by `LIMIT` on *rows*, which has no reason to respect family boundaries.
+  Reduced to a minimal reproduction:
+
+```text
+CREATE TABLE rt (id uuid PRIMARY KEY, parent_id uuid NULL REFERENCES rt(id));
+-- a 3-generation family t1 <- t2 <- t3, then a batch that takes only the first two:
+DELETE FROM rt WHERE ctid IN (SELECT ctid FROM rt LIMIT 2);
+
+ERROR:  23503: update or delete on table "rt" violates foreign key constraint
+        "rt_parent_id_fkey" on table "rt"
+DETAIL:  Key (id)=(...0002) is still referenced from table "rt".
+```
+
+  This would surface only under load — a family is split only when it happens to cross the
+  1000-row boundary — which is the worst possible time to discover it. `deadSessionTokensStmt`
+  therefore bounds itself by **session** (`WHERE rt.session_id IN (SELECT s.session_id … LIMIT
+  $2)`), so every statement deletes whole families. Verified against the same reproduction:
+  three passes at `LIMIT 1` yield `DELETE 3`, `DELETE 3`, `DELETE 0`, and the live session's
+  token survives. The `shomei-postgres` test
+  `maintenance sweep: a batch never splits a refresh-token rotation family` pins this with
+  `batchSize = 1` across two families.
+
+- **The drain loop's terminator must be "deleted zero rows", not "deleted fewer than
+  `batchSize` rows"** (which this plan's M2 prose specified). Since the refresh-token statement
+  bounds by sessions, one batch of a single session legitimately deletes three token rows — the
+  `rowsAffected` count and the `LIMIT` are simply not commensurable. `deleted <= 0` is the only
+  correct signal, and it is uniform across all eight statements.
+
+- **`Shomei.Postgres.Maintenance` needs a progress guarantee that the naive predicate lacks.**
+  Selecting dead sessions with `LIMIT $2` and deleting their tokens can pick a batch of sessions
+  that have *already* had their tokens swept, delete zero rows, and terminate the loop while
+  other dead sessions still hold tokens (there is no `ORDER BY`, so the same tokenless sessions
+  can be returned every time). The statement therefore carries an
+  `AND EXISTS (SELECT 1 FROM shomei_refresh_tokens rt2 WHERE rt2.session_id = s.session_id)`
+  guard, which makes every non-terminal batch delete at least one row.
 
 
 ## Decision Log
@@ -209,6 +256,36 @@ Record every decision made while working on the plan.
   DESC)` strictly subsumes the old single-column `created_at` index for the reader's
   `ORDER BY created_at DESC, event_id DESC` keyset query.
   Date: 2026-07-07
+
+- Decision: `deadSessionTokensStmt` batches by **session** (`WHERE rt.session_id IN (SELECT
+  s.session_id … LIMIT $2)`), not by row via `ctid`, and the drain loop terminates on
+  "zero rows deleted" rather than "fewer than `batchSize` rows deleted".
+  Rationale: The row-bounded `ctid` shape this plan originally specified violates
+  `shomei_refresh_tokens.parent_token_id`'s self-referencing `NO ACTION` foreign key whenever a
+  batch boundary falls inside a rotation family (reproduction in Surprises & Discoveries).
+  Batching by session makes every statement delete whole families, which is exactly the
+  consistency argument the plan's Decision Log already relied on — it just does not follow from
+  a `LIMIT` on rows. The consequence is that `rowsAffected` no longer relates to `batchSize`,
+  so only `deleted <= 0` can terminate the loop. `batchSize` accordingly means "sessions per
+  statement" for this one statement and "rows per statement" for the other seven; this is
+  documented on the field.
+  Date: 2026-07-09
+
+- Decision: Add `RecordWildCards` to `shomei-postgres`'s `default-extensions` rather than
+  spelling out all eight `SweepReport` fields at the construction site.
+  Rationale: `sweepOnce` binds each count to a variable named exactly after its field, so
+  `SweepReport {..}` is both shorter and harder to get wrong than a positional-looking list of
+  eight `field = variable` lines, where a transposed pair would typecheck silently. Confirmed
+  with the repository owner during implementation.
+  Date: 2026-07-09
+
+- Decision: The sweeper deliberately does **not** delete `shomei_account_lockouts` rows whose
+  `locked_until` is NULL.
+  Rationale: Those rows carry the running `failed_count` for an account that is not currently
+  locked; deleting one resets a brute-force counter mid-attack. They are bounded by the number
+  of accounts that have ever failed a login (and `clearAccountLockout` removes one on every
+  successful login), so they are not a growth risk. Only elapsed locks are swept.
+  Date: 2026-07-09
 
 - Decision: **Do not** create `shomei_refresh_tokens_expires_at_idx`, despite this plan's
   original M1 index list naming it.
@@ -392,21 +469,31 @@ sweepOnce :: Pool -> SweepConfig -> UTCTime -> IO (Either UsageError SweepReport
 ```
 
 `sweepOnce` runs, in order (order matters for the session/token foreign key), a
-repeat-until-short-batch loop per table: execute the batched delete with the table's cutoff,
-read the affected-row count (`D.rowsAffected` decoder), add it to the report, and repeat while
-the count equals `batchSize`. Each batch is its own `Pool.use` session — deliberately *not*
-one big transaction, so locks stay short and a crash mid-sweep loses nothing (deletes are
-idempotent). The statements, all `preparable` multiline strings in this module (house style:
-schema-qualified, `$1` = cutoff timestamp, `$2` = batch limit):
+repeat-until-empty-batch loop per table: execute the batched delete with the table's cutoff,
+read the affected-row count (`D.rowsAffected` decoder), add it to the report, and repeat until
+the count is zero. (The terminator is *zero rows*, not *fewer than `batchSize` rows*: statement 1
+below bounds itself by sessions, so a one-session batch can delete several token rows.) Each
+batch is its own `Pool.use` session — deliberately *not* one big transaction, so locks stay
+short and a crash mid-sweep loses nothing (deletes are idempotent). The statements, all
+`preparable` multiline strings in this module (house style: schema-qualified, `$1` = cutoff
+timestamp, `$2` = batch limit):
 
-1. Dead-session refresh tokens (cutoff = now − `deadSessionGraceDays`):
+1. Dead-session refresh tokens (cutoff = now − `deadSessionGraceDays`). This batches by
+   **session**, never by row: `parent_token_id` is a self-referencing foreign key with no
+   `ON DELETE` action, checked at end of statement, so a row-bounded `LIMIT` batch that split a
+   rotation family would raise a foreign-key violation (see Surprises & Discoveries for the
+   reproduction). The `EXISTS` guard keeps every non-terminal batch deleting at least one row,
+   so the drain loop cannot stall on already-swept sessions:
 
 ```sql
-DELETE FROM shomei.shomei_refresh_tokens
-WHERE ctid IN (
-  SELECT rt.ctid FROM shomei.shomei_refresh_tokens rt
-  JOIN shomei.shomei_sessions s ON s.session_id = rt.session_id
-  WHERE s.expires_at <= $1 OR (s.status = 'revoked' AND s.revoked_at <= $1)
+DELETE FROM shomei.shomei_refresh_tokens rt
+WHERE rt.session_id IN (
+  SELECT s.session_id
+  FROM shomei.shomei_sessions s
+  WHERE (s.expires_at <= $1 OR (s.status = 'revoked' AND s.revoked_at <= $1))
+    AND EXISTS (
+      SELECT 1 FROM shomei.shomei_refresh_tokens rt2
+      WHERE rt2.session_id = s.session_id)
   LIMIT $2)
 ```
 
@@ -430,18 +517,27 @@ locked_until <= $1` (reuse the one-time-token grace). 7. Login attempts: `occurr
 (cutoff = now − `loginAttemptRetentionDays`). 8. Auth events, only when
 `authEventRetentionDays` is `Just n`: `created_at <= $1`.
 
-Add an integration test to the existing `shomei-postgres` test suite
-(`shomei-postgres/test/Main.hs` pattern: `withShomeiMigratedDatabase`, `acquirePool 4 …`).
-Seed via plain insert sessions: two users; one session expired 40 days ago with a chain of 3
-refresh tokens, one active session with 2 tokens; expired + fresh verification/reset tokens;
-an expired ceremony; login attempts at 100 days and 10 days; auth events at 400 days and
-today. Run `sweepOnce` with defaults and assert the report reads exactly
-`refreshTokensDeleted = 3, sessionsDeleted = 1, verificationTokensDeleted = 1,
-resetTokensDeleted = 1, ceremoniesDeleted = 1, loginAttemptsDeleted = 1, authEventsDeleted =
-0`, and that the survivors are still present (count queries). Run `sweepOnce` again and assert
-an all-zero report (idempotence). Run once more with `authEventRetentionDays = Just 365` and
-assert exactly the 400-day event went. Also test the batch loop: seed 25 expired ceremonies,
-`batchSize = 10`, assert `ceremoniesDeleted = 25` (three batches).
+Add integration tests to the existing `shomei-postgres` test suite
+(`shomei-postgres/test/Main.hs` pattern: `withShomeiMigratedDatabase`, `acquirePool 4 …`, plus
+a new `execSql` helper wrapping `Hasql.Session.script` for multi-statement seeding). The shared
+fixture (`seedSweepFixture`) puts one row on each side of every cutoff: two users; one session
+expired 40 days ago carrying a three-generation rotation family; one session revoked 40 days
+ago but with a far-future `expires_at` (this exercises the `revoked_at` branch of the sweep's
+OR predicate, and the partial index added for it); one live session with 2 tokens; expired +
+fresh verification/reset tokens; ceremonies expired 2 h ago, 30 min ago, and not yet; lockouts
+elapsed 10 days ago, elapsed 1 day ago, and never locked; login attempts at 100 and 10 days;
+auth events at 400 days and today.
+
+Run `sweepOnce` with defaults and assert the report reads exactly `refreshTokensDeleted = 4,
+sessionsDeleted = 2, verificationTokensDeleted = 1, resetTokensDeleted = 1, ceremoniesDeleted =
+1, lockoutsDeleted = 1, loginAttemptsDeleted = 1, authEventsDeleted = 0`, and that the survivors
+are still present (count queries, including that users are never swept). Run `sweepOnce` again
+and assert `emptySweepReport` (idempotence). Run once more with `authEventRetentionDays = Just
+365` and assert exactly the 400-day event went. Test the batch loop: seed 25 expired ceremonies,
+`batchSize = 10`, assert `ceremoniesDeleted = 25` (three passes). Finally, pin the foreign-key
+hazard: two dead sessions with rotation families of 3 and 2 tokens, `batchSize = 1`, assert
+`refreshTokensDeleted = 5` and `sessionsDeleted = 2` — which only holds because the statement
+batches by session.
 
 ### Milestone M3 — the supervised background thread in the server
 

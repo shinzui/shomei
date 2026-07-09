@@ -30,6 +30,7 @@ common shared
     OverloadedRecordDot
     OverloadedStrings
     QualifiedDo
+    RecordWildCards
     TemplateHaskell
     TypeFamilies
 
@@ -46,6 +47,7 @@ library
     Shomei.Postgres.CredentialStore
     Shomei.Postgres.Database
     Shomei.Postgres.LoginAttemptStore
+    Shomei.Postgres.Maintenance
     Shomei.Postgres.PasskeyStore
     Shomei.Postgres.PasswordResetTokenStore
     Shomei.Postgres.PendingCeremonyStore
@@ -71,6 +73,7 @@ library
     , shomei-core
     , text
     , time
+    , transformers
     , uuid
 
 test-suite shomei-postgres-test
