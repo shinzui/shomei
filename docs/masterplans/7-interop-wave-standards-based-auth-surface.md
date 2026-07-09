@@ -235,7 +235,7 @@ the other.
 
 - [x] EP-1: Role/scope grant storage (migration) and port with Postgres + in-memory interpreters
 - [x] EP-1: Claims population at token mint through an enrichment hook
-- [ ] EP-1: `shomei-admin roles grant`
+- [x] EP-1: `shomei-admin roles grant`
 - [ ] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
 - [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
 - [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented

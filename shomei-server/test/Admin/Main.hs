@@ -37,6 +37,7 @@ import Shomei.Admin.Keys
     listAllKeys,
     listPublishableSigningKeys,
   )
+import Shomei.Admin.Roles (RolesCommand (..), runRoles)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
@@ -77,7 +78,7 @@ import Shomei.Postgres.Pool (acquirePool)
 
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Shomei.Server.Keys qualified as Keys
-import System.Exit (ExitCode)
+import System.Exit (ExitCode (..))
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -109,6 +110,16 @@ execSql pool sql = do
   res <- Pool.use pool (Session.script sql)
   either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
 
+-- | Run a CLI action that is expected to abort. The action functions call 'exitFailure' on a
+-- user error, which throws 'ExitCode' — catching it is how a test observes a nonzero exit.
+expectExitFailure :: String -> IO () -> IO ()
+expectExitFailure what action = do
+  result <- try @ExitCode action
+  case result of
+    Left (ExitFailure _) -> pure ()
+    Left ExitSuccess -> assertFailure (what <> ": expected a nonzero exit, got success")
+    Right () -> assertFailure (what <> ": expected the command to abort")
+
 main :: IO ()
 main =
   defaultMain
@@ -127,7 +138,10 @@ main =
           testRewrapWithWrongOldKekModifiesNothing,
           testUserCreate,
           testAuditQuery,
-          testSweepCommand
+          testSweepCommand,
+          testRolesLifecycle,
+          testRolesGrantOfUndefinedRoleFails,
+          testRolesGrantToUnknownUserFails
         ]
     )
 
@@ -405,6 +419,81 @@ testUserCreate = testCase "users create persists a user + credential whose hash 
   creds <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_credentials"
   users @?= 1
   creds @?= 1
+
+-- Roles ----------------------------------------------------------------------
+
+-- | The bootstrap path an operator actually runs: declare a role, grant it, read it back,
+-- revoke it. Definitions publish no audit event; the grant and the revoke each publish one.
+testRolesLifecycle :: TestTree
+testRolesLifecycle =
+  testCase "roles define/list-defined/grant/list/revoke round-trips and audits the grants" $ withDb \pool connStr -> do
+    let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
+
+    -- The registry starts with the migration's seeded 'admin'.
+    runRoles env RolesListDefined
+    seeded <- scalarInt pool "SELECT count(*) FROM shomei.shomei_roles"
+    seeded @?= 1
+
+    runRoles env (RolesDefine "auditor" (Just "read the audit trail"))
+    defined <- scalarInt pool "SELECT count(*) FROM shomei.shomei_roles"
+    defined @?= 2
+    -- Re-defining is idempotent and does not overwrite the description.
+    runRoles env (RolesDefine "auditor" (Just "something else"))
+    stillTwo <- scalarInt pool "SELECT count(*) FROM shomei.shomei_roles"
+    stillTwo @?= 2
+    desc <- scalarText pool "SELECT description FROM shomei.shomei_roles WHERE role = 'auditor'"
+    desc @?= "read the audit trail"
+
+    -- The CLI accepts a bare UUID as well as the typed id.
+    runRoles env (RolesGrant uid "auditor")
+    granted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants WHERE role = 'auditor'"
+    granted @?= 1
+    -- A CLI grant records no acting admin.
+    noActor <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants WHERE granted_by IS NULL"
+    noActor @?= 1
+    -- Re-granting changes nothing and publishes nothing.
+    runRoles env (RolesGrant uid "auditor")
+    stillOne <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
+    stillOne @?= 1
+
+    runRoles env (RolesList uid)
+    runRoles env (RolesRevoke uid "auditor")
+    afterRevoke <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
+    afterRevoke @?= 0
+    -- Revoking a grant that is not there is a no-op, not an error, and publishes nothing.
+    runRoles env (RolesRevoke uid "auditor")
+
+    -- Exactly one grant and one revoke landed in the audit trail; the two definitions and the
+    -- repeated grant/revoke added nothing.
+    grantEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_granted'"
+    revokeEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_revoked'"
+    grantEvents @?= 1
+    revokeEvents @?= 1
+
+-- | The typo guard: @roles grant --role adminn@ must fail loudly rather than mint a role no
+-- gate will ever check. This is the failure mode the role registry exists to close.
+testRolesGrantOfUndefinedRoleFails :: TestTree
+testRolesGrantOfUndefinedRoleFails =
+  testCase "roles grant of an undefined role exits nonzero and writes nothing" $ withDb \pool connStr -> do
+    let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
+    expectExitFailure "grant of an undefined role" (runRoles env (RolesGrant uid "adminn"))
+    grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
+    grants @?= 0
+
+-- | A grant naming a user that does not exist fails before touching the grant table.
+testRolesGrantToUnknownUserFails :: TestTree
+testRolesGrantToUnknownUserFails =
+  testCase "roles grant to an unknown user exits nonzero and writes nothing" $ withDb \pool connStr -> do
+    let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    expectExitFailure
+      "grant to an unknown user"
+      (runRoles env (RolesGrant "11111111-1111-1111-1111-111111111111" "admin"))
+    grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
+    grants @?= 0
 
 testAuditQuery :: TestTree
 testAuditQuery = testCase "audit reader returns published events; type filter + count work" $ withDb \pool _ -> do

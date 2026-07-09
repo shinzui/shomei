@@ -139,11 +139,11 @@ Milestone 2 — Claims enrichment at every mint, and default roles at signup: **
 - [x] Update the two round-trip budget guards (`testLoginRoundTripBudget` 7 → 8, `testRefreshRoundTripBudget` 3 → 4) for the one `listRolesForUser` read per mint, documenting why (see Surprises).
 - [x] `cabal build all` and `cabal test all` green (core 142, postgres 44, servant 10, admin 14, all others unchanged).
 
-Milestone 3 — CLI granting path:
+Milestone 3 — CLI granting path: **done 2026-07-09**
 
-- [ ] Add `shomei-server/app/Shomei/Admin/Roles.hs` (`roles define|list-defined|grant|revoke|list`) and wire it into `shomei-server/app/Admin.hs` + both cabal stanzas.
-- [ ] `roles grant` with an undefined role exits 1 with `role not defined: <name> (define it first: shomei-admin roles define <name>)`.
-- [ ] Admin CLI test (define → list-defined → grant → list → revoke → grant-typo-fails, over a migrated ephemeral DB) — suite green.
+- [x] Add `shomei-server/app/Shomei/Admin/Roles.hs` (`roles define|list-defined|grant|revoke|list`) and wire it into `shomei-server/app/Admin.hs` + both cabal stanzas.
+- [x] `roles grant` with an undefined role exits 1 with `role not defined: <name> (define it first: shomei-admin roles define <name>)`; an unknown user exits 1 with `user not found`.
+- [x] Admin CLI tests (`testRolesLifecycle`, `testRolesGrantOfUndefinedRoleFails`, `testRolesGrantToUnknownUserFails`) over a migrated ephemeral DB — `shomei-admin-test` green (17 tests). The lifecycle test asserts exactly one `role_granted` and one `role_revoked` audit row after a define ×2, grant ×2, revoke ×2 sequence, pinning both the idempotence and the publish-only-on-change rule; it also asserts `granted_by IS NULL` for a CLI grant.
 
 Milestone 4 — Enforcing combinators:
 
@@ -427,6 +427,15 @@ Record every decision made while working on the plan.
   API responses render KindID text; operators will paste either. `parseId` first,
   `Data.UUID.fromText` + `userIdFromUUID` as fallback.
   Date: 2026-07-07
+
+- Decision: `shomei-admin roles revoke` of a grant that does not exist prints `no such grant`
+  and exits **0**, while `roles grant` of an undefined role or an unknown user exits **1**.
+  Rationale: revocation is idempotent by intent — an operator (or a runbook) revoking a role
+  twice has achieved what they asked for, and failing the second call would break scripts. A
+  grant naming a role or a user that does not exist is a *typo*, the exact class of mistake the
+  registry exists to catch; it must be loud. The asymmetry mirrors the store's own return
+  values (`Bool` = "did this change anything") without conflating "no change" with "error".
+  Date: 2026-07-09
 
 
 ## Outcomes & Retrospective
