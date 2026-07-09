@@ -145,13 +145,15 @@ Milestone 3 — CLI granting path: **done 2026-07-09**
 - [x] `roles grant` with an undefined role exits 1 with `role not defined: <name> (define it first: shomei-admin roles define <name>)`; an unknown user exits 1 with `user not found`.
 - [x] Admin CLI tests (`testRolesLifecycle`, `testRolesGrantOfUndefinedRoleFails`, `testRolesGrantToUnknownUserFails`) over a migrated ephemeral DB — `shomei-admin-test` green (17 tests). The lifecycle test asserts exactly one `role_granted` and one `role_revoked` audit row after a define ×2, grant ×2, revoke ×2 sequence, pinning both the idempotence and the publish-only-on-change rule; it also asserts `granted_by IS NULL` for a CLI grant.
 
-Milestone 4 — Enforcing combinators:
+Milestone 4 — Enforcing combinators: **done 2026-07-09**
 
-- [ ] Implement `HasServer` for `RequireRole`/`RequireScope` in `shomei-servant/src/Shomei/Servant/Authz.hs` (self-authenticating; 403 on missing role/scope).
-- [ ] Switch `auditEvents` in `shomei-servant/src/Shomei/Servant/API.hs` from `Authenticated :>` to `RequireRole "admin" :>`; update `AppAPI` example; keep handler signature.
-- [ ] Update `HasOpenApi (RequireRole …)`/`(RequireScope …)` in `shomei-servant/src/Shomei/Servant/OpenApi.hs` to register the bearer security scheme; regenerate `docs/api/openapi.json`; openapi conformance suite green.
-- [ ] Add `HasClient` delegation instances for the combinators (in `shomei-client`) so `genericClient` still derives.
-- [ ] Servant end-to-end test: combinator-gated route returns 401 (no token), 403 (no role), 200 (role); a scope-gated route ditto.
+- [x] Implement `HasServer` for `RequireRole`/`RequireScope` in `shomei-servant/src/Shomei/Servant/Authz.hs` (self-authenticating; 403 on missing role/scope), sharing one `authorizedCheck` helper. Needed `UndecidableInstances` and `import Shomei.Prelude hiding (Context)` (lens re-exports a colliding `Context`).
+- [x] Switch `auditEvents` in `shomei-servant/src/Shomei/Servant/API.hs` from `Authenticated :>` to `RequireRole "admin" :>`; delete the now-redundant `requireRole` call from `auditEventsH` (GHC's unused-import warnings confirmed it was the last one); update the `AppAPI` example.
+- [x] Update `HasOpenApi (RequireRole …)`/`(RequireScope …)` in `shomei-servant/src/Shomei/Servant/OpenApi.hs` to register the bearer security scheme via a shared `requireBearer`; regenerate `docs/api/openapi.json` — **byte-identical**, confirming the swap preserved the documented contract (`/admin/audit/events` still carries `security: [{bearerAuth: []}]`); openapi conformance suite green at 24 paths.
+- [x] Add `HasClient` delegation instances for both combinators in `shomei-client/src/Shomei/Client.hs` so `genericClient` still derives. Needed `UndecidableInstances` (the associated `Client` type delegates to another application of the same family) and an explicit `import Servant.API (type (:>))` (lens re-exports a `:>` *pattern synonym*).
+- [x] Servant end-to-end test: the two host routes now carry **only** the combinators and **guard-free handlers**; assertions cover no token → 401, garbage token → 401, wrong principal → 403, hand-signed role token → 200, and a token minted after a *real* `grantRoleTo` → 200. A `RequireScope`-gated route is exercised by the existing service-token test (scoped token 200, login token 403) plus a new no-token 401.
+- [x] Prove the test is not vacuous: temporarily replacing `RequireRole "admin"` with `Authenticated` in the test API makes the non-admin request return **200 instead of 403**, i.e. the suite genuinely detects an unprotected route. Reverted.
+- [x] `cabal test all` green (11 suites).
 
 Milestone 5 — Live proof and docs:
 
@@ -217,6 +219,39 @@ never at verification) and is a single indexed lookup on `shomei_role_grants`'s 
 prefix; both constants and their explanatory haddocks were updated rather than the design.
 **Any later plan that adds a store read to a mint path will trip these tests** — that is what
 they are for.
+
+**2026-07-09 — `Shomei.Prelude` re-exports `Control.Lens`, which collides with Servant twice.**
+`Authz.hs` needs `import Shomei.Prelude hiding (Context)` (lens's
+`Control.Lens.Internal.Context` vs servant's `Servant.Context`), and `shomei-client` needs an
+explicit `import Servant.API (type (:>))` because lens exports a `:>` *pattern synonym* for
+snoc, which wins over the type operator in an instance head:
+
+```text
+• Pattern synonym ‘:>’ used as a type
+```
+
+Both `HasServer` and `HasClient` delegation instances also need `UndecidableInstances`, the
+latter because `type Client m (RequireRole r :> api) = Client m (AuthProtect "shomei-jwt" :> api)`
+is "no smaller than the LHS". Any later plan adding a combinator will meet the same three.
+
+**2026-07-09 — the RequireRole combinator swap left the OpenAPI document byte-identical.**
+`/admin/audit/events` moved from `Authenticated` to `RequireRole "admin"`, and after making the
+combinator's `HasOpenApi` instance register the bearer scheme (rather than pass through), the
+regenerated `docs/api/openapi.json` matched the committed one exactly. That is the intended
+result: the client-visible contract of the route did not change, only the enforcement moved from
+handler to type. Had the instances stayed transparent, the route would have been documented as
+unauthenticated and generated clients would have dropped the token.
+
+**2026-07-09 — the mutation check.** Replacing `RequireRole "admin"` with `Authenticated` in the
+servant test's API makes the non-admin request return 200 where the suite asserts 403. So the
+new assertions genuinely detect an unprotected route rather than passing for unrelated reasons.
+
+**2026-07-09 — granting a role mid-scenario broke a later, unrelated assertion.** The servant
+end-to-end scenario reuses one user across ~20 steps. Granting `admin` at step (g) made the
+*passwordless-login* token minted at step (r) carry the role, so the audit endpoint's "non-admin
+→ 403" assertion started returning 200. This is correct behavior, loudly caught: a fresh mint
+picks up the grant. The scenario now revokes the role after proving the grant — which doubles as
+an HTTP-level proof of the revocation lever.
 
 **2026-07-09 — the servant test forged an admin token by hand.** `shomei-servant/test/Main.hs`
 has `mkAdminToken`, whose comment reads "the workflows issue no roles, so this is the only way
@@ -427,6 +462,14 @@ Record every decision made while working on the plan.
   API responses render KindID text; operators will paste either. `parseId` first,
   `Data.UUID.fromText` + `userIdFromUUID` as fallback.
   Date: 2026-07-07
+
+- Decision: The servant end-to-end scenario keeps `mkAdminToken` (a hand-signed admin token)
+  **alongside** the new real grant→login→200 path, rather than deleting it.
+  Rationale: the hand-signed token isolates the combinator's claim check from the role store. If
+  both assertions used the store, a bug in `listRolesForUser` and a bug in the combinator would
+  be indistinguishable — and the audit-endpoint assertions elsewhere in the scenario need a
+  stable admin credential that no other step's grant/revoke can disturb.
+  Date: 2026-07-09
 
 - Decision: `shomei-admin roles revoke` of a grant that does not exist prints `no such grant`
   and exits **0**, while `roles grant` of an undefined role or an unknown user exits **1**.

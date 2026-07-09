@@ -1,6 +1,12 @@
+-- The 'HasClient' instances for 'RequireRole'/'RequireScope' delegate their associated
+-- @Client@ type to the @AuthProtect "shomei-jwt"@ instance, which GHC cannot see is
+-- terminating (the right-hand side is another application of the same family).
+{-# LANGUAGE UndecidableInstances #-}
+
 -- The @AuthClientData@ instance below is an unavoidable orphan (both the type family and
 -- @AuthProtect "shomei-jwt"@ belong to servant; 'Token' belongs here) — the standard
--- servant generalized-auth client pattern. Silence the orphan warning for this module.
+-- servant generalized-auth client pattern. The two 'HasClient' instances are orphans for the
+-- same reason. Silence the orphan warning for this module.
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | A typed Haskell client for the standalone Shōmei auth service.
@@ -39,6 +45,9 @@ where
 
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as TLS
+-- Explicitly, as a /type/: 'Shomei.Prelude' re-exports lens, whose @(:>)@ snoc pattern synonym
+-- would otherwise win.
+import Servant.API (type (:>))
 import Servant.API.Experimental.Auth (AuthProtect)
 import Servant.API.ResponseHeaders (getResponse)
 import Servant.Client
@@ -57,12 +66,13 @@ import Servant.Client.Core
     addHeader,
     mkAuthenticatedRequest,
   )
-import Servant.Client.Core.HasClient (AsClientT)
+import Servant.Client.Core.HasClient (AsClientT, HasClient (..))
 import Servant.Client.Generic (genericClient)
 import Shomei.Id (PasskeyId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.API qualified as API
+import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO
   ( LoginRequest,
     LoginResponse,
@@ -86,6 +96,25 @@ newtype Token = Token {unToken :: Text}
 
 -- | Tell @servant-client@ what credential the @shomei-jwt@ scheme needs client-side.
 type instance AuthClientData (AuthProtect "shomei-jwt") = Token
+
+-- | Client-side, Shōmei's authorization combinators are indistinguishable from plain
+-- authentication: the caller still presents one Bearer token, and whether the server then finds
+-- the required role or scope in it is the server's business (a 403 if not). So both delegate to
+-- the @AuthProtect "shomei-jwt"@ instance, and a @RequireRole \"admin\" :> …@ route's client
+-- function takes exactly the same @'bearer' tok@ argument an 'Authenticated' one does.
+--
+-- Without these, 'genericClient' cannot derive 'ShomeiClient' at all — @ShomeiAPI@ now carries a
+-- 'RequireRole' on its audit route. They are orphans for the same reason the 'AuthClientData'
+-- instance above is: the class belongs to servant, the combinator to @shomei-servant@.
+instance (HasClient m api) => HasClient m (RequireRole r :> api) where
+  type Client m (RequireRole r :> api) = Client m (AuthProtect "shomei-jwt" :> api)
+  clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+  hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+
+instance (HasClient m api) => HasClient m (RequireScope s :> api) where
+  type Client m (RequireScope s :> api) = Client m (AuthProtect "shomei-jwt" :> api)
+  clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+  hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
 
 -- | Build an 'AuthenticatedRequest' that adds @Authorization: Bearer <jwt>@.
 bearer :: Token -> AuthenticatedRequest (AuthProtect "shomei-jwt")

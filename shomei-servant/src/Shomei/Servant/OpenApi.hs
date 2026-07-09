@@ -189,26 +189,34 @@ instance ToParamSchema PasskeyId where
 -- security scheme in @components@ and require it on every operation of the
 -- sub-API.
 instance (HasOpenApi sub) => HasOpenApi (AuthProtect "shomei-jwt" :> sub) where
-  toOpenApi _ =
-    toOpenApi (Proxy :: Proxy sub)
-      & O.components . O.securitySchemes
-        <>~ O.SecurityDefinitions (IOHM.singleton "bearerAuth" bearerScheme)
-      & O.allOperations . O.security
-        %~ (O.SecurityRequirement (IOHM.singleton "bearerAuth" []) :)
-    where
-      bearerScheme =
-        O.SecurityScheme
-          (O.SecuritySchemeHttp (O.HttpSchemeBearer (Just "jwt")))
-          (Just "JWT access token")
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
--- | 'RequireRole'/'RequireScope' are phantom (transparent to the schema). They
--- appear in the @AppAPI@ embedding example, not in 'ShomeiAPI' itself; the
--- instances are provided so the example can also be described later.
+-- | 'RequireRole' and 'RequireScope' authenticate the caller themselves (they run the same
+-- 'Shomei.Servant.Auth.authHandler' 'Authenticated' does) and then check a claim. To a client
+-- reading the spec that is the same contract — present a bearer token — plus a 403 if the
+-- token lacks the role or scope. So both describe themselves exactly as 'Authenticated' does.
+--
+-- These must not be transparent pass-throughs: an operation carrying only 'RequireRole' would
+-- otherwise be documented as unauthenticated, and generated clients would omit the token.
 instance (HasOpenApi sub) => HasOpenApi (RequireRole (r :: Symbol) :> sub) where
-  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
 instance (HasOpenApi sub) => HasOpenApi (RequireScope (s :: Symbol) :> sub) where
-  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+
+-- | Register the bearer-JWT security scheme and require it on every operation of @sub@.
+requireBearer :: (HasOpenApi sub) => Proxy sub -> O.OpenApi
+requireBearer p =
+  toOpenApi p
+    & O.components . O.securitySchemes
+      <>~ O.SecurityDefinitions (IOHM.singleton "bearerAuth" bearerScheme)
+    & O.allOperations . O.security
+      %~ (O.SecurityRequirement (IOHM.singleton "bearerAuth" []) :)
+  where
+    bearerScheme =
+      O.SecurityScheme
+        (O.SecuritySchemeHttp (O.HttpSchemeBearer (Just "jwt")))
+        (Just "JWT access token")
 
 -- ---------------------------------------------------------------------------
 -- The assembled, enriched document

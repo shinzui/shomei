@@ -222,15 +222,17 @@ data ShomeiAPI mode = ShomeiAPI
           :> DeleteNoContent,
     -- | @GET /admin/audit/events@ (EP-7): an admin-gated, filtered, keyset-paginated page
     --     of the audit trail. Repeated @?type=@ collects into a list; @?before=@ takes an
-    --     opaque cursor from a previous page's @nextCursor@. The handler enforces the @admin@
-    --     role with 'Shomei.Servant.Authz.requireRole' (no production flow grants that role yet
-    --     — see the plan's Decision Log).
+    --     opaque cursor from a previous page's @nextCursor@.
+    --
+    --     'Shomei.Servant.Authz.RequireRole' both authenticates the caller and demands the
+    --     @admin@ role, so the handler carries no guard of its own — the type is the
+    --     enforcement. Grant the role with @shomei-admin roles grant --user … --role admin@.
     auditEvents ::
       mode
         :- "admin"
           :> "audit"
           :> "events"
-          :> Authenticated
+          :> RequireRole "admin"
           :> QueryParam "user" Text
           :> QueryParam "session" Text
           :> QueryParams "type" Text
@@ -264,13 +266,15 @@ newtype Project = Project {projectId :: Text}
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | Embeddability proof: mount the whole Shōmei API under @\/auth@ alongside a host
--- route protected by 'Authenticated', plus an admin route documented with the
--- 'RequireRole' phantom combinator. This type-checking shows the API type and the
--- combinators compose inside a host Servant app. (It is illustrative — it is not
--- served here; 'RequireRole' has no 'HasServer' instance, so an actual admin route
--- uses the 'Shomei.Servant.Authz.requireRole' guard instead.)
+-- | Embeddability proof: mount the whole Shōmei API under @\/auth@ alongside a host route
+-- protected by 'Authenticated', plus an admin route protected by 'RequireRole'. This
+-- type-checks to show the API type and the combinators compose inside a host Servant app.
+--
+-- Note that 'RequireRole' /replaces/ 'Authenticated' rather than accompanying it: it runs the
+-- same 'Shomei.Servant.Auth.authHandler' from the Servant context, then checks the role, and
+-- passes the resulting 'Shomei.Servant.Auth.AuthUser' to the handler. Both combinators enforce;
+-- neither is documentation.
 type AppAPI =
   "auth" :> NamedRoutes ShomeiAPI
     :<|> Authenticated :> "projects" :> Get '[JSON] [Project]
-    :<|> RequireRole "admin" :> Authenticated :> "admin" :> "users" :> Get '[JSON] [User]
+    :<|> RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [User]

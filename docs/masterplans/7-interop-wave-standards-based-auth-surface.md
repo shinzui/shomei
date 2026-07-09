@@ -236,7 +236,7 @@ the other.
 - [x] EP-1: Role/scope grant storage (migration) and port with Postgres + in-memory interpreters
 - [x] EP-1: Claims population at token mint through an enrichment hook
 - [x] EP-1: `shomei-admin roles grant`
-- [ ] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
+- [x] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
 - [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
 - [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
 - [ ] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
@@ -292,6 +292,25 @@ Per this MasterPlan's Integration Points, **EP-5** (ID token, userinfo) and **EP
 tokens) must build their claims through it rather than re-reading stores in the HTTP layer.
 `Shomei.Effect.InMemory.runInMemoryWith` supplies a `ClaimsEnricher` hook for tests that need
 to observe a host delta.
+
+**2026-07-09 (EP-1) — adding a Servant combinator costs three instances and three GHC papercuts.**
+A new combinator needs `HasServer` (shomei-servant), `HasOpenApi` (shomei-servant — and it must
+register the security scheme, not pass through, or the route is documented as unauthenticated),
+and `HasClient` (shomei-client, or `genericClient` stops deriving `ShomeiClient` entirely). All
+three need `UndecidableInstances`. Two name collisions bite because `Shomei.Prelude` re-exports
+`Control.Lens`: its `Context` shadows servant's (use `import Shomei.Prelude hiding (Context)`),
+and its `:>` *pattern synonym* shadows the type operator in an instance head (use an explicit
+`import Servant.API (type (:>))`). **EP-3, EP-4, EP-5, EP-7, and EP-9 all add route surface**;
+EP-9's `RequirePermission` follows this exact pattern.
+
+**2026-07-09 (EP-1) — `RequireRole` replaces `Authenticated`; it does not accompany it.** The
+`HasServer` instance runs the context-registered `AuthHandler` itself (a combinator cannot
+observe a value another combinator captured), so a route writes `RequireRole "admin" :> sub`
+*instead of* `Authenticated :> sub` and its handler still receives the `AuthUser`. Writing both
+authenticates twice and gives the handler two `AuthUser` arguments. EP-2's admin routes and
+EP-9's `RequirePermission` must follow the same rule. Composite conditions a single symbol
+cannot express (EP-2's "role `admin` OR scope `shomei:admin`") still use the exported
+`requireRole` / `requireScope` handler guards.
 
 **2026-07-09 (EP-1) — `ShomeiConfig`'s `FromJSON` is not the config-file decoder.** The Dhall
 file is rendered to JSON and decoded into a *separate* flat, all-optional `FileConfig`

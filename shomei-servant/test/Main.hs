@@ -85,6 +85,7 @@ import Shomei.Effect.InMemory
     runPasswordHasher,
     runPasswordResetTokenStore,
     runPendingCeremonyStore,
+    runInMemory,
     runRefreshTokenStore,
     runSessionStore,
     runSigningKeyStore,
@@ -94,7 +95,7 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
-import Shomei.Id (genSessionId, genUserId)
+import Shomei.Id (UserId, genSessionId, genUserId, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
@@ -102,11 +103,12 @@ import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler, cookiePolicyFromConfig)
-import Shomei.Servant.Authz (requireRole, requireScope)
+import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Workflow qualified as Wf
+import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -126,20 +128,25 @@ servicePassword = "correct horse battery staple"
 ingestScope :: Scope
 ingestScope = Scope "kawa:ingest"
 
--- | The test API: the whole Shōmei API plus a host admin route guarded by the
--- 'requireRole' function (proving embeddability + the @RequireRole@ behavior).
+-- | The test API: the whole Shōmei API plus two host routes protected /only/ by the
+-- 'RequireRole' and 'RequireScope' combinators. Their handlers contain no authorization code
+-- at all, so the 401/403/200 assertions below prove the route type alone enforces — which is
+-- the entire point of the combinators having 'HasServer' instances.
+--
+-- The combinators sit where 'Authenticated' used to: they run the same auth handler themselves
+-- and pass the resulting 'AuthUser' through to the handler.
 type TestAPI =
   NamedRoutes ShomeiAPI
-    :<|> "admin" :> "users" :> Authenticated :> Get '[JSON] [UserResponse]
-    :<|> "ingest" :> Authenticated :> Get '[JSON] [UserResponse]
+    :<|> RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [UserResponse]
+    :<|> RequireScope "kawa:ingest" :> "ingest" :> Get '[JSON] [UserResponse]
 
 testServer :: Env -> Server TestAPI
 testServer env = shomeiServer env :<|> adminUsersH :<|> ingestH
   where
     adminUsersH :: AuthUser -> Handler [UserResponse]
-    adminUsersH user = requireRole (Role "admin") user >> pure []
+    adminUsersH _user = pure []
     ingestH :: AuthUser -> Handler [UserResponse]
-    ingestH user = requireScope ingestScope user >> pure []
+    ingestH _user = pure []
 
 app :: Env -> Application
 app env = serveWithContext (Proxy @TestAPI) ctx (testServer env)
@@ -176,8 +183,35 @@ runHybrid ref jwk jwkset cfg =
     . runRoleStore ref
     . runUserStore ref
 
--- | Mint an access token carrying the @admin@ role by signing claims directly with
--- the in-test key (the workflows issue no roles, so this is the only way to get one).
+-- | Grant the @admin@ role to a user through the real audited workflow, straight against the
+-- in-memory world the server is running on. The next token minted for that user (by login or
+-- refresh) will carry the role.
+grantAdminTo :: IORef World -> Text -> IO ()
+grantAdminTo ref userIdText = do
+  uid <- parseUserId userIdText
+  outcome <- runInMemory ref (grantRoleTo Nothing uid (Role "admin"))
+  case outcome of
+    Right True -> pure ()
+    Right False -> assertFailure "expected the admin grant to be new"
+    Left e -> assertFailure ("granting admin failed: " <> show e)
+
+-- | The inverse. The next token minted for the user carries no @admin@ role.
+revokeAdminFrom :: IORef World -> Text -> IO ()
+revokeAdminFrom ref userIdText = do
+  uid <- parseUserId userIdText
+  outcome <- runInMemory ref (revokeRoleFrom Nothing uid (Role "admin"))
+  case outcome of
+    Right True -> pure ()
+    Right False -> assertFailure "expected an admin grant to revoke"
+    Left e -> assertFailure ("revoking admin failed: " <> show e)
+
+parseUserId :: Text -> IO UserId
+parseUserId t =
+  either (\e -> assertFailure ("bad user id " <> show t <> ": " <> show e)) pure (parseId t)
+
+-- | Mint an access token carrying the @admin@ role by signing claims directly with the in-test
+-- key. Kept alongside the real grant path in (g): it isolates the combinator's claim check from
+-- the store, so a failure in one does not mask a failure in the other.
 mkAdminToken :: JWK -> ShomeiConfig -> IO Text
 mkAdminToken jwk cfg = do
   uid <- genUserId
@@ -688,11 +722,54 @@ scenario ref adminToken impToken port = do
   assertBool "jwks has keys[].kid" (jwksHasKid jwks)
   assertBool "jwks has no private 'd'" (not (hasKeyDeep "d" jwks))
 
-  -- (g) RequireRole: non-admin → 403, admin → 200
+  -- (g) The RequireRole combinator enforces, with no handler guard behind it.
+  --
+  --     No token → 401 (the combinator authenticates before it authorizes); a token whose
+  --     principal lacks the role → 403; a token minted AFTER a real grant → 200.
+  (noTokenAdminStatus, _) <- getJSON mgr port "/admin/users" []
+  noTokenAdminStatus @?= 401
+  (garbageAdminStatus, _) <- getJSON mgr port "/admin/users" (bearer "garbage.token.value")
+  garbageAdminStatus @?= 401
   (forbiddenStatus, _) <- getJSON mgr port "/admin/users" (bearer access)
   forbiddenStatus @?= 403
+
+  -- A hand-signed token carrying the role passes: the combinator reads the claim.
   (adminStatus, _) <- getJSON mgr port "/admin/users" (bearer adminToken)
   adminStatus @?= 200
+
+  -- ...and so does one minted by the real path: grant the role to the logged-in user through
+  -- the audited workflow, log in again, and the fresh token opens the same door. This is the
+  -- whole loop the plan exists to close — before EP-1, no production flow could mint this token.
+  grantAdminTo ref adaUserId
+  (grantedLoginStatus, grantedLoginBody) <- postJSON mgr port "/auth/login" loginBody
+  grantedLoginStatus @?= 200
+  grantedResp <- must "post-grant login body" grantedLoginBody
+  grantedAccess <- must "post-grant accessToken" (dig ["token", "accessToken"] grantedResp >>= asText)
+  (grantedStatus, _) <- getJSON mgr port "/admin/users" (bearer grantedAccess)
+  grantedStatus @?= 200
+
+  -- The pre-grant token is unchanged: a JWT is self-contained, so the role appears only on
+  -- tokens minted after the grant (the staleness contract in docs/user/security.md).
+  (staleStatus, _) <- getJSON mgr port "/admin/users" (bearer access)
+  staleStatus @?= 403
+
+  -- Revoke it again, and the next mint has no role — the other half of the same contract.
+  -- (This also restores the pre-grant state for the rest of the scenario, whose later logins
+  -- mint fresh tokens for this very user and expect them to be non-admin.)
+  revokeAdminFrom ref adaUserId
+  (revokedLoginStatus, revokedLoginBody) <- postJSON mgr port "/auth/login" loginBody
+  revokedLoginStatus @?= 200
+  revokedResp <- must "post-revoke login body" revokedLoginBody
+  revokedAccess <- must "post-revoke accessToken" (dig ["token", "accessToken"] revokedResp >>= asText)
+  (revokedStatus, _) <- getJSON mgr port "/admin/users" (bearer revokedAccess)
+  revokedStatus @?= 403
+
+  -- (g2) The RequireScope combinator enforces the same way. An ordinary login token carries no
+  --      scopes; only a service token holds 'kawa:ingest' (exercised in the service-token suite).
+  (noTokenIngestStatus, _) <- getJSON mgr port "/ingest" []
+  noTokenIngestStatus @?= 401
+  (ingestForbiddenStatus, _) <- getJSON mgr port "/ingest" (bearer revokedAccess)
+  ingestForbiddenStatus @?= 403
 
   -- (h) password-reset request/confirm allows login with the new password.
   (resetReqStatus, _) <- postJSON mgr port "/auth/password-reset/request" (object ["email" .= email])

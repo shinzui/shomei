@@ -22,7 +22,7 @@ import Network.Socket (SockAddr (..))
 import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (AuthClaims (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
     LoginCommand (..),
@@ -55,7 +55,6 @@ import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..))
 import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
-import Shomei.Servant.Authz (requireRole)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
   ( AuditEventsPage (..),
@@ -388,10 +387,14 @@ stopImpersonateH env caller = do
   pure NoContent
 
 -- | @GET /admin/audit/events@ (EP-7): admin-gated, filtered, keyset-paginated audit-trail
--- read. The query params arrive in route order. 'requireRole' rejects a non-admin principal
--- with 403 before any work; a malformed param (bad UUID, timestamp, or cursor) is a 400 via
--- 'buildQuery'. 'nextCursor' is set only when the page came back full (exactly the requested,
--- clamped limit), so a caller paginates until it is 'Nothing'.
+-- read. The query params arrive in route order.
+--
+-- There is no authorization check here: the route's @RequireRole "admin"@ combinator
+-- authenticated the caller and rejected a non-admin with 403 before this handler ran. The
+-- 'AuthUser' it produced is passed through and deliberately unused. A malformed param (bad
+-- UUID, timestamp, or cursor) is a 400 via 'buildQuery'. 'nextCursor' is set only when the page
+-- came back full (exactly the requested, clamped limit), so a caller paginates until it is
+-- 'Nothing'.
 auditEventsH ::
   Env ->
   AuthUser ->
@@ -403,8 +406,7 @@ auditEventsH ::
   Maybe Int -> -- ?limit=<n>
   Maybe Text -> -- ?before=<cursor>
   Handler AuditEventsPage
-auditEventsH env user mUser mSession types mSince mUntil mLimit mBefore = do
-  requireRole (Role "admin") user
+auditEventsH env _user mUser mSession types mSince mUntil mLimit mBefore = do
   q <- either badRequest pure (buildQuery mUser mSession types mSince mUntil mLimit mBefore)
   rows <- runPort env (queryAuthEvents q)
   let full = length rows == clampLimit q.queryLimit
