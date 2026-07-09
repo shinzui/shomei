@@ -23,6 +23,7 @@ twelve-factor — env always wins):
 | `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
+| `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
 | `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |
 | `SHOMEI_PASSWORD_REJECT_COMMON` | reject passwords from the built-in common-password dictionary | `true` |
 | `SHOMEI_PASSWORD_REJECT_CONTEXTUAL` | reject passwords equal to the login email/local-part/display name | `true` |

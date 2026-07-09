@@ -3,9 +3,9 @@
 Shōmei emits notifications — it does **not** send email. The account-lifecycle workflows
 (email verification, password reset) produce a `Notification` value and hand it to the
 `Notifier` effect; *delivering* it is your responsibility. The toolkit ships one built-in
-interpreter, a development sender that writes the link to the server log. To send real email
-through your provider (SendGrid, Resend, SES, an SMTP relay, an internal mail service, …), you
-supply your own `Notifier` interpreter.
+interpreter, a development sender that writes a line to the server log (with the one-time token
+redacted — see below). To send real email through your provider (SendGrid, Resend, SES, an SMTP
+relay, an internal mail service, …), you supply your own `Notifier` interpreter.
 
 This keeps Shōmei transport-agnostic: the core defines only the *effect*; the only code that
 knows about your provider is your interpreter.
@@ -106,14 +106,41 @@ runNotifierWebhook mgr url = interpret_ \case
 The JSON includes the raw one-time `token`, so this endpoint must be an internal call over TLS
 that you trust — the token has to reach the user regardless of transport.
 
+## The log sender redacts tokens
+
+By default `LogNotifier` does **not** print a usable link. It prints the recipient, the expiry,
+and the first 8 hex characters of the token's SHA-256:
+
+```text
+[shomei:log] password_reset email=a@example.com token_sha256=f6dd8191 expires_at=2026-07-09 03:44:27 UTC (set SHOMEI_NOTIFIER_LOG_SECRETS=true to log the full link in development)
+```
+
+The prefix is for correlation, not redemption: one-time tokens are stored as the SHA-256 of the
+token (base64url), so `token_sha256` ties a log line to its `token_hash` row while the log itself
+carries nothing an attacker could use.
+
+For local development, where the logged link is how you actually complete a signup or reset,
+set `SHOMEI_NOTIFIER_LOG_SECRETS=true` and the full link comes back:
+
+```text
+[shomei:log] password_reset email=a@example.com link=http://localhost:8080/auth/password-reset/confirm?token=7Hu0OCr… expires_at=2026-07-09 03:44:40 UTC
+```
+
+Never set it in a shared or production environment: anyone who can read the log can then complete
+a password reset for any account. It is an environment variable only — there is deliberately no
+Dhall-file key — so it cannot linger unnoticed in a committed config.
+
 ## Two things to know
 
 1. **This is an in-process Haskell API.** Plugging in a sender means composing Shōmei as a
    library and building your own server assembly (replacing the one line above). The prebuilt
    `shomei-server` / `shomei-admin` binaries hardcode the dev log sender — there is no config
    flag or plugin hook to inject an external sender into the stock binary. If you run the stock
-   binary, your only built-in option is to scrape the structured log line (it carries the
-   recipient, the confirm link, and the expiry).
+   binary, your only built-in option is to scrape the log line — but note that by default it
+   carries the recipient, the expiry, and only a **hash prefix** of the token, not the link
+   (see "The log sender redacts tokens" below). Scraping the log to deliver real mail means
+   running with `SHOMEI_NOTIFIER_LOG_SECRETS=true`, which puts redeemable tokens in your log;
+   supplying your own `Notifier` interpreter is the supported path.
 
 2. **Sending is fire-and-forget.** `SendNotification` returns `()`, and the workflows ignore
    the result — the request endpoints return a generic `202 Accepted` whether or not the account

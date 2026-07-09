@@ -94,6 +94,41 @@ distinguish them. The `verify-email/request` and `password-reset/request` endpoi
 `202` whether or not the email exists; the only difference (a notification side effect) is
 invisible to the requester.
 
+Identical bytes are not enough on their own: a response that arrives sooner is just as much a
+disclosure. Verifying a password with Argon2id deliberately costs ~100 ms, so a login that
+short-circuits before hashing — an unknown identifier, a credential row whose user is gone, a
+suspended account — would answer in microseconds and thereby announce that the account does not
+exist (or exists and is suspended). Every failing login therefore performs **exactly one**
+password verification: the paths that never reach a stored hash verify against a fixed dummy
+Argon2id hash instead, so all of them pay the same cost.
+
+### Signup deliberately discloses existence
+
+`POST /auth/signup` answers `409 email_taken` / `409 login_id_taken` when the identifier is
+already registered, which does tell the caller that an account exists. This is accepted product
+behavior — signup forms need to say "that address is already registered" — and it is the reason
+the reset and verification flows are deliberately blind: they always answer `202`, so an attacker
+cannot use *them* to enumerate. The asymmetry is intentional, not an oversight.
+
+## Email verification enforcement
+
+`notifierConfig.emailVerificationRequired` (Dhall key `emailVerificationRequired`; default off)
+gates **token issuance** on a verified email address. With it on:
+
+- password login, refresh, MFA completion, and passwordless passkey login all refuse an account
+  whose email is present but unverified, with `403 email_not_verified`;
+- `POST /auth/signup` still returns its initial token pair. The gate closes at the first refresh,
+  so an unverified account keeps working for at most one access-token lifetime (default 15
+  minutes) and cannot renew silently;
+- an account with **no** email address is exempt — it could never complete verification, so
+  gating it would permanently lock out login-id-only accounts;
+- confirming the verification token unblocks the account immediately.
+
+`403 email_not_verified` is deliberately distinct from the generic `401 invalid_login`, and that
+is not an enumeration leak: every path that can return it has already proven control of the
+account (a correct password, a valid refresh token, or a verified passkey assertion). A generic
+`401` would instead strand a legitimate user who has no way to learn they must click the link.
+
 ## Abuse protection (EP-2)
 
 - **Per-account brute-force lockout** (PostgreSQL-backed, survives restarts): after
@@ -171,6 +206,24 @@ without shedding their own identity.
 The structured request logger reads only the method, path, response status, duration, and peer
 IP — never request/response bodies or the `Authorization`/`Cookie` headers — so no password,
 token, or cookie can appear in a log line.
+
+The built-in `LogNotifier` (which writes password-reset and email-verification notifications to
+the server log) redacts the one-time token. It logs the first 8 hex characters of the token's
+SHA-256 instead, and no link:
+
+```text
+[shomei:log] password_reset email=a@example.com token_sha256=f6dd8191 expires_at=… (set SHOMEI_NOTIFIER_LOG_SECRETS=true to log the full link in development)
+```
+
+That prefix is a correlation handle, not a secret: the token is 32 random bytes, and the stored
+`token_hash` column is the SHA-256 of the same token (base64url rather than hex), so a log line
+can be tied to its database row without the log ever carrying anything redeemable.
+
+Setting `SHOMEI_NOTIFIER_LOG_SECRETS=true` restores the full clickable link. It exists because
+`LogNotifier` is a **development** interpreter, where the logged link is how you complete the
+flow. There is deliberately no Dhall-file key for it: enabling it must be an explicit
+per-process decision, not a line that lingers unnoticed in a committed config file. Anyone who
+can read the log of a server running with it can take over any account mid-reset.
 
 ## Reading the audit trail (EP-7)
 

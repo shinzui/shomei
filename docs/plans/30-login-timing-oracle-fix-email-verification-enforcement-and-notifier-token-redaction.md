@@ -53,26 +53,26 @@ This plan also folds in one documentation task the MasterPlan assigned here: rec
 Use a checklist to summarize granular steps. Every stopping point must be documented here,
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 
-- [ ] (a) `dummyPasswordHash` constant generated with production Argon2id parameters and
-      committed to `Shomei.Domain.Password` with provenance comment.
-- [ ] (a) `login` miss paths (no credential; credential without user; inactive user) verify
-      against the dummy hash before failing; core tests with a counting hasher pass.
-- [ ] (b) `EmailNotVerified` added to `AuthError` and mapped to `403 email_not_verified`.
-- [ ] (b) Enforcement in `login` (password path), `refresh`, `Mfa.completeMfa`, and
+- [x] (a) `dummyPasswordHash` constant generated with production Argon2id parameters and
+      committed to `Shomei.Domain.Password` with provenance comment. (2026-07-08)
+- [x] (a) `login` miss paths (no credential; credential without user; inactive user) verify
+      against the dummy hash before failing; core tests with a counting hasher pass. (2026-07-08)
+- [x] (b) `EmailNotVerified` added to `AuthError` and mapped to `403 email_not_verified`. (2026-07-08)
+- [x] (b) Enforcement in `login` (password path), `refresh`, `Mfa.completeMfa`, and
       `Mfa.completePasswordlessLogin`; core tests pass (blocked unverified, allowed
-      verified, allowed no-email, unblocked after confirmation).
-- [ ] (b) Servant error-mapping covered; servant E2E extended with an
-      `emailVerificationRequired` scenario.
-- [ ] (c) `NotifierConfig.logRawTokens` added (default `False`);
-      `SHOMEI_NOTIFIER_LOG_SECRETS` env override wired in `Shomei.Server.Config`.
-- [ ] (c) `Shomei.Notify.renderNotification` redacts (SHA-256 8-hex prefix, no link) unless
-      `logRawTokens`; unit tests assert the raw token never appears in redacted output.
-- [ ] Docs: `docs/user/security.md` — timing-equalization note, `emailVerificationRequired`
+      verified, allowed no-email, unblocked after confirmation). (2026-07-08)
+- [x] (b) Servant error-mapping covered; servant E2E extended with an
+      `emailVerificationRequired` scenario. (2026-07-08)
+- [x] (c) `NotifierConfig.logRawTokens` added (default `False`);
+      `SHOMEI_NOTIFIER_LOG_SECRETS` env override wired in `Shomei.Server.Config`. (2026-07-08)
+- [x] (c) `Shomei.Notify.renderNotification` redacts (SHA-256 8-hex prefix, no link) unless
+      `logRawTokens`; unit tests assert the raw token never appears in redacted output. (2026-07-08)
+- [x] Docs: `docs/user/security.md` — timing-equalization note, `emailVerificationRequired`
       semantics, notifier redaction, signup-existence asymmetry paragraph;
       `docs/user/api.md` — `403 email_not_verified` on the affected endpoints;
-      `docs/user/deployment.md`/`docs/user/notifications.md` — the new env flag.
-- [ ] `cabal build all` and `cabal test all` green; living sections updated; Outcomes
-      written.
+      `docs/user/deployment.md`/`docs/user/notifications.md` — the new env flag. (2026-07-08)
+- [x] `cabal build all` and `cabal test all` green; living sections updated; Outcomes
+      written. (2026-07-08)
 
 
 ## Surprises & Discoveries
@@ -80,7 +80,65 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The malformed-hash short-circuit is real and dramatic; the dummy is indistinguishable from
+  a real hash.** Measured in `cabal repl shomei-postgres` on this machine:
+
+  ```text
+  dummy     0.101408s result=False
+  malformed 0.000009s result=False
+  real      0.183407s result=False
+  ```
+
+  The 0.18 s is first-call warm-up; re-measured with the order swapped, steady state is
+  `real 0.093s` / `dummy 0.095s` — indistinguishable, which is the whole point. A malformed
+  constant would answer in 9 µs and silently reopen the oracle the constant exists to close.
+  This is why `dummyPasswordHash`'s haddock carries a MUST about format validity.
+
+- **The plan's `TimingSpec` design was validated by running it against the unfixed code**, as
+  the plan asked. Before the fix, two of the four cases fail with `counter == 0`:
+
+  ```text
+  unknown login id still verifies a password (dummy hash): FAIL  expected: 1
+  wrong password verifies exactly once:                    OK
+  suspended account still verifies a password:             FAIL  expected: 1
+  successful login verifies exactly once:                  OK
+  ```
+
+  Note the suspended-account case fails too — confirming the Decision Log's judgment that the
+  finding's "unknown login id" framing understated the oracle.
+
+- **`Shomei.Effect.InMemory` did not export `runTokenSigner`/`runTokenVerifier`,** although its
+  module haddock advertises the individual interpreters precisely so an assembly can compose a
+  hybrid stack. `TimingSpec` needs them to rebuild `runInMemory` with a counting hasher in the
+  `PasswordHasher` slot, so both are now exported. Any future spec that swaps one interpreter
+  can do the same.
+
+- **`Shomei.Workflow` had to add `NotifierConfig (..)` to its `Shomei.Config` import** before
+  `cfg.notifierConfig.emailVerificationRequired` would resolve — the `DuplicateRecordFields` /
+  `HasField` interaction this repo has hit before (MasterPlan 3, EP-1). Dot access on a record
+  needs that record's field selectors in scope, not just its type.
+
+- **There is no `SHOMEI_EMAIL_VERIFICATION_REQUIRED` environment variable.** The flag is
+  settable only through the Dhall config file's `emailVerificationRequired` key (and the library
+  API). An early draft of the security.md paragraph invented the env var; it was corrected after
+  `rg -n "EMAIL_VERIFICATION" --type haskell` found nothing. Adding one would be a reasonable
+  follow-up but is out of scope here.
+
+- **`docs/user/notifications.md` contained a claim the redaction falsified:** "your only
+  built-in option is to scrape the structured log line (it carries the recipient, the confirm
+  link, and the expiry)". That paragraph now describes the redacted line and points at
+  `SHOMEI_NOTIFIER_LOG_SECRETS`. Grep for downstream docs before changing a log format.
+
+- **The hash-prefix correlation was verified against a live database**, not just asserted:
+
+  ```text
+  raw token from log:        7Hu0OCrgi1FvA6ql4NJHgzWhBcxqFiUBdbwMMMIHbjQ
+  sha256 hex prefix:         f8eb15bb          <- what the redacted log line prints
+  stored token_hash:         -OsVu7iiat44pDezxBOuDEnEwtHmKX3dO1tRAFgHZIc
+  sha256 of raw as b64url:   -OsVu7iiat44pDezxBOuDEnEwtHmKX3dO1tRAFgHZIc
+  ```
+
+  Same digest, two encodings — so an operator can tie a redacted log line to its row.
 
 
 ## Decision Log
@@ -180,13 +238,79 @@ Record every decision made while working on the plan.
   reset/verify flows are unaffected. This plan only writes the paragraph.
   Date: 2026-07-07
 
+- Decision: Export `runTokenSigner`/`runTokenVerifier` from `Shomei.Effect.InMemory`.
+  Rationale: `TimingSpec` composes the `runInMemory` stack with one interpreter replaced, which
+  is exactly the hybrid-assembly use the module's haddock already advertises for its other
+  interpreters. These two were omitted from the export list by oversight.
+  Date: 2026-07-08
+
+- Decision: The redacted notifier line carries a trailing hint,
+  `(set SHOMEI_NOTIFIER_LOG_SECRETS=true to log the full link in development)`.
+  Rationale: as the plan's example specified. It repeats on every line, which is mild noise, but
+  the alternative is a developer hitting a dead-ended signup flow with no idea why the link
+  vanished. The hint is suppressed when the flag is on.
+  Date: 2026-07-08
+
+- Decision: `EmailVerificationSpec` is a new module rather than a group inside `WorkflowSpec` or
+  `AccountSpec`.
+  Rationale: it needs a second `ShomeiConfig` (the gated one) plus the passkey fixtures from
+  `MfaSpec`, and it asserts one coherent feature across four workflows. Bolting that onto
+  `WorkflowSpec` would have mixed two configs into a module whose fixtures assume one.
+  Date: 2026-07-08
+
+- Decision: Documented `emailVerificationRequired` as Dhall-file-only; did not add an env var.
+  Rationale: none exists (verified). Adding `SHOMEI_EMAIL_VERIFICATION_REQUIRED` would be a
+  sensible follow-up but is scope creep here, and inventing it in prose would have shipped a
+  false doc. Recorded in Surprises & Discoveries.
+  Date: 2026-07-08
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**All three fixes delivered, each with the behavioral evidence the plan asked for.**
+
+1. *Timing oracle closed.* Every failing login now performs exactly one Argon2id verification,
+   asserted by an invocation counter on all four paths, and the dummy hash measures within 2 ms
+   of a real one. The plan's insistence that the constant stay format-valid turned out to be the
+   load-bearing detail: a malformed value short-circuits in 9 µs and would have reopened the
+   oracle while looking like a fix. That risk is now pinned in the constant's haddock.
+
+2. *`emailVerificationRequired` is real.* It gates login, refresh, MFA completion, and
+   passwordless passkey login, returns a distinct `403 email_not_verified`, exempts email-less
+   accounts, and — verified by the untouched suites — changes nothing when off.
+
+3. *Tokens no longer leak into logs.* `LogNotifier` prints an 8-hex SHA-256 prefix; the full link
+   returns only under `SHOMEI_NOTIFIER_LOG_SECRETS=true`. The prefix was confirmed against a real
+   `token_hash` row, so the correlation the Decision Log promised actually works.
+
+**Deviations from the plan, all recorded in the Decision Log:** `Shomei.Effect.InMemory` had to
+export two more interpreters; `Shomei.Workflow` needed `NotifierConfig (..)` imported for dot
+access; the email tests live in their own module; and `emailVerificationRequired` is documented as
+Dhall-only because the env var the plan's docs task implied does not exist.
+
+**Gaps and follow-ups, none blocking:**
+
+- No `SHOMEI_EMAIL_VERIFICATION_REQUIRED` env var. Every other notifier/policy knob has one, so
+  this is an inconsistency worth closing — a one-line `boolEnv` in `overlayCoreFromEnv`.
+- Signup still issues a token pair for an unverified account (deliberate — changing it is a wire
+  change). The exposure is one access-token lifetime. A stricter no-token-at-signup mode remains
+  available if operators ask.
+- `completeMfa`'s gate is nearly unreachable because `login` already gates before handing out a
+  ceremony id. It is kept as defense in depth, at the cost of one redundant check.
+- The dummy-hash equivalence rests on the constant matching `Shomei.Crypto.argonOptions`. If
+  those parameters are ever retuned, the constant must be regenerated or failed logins get
+  *cheaper* than real ones — re-opening the oracle in the other direction. Nothing enforces this
+  today; a test that hashes a throwaway password and compares the cost parameters embedded in the
+  two strings would.
+
+**Lesson.** Two of the three fixes were "the code does not do what the documentation says", and
+in both cases the doc was the more trustworthy artifact — it described the intended security
+property precisely enough to test. The third (log redaction) then *falsified* a doc elsewhere in
+the tree, which nothing would have caught but grep. Changing an output format means grepping the
+docs for people who told users to read it.
 
 
 ## Context and Orientation
@@ -601,6 +725,52 @@ Acceptance is behavioral, per fix:
 
 Exact test commands: `cabal test shomei-core shomei-servant shomei-server`, then
 `cabal test all`.
+
+### Executed results (2026-07-08)
+
+`cabal test all -j1`: 12 of 12 suites PASS.
+
+**1. Timing.** `TimingSpec`, four cases, all green after the fix; against the unfixed workflow
+the unknown-id and suspended-account cases report `expected: 1, got 0` (transcript in Surprises
+& Discoveries). Manual repl measurement, steady state: real hash 93 ms, dummy hash 95 ms,
+malformed hash 9 µs.
+
+**2. Email verification.** `EmailVerificationSpec`, six cases:
+
+```text
+an unverified account cannot log in:                            OK
+an unverified account cannot refresh the pair signup handed it: OK
+verifying the email unblocks login:                             OK
+an account with no email is exempt (it could never verify one): OK
+with the flag off an unverified account logs in (the default):  OK
+passwordless passkey login is gated too:                        OK
+```
+
+And over HTTP, in the servant end-to-end suite:
+
+```text
+emailVerificationRequired blocks login with 403 until the email is verified: OK
+```
+
+which asserts `403` + body `{"error":"email_not_verified"}` on both login and refresh, then
+`200` after confirming the token. Flag-off behavior is proven by every other suite staying
+green without modification.
+
+**3. Redaction.** Unit tests assert the raw token is absent and the hash prefix present. Against
+a live server:
+
+```text
+# default
+[shomei:log] password_reset email=redact@example.com token_sha256=f6dd8191 expires_at=2026-07-09 03:44:27.031926 UTC (set SHOMEI_NOTIFIER_LOG_SECRETS=true to log the full link in development)
+
+# SHOMEI_NOTIFIER_LOG_SECRETS=true
+[shomei:log] password_reset email=redact@example.com link=http://localhost:8080/auth/password-reset/confirm?token=7Hu0OCrgi1FvA6ql4NJHgzWhBcxqFiUBdbwMMMIHbjQ expires_at=2026-07-09 03:44:40.317903 UTC
+```
+
+The prefix correlates with the stored hash (both SHA-256 of the token, hex vs base64url) —
+checked against the `shomei_password_reset_tokens` row; see Surprises & Discoveries.
+
+**4. Suite health.** Green.
 
 
 ## Idempotence and Recovery

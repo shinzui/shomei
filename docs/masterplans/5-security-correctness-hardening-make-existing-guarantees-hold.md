@@ -87,7 +87,7 @@ verifiable behaviors.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | Complete |
 | 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Complete |
-| 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | In Progress |
+| 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Complete |
 | 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Not Started |
 | 5 | Encrypt Signing Private Keys at Rest | docs/plans/32-encrypt-signing-private-keys-at-rest.md | None | EP-2 | Not Started |
 
@@ -151,9 +151,9 @@ rename existing ones.
 - [x] EP-2: `ListPublishableSigningKeys` port operation and interpreters (Postgres, in-memory) (2026-07-08)
 - [x] EP-2: JWKS built from active + retired keys; served document and verifier key set agree (2026-07-08)
 - [x] EP-2: Periodic (or signal-driven) key reload without restart; rotation runbook re-verified end-to-end (2026-07-08)
-- [ ] EP-3: Dummy-hash verification on unknown-account login path; timing test
-- [ ] EP-3: `emailVerificationRequired` enforced at login/token issuance
-- [ ] EP-3: `LogNotifier` redacts one-time tokens (hash prefix only)
+- [x] EP-3: Dummy-hash verification on unknown-account login path; timing test (2026-07-08)
+- [x] EP-3: `emailVerificationRequired` enforced at login/token issuance (2026-07-08)
+- [x] EP-3: `LogNotifier` redacts one-time tokens (hash prefix only) (2026-07-08)
 - [ ] EP-4: Decision recorded: complete cookie transport (vs. remove read path)
 - [ ] EP-4: Set-Cookie emission on login/refresh/logout honoring `TokenTransport`, with `HttpOnly`/`Secure`/`SameSite`
 - [ ] EP-4: CSRF defense for cookie-authenticated mutations
@@ -232,6 +232,31 @@ rename existing ones.
   server.** Any runbook in any plan that sends signals must target the binary from
   `cabal list-bin exe:shomei-server`. Related: port 8080 may be held by an unrelated local
   service; `SHOMEI_PORT` moves the server.
+
+- **EP-3 added `AuthError.EmailNotVerified` (→ `403 email_not_verified`) and
+  `NotifierConfig.logRawTokens`.** Any plan that pattern-matches `AuthError` exhaustively, or
+  constructs a `NotifierConfig` literal, must handle them. `Shomei.Workflow.refresh` also gained
+  a `UserStore :> es` constraint (the user row is loaded only when the flag is on) — plan 33's
+  transactional wrapper in the Operational MasterPlan wraps that same function and must carry
+  the constraint through.
+
+- **`Shomei.Workflow.Session.ensureEmailVerified :: ShomeiConfig -> User -> Either AuthError ()`
+  is the single gate.** Any future token-issuing path (OIDC, TOTP — see the Interop MasterPlan)
+  must call it, or it silently becomes a bypass of `emailVerificationRequired`.
+
+- **Dot access on a config record requires importing that record's field selectors,** not just
+  its type: `Shomei.Workflow` had to import `NotifierConfig (..)` before
+  `cfg.notifierConfig.emailVerificationRequired` would resolve. This is the same
+  `DuplicateRecordFields`/`HasField` interaction recorded in MasterPlan 3, and it will bite any
+  plan reaching into a nested config record for the first time.
+
+- **`Shomei.Effect.InMemory` now exports `runTokenSigner`/`runTokenVerifier`** (the fake
+  interpreters), so a spec can rebuild the `runInMemory` stack with one interpreter swapped —
+  how EP-3's `TimingSpec` counts hasher invocations.
+
+- **There is no `SHOMEI_EMAIL_VERIFICATION_REQUIRED` environment variable**; the flag is
+  Dhall-file-only. Do not document one without adding it. (A one-line `boolEnv` addition in
+  `Shomei.Server.Config.overlayCoreFromEnv` is an easy follow-up, noted in EP-3's Outcomes.)
 
 
 ## Decision Log
