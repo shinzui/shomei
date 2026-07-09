@@ -40,7 +40,7 @@ import Shomei.Domain.LoginAttempt
     NewLoginAttempt (..),
   )
 import Shomei.Domain.LoginId (LoginId)
-import Shomei.Domain.Password (PasswordContext (..), validatePassword)
+import Shomei.Domain.Password (PasswordContext (..), dummyPasswordHash, validatePassword)
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Domain.RefreshToken qualified as RT
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (SessionActive))
@@ -204,11 +204,16 @@ login cfg ctx cmd = runErrorNoCallStack do
     -- password (never 'AccountLocked'), so a locked account is indistinguishable.
     mLock <- getAccountLockout ctx.accountKey
     when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) mLock) (throwError InvalidCredentials)
+  -- Every failure path below performs exactly one 'verifyPassword'. The paths that never
+  -- reach a stored hash verify against 'dummyPasswordHash' instead, so a miss costs the same
+  -- Argon2id work as a wrong password and cannot be told apart by response time.
   mCred <- findPasswordCredentialByLoginId cmd.loginId
-  cred <- maybe (failLogin rl ctx cmd.loginId ts) pure mCred
+  cred <- maybe (failLoginTimed rl ctx cmd ts) pure mCred
   mUser <- findUserById cred.userId
-  user <- maybe (failLogin rl ctx cmd.loginId ts) pure mUser
-  when (user.status /= UserActive) (throwError UserNotActive)
+  user <- maybe (failLoginTimed rl ctx cmd ts) pure mUser
+  when (user.status /= UserActive) do
+    _ <- verifyPassword cmd.password dummyPasswordHash
+    throwError UserNotActive
   ok <- verifyPassword cmd.password cred.passwordHash
   unless ok (failLogin rl ctx cmd.loginId ts)
   recordLoginAttempt
@@ -233,10 +238,29 @@ login cfg ctx cmd = runErrorNoCallStack do
       (_sid, pair) <- issueSession cfg user ts
       pure (LoginComplete user pair)
 
+-- | 'failLogin' preceded by a dummy Argon2id verification, for the login paths that fail
+-- before ever reaching a stored password hash: an unknown login identifier, and a credential
+-- row whose user row is missing. Without the dummy work these return in microseconds while a
+-- wrong password costs ~100 ms, which enumerates accounts through the identical @401@.
+failLoginTimed ::
+  ( LoginAttemptStore :> es,
+    AuthEventPublisher :> es,
+    PasswordHasher :> es,
+    Error AuthError :> es
+  ) =>
+  RateLimitConfig ->
+  ClientContext ->
+  LoginCommand ->
+  UTCTime ->
+  Eff es a
+failLoginTimed rl ctx cmd ts = do
+  _ <- verifyPassword cmd.password dummyPasswordHash
+  failLogin rl ctx cmd.loginId ts
+
 -- | The shared failure path for 'login': record the failed attempt, publish 'LoginFailed',
 -- lock the account if the windowed per-account failure budget is now exhausted, then throw the
 -- generic 'InvalidCredentials'. Both the unknown-account branch and the wrong-password branch
--- call this so they remain byte-for-byte identical at the boundary.
+-- reach this so they remain byte-for-byte identical at the boundary.
 failLogin ::
   ( LoginAttemptStore :> es,
     AuthEventPublisher :> es,

@@ -35,6 +35,8 @@ module Shomei.Effect.InMemory
     runNotifier,
     runPasswordHasher,
     runPasswordBreachCheckerFake,
+    runTokenSigner,
+    runTokenVerifier,
     runAuthEventPublisher,
     runAuthEventReader,
     runSigningKeyStore,

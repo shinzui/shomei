@@ -130,6 +130,7 @@ test-suite shomei-core-test
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
     Shomei.Workflow.ServiceTokenSpec
+    Shomei.Workflow.TimingSpec
     Shomei.WorkflowSpec
 
   build-depends:

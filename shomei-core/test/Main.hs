@@ -12,6 +12,7 @@ import Shomei.Workflow.ImpersonationSpec qualified
 import Shomei.Workflow.MfaSpec qualified
 import Shomei.Workflow.PasskeySpec qualified
 import Shomei.Workflow.ServiceTokenSpec qualified
+import Shomei.Workflow.TimingSpec qualified
 import Shomei.WorkflowSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
@@ -31,6 +32,7 @@ main =
           Shomei.Workflow.MfaSpec.tests,
           Shomei.Workflow.ImpersonationSpec.tests,
           Shomei.Workflow.ServiceTokenSpec.tests,
+          Shomei.Workflow.TimingSpec.tests,
           Shomei.Workflow.PasskeySpec.tests,
           Shomei.Workflow.ConcurrencySpec.tests
         ]

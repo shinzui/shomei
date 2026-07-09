@@ -7,6 +7,7 @@
 module Shomei.Domain.Password
   ( PlainPassword (..),
     PasswordHash (..),
+    dummyPasswordHash,
     PasswordPolicy (..),
     PasswordContext (..),
     emptyPasswordContext,
@@ -30,6 +31,23 @@ instance Show PlainPassword where
 newtype PasswordHash = PasswordHash Text
   deriving stock (Generic)
   deriving newtype (Eq, Show, FromJSON, ToJSON)
+
+-- | A fixed, well-formed Argon2id hash of a discarded random password, used to equalize the
+-- timing of failed logins: the paths that fail before reaching a stored hash (unknown login
+-- identifier, dangling credential, inactive account) verify the presented password against
+-- THIS hash, so every failed login pays the same Argon2id cost. Without it, a miss returns in
+-- microseconds while a wrong password costs ~100 ms, and that difference enumerates accounts.
+--
+-- Generated once with the production parameters in @Shomei.Crypto.argonOptions@ (Argon2id,
+-- t=3, m=64 MiB, p=1); the preimage was random and never recorded.
+--
+-- It MUST stay format-valid (@argon2id$\<b64 salt\>$\<b64 hash\>@). @verifyPasswordArgon2id@
+-- returns 'False' /without hashing/ on malformed input — measured at 9 µs, versus ~95 ms for
+-- this value — so a malformed constant here silently reopens the very oracle it closes.
+-- Nothing is expected to verify against it; its only job is to make the hasher do real work.
+dummyPasswordHash :: PasswordHash
+dummyPasswordHash =
+  PasswordHash "argon2id$DrH+S1Tu9fzWNhj8IWtjvA==$IV3O9p9NgmlK5IC5ULgtpZ/BIkgc9uADUOi7PBWytPY="
 
 data PasswordPolicy = PasswordPolicy
   { minLength :: !Int,
