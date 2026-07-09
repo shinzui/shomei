@@ -29,6 +29,29 @@ describes an HTTP bearer (JWT) scheme. Supply your access token as the bearer
 credential (`Authorization: Bearer <accessToken>`), exactly as the
 [HTTP API guide](api.md) describes.
 
+## Token transport and generated clients
+
+The schema describes **all three** token transports, so `TokenPairResponse.accessToken` and
+`.refreshToken` are **optional** — a cookie-transport server omits them (only `expiresIn` is
+required). Generated clients therefore type them as nullable (`accessToken?: string` in
+TypeScript, `Optional[str]` in Python). A **bearer** deployment — the default — always populates
+them, so unwrapping is safe there; write the null check anyway if your client might point at a
+cookie-mode server.
+
+`RefreshRequest.refreshToken` is likewise optional, because cookie clients post `{}` and let the
+`shomei_refresh` cookie carry the token.
+
+Two things the document under-describes, both inherent to OpenAPI:
+
+- Cookie-issuing responses list **one** `Set-Cookie` header, because OpenAPI keys response
+  headers by name. The server always sends two (`shomei_session` and `shomei_refresh`).
+- `POST /auth/logout` shows an empty `application/json` media type on its `204`. The wire
+  response has no body.
+
+If you use cookie transport from a browser, your generated client must send credentials with each
+request (`fetch(..., { credentials: "include" })`) and an allow-listed `Origin` on every mutating
+call, or the server answers `403 csrf_rejected`. See [Token transport](api.md#token-transport).
+
 ## A note on OpenAPI 3.1
 
 The document declares `"openapi": "3.1.0"`. Some older generators only support

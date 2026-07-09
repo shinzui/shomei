@@ -8,6 +8,11 @@ The `shomei-client` package derives its client record from the same Servant `Sho
 the server serves. Authenticated calls take a `Token`, which adds
 `Authorization: Bearer <access-token>`.
 
+It is a **bearer-mode** client: it does not set or read Shōmei's cookies, and bearer credentials
+are accepted in every transport, so it works against a cookie-mode server too. Note that
+`TokenPairResponse.accessToken`/`.refreshToken` are `Maybe Text` — a cookie-only server omits them
+— so unwrap them when talking to a server you did not configure.
+
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
 

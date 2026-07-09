@@ -284,7 +284,7 @@ mkLoginId' t = case mkLoginId t of
 -- | Run an action over a fresh migrated database and a pool.
 withDb :: (Pool -> IO a) -> IO a
 withDb action = withShomeiMigratedDatabase \connStr -> do
-  pool <- acquirePool 4 connStr
+  pool <- acquirePool 4 10 connStr
   action pool
 
 -- | Unwrap the @Either AuthError@ from 'runApp' (the interpreter-level failure channel).

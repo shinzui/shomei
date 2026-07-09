@@ -47,6 +47,10 @@ List with `GET /auth/passkeys`; remove one with `DELETE /auth/passkeys/{passkeyI
    output> }`. The server verifies the signature and returns the access/refresh token pair
    `{ "accessToken", "refreshToken", "expiresIn" }`.
 
+   In cookie transport (`SHOMEI_TOKEN_TRANSPORT=cookie`) this response sets the
+   `shomei_session`/`shomei_refresh` cookies instead and the body carries only `expiresIn` — see
+   [Token transport](api.md#token-transport).
+
 If step 3 is never performed (or fails), no usable token is ever issued — possession of the
 password alone does not grant a session. A failed assertion returns `401 mfa_failed`; a
 missing/expired/already-consumed ceremony returns `404 ceremony_not_found`.
@@ -60,6 +64,7 @@ missing/expired/already-consumed ceremony returns `404 ceremony_not_found`.
 3. POST `/auth/login/passkey/complete` with `{ "ceremonyId": "...", "assertion": <get()
    output> }`. On success the response is the token pair `{ "accessToken", "refreshToken",
    "expiresIn" }` directly (the passkey is the strong factor, so there is no second challenge).
+   As above, cookie transport moves the tokens into cookies and omits them from the body.
 
 ## Configuration
 

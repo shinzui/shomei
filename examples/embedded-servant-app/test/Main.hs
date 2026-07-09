@@ -45,7 +45,7 @@ tests =
     "embedded demo: mounted /auth + guarded /projects"
     [ testCase "/projects is 401 without a token and 200 with one" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 connStr
+          pool <- acquirePool 4 10 connStr
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")

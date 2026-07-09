@@ -82,7 +82,7 @@ cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
 
 withDb :: (Pool -> Text -> IO a) -> IO a
 withDb action = withShomeiMigratedDatabase \connStr -> do
-  pool <- acquirePool 4 connStr
+  pool <- acquirePool 4 10 connStr
   action pool connStr
 
 scalarInt :: Pool -> Text -> IO Int

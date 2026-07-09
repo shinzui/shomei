@@ -52,7 +52,7 @@ tests =
     "microservice demo: downstream local JWT verification"
     [ testCase "valid token → 200 (offline), tampered → 401, none → 401" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 connStr
+          pool <- acquirePool 4 10 connStr
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")

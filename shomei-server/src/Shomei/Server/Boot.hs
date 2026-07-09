@@ -25,7 +25,7 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (forever)
 import Data.IORef (newIORef, readIORef)
 import Data.Text qualified as Text
-import Data.Time (secondsToDiffTime)
+import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
 import Effectful (Eff, inject)
 import Hasql.Pool qualified as Pool
 import Network.HTTP.Client.TLS (newTlsManager)
@@ -132,12 +132,26 @@ installKeyReload cfg env = do
 buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
   _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
-  pool <- acquirePool 10 settings.serverConnStr
+  hPutStrLn
+    stderr
+    ( "[shomei] db pool: size "
+        <> show settings.serverDbPoolSize
+        <> ", acquisition timeout "
+        <> show settings.serverDbPoolAcquisitionTimeoutMs
+        <> "ms"
+    )
+  pool <- acquirePool settings.serverDbPoolSize (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs) settings.serverConnStr
   kek <- loadKekFromEnv
   keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
   pure Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = kek, envHttpManager = mgr}
+
+-- | Milliseconds to a 'DiffTime', exactly (a 'DiffTime' counts picoseconds, so this loses
+-- nothing). Used for the pool's acquisition timeout, which config carries as an integer count
+-- of milliseconds.
+millisToDiffTime :: Int -> DiffTime
+millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 -- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification

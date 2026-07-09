@@ -54,7 +54,7 @@ tests =
     "auth lifecycle over HTTP against PostgreSQL"
     [ testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 connStr
+          pool <- acquirePool 4 10 connStr
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")

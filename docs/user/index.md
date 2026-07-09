@@ -20,7 +20,8 @@ Haskell service, and integrating client applications.
 - [Notifications](notifications.md) explains the `Notifier` effect and how to deliver email
   verification and password-reset links through your own provider.
 - [Security Model](security.md) summarizes password hashing, token handling, session revocation,
-  key rotation, lockout/rate limits, audit logging, impersonation, passkeys, and service tokens.
+  key rotation, signing-key encryption at rest, cookie transport and CSRF defenses,
+  lockout/rate limits, audit logging, impersonation, passkeys, and service tokens.
 - [Client & Examples](client-and-examples.md) shows the typed Haskell client and the two runnable
   example applications.
 - [Generating API Clients](openapi-client-generation.md) explains the committed OpenAPI 3.1 schema

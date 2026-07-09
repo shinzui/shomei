@@ -54,11 +54,29 @@ import System.Process (readProcess)
 import Text.Read (readMaybe)
 
 -- | Server-only settings not part of the transport-agnostic 'ShomeiConfig'.
+--
+-- The pool knobs live here rather than in 'ShomeiConfig' because 'ShomeiConfig' is
+-- deliberately infrastructure-agnostic — it has no @hasql@ types and no knowledge that
+-- PostgreSQL exists. The pool is a server deployment concern exactly like the listen port.
 data ServerSettings = ServerSettings
   { serverPort :: !Int,
-    serverConnStr :: !Text
+    serverConnStr :: !Text,
+    -- | connections held open by the @hasql@ pool
+    serverDbPoolSize :: !Int,
+    -- | how long a request waits for a free pooled connection before failing
+    serverDbPoolAcquisitionTimeoutMs :: !Int
   }
   deriving stock (Show, Generic)
+
+-- | The pool size a server boots with when neither the Dhall file nor the environment says
+-- otherwise. Ten preserves the value that was hardcoded in @Shomei.Server.Boot.buildEnv@.
+defaultDbPoolSize :: Int
+defaultDbPoolSize = 10
+
+-- | The acquisition timeout, in milliseconds, a server boots with by default: @hasql-pool@'s
+-- own 10-second default, made explicit.
+defaultDbPoolAcquisitionTimeoutMs :: Int
+defaultDbPoolAcquisitionTimeoutMs = 10000
 
 -- | The flat, all-optional shape the Dhall config file is rendered into (via @dhall-to-json@).
 -- Every field is a 'Maybe' scalar so a partial file is valid and absent keys fall back to the
@@ -68,6 +86,10 @@ data FileConfig = FileConfig
     audience :: !(Maybe Text),
     databaseUrl :: !(Maybe Text),
     port :: !(Maybe Int),
+    -- | connections held open by the @hasql@ pool
+    dbPoolSize :: !(Maybe Int),
+    -- | how long a request waits for a free pooled connection, in milliseconds
+    dbPoolAcquisitionTimeoutMs :: !(Maybe Int),
     accessTokenTtlSeconds :: !(Maybe Int),
     refreshTokenTtlSeconds :: !(Maybe Int),
     sessionTtlSeconds :: !(Maybe Int),
@@ -161,7 +183,12 @@ baseDefaults :: IO (ShomeiConfig, ServerSettings)
 baseDefaults =
   pure
     ( defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients"),
-      ServerSettings {serverPort = 8080, serverConnStr = ""}
+      ServerSettings
+        { serverPort = 8080,
+          serverConnStr = "",
+          serverDbPoolSize = defaultDbPoolSize,
+          serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs
+        }
     )
 
 baseFromFile :: Maybe FileConfig -> IO (ShomeiConfig, ServerSettings)
@@ -222,7 +249,14 @@ baseFromFile (Just fc) = do
                   allowedOrigins = fromMaybe cfg0.cookieConfig.allowedOrigins fc.csrfAllowedOrigins
                 }
           }
-      settings = ServerSettings {serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
+      settings =
+        ServerSettings
+          { serverPort = fromMaybe 8080 fc.port,
+            serverConnStr = fromMaybe "" fc.databaseUrl,
+            serverDbPoolSize = fromMaybe defaultDbPoolSize fc.dbPoolSize,
+            serverDbPoolAcquisitionTimeoutMs =
+              fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs
+          }
   pure (cfg, settings)
 
 -- Env overrides --------------------------------------------------------------
@@ -231,14 +265,40 @@ overlayFromEnvBoth :: ShomeiConfig -> ServerSettings -> IO (ShomeiConfig, Server
 overlayFromEnvBoth baseCfg baseSettings = do
   connStr <- textEnv "PG_CONNECTION_STRING" baseSettings.serverConnStr
   portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
+  poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
+  poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
   aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
   when (Text.null connStr) (ioError (userError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)"))
-  pure (cfg, ServerSettings {serverPort = portV, serverConnStr = connStr})
+  -- Validated after the overlay so a bad value fails the boot whichever layer supplied it.
+  -- A zero-size pool deadlocks every request and a zero acquisition timeout fails every
+  -- checkout, so neither is a survivable "disable" setting: refuse to start.
+  requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
+  requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
+  pure
+    ( cfg,
+      ServerSettings
+        { serverPort = portV,
+          serverConnStr = connStr,
+          serverDbPoolSize = poolSize,
+          serverDbPoolAcquisitionTimeoutMs = poolTimeout
+        }
+    )
   where
     issuerText (Issuer t) = t
     audienceText (Audience t) = t
+    requirePositive envName dhallField n =
+      when (n <= 0) do
+        ioError
+          ( userError
+              ( Text.unpack envName
+                  <> " (Dhall field "
+                  <> Text.unpack dhallField
+                  <> ") must be a positive integer, got "
+                  <> show n
+              )
+          )
 
 overlayCoreFromEnv :: ShomeiConfig -> IO ShomeiConfig
 overlayCoreFromEnv base = do

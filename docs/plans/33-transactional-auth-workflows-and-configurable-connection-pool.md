@@ -5,6 +5,7 @@ title: "Transactional Auth Workflows and Configurable Connection Pool"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
 master_plan: "docs/masterplans/6-operational-and-performance-hardening.md"
+intention: intention_01kx2hqr6beeashgwvg5zwxtgc
 ---
 
 # Transactional Auth Workflows and Configurable Connection Pool

@@ -30,7 +30,7 @@ loadAdminEnv = do
   iss <- envOr "SHOMEI_ISSUER" "shomei"
   aud <- envOr "SHOMEI_AUDIENCE" "shomei-clients"
   let cfg = defaultShomeiConfig (Issuer iss) (Audience aud)
-  p <- acquirePool 4 cs
+  p <- acquirePool 4 10 cs
   pure AdminEnv {config = cfg, pool = p, connStr = cs}
 
 requireEnv :: Text -> IO Text
