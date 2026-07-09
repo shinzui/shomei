@@ -4,6 +4,7 @@ slug: interop-wave-standards-based-auth-surface
 title: "Interop Wave: Standards-Based Auth Surface"
 kind: master-plan
 created_at: 2026-07-07T17:22:07Z
+intention: "intention_01kx254gy7e429sh8erv1hee3n"
 ---
 
 # Interop Wave: Standards-Based Auth Surface
@@ -40,6 +41,16 @@ standard RFC 8693 token-exchange grant; TOTP joins passkeys as a second factor w
 one-time recovery codes as the lockout escape hatch; and account-lifecycle email actually
 delivers in production through SMTP and webhook `Notifier` interpreters.
 
+Authorization follows a deliberate two-tier story. Shōmei's built-in RBAC — flat roles with a
+registry, default signup roles, role→permission definitions, and time-bound grants — is
+self-contained and complete for deployments that want no second system, and it gates Shōmei's
+own `/admin` surface with zero external infrastructure. For robust fine-grained authorization
+(resource-scoped permissions, relationship-derived access, live revocation, caveats), the
+documented recommendation is **en**, the author's Zanzibar-style ReBAC toolkit at
+`/Users/shinzui/Keikaku/bokuno/en`; this initiative ships the integration examples and guide
+that make "shomei for authentication, en for authorization" the paved road. The built-in tier
+is never removed in favor of en.
+
 Explicitly out of scope, deliberately and permanently (recorded in the Decision Log):
 multi-tenancy (instances/orgs — tenant-per-deployment plus a host-managed `tenant` claim via
 `extraClaims` covers Shōmei's cases), SAML and LDAP, SCIM (only coherent after the admin API
@@ -50,16 +61,18 @@ authorization grant, quotas, and SMS/email OTP factors.
 
 ## Decomposition Strategy
 
-Eight work streams exceed the seven-plan guideline, so they are grouped into three phases —
+Ten work streams exceed the seven-plan guideline, so they are grouped into three phases —
 implementation waves that also match dependency structure and risk.
 
 Phase 1 (Foundations) makes the existing surface trustworthy and evolvable before new
 protocol surface is added: EP-1 gives roles/scopes a source of truth (the review's
 "unsatisfiable admin role" finding makes this the keystone — both the admin API and every
-gated route depend on it); EP-2 exposes administration over HTTP; EP-3 establishes `/v1` and
-the universal error envelope. EP-3 sits in Phase 1 because it is a breaking-change window:
-every route added by later plans must be born under `/v1` with the new envelope, not migrated
-afterward.
+gated route depend on it), including the role registry and default signup roles; EP-9 grows
+that built-in tier with role→permission indirection and time-bound grants so non-en adopters
+never hard-code role names across services; EP-2 exposes administration over HTTP; EP-3
+establishes `/v1` and the universal error envelope. EP-3 sits in Phase 1 because it is a
+breaking-change window: every route added by later plans must be born under `/v1` with the
+new envelope, not migrated afterward.
 
 Phase 2 (Standards surface) recasts Shōmei's token machinery as OAuth2/OIDC: EP-4 moves
 service accounts from static config into the database and introduces the `/oauth/token`
@@ -73,7 +86,9 @@ it generalizes a different workflow (impersonation) and is droppable without wea
 Phase 3 (Factors and delivery) is user-facing completeness, independent of the protocol work:
 EP-7 adds TOTP and recovery codes by extending the existing factor-agnostic MFA shape
 (`mfa_required` login arm and `/auth/mfa/complete`); EP-8 ships real SMTP and webhook
-`Notifier` interpreters so verification/reset email leaves the process.
+`Notifier` interpreters so verification/reset email leaves the process; EP-10 ships the en
+integration example and guide (nominally Phase 3, but dependency-free — it may run at any
+point).
 
 The alternative of one mega-plan "OIDC provider" containing EP-4 through EP-6 was rejected: it
 would exceed five milestones, and client_credentials alone delivers most of the
@@ -94,11 +109,14 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Not Started |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Not Started |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Not Started |
+| 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Not Started |
+| 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
 
-Phases: Phase 1 = EP-1, EP-2, EP-3. Phase 2 = EP-4, EP-5, EP-6. Phase 3 = EP-7, EP-8.
+Phases: Phase 1 = EP-1, EP-2, EP-3, EP-9. Phase 2 = EP-4, EP-5, EP-6. Phase 3 = EP-7, EP-8,
+EP-10 (EP-10 has no hard dependencies and may run at any point).
 
 
 ## Dependency Graph
@@ -125,9 +143,23 @@ in EP-3 and in Integration Points). EP-8 has no dependencies at all and is a goo
 warm-up or parallel filler at any point. EP-7 is independent of the protocol plans; its only
 coordination is with the MFA method union (Integration Points).
 
-Parallelism guide: Phase 1 can run EP-1 and EP-3 concurrently, with EP-2 starting once EP-1
-lands. Phase 2 can start EP-4 concurrently with Phase 1 (it integrates with, but does not
-require, EP-3). EP-7 and EP-8 fit anywhere.
+EP-9 hard-depends on EP-1 because it extends every artifact EP-1 creates: the role registry
+table gains a permissions side-table, the grants table gains an expiry column, the RoleStore
+port gains definition/permission operations, the claims-enrichment path resolves permissions,
+and the `RequirePermission` combinator follows the enforcing-combinator pattern EP-1
+establishes. Its soft dependency on EP-2 covers the admin routes that expose role/permission
+management over HTTP. It also has a cross-MasterPlan integration with the Operational
+MasterPlan's sweeper (`docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md`)
+for expired-grant cleanup.
+
+EP-10 has no hard dependencies: the en integration example and guide work against today's
+`Authenticated`/`AuthUser` surface. It soft-depends on EP-1 (its documentation cross-links the
+two-tier boundary text EP-1 adds to `docs/user/security.md`) and EP-4 (the service-account
+subject-mapping note references `client_id`s that EP-4 introduces).
+
+Parallelism guide: Phase 1 can run EP-1 and EP-3 concurrently, with EP-2 and EP-9 starting
+once EP-1 lands. Phase 2 can start EP-4 concurrently with Phase 1 (it integrates with, but
+does not require, EP-3). EP-7, EP-8, and EP-10 fit anywhere.
 
 
 ## Integration Points
@@ -171,9 +203,32 @@ authentication in service on-behalf-of exchanges. The existing config-defined se
 (`Shomei.Config` service-token sub-record) remain supported during a deprecation window; EP-4
 documents the migration path.
 
-`shomei-admin` CLI (`shomei-server/app/`): EP-1 adds `roles grant/revoke` (the bootstrap path
-for the first admin), EP-4 adds `service-accounts create/rotate/revoke`. Additive subcommands;
-no shared code beyond the existing CLI plumbing.
+`shomei-admin` CLI (`shomei-server/app/`): EP-1 adds `roles grant/revoke` plus the role
+registry subcommands (the bootstrap path for the first admin), EP-9 adds
+`roles allow/disallow/show` and grant-expiry flags, EP-4 adds
+`service-accounts create/rotate/revoke`. Additive subcommands; no shared code beyond the
+existing CLI plumbing.
+
+Role storage (`shomei_roles` registry and `shomei_role_grants` tables, `RoleStore` port in
+`shomei-core/src/Shomei/Effect/`): EP-1 owns the tables and the port; EP-9 extends them
+(permissions side-table, nullable `expires_at` on grants, new port operations) and must do so
+additively — EP-2's admin routes and EP-1's CLI keep working unchanged.
+
+Claims vocabulary (`shomei-core/src/Shomei/Domain/Claims.hs`, `reservedClaimKeys`, and the
+matching sign/verify claim filters in `shomei-jwt`): EP-1 populates the existing `roles` and
+`scopes` claims through its enrichment hook; EP-9 adds a `permissions` claim, which must join
+`reservedClaimKeys` and the jwt-layer filter tables so `extraClaims` cannot forge it. Any plan
+adding a reserved claim updates all of these sites together.
+
+The en boundary (docs and combinator naming): shomei's built-in RBAC (EP-1, EP-9) is the
+self-contained tier; the author's sibling project **en** (`/Users/shinzui/Keikaku/bokuno/en`,
+a Zanzibar-style ReBAC toolkit) is the documented recommendation for fine-grained,
+relationship-based authorization. EP-10 owns the integration guide and examples; EP-1 and
+EP-9 own short boundary statements in their docs milestones that point at it. Naming is
+verified non-colliding: shomei's `RequireRole`/`RequireScope`/`RequirePermission` are
+type-level combinators over static JWT claims; en-servant exports only a term-level
+`requirePermission` handler guard for live relationship checks, and neither library imports
+the other.
 
 
 ## Progress
@@ -196,6 +251,10 @@ no shared code beyond the existing CLI plumbing.
 - [ ] EP-7: Hashed one-time recovery codes with generation and consumption flows
 - [ ] EP-8: SMTP `Notifier` interpreter with TLS and auth, configured via Dhall/env
 - [ ] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
+- [ ] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
+- [ ] EP-9: Time-bound grants (`expires_at`), expiry-filtered at mint, CLI flags, sweeper integration
+- [ ] EP-10: `examples/embedded-with-en` — shomei auth + embedded en authorization, end-to-end transcript
+- [ ] EP-10: Microservice recipe (JWKS verify → subject mapping → en-client check) and `docs/user/authorization.md` two-tier guide
 
 
 ## Surprises & Discoveries
@@ -247,7 +306,43 @@ no shared code beyond the existing CLI plumbing.
   recorded in EP-4/EP-6.
   Date: 2026-07-07
 
+- Decision: Shomei ships a two-tier authorization story — the built-in RBAC tier stays and
+  grows (EP-1 folded in a role registry and default signup roles; new EP-9 adds
+  role→permission definitions and time-bound grants), while **en**
+  (`/Users/shinzui/Keikaku/bokuno/en`, the author's Zanzibar-style ReBAC toolkit) is the
+  documented recommendation for robust fine-grained authorization (new EP-10 provides the
+  integration examples and guide). The built-in tier is never removed in favor of en.
+  Rationale: (a) developers who do not want a second system must still get complete, safe
+  RBAC from shomei alone — permission indirection exists precisely so non-en adopters do not
+  hard-code role names across services; (b) shomei must gate its own `/admin` endpoints with
+  zero external infrastructure; (c) a code-level integration analysis found en-server itself
+  has no caller authentication yet (en's `docs/plans/33-…` names shomei-JWT verification as
+  the intended mechanism), so shomei's flat JWT roles are what cut the auth↔authz bootstrap
+  circularity; (d) the graduation boundary is explicit: resource-scoped permissions,
+  relationship-derived access, live revocation, and caveats belong to en, and shomei will not
+  grow them.
+  Date: 2026-07-07
+
+- Decision: The canonical en subject mapping is `user:<TypeID text>` (`idText` of the JWT
+  `sub`), pinned in EP-10's guide and example code.
+  Rationale: en's `ObjectRef` ids are compared as plain text; shomei renders identifiers both
+  as TypeID text (JWT, API) and bare UUID (audit columns), and a mixed convention makes en
+  checks silently deny. The JWT `sub` form is what every downstream verifier actually holds.
+  Date: 2026-07-07
+
 
 ## Outcomes & Retrospective
 
 (To be filled during and after implementation.)
+
+---
+
+Revision note (2026-07-07): Added EP-9 (`docs/plans/46-role-definitions-permissions-and-time-bound-grants.md`)
+and EP-10 (`docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`)
+after an RBAC gap assessment and a code-level shomei×en integration analysis. EP-1's scope was
+extended in place (role registry/validation, default signup roles, en-boundary documentation).
+Reason: the user directed a two-tier authorization posture — self-contained built-in RBAC for
+deployments that do not adopt en, with en as the documented recommendation for robust
+authorization — captured in the Decision Log together with the pinned subject-mapping
+convention. Registry, Dependency Graph, Integration Points, Progress, and phases updated
+accordingly (Phase 1 gains EP-9; EP-10 floats).

@@ -4,6 +4,7 @@ slug: admin-http-api-for-user-and-session-management
 title: "Admin HTTP API for User and Session Management"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
+intention: "intention_01kx254gy7e429sh8erv1hee3n"
 master_plan: "docs/masterplans/7-interop-wave-standards-based-auth-surface.md"
 ---
 

@@ -4,6 +4,7 @@ slug: persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment
 title: "Persistent Roles and Scopes with a Granting Path and Claims Enrichment"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
+intention: "intention_01kx254gy7e429sh8erv1hee3n"
 master_plan: "docs/masterplans/7-interop-wave-standards-based-auth-surface.md"
 ---
 
@@ -14,10 +15,13 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 This is **EP-1** of MasterPlan 7
 (`docs/masterplans/7-interop-wave-standards-based-auth-surface.md`), the keystone of its
-Phase 1. It has no dependencies on other plans in that MasterPlan. Two later plans build
+Phase 1. It has no dependencies on other plans in that MasterPlan. Three later plans build
 directly on it: the admin HTTP API (`docs/plans/39-admin-http-api-for-user-and-session-management.md`)
-cannot demonstrate an authorized request until this plan's granting path exists, and the OIDC
-plans reuse the claims-construction hook this plan introduces.
+cannot demonstrate an authorized request until this plan's granting path exists; the
+built-in tier's growth plan
+(`docs/plans/46-role-definitions-permissions-and-time-bound-grants.md`, EP-9) extends this
+plan's registry table, `RoleStore` port, enrichment path, and combinator pattern; and the
+OIDC plans reuse the claims-construction hook this plan introduces.
 
 
 ## Purpose / Big Picture
@@ -39,25 +43,59 @@ and enforces **nothing** — a route author who writes the type but forgets the 
 After this plan, all of that is fixed end-to-end:
 
 1. Roles have a **persistent source of truth**: a new `shomei_role_grants` table and a
-   `RoleStore` effect (grant, revoke, list) with PostgreSQL and in-memory interpreters.
-2. Every token mint (signup, login, MFA completion, passwordless login, refresh) populates
+   `RoleStore` effect (define, list-defined, grant, revoke, list) with PostgreSQL and
+   in-memory interpreters.
+2. Roles have a **declared catalog** (a "role registry"): a new `shomei_roles` table (role
+   name as primary key, plus a description and a created-at timestamp), seeded with `admin`
+   by the migration. `shomei_role_grants.role` carries a foreign key into it, and the
+   granting workflow refuses a role that has not been defined — so
+   `roles grant --role adminn` (a typo) fails loudly (CLI exit code 1; HTTP 422
+   `role_not_defined` once plan 39 exposes granting over HTTP) instead of silently minting
+   a role nothing will ever check. Operators declare new roles with
+   `shomei-admin roles define <name> --description "…"` and inspect the catalog with
+   `shomei-admin roles list-defined`.
+3. Every token mint (signup, login, MFA completion, passwordless login, refresh) populates
    the `roles` claim from that store and runs a **host-supplied claims-enrichment hook** (a
    new `ClaimsEnricher` effect) that can add scopes, roles, and extra claims. This hook is
    the claims-construction integration point that the later OIDC and token-exchange plans
    (MasterPlan 7 EP-5/EP-6) must reuse.
-3. An operator can **bootstrap the first admin** from the box:
+4. Deployments can configure **default roles for new users**: a new
+   `defaultRoles :: Set Role` field on `ShomeiConfig` (default empty), validated against
+   the role registry at server boot (the server refuses to start naming an undefined
+   default role), and applied inside the signup workflow at the same point the user row is
+   created — audited as `role_granted` with a `NULL` granting actor, exactly like a CLI
+   bootstrap grant. `shomei-admin users create` drives the same workflow, so CLI-created
+   users receive them too.
+5. An operator can **bootstrap the first admin** from the box:
    `shomei-admin roles grant --user <id> --role admin`, plus `roles revoke` and `roles list`.
-4. `RequireRole`/`RequireScope` become **real, enforcing combinators** with `HasServer`
+6. `RequireRole`/`RequireScope` become **real, enforcing combinators** with `HasServer`
    instances: the route type alone authenticates the caller and rejects a principal lacking
    the role/scope with 403. The audit endpoint switches to `RequireRole "admin"` as the
    proving route.
-5. Grants and revocations are **audited** (`role_granted` / `role_revoked` rows in
+7. Grants and revocations are **audited** (`role_granted` / `role_revoked` rows in
    `shomei_auth_events`, carrying who granted what to whom).
 
 You can see it working: run the dev server, create a user, grant them `admin` with the CLI,
 log in, and `curl /admin/audit/events` with the fresh token — HTTP 200 with the audit trail.
-Revoke the role, refresh the token, and the same request is 403. The exact transcript is in
-Validation and Acceptance.
+Revoke the role, refresh the token, and the same request is 403. Grant a misspelled role
+and the CLI refuses with `role not defined`. The exact transcript is in Validation and
+Acceptance.
+
+One product decision frames what this plan builds and, deliberately, what it does not
+(recorded in the Decision Log): Shōmei ships a **two-tier authorization story**. This plan
+is tier 1 — flat, self-contained role-based access control that works with zero extra
+infrastructure, gates Shōmei's *own* `/admin` endpoints, and grows (in
+`docs/plans/46-role-definitions-permissions-and-time-bound-grants.md`) into role→permission
+definitions and time-bound grants. Tier 2, the recommended path for robust, fine-grained,
+relationship-based authorization ("is this user an editor *of this project*?", live
+revocation, conditional access), is the author's sibling project **en** — a Zanzibar-style
+ReBAC toolkit at `/Users/shinzui/Keikaku/bokuno/en` — documented in
+`docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`.
+Shōmei's built-in roles are never removed in favor of en: they are the bootstrap tier that
+cuts the auth↔authz circularity (en's own server has no caller authentication yet; its
+plan for adding it names Shōmei-JWT verification as the intended credential checker, so
+*something* that is not en must gate Shōmei's admin surface). The docs milestone below
+states this boundary for users.
 
 One semantic to understand up front (documented for operators in Milestone 5): **role
 changes take effect at the next token mint**, i.e. the next login or refresh, not on
@@ -73,29 +111,33 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Role persistence (migration, port, interpreters, audit events):
+Milestone 1 — Role persistence (migration, registry, port, interpreters, audit events):
 
-- [ ] Add migration `shomei-migrations/sql-migrations/<ts>-shomei-role-grants.sql` (via `just new-migration name=shomei-role-grants`) creating `shomei_role_grants`.
-- [ ] Add `UserNotFound` to `AuthError` (`shomei-core/src/Shomei/Error.hs`) and its mapping in `shomei-servant/src/Shomei/Servant/Error.hs` (404 `user_not_found`).
+- [ ] Add migration `shomei-migrations/sql-migrations/<ts>-shomei-role-grants.sql` (via `just new-migration name=shomei-role-grants`) creating `shomei_roles` (seeded with `admin`) and `shomei_role_grants` (with the `role` FK into `shomei_roles`).
+- [ ] Add `UserNotFound` and `RoleNotDefined` to `AuthError` (`shomei-core/src/Shomei/Error.hs`) and their mappings in `shomei-servant/src/Shomei/Servant/Error.hs` (404 `user_not_found`; 422 `role_not_defined`).
 - [ ] Add `RoleGranted`/`RoleRevoked` constructors + `RoleGrantedData`/`RoleRevokedData` to `shomei-core/src/Shomei/Domain/Event.hs`.
-- [ ] Extend `projectAuthEvent`/`reconstructAuthEvent` in `shomei-core/src/Shomei/Domain/EventCodec.hs` (`role_granted`, `role_revoked`) and bump the constructor-count guard in `shomei-core/test/Shomei/Domain/EventCodecSpec.hs` from 25 to 27 with round-trip cases.
-- [ ] Add the `RoleStore` effect (`shomei-core/src/Shomei/Effect/RoleStore.hs`) and export it from the cabal file.
-- [ ] Add `Shomei.Workflow.Roles` (`grantRole`, `revokeRole`, `rolesForUser`) publishing the audit events.
-- [ ] Add the PostgreSQL interpreter `shomei-postgres/src/Shomei/Postgres/RoleStore.hs` (`runRoleStorePostgres`).
-- [ ] Add the in-memory interpreter (`runRoleStore` + a `roleGrants` field in `World`) to `shomei-core/src/Shomei/Effect/InMemory.hs`.
-- [ ] Postgres interpreter test in `shomei-postgres/test/Main.hs` (grant/duplicate-grant/list/revoke/FK failure) — suite green.
+- [ ] Extend `projectAuthEvent`/`reconstructAuthEvent` in `shomei-core/src/Shomei/Domain/EventCodec.hs` (`role_granted`, `role_revoked`) and bump the constructor-count guard in `shomei-core/test/Shomei/Domain/EventCodecSpec.hs` from 25 to 27 with round-trip cases. (Role *definitions* are not audit events — Decision Log.)
+- [ ] Add the `RoleStore` effect (`shomei-core/src/Shomei/Effect/RoleStore.hs`) with grant/revoke/list **and** `DefineRole`/`ListDefinedRoles` + the `RoleDefinition` record; export it from the cabal file.
+- [ ] Add `Shomei.Workflow.Roles` (`grantRoleTo`, `revokeRoleFrom`, `rolesOf`, `applyDefaultRoles`, `undefinedDefaultRoles`) publishing the audit events; `grantRoleTo` refuses undefined roles with `RoleNotDefined`.
+- [ ] Add the PostgreSQL interpreter `shomei-postgres/src/Shomei/Postgres/RoleStore.hs` (`runRoleStorePostgres`, five statements).
+- [ ] Add the in-memory interpreter (`runRoleStore` + `roleGrants` and `definedRoles` fields in `World`, `definedRoles` pre-seeded with `admin` to mirror the migration) to `shomei-core/src/Shomei/Effect/InMemory.hs`.
+- [ ] Postgres interpreter test in `shomei-postgres/test/Main.hs` (define/duplicate-define/list-defined; grant/duplicate-grant/list/revoke; grant of an undefined role → `RoleNotDefined`; FK failure) — suite green.
 
-Milestone 2 — Claims enrichment at every mint:
+Milestone 2 — Claims enrichment at every mint, and default roles at signup:
 
-- [ ] Add the `ClaimsEnricher` effect + `ClaimsDelta` (`shomei-core/src/Shomei/Effect/ClaimsEnricher.hs`) with `runClaimsEnricherNull` and `runClaimsEnricherPure`.
+- [ ] Add the `ClaimsEnricher` effect + `ClaimsDelta` (`shomei-core/src/Shomei/Effect/ClaimsEnricher.hs`) with `runClaimsEnricherNull` and `runClaimsEnricherPure`; module haddock carries the staleness warning (do **not** mirror live en/ReBAC decisions into JWT claims — see 2.1).
 - [ ] Add `buildEnrichedClaims` to `shomei-core/src/Shomei/Workflow/Session.hs`; switch `issueSession`, `Shomei.Workflow.signup`, and `Shomei.Workflow.refresh` to it.
+- [ ] Add `defaultRoles :: Set Role` to `ShomeiConfig` (`shomei-core/src/Shomei/Config.hs`, default empty in `defaultShomeiConfig`) and the `SHOMEI_DEFAULT_ROLES` env override in `shomei-server/src/Shomei/Server/Config.hs`.
+- [ ] Apply default roles in `Shomei.Workflow.signup` (via `Shomei.Workflow.Roles.applyDefaultRoles`, immediately after `createUser`) so the first minted token already carries them; audited as `role_granted` with `granted_by = NULL`.
+- [ ] Boot-time validation: the server (`shomei-server/src/Shomei/Server/Boot.hs`) refuses to start when `defaultRoles` names a role missing from `shomei_roles` (via `undefinedDefaultRoles`); embedded-host guidance documented on the helper's haddock.
 - [ ] Wire `RoleStore` + `ClaimsEnricher` into every effect stack: `Shomei.Servant.Seam.AppEffects`, `Shomei.Server.App.AppEffects` + `runAppIO`, `Shomei.Effect.InMemory.runInMemory`, `shomei-postgres/test/Main.hs`, `shomei-servant/test/Main.hs`, `shomei-server/app/Shomei/Admin/Users.hs`, and the admin test suite.
-- [ ] Core/postgres/servant tests proving a granted role appears in the next minted token (login and refresh), and that a `ClaimsDelta` cannot smuggle reserved claim keys.
+- [ ] Core/postgres/servant tests proving a granted role appears in the next minted token (login and refresh), that a `ClaimsDelta` cannot smuggle reserved claim keys, and that a signup under a config with `defaultRoles = {"member"}` (defined) mints a `member`-roled first token and lands a `role_granted` audit row.
 
 Milestone 3 — CLI granting path:
 
-- [ ] Add `shomei-server/app/Shomei/Admin/Roles.hs` (`roles grant|revoke|list`) and wire it into `shomei-server/app/Admin.hs` + both cabal stanzas.
-- [ ] Admin CLI test (grant → list → revoke over a migrated ephemeral DB) — suite green.
+- [ ] Add `shomei-server/app/Shomei/Admin/Roles.hs` (`roles define|list-defined|grant|revoke|list`) and wire it into `shomei-server/app/Admin.hs` + both cabal stanzas.
+- [ ] `roles grant` with an undefined role exits 1 with `role not defined: <name> (define it first: shomei-admin roles define <name>)`.
+- [ ] Admin CLI test (define → list-defined → grant → list → revoke → grant-typo-fails, over a migrated ephemeral DB) — suite green.
 
 Milestone 4 — Enforcing combinators:
 
@@ -107,8 +149,9 @@ Milestone 4 — Enforcing combinators:
 
 Milestone 5 — Live proof and docs:
 
-- [ ] Live transcript: CLI grant → login → `curl /admin/audit/events` 200 → revoke + refresh → 403 (recorded below).
-- [ ] Rewrite the "Known limitation — the `admin` role" section of `docs/user/security.md`; document staleness semantics and the enrichment hook; update `docs/user/api.md`; CHANGELOG entry.
+- [ ] Live transcript: CLI grant → login → `curl /admin/audit/events` 200 → revoke + refresh → 403; plus the typo-grant refusal (recorded below).
+- [ ] Rewrite the "Known limitation — the `admin` role" section of `docs/user/security.md`; document staleness semantics, the role registry, default roles, and the enrichment hook; update `docs/user/api.md`; CHANGELOG entry.
+- [ ] The rewritten `docs/user/security.md` section states the **two-tier authorization story**: built-in flat roles as the self-contained/bootstrap/coarse tier, en (`docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`) as the recommended tier for fine-grained/relationship-based authorization with live revocation.
 - [ ] Update MasterPlan 7 registry/progress for EP-1.
 
 
@@ -124,15 +167,80 @@ implementation. Provide concise evidence.
 
 Record every decision made while working on the plan.
 
-- Decision: Role grants use a **flat** `(user_id, role)` model — one table, role as plain
-  text, no role catalog, no projects/organizations/grant-objects (the Zitadel shape).
-  Scopes get **no** persistence: they remain claim-strings supplied by service-token
-  requests and by the enrichment hook.
+- Decision: Role grants use a **flat** `(user_id, role)` model — role as plain text, no
+  projects/organizations/grant-objects (the Zitadel shape). Scopes get **no** persistence:
+  they remain claim-strings supplied by service-token requests and by the enrichment hook.
   Rationale: MasterPlan 7's gap analysis concluded Shōmei is single-tenant and headless;
   a grant hierarchy would touch every table and route for no current consumer. Roles are
   the thing the existing `requireRole` gate actually reads; scopes are already minted
   per-request by `/auth/service-token` and will be negotiated per-grant by the OAuth2 plans.
-  A flat table upgrades cleanly (add columns) if a catalog is ever needed.
+  A flat table upgrades cleanly (add columns) if more is ever needed.
+  (Amended 2026-07-07, same-day scope fold: the original "no role catalog" clause is
+  superseded by the role-registry decision below. The flat, object-free *grant* model
+  itself is unchanged.)
+  Date: 2026-07-07
+
+- Decision: Roles get a **registry** — a `shomei_roles` catalog table (`role text PRIMARY
+  KEY`, `description text NULL`, `created_at timestamptz NOT NULL`), seeded with `admin`
+  by the migration; `shomei_role_grants.role` carries an FK into it; the `RoleStore` port
+  gains `DefineRole`/`ListDefinedRoles` (with a `RoleDefinition` record); `grantRoleTo`
+  refuses an undefined role with a new `AuthError` constructor `RoleNotDefined`, mapped to
+  HTTP 422 `role_not_defined` (the CLI renders it as a stderr error, exit 1). The registry
+  is append-only in this plan: there is no `roles undefine` (removal would have to answer
+  what happens to outstanding grants; deferred until a consumer needs it —
+  `docs/plans/46-role-definitions-permissions-and-time-bound-grants.md` builds on the
+  registry and may revisit). The admin HTTP route `GET /admin/roles` that lists the
+  catalog belongs to plan 39 (`docs/plans/39-admin-http-api-for-user-and-session-management.md`),
+  which owns the admin HTTP surface; this plan provides the port operation and the
+  `RoleDefinition` shape it will serialize.
+  Rationale: without a catalog, `roles grant --role adminn` (typo) silently succeeds and
+  mints a role no gate ever checks — the same "compiles but enforces nothing" failure mode
+  this plan exists to kill, moved one layer up. The FK makes the invariant hold even for
+  code that bypasses the workflow. A separate table (rather than an enum or a config list)
+  keeps definitions administrable at runtime and gives plan 46's `shomei_role_permissions`
+  table something to reference. Definitions are **not** audit events: they are rare,
+  low-sensitivity catalog metadata, and keeping the `AuthEvent` count at 27 avoids codec
+  churn; grants/revocations (the security-relevant facts) remain fully audited.
+  Date: 2026-07-07
+
+- Decision: New users can receive **default roles at signup**: `ShomeiConfig` gains
+  `defaultRoles :: Set Role` (default empty; `SHOMEI_DEFAULT_ROLES` comma-separated env
+  override in the server's config loader), validated against the registry at server boot
+  (fail fast with the offending names), and applied by `Shomei.Workflow.signup`
+  immediately after `createUser` — inside the same workflow invocation, before the first
+  token is minted, so the very first access token already carries them. Each application
+  is audited as `role_granted` with `granted_by = NULL` (the "system/bootstrap" actor,
+  same convention as CLI grants). `shomei-admin users create` drives the same `signup`
+  workflow, so CLI-created users receive default roles too — no special-casing.
+  Rationale: "every new user is a `member`" is the most common role shape and must not
+  require a per-user CLI call. Applying them inside `signup` (not in a store trigger, not
+  in the HTTP handler) keeps one audited code path for every entry point (HTTP signup and
+  the admin CLI both call `signup`). Boot-time validation (rather than validating at each
+  signup) keeps the hot path free of catalog reads beyond the grant inserts themselves and
+  turns a config typo into an immediate, obvious startup failure instead of a stream of
+  522s; because the registry is append-only in this plan, a boot-validated role cannot
+  later disappear, so `applyDefaultRoles` may grant without re-checking.
+  Date: 2026-07-07
+
+- Decision: Shōmei ships a **two-tier authorization story**, and this plan is tier 1 —
+  deliberately flat and self-contained. Tier 2, recommended for robust fine-grained
+  authorization (resource-scoped permissions, relationship-derived access, live
+  revocation, caveats), is the sibling Zanzibar-style ReBAC project **en**
+  (`/Users/shinzui/Keikaku/bokuno/en`; integration guidance is
+  `docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`).
+  Shōmei's built-in roles are **never removed** in favor of en. The docs milestone states
+  the boundary, and the `ClaimsEnricher` haddock warns hosts not to mirror live en
+  decisions into JWT claims.
+  Rationale: two reasons. (1) Bootstrap circularity: en's own server currently has **no
+  caller authentication** (en's `docs/plans/33-add-caller-authentication-and-rate-limiting-to-en-server.md`
+  is unimplemented and names Shōmei-JWT verification as a future credential checker), so
+  Shōmei's admin surface cannot be gated by en without each system depending on the other
+  at boot; flat JWT roles cut that knot. (2) Deployments that do not want a second
+  authorization system get a complete, if coarse, story from Shōmei alone — plan 46 grows
+  it (permissions, time-bound grants) precisely so that tier 1 remains genuinely usable.
+  JWT claims are minted-then-static, which is the wrong transport for en's live decisions
+  (a mirrored decision is stale the moment a tuple changes); the enrichment hook is for
+  coarse hints and scopes, and plan 47's guide shows the correct live-check pattern.
   Date: 2026-07-07
 
 - Decision: `granted_by` on `shomei_role_grants` is **nullable**.
@@ -364,6 +472,20 @@ Additionally `shomei-server/app/Shomei/Admin/Users.hs` (`createUserAction`) asse
 *private* minimal chain to run `Wf.signup` — it interprets exactly the effects `signup`
 demands, so widening `signup`'s constraints means widening that chain too.
 
+### Configuration
+
+`ShomeiConfig` (`shomei-core/src/Shomei/Config.hs`, `data ShomeiConfig` at line ~221) is
+plain data with `FromJSON`/`ToJSON` instances and a `defaultShomeiConfig :: Issuer ->
+Audience -> ShomeiConfig` constructor (line ~278). The standalone server loads it in
+`shomei-server/src/Shomei/Server/Config.hs`: defaults → optional Dhall file
+(`$SHOMEI_CONFIG`, rendered by `dhall-to-json` and decoded) → individual `SHOMEI_*`
+environment overrides (see `applyEnv`, line ~211 onward, for the `textEnv`/`intEnv`
+helpers to imitate). Milestone 2 adds the `defaultRoles` field here and a
+`SHOMEI_DEFAULT_ROLES` override (comma-separated role names). Because the record has
+`FromJSON`, adding a field with no default breaks decoding of existing config files —
+follow the loader's existing pattern for optional fields (GHC's record-completeness errors
+plus the loader tests will point at every construction site).
+
 ### The audit-event vocabulary
 
 `shomei-core/src/Shomei/Domain/Event.hs` defines `data AuthEvent` with **25 constructors**
@@ -403,11 +525,12 @@ combinator (no path count change) and the combinator instances.
 
 Five milestones. Each is independently verifiable; commit at each boundary.
 
-### Milestone 1 — Role persistence: table, port, interpreters, audit events
+### Milestone 1 — Role persistence: registry + grants tables, port, interpreters, audit events
 
-Scope: after this milestone the repository can durably record "user U has role R", read it
-back, revoke it, and every grant/revoke is an audit event — proven by postgres interpreter
-tests. Nothing reads the store at mint time yet.
+Scope: after this milestone the repository can durably declare "role R exists" and record
+"user U has role R", read both back, revoke grants, refuse grants of undeclared roles, and
+every grant/revoke is an audit event — proven by postgres interpreter tests. Nothing reads
+the store at mint time yet.
 
 **1.1 The migration.** From the repo root (inside `nix develop`):
 `just new-migration name=shomei-role-grants`, then edit the generated file to:
@@ -417,9 +540,19 @@ tests. Nothing reads the store at mint time yet.
 
 SET search_path TO shomei, pg_catalog;
 
+CREATE TABLE IF NOT EXISTS shomei_roles (
+  role        text        PRIMARY KEY,
+  description text        NULL,
+  created_at  timestamptz NOT NULL
+);
+
+INSERT INTO shomei_roles (role, description, created_at)
+VALUES ('admin', 'Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes', now())
+ON CONFLICT (role) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS shomei_role_grants (
   user_id    uuid        NOT NULL REFERENCES shomei_users(user_id) ON DELETE CASCADE,
-  role       text        NOT NULL,
+  role       text        NOT NULL REFERENCES shomei_roles(role),
   granted_by uuid        NULL REFERENCES shomei_users(user_id),
   granted_at timestamptz NOT NULL,
   PRIMARY KEY (user_id, role)
@@ -428,18 +561,27 @@ CREATE TABLE IF NOT EXISTS shomei_role_grants (
 CREATE INDEX IF NOT EXISTS shomei_role_grants_role_idx ON shomei_role_grants (role);
 ```
 
-The composite primary key makes a duplicate grant a no-op-detectable conflict; `ON DELETE
-CASCADE` means deleting a user removes their grants; `granted_by` is nullable for CLI
-bootstrap grants (Decision Log). Because migrations are embedded via Template Haskell,
-`just migrate` touches the cabal file first — nothing else to wire.
+`shomei_roles` is the registry (Decision Log): the catalog of roles an operator has
+declared, seeded with `admin` so the bootstrap grant works on a fresh database with no
+prior `roles define`. The FK from `shomei_role_grants.role` makes "grants reference
+defined roles" a database invariant, not just workflow discipline. The composite primary
+key makes a duplicate grant a no-op-detectable conflict; `ON DELETE CASCADE` means
+deleting a user removes their grants; `granted_by` is nullable for CLI bootstrap grants
+and config-driven default-role grants (Decision Log). There is deliberately no CASCADE on
+the role FK — the registry is append-only in this plan, so the case never arises. Because
+migrations are embedded via Template Haskell, `just migrate` touches the cabal file
+first — nothing else to wire.
 
-**1.2 The error.** Add a `UserNotFound` constructor to `AuthError` in
-`shomei-core/src/Shomei/Error.hs` (grant/revoke against a nonexistent user must fail
-cleanly, and plan 39 reuses it). Add its arm to `authErrorToServerError` in
-`shomei-servant/src/Shomei/Servant/Error.hs`:
-`UserNotFound -> json err404 "user_not_found" "User not found"`. GHC's exhaustiveness
-warnings (the repo builds with warnings on) will point at any other `case` over `AuthError`
-needing an arm.
+**1.2 The errors.** Add `UserNotFound` and `RoleNotDefined Role` constructors to
+`AuthError` in `shomei-core/src/Shomei/Error.hs` (grant/revoke against a nonexistent user,
+and grants of undeclared roles, must fail cleanly; plan 39 reuses both). Add their arms to
+`authErrorToServerError` in `shomei-servant/src/Shomei/Servant/Error.hs`:
+`UserNotFound -> json err404 "user_not_found" "User not found"` and
+`RoleNotDefined (Role r) -> json err422 "role_not_defined" ("Role not defined: " <> r)`
+(422 Unprocessable Content: the request was well-formed but names a role the deployment
+never declared — a client mistake, not a missing resource; plan 39's grant route relies on
+this mapping). GHC's exhaustiveness warnings (the repo builds with warnings on) will point
+at any other `case` over `AuthError` needing an arm.
 
 **1.3 The events.** In `shomei-core/src/Shomei/Domain/Event.hs` add two constructors and
 records, mirroring the existing style exactly (`deriving stock (Generic, Eq, Show)`,
@@ -479,9 +621,13 @@ count guard 25 → 27 (the guard failing is your checklist that you found every 
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
--- | The role-grant port: durable "user has role" facts (EP-1 of MasterPlan 7).
+-- | The role port: the declared role catalog ("registry") and durable "user has role"
+-- facts (EP-1 of MasterPlan 7).
 module Shomei.Effect.RoleStore
   ( RoleStore (..),
+    RoleDefinition (..),
+    defineRole,
+    listDefinedRoles,
     grantRole,
     revokeRole,
     listRolesForUser,
@@ -495,7 +641,21 @@ import Shomei.Domain.Claims (Role)
 import Shomei.Id (UserId)
 import Shomei.Prelude
 
+-- | One row of the role registry (the @shomei_roles@ table): a role an operator has
+-- declared grantable, with an optional human description.
+data RoleDefinition = RoleDefinition
+  { role :: !Role,
+    description :: !(Maybe Text),
+    createdAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+
 data RoleStore :: Effect where
+  -- | Declare a role in the registry. Returns 'True' if newly defined, 'False' if it
+  -- already existed (idempotent; the description of an existing role is NOT updated).
+  DefineRole :: Role -> Maybe Text -> UTCTime -> RoleStore m Bool
+  -- | The full registry, sorted by role name. Deployments have few roles; no paging.
+  ListDefinedRoles :: RoleStore m [RoleDefinition]
   -- | Record a grant. Returns 'True' if the grant is new, 'False' if it already existed
   -- (idempotent; callers publish the audit event only on 'True').
   GrantRole :: UserId -> Role -> Maybe UserId -> UTCTime -> RoleStore m Bool
@@ -504,6 +664,12 @@ data RoleStore :: Effect where
   ListRolesForUser :: UserId -> RoleStore m (Set Role)
 
 type instance DispatchOf RoleStore = Dynamic
+
+defineRole :: (RoleStore :> es) => Role -> Maybe Text -> UTCTime -> Eff es Bool
+defineRole r desc ts = send (DefineRole r desc ts)
+
+listDefinedRoles :: (RoleStore :> es) => Eff es [RoleDefinition]
+listDefinedRoles = send ListDefinedRoles
 
 grantRole :: (RoleStore :> es) => UserId -> Role -> Maybe UserId -> UTCTime -> Eff es Bool
 grantRole uid r by ts = send (GrantRole uid r by ts)
@@ -515,7 +681,9 @@ listRolesForUser :: (RoleStore :> es) => UserId -> Eff es (Set Role)
 listRolesForUser = send . ListRolesForUser
 ```
 
-Add `Shomei.Effect.RoleStore` to `shomei-core.cabal` `exposed-modules`.
+Add `Shomei.Effect.RoleStore` to `shomei-core.cabal` `exposed-modules`. `RoleDefinition`
+is the shape plan 39's `GET /admin/roles` route will serialize — the route itself is
+plan 39's; this plan ships the port operation and the record.
 
 **1.5 The workflow.** Create `shomei-core/src/Shomei/Workflow/Roles.hs` so the CLI (this
 plan) and the admin API (plan 39) share one audited path:
@@ -523,7 +691,7 @@ plan) and the admin API (plan 39) share one audited path:
 ```haskell
 grantRoleTo ::
   (UserStore :> es, RoleStore :> es, AuthEventPublisher :> es, Clock :> es) =>
-  Maybe UserId ->  -- the granting actor (Nothing = CLI bootstrap)
+  Maybe UserId ->  -- the granting actor (Nothing = CLI bootstrap / system)
   UserId ->        -- the subject
   Role ->
   Eff es (Either AuthError Bool)  -- Right True = newly granted; Right False = already had it
@@ -531,23 +699,50 @@ grantRoleTo ::
 revokeRoleFrom :: (…same…) => Maybe UserId -> UserId -> Role -> Eff es (Either AuthError Bool)
 
 rolesOf :: (UserStore :> es, RoleStore :> es) => UserId -> Eff es (Either AuthError (Set Role))
+
+-- | Grant every configured default role to a fresh user (called by 'signup' right after
+-- 'createUser'; audited as role_granted with no actor). Boot validated the roles against
+-- the registry (see 'undefinedDefaultRoles'), so this does not re-check definitions.
+applyDefaultRoles ::
+  (RoleStore :> es, AuthEventPublisher :> es) =>
+  ShomeiConfig -> UserId -> UTCTime -> Eff es ()
+
+-- | The configured default roles missing from the registry — nonempty means the config
+-- is broken and the process should refuse to serve. The standalone server calls this at
+-- boot; embedding hosts should call it wherever they assemble their ports.
+undefinedDefaultRoles :: (RoleStore :> es) => ShomeiConfig -> Eff es (Set Role)
 ```
 
-Each first checks `findUserById` (a `Nothing` is `Left UserNotFound`), then calls the
-store, and publishes `RoleGranted`/`RoleRevoked` **only when the store reported a change**
-(so re-running a grant does not spam the audit trail). The workflow treats the `Role` text
-as opaque and does not validate it: input validation (trimming, rejecting blank role text)
-belongs to the boundary layers — the CLI in Milestone 3 and plan 39's HTTP handlers —
-matching how `mkEmail`/`mkLoginId` validate before workflows run. Do not invent a new
-`AuthError` for a blank role; the boundaries refuse it before the workflow ever sees it.
-State this in the module haddock.
+`grantRoleTo` first checks `findUserById` (a `Nothing` is `Left UserNotFound`), then
+checks the role is defined — `listDefinedRoles`, membership on the role names (catalogs
+are tiny; no dedicated exists-op) — returning `Left (RoleNotDefined r)` if not, then calls
+the store, and publishes `RoleGranted` **only when the store reported a change** (so
+re-running a grant does not spam the audit trail). `revokeRoleFrom` needs no registry
+check (revoking an existing grant of any role must always work). `applyDefaultRoles`
+iterates `cfg.defaultRoles` calling the store's `grantRole` with `Nothing` as actor and
+publishing `RoleGranted` per new grant — it deliberately skips the `findUserById` and
+registry checks (`signup` just created the user; boot validated the roles, and the
+registry is append-only so they cannot have vanished). The workflow treats the `Role` text
+as opaque and does not validate its *shape*: input validation (trimming, rejecting blank
+role text) belongs to the boundary layers — the CLI in Milestone 3 and plan 39's HTTP
+handlers — matching how `mkEmail`/`mkLoginId` validate before workflows run. Do not invent
+a new `AuthError` for a blank role; the boundaries refuse it before the workflow ever sees
+it. State this in the module haddock.
 
 **1.6 The PostgreSQL interpreter.** Create
 `shomei-postgres/src/Shomei/Postgres/RoleStore.hs` exporting `runRoleStorePostgres`,
-mirroring `Shomei.Postgres.SessionStore` (`interpret_`, `runSession`, `dbFail`). Three
+mirroring `Shomei.Postgres.SessionStore` (`interpret_`, `runSession`, `dbFail`). Five
 statements:
 
 ```sql
+-- define: rowsAffected 0 means the role was already defined
+INSERT INTO shomei.shomei_roles (role, description, created_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (role) DO NOTHING
+
+-- list-defined
+SELECT role, description, created_at FROM shomei.shomei_roles ORDER BY role
+
 -- grant: rowsAffected 0 means the grant already existed
 INSERT INTO shomei.shomei_role_grants (user_id, role, granted_by, granted_at)
 VALUES ($1, $2, $3, $4)
@@ -560,39 +755,54 @@ DELETE FROM shomei.shomei_role_grants WHERE user_id = $1 AND role = $2
 SELECT role FROM shomei.shomei_role_grants WHERE user_id = $1 ORDER BY role
 ```
 
-Use `D.rowsAffected` (yields `Int64`; `> 0` gives the `Bool`) for the first two and
-`D.rowList (D.column (D.nonNullable D.text))` (then `Set.fromList . map Role`) for the
-third. Encoders: `contrazip4 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable
-E.text)) (E.param (E.nullable E.uuid)) (E.param (E.nonNullable E.timestamptz))` for grant
-(convert with `userIdToUUID`, `fmap userIdToUUID`, and unwrap `Role`); `contrazip2` for
-revoke. Constraint: `(Database :> es, Error AuthError :> es)` — no `IOE` needed (no
-`liftIO`; the audit reader set this precedent). Confirm the exact `D.rowsAffected` name
-against the installed hasql via `mori registry show hasql --full` before coding. Add the
-module to `shomei-postgres.cabal`.
+Use `D.rowsAffected` (yields `Int64`; `> 0` gives the `Bool`) for define/grant/revoke,
+`D.rowList` with a three-column row decoder (`text`, nullable `text`, `timestamptz` →
+`RoleDefinition`) for list-defined, and `D.rowList (D.column (D.nonNullable D.text))`
+(then `Set.fromList . map Role`) for list. Encoders: `contrazip3` for define (unwrap
+`Role`, nullable text description, timestamptz), `contrazip4 (E.param (E.nonNullable
+E.uuid)) (E.param (E.nonNullable E.text)) (E.param (E.nullable E.uuid)) (E.param
+(E.nonNullable E.timestamptz))` for grant (convert with `userIdToUUID`, `fmap
+userIdToUUID`, and unwrap `Role`); `contrazip2` for revoke. Constraint: `(Database :> es,
+Error AuthError :> es)` — no `IOE` needed (no `liftIO`; the audit reader set this
+precedent). Confirm the exact `D.rowsAffected` name against the installed hasql via
+`mori registry show hasql --full` before coding. Add the module to `shomei-postgres.cabal`.
 
-**1.7 The in-memory interpreter.** In `shomei-core/src/Shomei/Effect/InMemory.hs` add a
-field `roleGrants :: !(Map UserId (Set Role))` to `World` (initialize empty in
-`emptyWorld`), an exported `runRoleStore :: (IOE :> es) => IORef World -> Eff (RoleStore :
-es) a -> Eff es a` implementing the three ops over the map (grant returns `False` when the
-role is already present; `granted_by`/timestamps are not modeled), and stack it inside
-`runInMemory` in the same relative position you add it to the other lists (1.9/M2).
+**1.7 The in-memory interpreter.** In `shomei-core/src/Shomei/Effect/InMemory.hs` add two
+fields to `World`: `roleGrants :: !(Map UserId (Set Role))` (initialize empty in
+`emptyWorld`) and `definedRoles :: !(Map Role (Maybe Text))` (initialize with `admin`
+pre-defined, mirroring the migration's seed so in-memory and postgres stacks agree on a
+fresh world). Export `runRoleStore :: (IOE :> es) => IORef World -> Eff (RoleStore : es) a
+-> Eff es a` implementing the five ops over the maps (define returns `False` when the role
+is already present and does not overwrite the description; grant returns `False` when the
+role is already granted; `granted_by`/timestamps are not modeled — `ListDefinedRoles`
+fabricates a fixed `createdAt`), and stack it inside `runInMemory` in the same relative
+position you add it to the other lists (M2). The in-memory grant does **not** enforce the
+FK (the workflow's registry check is the tested path; the FK is postgres-only defense in
+depth — note this asymmetry in a comment).
 
 **1.8 Interpreter tests.** In `shomei-postgres/test/Main.hs` (which runs against an
 ephemeral migrated PostgreSQL): add `RoleStore` to the harness stack + chain, then a
-`testRoleStore` that creates a user through the existing store helpers, asserts
-grant → `True`, duplicate grant → `False`, `listRolesForUser` = the granted set, revoke →
-`True`, revoke again → `False`, list empty; and asserts a grant for a random nonexistent
-UUID-derived user id surfaces the FK violation as `InternalAuthError` (or pre-check — the
-workflow pre-checks, the raw port may FK-fail; assert whichever the port does, and note it).
+`testRoleStore` that: asserts the seeded registry (`listDefinedRoles` contains `admin`),
+`defineRole "auditor"` → `True`, duplicate define → `False`, list-defined shows both
+sorted; creates a user through the existing store helpers, asserts grant → `True`,
+duplicate grant → `False`, `listRolesForUser` = the granted set, revoke → `True`, revoke
+again → `False`, list empty; asserts the raw port's grant of an **undefined** role
+surfaces the FK violation as `InternalAuthError` while `Shomei.Workflow.Roles.grantRoleTo`
+returns `Left (RoleNotDefined …)` before touching the table; and asserts a grant for a
+random nonexistent UUID-derived user id surfaces the user FK violation as
+`InternalAuthError` (or pre-check — the workflow pre-checks, the raw port may FK-fail;
+assert whichever the port does, and note it).
 
 Acceptance: `cabal test shomei-core:shomei-core-test shomei-postgres:shomei-postgres-test`
 green, including the 27-constructor guard and the new role-store test.
 
-### Milestone 2 — Claims enrichment at every mint
+### Milestone 2 — Claims enrichment at every mint, and default roles at signup
 
 Scope: after this milestone, a granted role appears in the `roles` claim of every token
-minted afterward (signup/login/MFA/passwordless/refresh), and hosts have a hook to add
-claims. Proven by tests that mint before/after a grant.
+minted afterward (signup/login/MFA/passwordless/refresh), hosts have a hook to add claims,
+and a deployment configured with `defaultRoles` mints them onto every new user's first
+token (with the server refusing to boot if the config names an undefined role). Proven by
+tests that mint before/after a grant and by a signup-under-config test.
 
 **2.1 The enrichment effect.** Create `shomei-core/src/Shomei/Effect/ClaimsEnricher.hs`:
 
@@ -603,6 +813,15 @@ claims. Proven by tests that mint before/after a grant.
 -- host (or compromised host code path) can never override a reserved claim. The OIDC and
 -- token-exchange plans (MasterPlan 7 EP-5/EP-6) MUST build their claims through this same
 -- hook rather than re-reading stores in the HTTP layer.
+--
+-- __Do not mirror live authorization decisions into JWT claims through this hook.__
+-- Claims are minted once and are then static for the token's lifetime; a decision copied
+-- from a live authorization system (e.g. a check against the en ReBAC engine — see
+-- @docs\/plans\/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md@)
+-- is stale the moment the underlying relationship changes, silently granting revoked
+-- access until the token expires. This hook is for coarse, slow-moving hints — tenant
+-- ids, plan tiers, extra scopes — not for per-resource permissions. Check fine-grained
+-- permissions live, in the handler, against the authorization system.
 module Shomei.Effect.ClaimsEnricher
   ( ClaimsEnricher (..),
     ClaimsDelta (..),
@@ -689,7 +908,47 @@ inherit via `issueSession`). Do **not** touch `ServiceToken.hs` or `Impersonatio
 The `inject` bridge in `Shomei.Server.Boot.seamEnv` type-checks only if the seam list is a
 subset of the server list — building `shomei-server` verifies the alignment.
 
-**2.5 Tests.** (a) In the servant end-to-end suite (`shomei-servant/test/Main.hs`), grant
+**2.5 Default roles.** Three edits, in dependency order:
+
+First, the config field. In `shomei-core/src/Shomei/Config.hs` add
+`defaultRoles :: !(Set Role)` to `data ShomeiConfig` (line ~221; import `Role` from
+`Shomei.Domain.Claims` and `Data.Set` qualified) and `defaultRoles = Set.empty` to
+`defaultShomeiConfig` (line ~278). In `shomei-server/src/Shomei/Server/Config.hs` add a
+`SHOMEI_DEFAULT_ROLES` override in `applyEnv` (line ~211 onward): comma-separated role
+names, split with `Text.splitOn ","`, trimmed, blanks dropped, into `Set Role` — follow
+the existing `textEnv` helper style. Keep the loader's precedence (defaults → Dhall file →
+env).
+
+Second, the signup application. In `Shomei.Workflow.signup`
+(`shomei-core/src/Shomei/Workflow.hs`), immediately after the `createUser` call (line
+~131) and before the session is created, add
+`applyDefaultRoles cfg user.userId ts` (from `Shomei.Workflow.Roles`, Milestone 1.5). The
+grants therefore exist before 2.3's `buildEnrichedClaims` runs at line ~152, so the
+**first** access token already carries the default roles, and each grant lands a
+`role_granted` audit row with no actor. `signup` already has (after 2.3) every constraint
+`applyDefaultRoles` needs. `shomei-admin users create` drives this same `signup` through
+its private chain (`shomei-server/app/Shomei/Admin/Users.hs`), so CLI-created users get
+default roles with no further code — the 2.4 wiring already added the interpreters it
+needs.
+
+Third, boot validation. In `shomei-server/src/Shomei/Server/Boot.hs` (or the server's
+startup path in `Shomei.Server.App` — wherever the pool exists before Warp binds), when
+`cfg.defaultRoles` is nonempty, run `Shomei.Workflow.Roles.undefinedDefaultRoles` over a
+minimal chain (`runEff . runErrorNoCallStack . runDatabasePool pool .
+runRoleStorePostgres`) and, if the result is nonempty, exit with a message naming the
+missing roles and the fix:
+
+```text
+shomei-server: defaultRoles names undefined roles: member, staff
+define them first: shomei-admin roles define member
+```
+
+Failing at boot (not at signup time) turns a config typo into an immediate, obvious
+failure instead of intermittent signup 5xx responses (Decision Log). Embedding hosts
+assemble their own boot; the `undefinedDefaultRoles` haddock tells them to call it when
+they set `defaultRoles`.
+
+**2.6 Tests.** (a) In the servant end-to-end suite (`shomei-servant/test/Main.hs`), grant
 `admin` to a user through the in-memory `RoleStore` (drive `Shomei.Workflow.Roles.grantRoleTo`
 through the harness), log the user in over HTTP, and assert the decoded access token's
 `roles` claim contains `admin` (the suite already decodes/verifies tokens for other
@@ -699,7 +958,11 @@ access token carries it. (c) Reserved-key safety: a core-level test running
 `buildEnrichedClaims` under `runClaimsEnricherPure` with a delta whose `extraClaims` tries
 to set `"sub"`/`"roles"` — assert the resulting `AuthClaims.extraClaims` dropped them.
 (d) A postgres-side test that a granted role survives the real store into
-`buildEnrichedClaims` output.
+`buildEnrichedClaims` output. (e) Default roles: a core-level (in-memory) test that runs
+`signup` under a config with `defaultRoles = Set.fromList [Role "member"]` after defining
+`member` in the world, asserting the returned access token's claims carry `member` and a
+`role_granted` event with no actor was published; and a companion negative test that
+`undefinedDefaultRoles` reports a role missing from the registry.
 
 Acceptance: `cabal build all && cabal test all` green.
 
@@ -713,25 +976,35 @@ Create `shomei-server/app/Shomei/Admin/Roles.hs` exporting `RolesCommand`, `role
 (running an effectful chain over `AdminEnv.pool`). Commands:
 
 ```text
+shomei-admin roles define       <name> [--description <text>]
+shomei-admin roles list-defined
 shomei-admin roles grant  --user <user_… | UUID> --role <text>
 shomei-admin roles revoke --user <user_… | UUID> --role <text>
 shomei-admin roles list   --user <user_… | UUID>
 ```
 
 Parse the user reference with `parseId` first, falling back to `Data.UUID.fromText` +
-`userIdFromUUID` (Decision Log); trim the role text and reject blank with a stderr `die`.
+`userIdFromUUID` (Decision Log); trim role names and reject blank with a stderr `die`.
 `runRoles` assembles a small chain — `runEff . runErrorNoCallStack . runDatabasePool
 env.pool . runClockIO . runAuthEventPublisherPostgres . runRoleStorePostgres .
-runUserStorePostgres` — and drives `Shomei.Workflow.Roles` with `Nothing` as the actor.
-Output: `granted admin to user_…` / `user already had role admin` (exit 0 both ways, the
-Bool distinguishes wording); `revoked` / `no such grant`; `list` prints one role per line.
-`Left UserNotFound` → `die "user not found: …"` (exit 1). Wire `Roles RolesCommand` into
-`Admin.hs`'s `Command`/`commandParser`/`run`, and add the module to both `other-modules`
-lists in `shomei-server/shomei-server.cabal`.
+runUserStorePostgres` — and drives `Shomei.Workflow.Roles` with `Nothing` as the actor
+(`define`/`list-defined` call the `RoleStore` port directly — no user lookup, no audit
+event; Decision Log). Output: `defined role auditor` / `role auditor was already defined`
+(exit 0 both ways); `list-defined` prints one role per line with its description
+(`admin — Full access to the shomei /admin surface…`); `granted admin to user_…` /
+`user already had role admin` (exit 0 both ways, the Bool distinguishes wording);
+`revoked` / `no such grant`; `list` prints one role per line. `Left UserNotFound` →
+`die "user not found: …"` (exit 1). `Left (RoleNotDefined r)` →
+`die "role not defined: <r> (define it first: shomei-admin roles define <r>)"` (exit 1) —
+this is the typo guard working. Wire `Roles RolesCommand` into `Admin.hs`'s
+`Command`/`commandParser`/`run`, and add the module to both `other-modules` lists in
+`shomei-server/shomei-server.cabal`.
 
 Add a test to the `shomei-admin-test` suite mirroring its existing audit test: against the
-ephemeral migrated DB, create a user, grant → list shows it → revoke → list empty, and
-assert two audit rows (`role_granted`, `role_revoked`) landed via the audit reader.
+ephemeral migrated DB, define `auditor` → list-defined shows `admin` and `auditor`; create
+a user, grant `auditor` → list shows it → revoke → list empty; grant a never-defined role
+name → exit code 1 and the `role not defined` stderr message; and assert exactly two audit
+rows (`role_granted`, `role_revoked`) landed via the audit reader (definitions add none).
 
 ### Milestone 4 — Enforcing `RequireRole`/`RequireScope`
 
@@ -836,11 +1109,28 @@ the service-token tests — reuse).
 Scope: the full loop demonstrated against a real server, and the docs stop describing the
 hole. Run the transcript in Validation and Acceptance and paste the real output into this
 plan. Then: rewrite `docs/user/security.md`'s "Known limitation — the `admin` role"
-section into "Granting roles" (CLI bootstrap, staleness semantics, revocation lever);
-document the `ClaimsEnricher` hook for embedding hosts (a short section in
+section into "Granting roles" (role registry and `roles define`, CLI bootstrap grant,
+default roles via `defaultRoles`/`SHOMEI_DEFAULT_ROLES`, staleness semantics, revocation
+lever); document the `ClaimsEnricher` hook for embedding hosts (a short section in
 `docs/user/security.md` or `docs/user/architecture.md` — wherever `Notifier`'s host-hook
-story lives, mirror it); update `docs/user/api.md`'s audit-endpoint paragraph; add a
-CHANGELOG entry under Unreleased; tick EP-1 in MasterPlan 7's registry and Progress.
+story lives, mirror it), including the "no live-decision mirroring" warning from 2.1;
+update `docs/user/api.md`'s audit-endpoint paragraph; add a CHANGELOG entry under
+Unreleased; tick EP-1 in MasterPlan 7's registry and Progress.
+
+The rewritten security-model section must also state the **two-tier authorization story**
+(Decision Log) so users can place Shōmei's roles correctly: Shōmei's flat roles + scopes
+are the self-contained, bootstrap, coarse-grained tier — they work with zero extra
+infrastructure, they gate Shōmei's own `/admin` endpoints, and (because en's server has no
+caller authentication yet and plans to verify Shōmei JWTs when it gets one) they are what
+cuts the authentication↔authorization bootstrap circularity. For robust fine-grained or
+relationship-based authorization with live revocation ("editor of *this* project",
+consistency tokens, caveats), the recommended graduation path is the sibling project en;
+point the section at `docs/user/authorization.md` (created by
+`docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`;
+until that plan lands, point at the plan document itself) and note that the built-in tier
+grows permission indirection and time-bound grants in
+`docs/plans/46-role-definitions-permissions-and-time-bound-grants.md` without ever being
+removed in favor of en.
 
 
 ## Concrete Steps
@@ -870,7 +1160,7 @@ shomei-core-test        ... all tests passed (incl. EventCodec 27-constructor gu
 shomei-postgres-test    ... all tests passed (incl. testRoleStore)
 shomei-servant-test     ... all tests passed (combinator 401/403/200, enrichment claims)
 shomei-servant-openapi-test ... 24 paths, ToJSON⇔ToSchema conformance passed
-shomei-admin-test       ... all tests passed (roles grant/list/revoke round-trip)
+shomei-admin-test       ... all tests passed (roles define/grant/list/revoke round-trip, typo refusal)
 ```
 
 Regenerate the OpenAPI spec whenever `API.hs`, a DTO, or an `OpenApi.hs` instance changes,
@@ -909,7 +1199,13 @@ TOK=$(curl -s -XPOST localhost:8080/auth/login \
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/admin/audit/events -H "Authorization: Bearer $TOK"
 # → 403
 
-# 3. grant admin, log in again (fresh mint), and read the audit trail
+# 3. a typo'd role name is refused (the registry at work), then grant admin for real,
+#    log in again (fresh mint), and read the audit trail
+cabal run shomei-admin -- roles grant --user user_01ABC... --role adminn
+# → shomei-admin: role not defined: adminn (define it first: shomei-admin roles define adminn)
+#   (exit code 1)
+cabal run shomei-admin -- roles list-defined
+# → admin — Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes
 cabal run shomei-admin -- roles grant --user user_01ABC... --role admin
 # → granted admin to user_01ABC...
 TOK=$(curl -s -XPOST localhost:8080/auth/login \
@@ -928,8 +1224,13 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/admin/audit/events -H "A
 
 Acceptance criteria, phrased as observable behavior:
 
-- `shomei-admin roles grant/revoke/list` behave as transcribed (idempotent wording on
-  repeats; `user not found` on a bogus id; exit codes 0/1 accordingly).
+- `shomei-admin roles define/list-defined/grant/revoke/list` behave as transcribed
+  (idempotent wording on repeats; `user not found` on a bogus id; `role not defined` on a
+  role name absent from the registry; exit codes 0/1 accordingly).
+- With `SHOMEI_DEFAULT_ROLES=member` (after `roles define member`), a fresh signup's very
+  first access token carries `member` in its `roles` claim and
+  `shomei-admin audit events --type role_granted` shows the grant with no acting admin.
+  With `SHOMEI_DEFAULT_ROLES=nosuchrole`, the server refuses to start, naming the role.
 - A token minted after a grant carries the role; `GET /admin/audit/events` with it → 200.
 - A token minted after revocation → 403 with a JSON error body; no token → 401.
 - `shomei-admin audit events --type role_granted` lists the grant with the subject's
@@ -969,25 +1270,82 @@ stanzas — add only what GHC demands). Consult installed sources via `mori regi
 
 Must exist at the end (full module paths, exact signatures):
 
-- `Shomei.Effect.RoleStore` (shomei-core): `RoleStore (..)`,
+- `Shomei.Effect.RoleStore` (shomei-core): `RoleStore (..)`, `RoleDefinition (..)`,
+  `defineRole :: (RoleStore :> es) => Role -> Maybe Text -> UTCTime -> Eff es Bool`,
+  `listDefinedRoles :: (RoleStore :> es) => Eff es [RoleDefinition]`,
   `grantRole :: (RoleStore :> es) => UserId -> Role -> Maybe UserId -> UTCTime -> Eff es Bool`,
   `revokeRole :: (RoleStore :> es) => UserId -> Role -> Eff es Bool`,
   `listRolesForUser :: (RoleStore :> es) => UserId -> Eff es (Set Role)`.
 - `Shomei.Effect.ClaimsEnricher` (shomei-core): `ClaimsEnricher (..)`, `ClaimsDelta (..)`,
-  `emptyClaimsDelta`, `enrichClaims`, `runClaimsEnricherNull`, `runClaimsEnricherPure`.
+  `emptyClaimsDelta`, `enrichClaims`, `runClaimsEnricherNull`, `runClaimsEnricherPure` —
+  haddock carries the no-live-decision-mirroring warning (2.1).
 - `Shomei.Workflow.Session.buildEnrichedClaims :: (RoleStore :> es, ClaimsEnricher :> es)
   => ShomeiConfig -> UserId -> SessionId -> UTCTime -> Eff es AuthClaims` — the
   MasterPlan-7 claims-construction integration point.
-- `Shomei.Workflow.Roles` (shomei-core): `grantRoleTo`, `revokeRoleFrom`, `rolesOf` as in
-  Milestone 1.5.
+- `Shomei.Workflow.Roles` (shomei-core): `grantRoleTo`, `revokeRoleFrom`, `rolesOf`,
+  `applyDefaultRoles`, `undefinedDefaultRoles` as in Milestone 1.5.
+- `Shomei.Config.ShomeiConfig` gains `defaultRoles :: Set Role` (empty in
+  `defaultShomeiConfig`); `Shomei.Server.Config` reads `SHOMEI_DEFAULT_ROLES`.
 - `Shomei.Postgres.RoleStore.runRoleStorePostgres :: (Database :> es, Error AuthError :> es)
   => Eff (RoleStore : es) a -> Eff es a`.
-- `Shomei.Effect.InMemory`: `roleGrants` in `World`, exported `runRoleStore`.
+- `Shomei.Effect.InMemory`: `roleGrants` and `definedRoles` (seeded with `admin`) in
+  `World`, exported `runRoleStore`.
 - `Shomei.Domain.Event`: `RoleGranted`/`RoleRevoked` (+ data records);
   `Shomei.Domain.EventCodec` handling `role_granted`/`role_revoked`; `Shomei.Error.AuthError`
-  gains `UserNotFound`.
+  gains `UserNotFound` and `RoleNotDefined` (mapped to 404 `user_not_found` / 422
+  `role_not_defined`).
 - `Shomei.Servant.Authz`: `HasServer` instances for `RequireRole r :> api` /
   `RequireScope s :> api` with `ServerT … m = AuthUser -> ServerT api m`; guards retained.
 - `Shomei.Client`: `HasClient` delegation instances for both combinators.
-- `shomei-admin` CLI: `roles grant|revoke|list` (`Shomei.Admin.Roles`).
-- Migration `shomei-migrations/sql-migrations/<ts>-shomei-role-grants.sql`.
+- `shomei-admin` CLI: `roles define|list-defined|grant|revoke|list` (`Shomei.Admin.Roles`).
+- Migration `shomei-migrations/sql-migrations/<ts>-shomei-role-grants.sql` creating
+  `shomei_roles` (seeded with `admin`) and `shomei_role_grants` (role FK into the registry).
+
+
+## Revision Notes
+
+**2026-07-07 — Scope fold: role registry, default roles, and the two-tier authorization
+boundary.** Revised before implementation started (no code exists yet, so no migration of
+in-flight work was needed). Three additions were folded through every section — Purpose,
+Progress, Decision Log, Context and Orientation (new Configuration subsection), Milestones
+1/2/3/5, Concrete Steps, Validation and Acceptance, and Interfaces and Dependencies:
+
+1. **Role registry.** The original plan's "no role catalog" stance left a silent failure
+   mode: `roles grant --role adminn` (a typo) would succeed and grant a role nothing
+   checks. A `shomei_roles` catalog table (seeded with `admin`), an FK from
+   `shomei_role_grants`, `DefineRole`/`ListDefinedRoles` port operations, `roles
+   define`/`roles list-defined` CLI commands, and a `RoleNotDefined` error (HTTP 422
+   `role_not_defined`; CLI exit 1) close it. The `GET /admin/roles` HTTP route stays in
+   plan 39 (which owns the admin HTTP surface); this plan ships the query, port op, and
+   `RoleDefinition` shape it serializes. The Decision Log's flat-model entry was amended
+   rather than rewritten: the flat grant model stands, only the catalog clause was
+   superseded.
+
+2. **Default roles on signup.** `ShomeiConfig.defaultRoles` (empty default,
+   `SHOMEI_DEFAULT_ROLES` env override), validated against the registry at server boot
+   (fail fast), applied inside `Shomei.Workflow.signup` right after `createUser` so the
+   first minted token carries them, audited as `role_granted` with `granted_by = NULL`.
+   `shomei-admin users create` inherits the behavior for free because it drives the same
+   workflow.
+
+3. **Two-tier authorization boundary.** A product decision now recorded here (Decision
+   Log) and propagated to the docs milestone: Shōmei's flat roles are the permanent,
+   self-contained tier-1 authorization story (zero extra infrastructure; gates Shōmei's
+   own `/admin`; cuts the bootstrap circularity with en, whose server has no caller
+   authentication yet and plans to verify Shōmei JWTs when it gets one), and the sibling
+   Zanzibar-style ReBAC project **en** is the recommended tier 2 for fine-grained,
+   relationship-based authorization with live revocation. The `ClaimsEnricher` haddock
+   (2.1) gained an explicit warning against mirroring live en decisions into static JWT
+   claims. Follow-up plans referenced:
+   `docs/plans/46-role-definitions-permissions-and-time-bound-grants.md` (tier-1 growth:
+   permissions, time-bound grants — it extends this plan's registry table, `RoleStore`
+   port, enrichment path, and combinator pattern) and
+   `docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md`
+   (tier-2 paved road).
+
+Why folded here rather than into a new plan: the registry is the same migration, port,
+CLI module, and test suites this plan already creates — a separate plan would edit every
+file this one touches; and default roles are meaningless before the enrichment path
+exists. Plan 46 was kept separate because permission indirection and expiring grants are
+additive layers on top of a working registry, not prerequisites for killing the
+"unsatisfiable admin role" hole this plan exists to fix.
