@@ -13,7 +13,7 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Crypto (Argon2Params, runPasswordHasherCrypto, runTokenGenCrypto)
+import Shomei.Crypto (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
@@ -48,7 +48,9 @@ createUserAction env emailArg pwArg mDisplay = do
             password = PlainPassword pwArg,
             displayName = mDisplay
           }
-  outcome <- runSignup env.pool env.argon2 (signup env.config cmd)
+  -- The CLI hashes exactly one password, so a limiter of one is right and costs nothing.
+  limiter <- newHashingLimiter 1
+  outcome <- runSignup env.pool limiter env.argon2 (signup env.config cmd)
   case outcome of
     Left infra -> die ("infrastructure error: " <> show infra)
     Right (Left rejected) -> die ("signup rejected: " <> show rejected)
@@ -58,6 +60,7 @@ createUserAction env emailArg pwArg mDisplay = do
 -- | Run a 'signup' over the PostgreSQL interpreters, with a fake signer.
 runSignup ::
   Pool ->
+  HashingLimiter ->
   Argon2Params ->
   Eff
     [ UserStore,
@@ -74,14 +77,14 @@ runSignup ::
     ]
     a ->
   IO (Either AuthError a)
-runSignup pool argon2 =
+runSignup pool limiter argon2 =
   runEff
     . runErrorNoCallStack
     . runDatabasePool pool
     . runTokenGenCrypto
     . runClockIO
     . runTokenSignerFake
-    . runPasswordHasherCrypto argon2
+    . runPasswordHasherCrypto limiter argon2
     . runPasswordBreachCheckerNoCheck
     . runAuthUnitOfWorkPostgres
     . runCredentialStorePostgres

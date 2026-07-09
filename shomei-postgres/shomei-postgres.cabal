@@ -71,6 +71,7 @@ library
     , hasql-transaction     >=1.0
     , ram
     , shomei-core
+    , stm
     , text
     , time
     , transformers

@@ -58,19 +58,23 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `Argon2Params` record + `defaultArgon2Params` in
+- [x] M1 (2026-07-09): `Argon2Params` record + `defaultArgon2Params` in
       `shomei-postgres/src/Shomei/Crypto.hs`; PHC-style hash encoding for new hashes;
       verification parses PHC and legacy 3-part formats.
-- [ ] M1: round-trip and legacy-compatibility tests in the `shomei-postgres` suite (hash with
-      new params, verify; verify a fixture legacy-format hash; verify old hashes after a
-      params change).
-- [ ] M1: params configurable via `ServerSettings` / Dhall / `SHOMEI_ARGON2_*` env; boot floor
-      warning for weak params.
-- [ ] M2: `HashingLimiter` (STM permit counter with peak tracking) in `Shomei.Crypto`;
-      `runPasswordHasherCrypto` takes limiter + params; `VerifyPassword` becomes IO with
-      `evaluate` inside the permit bracket.
-- [ ] M2: `Env` gains the limiter; all `Env` construction sites updated; concurrency test
-      (16 parallel hashes, peak ≤ limit) green.
+- [x] M1 (2026-07-09): round-trip and legacy-compatibility tests in the `shomei-postgres` suite
+      (five cases: PHC-formatted new hashes; the legacy fixture; mixed-params coexistence;
+      malformed strings verify `False`; the dummy hash tracks the configured params).
+- [x] M1 (2026-07-09): params configurable via `ServerSettings` / Dhall / `SHOMEI_ARGON2_*` env;
+      boot floor warning for weak params; `shomei-admin` reads the same variables.
+- [x] M1 (2026-07-09): **unplanned but required** — closed the account-enumeration timing oracle
+      that configurable parameters would otherwise have opened. New `VerifyPasswordDummy` port
+      operation replaces the hardcoded `dummyPasswordHash` constant. See Surprises & Discoveries.
+- [x] M2 (2026-07-09): `HashingLimiter` (STM permit counter with peak tracking) in
+      `Shomei.Crypto`; `runPasswordHasherCrypto` takes limiter + params; every operation forced
+      with `evaluate` inside the permit bracket.
+- [x] M2 (2026-07-09): `Env` gains the limiter; all six `Env`/`AdminEnv` construction sites
+      updated; four concurrency tests green, including a mutation-checked assertion that the
+      *interpreter* takes a permit.
 - [ ] M3: `deploy/entrypoint.sh` computes CPU count from cgroup v2/v1 and exports `GHCRTS`;
       Dockerfile comment block updated; deployment docs updated with the reasoning and the
       cgroup caveat (verified or hedged — see M3).
@@ -86,7 +90,88 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **Making the Argon2 parameters configurable would, by itself, have reopened the login timing
+  oracle — the single most serious thing found in this plan.** The login paths that never reach
+  a stored hash (unknown account, suspended user) used to verify against
+  `Shomei.Domain.Password.dummyPasswordHash`, a hardcoded 64 MiB legacy hash, so that a miss
+  cost the same ~100 ms as a wrong password. But verification cost is decided by the parameters
+  embedded in the hash being verified. The moment an operator lowered the cost, a *hit* got
+  cheap while a *miss* stayed expensive, and response time revealed whether an account exists.
+  Measured with `crypton` directly:
+
+```text
+default (m=65536,t=3): 101.7 ms
+OWASP floor (m=19456,t=2): 18.9 ms      -- a legitimate setting that triggers NO warning
+lowered (m=8192,t=3): 10.6 ms
+```
+
+  So at the OWASP floor a miss would take 102 ms and a hit 19 ms — a 5.4× differential,
+  trivially measurable over a network, in exactly the code whose comment says "so a miss costs
+  the same Argon2id work as a wrong password". Worse, `shomei-core`'s `TimingSpec` would have
+  stayed green: it counts hasher *invocations*, and its header explicitly justifies that as a
+  cost proxy "because `dummyPasswordHash` carries the production parameters". Configurability
+  silently falsifies that premise.
+
+  The fix is a new port operation, `VerifyPasswordDummy :: PlainPassword -> PasswordHasher m ()`
+  ("burn one verification's worth of work"), which the real interpreter services by deriving
+  against `dummyHashFor params` — the configured parameters, by construction. Verified:
+
+```text
+at OWASP floor -- hit(wrong pw) avg 15.81 ms   miss(dummy) avg 15.84 ms   ratio 1.0024
+(the old constant dummy would have cost 102 ms here)
+```
+
+  This also deletes an Argon2id hash string from `shomei-core`, a package whose own module
+  header says infrastructure is kept out of it. The domain never had any business knowing what
+  an Argon2 hash looks like.
+
+- **A test that asserts only an upper bound on a counter can be vacuous.** The first version of
+  `hashing limiter: the PasswordHasher interpreter acquires a permit` asserted `peak <= 2`.
+  Removing the permit bracket from `runPasswordHasherCrypto` entirely leaves `peak == 0`, so the
+  test passed against a completely unbounded interpreter:
+
+```text
+=== MUTANT: bracket removed from HashPassword ===
+  hashing limiter: the PasswordHasher interpreter acquires a permit: OK
+```
+
+  Adding `assertBool "the interpreter never acquired a permit" (peak >= 1)` makes it detect the
+  regression:
+
+```text
+=== MUTANT: bracket removed from HashPassword ===
+  hashing limiter: the PasswordHasher interpreter acquires a permit: FAIL
+    the interpreter never acquired a permit
+```
+
+  Any "never more than N" assertion needs a companion "and at least one happened", or it
+  certifies nothing. The `peak == limit` assertions in the other limiter tests already had this
+  property; this one did not.
+
+- **`stm` was not in `shomei-postgres`'s `build-depends`** (the plan asked for this to be
+  recorded). It was only a dependency of `shomei-server`. Added. Likewise `shomei-postgres` had
+  to be added to the `shomei-server-config-test` suite, which now reads `Argon2Params`.
+
+- **`cabal build all` does not build test suites in this project**, so a broken test module
+  survives a green `cabal build all` and only fails during `cabal test all` — after the earlier
+  suites have run. Use `cabal build all --enable-tests` when checking that a cross-cutting change
+  compiles. This cost one wasted full-suite run when `AdminEnv`'s new field broke
+  `shomei-server/test/Admin/Main.hs`.
+
+- **Argon2 cost measurements need a warm-up call.** The first derivation in a process pays page
+  faults for the freshly allocated memory arena, which made a hit look 2× more expensive than an
+  identically-parameterized miss (38.9 ms vs 17.0 ms) until a warm-up and 5-iteration average
+  were used. A single-shot timing comparison here is worthless.
+
+- **`crypton`'s unsafe FFI call is confirmed**, as the plan asserted from memory:
+  `foreign import ccall unsafe "crypton_argon2_hash"` at `Crypto/KDF/Argon2.hs:157` in the local
+  dependency checkout. The cost types are `Word32` (`TimeCost`, `MemoryCost`, `Parallelism`) and
+  `Version13` is `0x13` = 19, which is the number written into the PHC `v=` field.
+
+- **The test suites now hash with cheap parameters** (`m=8192,t=1,p=1`). Six suites perform real
+  signups and logins; at the production cost each hash is ~100 ms, which dominated their
+  runtime for no benefit. The Argon2 parameters themselves are covered by the dedicated tests in
+  `shomei-postgres/test/Main.hs`, which do use `defaultArgon2Params`.
 
 
 ## Decision Log
@@ -172,6 +257,33 @@ Record every decision made while working on the plan.
   Rationale: The whole milestone rests on this claim; PLANS.md requires embedded knowledge to
   be verified, and an empirical check inside a `--cpus`-limited container is cheap.
   Date: 2026-07-07
+
+- Decision: Replace `Shomei.Domain.Password.dummyPasswordHash` with a `VerifyPasswordDummy`
+  operation on the `PasswordHasher` port, rather than keeping a constant hash (in any format) or
+  having the interpreter recognize the constant by value.
+  Rationale: Verification cost is a function of the parameters embedded in the hash being
+  verified, so *any* constant drifts out of step with a configured cost and reopens the account
+  enumeration oracle (evidence in Surprises & Discoveries). Only the interpreter knows the
+  parameters in force, so only the interpreter can produce equal-cost work — which makes this a
+  port operation by construction. Sentinel-comparing `hash == dummyPasswordHash` inside the
+  interpreter would work but leaves a value-level coupling that a future edit breaks silently.
+  The chosen shape also removes an Argon2id string from `shomei-core`, restoring the layering
+  its module header claims. Cost: one extra constructor, and `TimingSpec`'s fake counts both
+  operations. Approved by the repository owner before implementation.
+  Date: 2026-07-09
+
+- Decision: `shomei-admin users create` builds a limiter of 1 rather than reading
+  `SHOMEI_HASHING_MAX_CONCURRENCY`.
+  Rationale: The CLI hashes exactly one password in its lifetime, so any bound ≥ 1 is
+  equivalent; 1 is the honest description. It *does* read `SHOMEI_ARGON2_*`, because those
+  change the stored hash and a CLI-seeded user must be hashed exactly as a signup would be.
+  Date: 2026-07-09
+
+- Decision: Test suites hash with `Argon2Params 8192 1 1` instead of the production defaults.
+  Rationale: Six suites perform real signups/logins; at ~100 ms per hash the production
+  parameters dominated their runtime while testing nothing the dedicated Argon2 tests do not
+  already cover. Those dedicated tests still use `defaultArgon2Params`.
+  Date: 2026-07-09
 
 - Decision: The load test is a **shell script driving the real server with `curl`**
   (`scripts/argon2-load-test.sh`), not a Haskell bench harness, and acceptance is **relative**

@@ -25,7 +25,7 @@ import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Network.HTTP.Client (Manager)
 import Shomei.Config (ShomeiConfig (passwordPolicy), webauthnConfig)
-import Shomei.Crypto (Argon2Params, runPasswordHasherCrypto, runTokenGenCrypto)
+import Shomei.Crypto (Argon2Params, HashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Domain.Password (PasswordPolicy (breachCheckTimeoutMs))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
@@ -123,7 +123,9 @@ data Env = Env
     envHttpManager :: !Manager,
     -- | Argon2id cost parameters for hashing new passwords. Verification reads the parameters
     --     embedded in each stored hash, so this only affects hashes written from now on.
-    envArgon2Params :: !Argon2Params
+    envArgon2Params :: !Argon2Params,
+    -- | bounds how many Argon2 derivations run at once, process-wide
+    envHashingLimiter :: !HashingLimiter
   }
 
 -- | Interpret the whole 'AppEffects' stack down to IO, surfacing an infrastructure
@@ -149,7 +151,7 @@ runAppIO env action = do
     . runAuthEventPublisherPostgres
     . runTokenVerifierJwt keys.verifierJwks env.envConfig
     . runTokenSignerJwt keys.signingKey env.envConfig
-    . runPasswordHasherCrypto env.envArgon2Params
+    . runPasswordHasherCrypto env.envHashingLimiter env.envArgon2Params
     . runPasswordBreachCheckerHibp env.envHttpManager breachTimeoutMs
     . runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)
     . runNotifierFromConfig env.envConfig

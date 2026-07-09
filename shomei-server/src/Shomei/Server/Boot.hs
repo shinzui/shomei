@@ -39,7 +39,7 @@ import Servant
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
-import Shomei.Crypto (argon2WarningFloor, sha256Hex)
+import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
@@ -203,6 +203,18 @@ buildEnv cfg settings = do
   keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
+  limiter <- newHashingLimiter settings.serverHashingMaxConcurrency
+  hPutStrLn
+    stderr
+    ( "[shomei] hashing concurrency "
+        <> show (hashingLimit limiter)
+        <> ", argon2 m="
+        <> show settings.serverArgon2.memoryKiB
+        <> "KiB,t="
+        <> show settings.serverArgon2.iterations
+        <> ",p="
+        <> show settings.serverArgon2.parallelism
+    )
   pure
     Env
       { envPool = pool,
@@ -210,7 +222,8 @@ buildEnv cfg settings = do
         envKeys = keysRef,
         envKek = kek,
         envHttpManager = mgr,
-        envArgon2Params = settings.serverArgon2
+        envArgon2Params = settings.serverArgon2,
+        envHashingLimiter = limiter
       }
 
 -- | Milliseconds to a 'DiffTime', exactly (a 'DiffTime' counts picoseconds, so this loses

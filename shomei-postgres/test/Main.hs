@@ -5,7 +5,8 @@
 -- PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
-import Control.Monad (forM_)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Monad (forM_, replicateM, void)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort)
@@ -28,9 +29,12 @@ import Shomei.Crypto
     defaultArgon2Params,
     dummyHashFor,
     hashPasswordArgon2id,
+    newHashingLimiter,
+    peakHashingConcurrency,
     runPasswordHasherCrypto,
     runTokenGenCrypto,
     verifyPasswordArgon2id,
+    withHashingPermit,
   )
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
@@ -95,7 +99,7 @@ import Shomei.Effect.PasskeyStore
     updatePasskeySignCounter,
   )
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
-import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword)
+import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPasswordDummy)
 import Shomei.Effect.PasswordResetTokenStore
   ( PasswordResetTokenStore,
     createPasswordResetToken,
@@ -193,12 +197,15 @@ runApp pool action = do
 runAppWithNotifications :: IORef [Notification] -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
 runAppWithNotifications ref pool action = do
   wref <- newIORef (emptyWorld (UTCTime (fromGregorian 2000 1 1) 0))
+  limiter <- newHashingLimiter 2
   ( runEff
       . runErrorNoCallStack
       . runDatabasePool pool
       . runClockIO
       . runTokenGenCrypto
-      . runPasswordHasherCrypto defaultArgon2Params
+      -- Cheap parameters: these workflow tests hash real passwords, and the production cost
+      -- (~100 ms per hash) would dominate the suite. The argon2 tests below cover the real ones.
+      . runPasswordHasherCrypto limiter cheapParams
       . runPasswordBreachCheckerFake wref
       . runTokenSignerFake
       . runSigningKeyStorePostgres
@@ -225,12 +232,13 @@ runAppAtTime :: UTCTime -> Pool -> Eff AppEffects a -> IO (Either AuthError a)
 runAppAtTime t pool action = do
   ref <- newIORef []
   wref <- newIORef (emptyWorld t)
+  limiter <- newHashingLimiter 2
   ( runEff
       . runErrorNoCallStack
       . runDatabasePool pool
       . runClockFixed t
       . runTokenGenCrypto
-      . runPasswordHasherCrypto defaultArgon2Params
+      . runPasswordHasherCrypto limiter cheapParams
       . runPasswordBreachCheckerFake wref
       . runTokenSignerFake
       . runSigningKeyStorePostgres
@@ -378,6 +386,10 @@ tests =
     testArgon2ParamsChangeLeavesOldHashesVerifiable,
     testArgon2MalformedHashesVerifyFalse,
     testArgon2DummyHashTracksConfiguredParams,
+    testHashingLimiterBoundsConcurrency 1,
+    testHashingLimiterBoundsConcurrency 2,
+    testInterpreterHonorsTheLimiter,
+    testDummyVerificationTakesAPermit,
     testSweepDeletesExpiredRows,
     testSweepIsIdempotent,
     testSweepAuthEventRetention,
@@ -1085,6 +1097,76 @@ testArgon2DummyHashTracksConfiguredParams =
     costFields (PasswordHash t) = case Text.splitOn "$" t of
       ("" : "argon2id" : version : params : _) -> Just (version, params)
       _ -> Nothing
+
+-- Hashing limiter -------------------------------------------------------------
+
+-- | At most @limit@ Argon2 derivations may run at once, no matter how many requests arrive.
+--
+-- Sixteen threads race for permits. Each holds its permit for a fixed 25 ms before hashing, so
+-- the first @limit@ of them are provably in flight together and the high-water mark reaches
+-- @limit@ exactly. The assertion that matters is @peak <= limit@ — that is the bound; the
+-- @peak == limit@ half only confirms the test actually saturated the gate rather than
+-- trivially passing.
+testHashingLimiterBoundsConcurrency :: Int -> TestTree
+testHashingLimiterBoundsConcurrency limit =
+  testCase ("hashing limiter: peak concurrency never exceeds the limit (" <> show limit <> ")") do
+    limiter <- newHashingLimiter limit
+    dones <- replicateM 16 newEmptyMVar
+    forM_ (zip [1 :: Int ..] dones) \(i, done) ->
+      void $ forkIO do
+        h <- withHashingPermit limiter do
+          threadDelay 25_000
+          hashPasswordArgon2id cheapParams ("pw" <> Text.pack (show i))
+        putMVar done (i, h)
+    results <- mapM takeMVar dones
+
+    peak <- peakHashingConcurrency limiter
+    assertBool ("peak " <> show peak <> " exceeded the limit " <> show limit) (peak <= limit)
+    assertEqual "the test must saturate the gate, or it proves nothing" limit peak
+
+    -- Every hash is real and verifies: the gate serializes work, it does not corrupt it.
+    forM_ results \(i, h) ->
+      assertBool
+        ("hash " <> show i <> " must verify")
+        (verifyPasswordArgon2id ("pw" <> Text.pack (show i)) h)
+
+-- | The bound must hold through the effect interpreter, not merely around 'withHashingPermit'.
+-- A refactor that dropped the bracket from 'runPasswordHasherCrypto' would leave the previous
+-- test green and the server unbounded.
+testInterpreterHonorsTheLimiter :: TestTree
+testInterpreterHonorsTheLimiter =
+  testCase "hashing limiter: the PasswordHasher interpreter acquires a permit" do
+    limiter <- newHashingLimiter 2
+    dones <- replicateM 8 newEmptyMVar
+    forM_ (zip [1 :: Int ..] dones) \(i, done) ->
+      void $ forkIO do
+        h <-
+          runEff
+            . runPasswordHasherCrypto limiter cheapParams
+            $ hashPassword (PlainPassword ("pw" <> Text.pack (show i)))
+        putMVar done h
+    _ <- mapM takeMVar dones
+    peak <- peakHashingConcurrency limiter
+    -- Both halves matter. @peak <= 2@ is the bound. @peak >= 1@ proves a permit was taken at
+    -- all: without it, deleting the bracket from the interpreter leaves @peak == 0@ and this
+    -- test would pass while the server hashed without limit.
+    assertBool ("interpreter allowed " <> show peak <> " concurrent hashes") (peak <= 2)
+    assertBool "the interpreter never acquired a permit" (peak >= 1)
+
+-- | A verification of a *dummy* hash also takes a permit — the miss path must be bounded
+-- exactly like the hit path, or a flood of logins for nonexistent accounts bypasses the gate.
+testDummyVerificationTakesAPermit :: TestTree
+testDummyVerificationTakesAPermit =
+  testCase "hashing limiter: the dummy verification path is bounded too" do
+    limiter <- newHashingLimiter 1
+    dones <- replicateM 4 newEmptyMVar
+    forM_ dones \done ->
+      void $ forkIO do
+        runEff . runPasswordHasherCrypto limiter cheapParams $ verifyPasswordDummy (PlainPassword "pw")
+        putMVar done ()
+    _ <- mapM takeMVar dones
+    peak <- peakHashingConcurrency limiter
+    peak @?= 1
 
 -- Maintenance sweep ----------------------------------------------------------
 

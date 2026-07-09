@@ -76,9 +76,21 @@ data ServerSettings = ServerSettings
     serverSweep :: !SweepSettings,
     -- | Argon2id cost parameters for hashing /new/ passwords. Existing hashes carry the
     --     parameters they were made with, so changing these never invalidates a credential.
-    serverArgon2 :: !Argon2Params
+    serverArgon2 :: !Argon2Params,
+    -- | How many Argon2 derivations may run at once. Each pins a capability in an unsafe
+    --     foreign call and transiently allocates its full memory cost, so this bounds both GC
+    --     stalls and the memory spike. Raising it trades hot-path latency for login throughput.
+    serverHashingMaxConcurrency :: !Int
   }
   deriving stock (Show, Generic)
+
+-- | Two concurrent hashes bound the transient allocation at ~128 MiB and cap the capabilities
+-- that can be pinned in unsafe FFI simultaneously, while still sustaining ~13–40 logins/second
+-- at 50–150 ms per hash — far above any single-instance deployment's login rate. The
+-- conservative end of the review's 2–4 suggestion: too-small merely queues logins, while
+-- too-large is the global-GC-stall bug this bound exists to prevent.
+defaultHashingMaxConcurrency :: Int
+defaultHashingMaxConcurrency = 2
 
 -- | Settings for the background expired-data sweeper (see 'Shomei.Postgres.Maintenance').
 --
@@ -165,6 +177,8 @@ data FileConfig = FileConfig
     argon2MemoryKiB :: !(Maybe Int),
     argon2Iterations :: !(Maybe Int),
     argon2Parallelism :: !(Maybe Int),
+    -- | how many Argon2 derivations may run at once
+    hashingMaxConcurrency :: !(Maybe Int),
     accessTokenTtlSeconds :: !(Maybe Int),
     refreshTokenTtlSeconds :: !(Maybe Int),
     sessionTtlSeconds :: !(Maybe Int),
@@ -264,7 +278,8 @@ baseDefaults =
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
           serverSweep = defaultSweepSettings,
-          serverArgon2 = defaultArgon2Params
+          serverArgon2 = defaultArgon2Params,
+          serverHashingMaxConcurrency = defaultHashingMaxConcurrency
         }
     )
 
@@ -334,7 +349,9 @@ baseFromFile (Just fc) = do
             serverDbPoolAcquisitionTimeoutMs =
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
             serverSweep = mergeSweep defaultSweepSettings fc,
-            serverArgon2 = mergeArgon2 defaultArgon2Params fc
+            serverArgon2 = mergeArgon2 defaultArgon2Params fc,
+            serverHashingMaxConcurrency =
+              fromMaybe defaultHashingMaxConcurrency fc.hashingMaxConcurrency
           }
   pure (cfg, settings)
 
@@ -385,6 +402,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   sweep <- overlaySweepFromEnv baseSettings.serverSweep
   argon2 <- overlayArgon2FromEnv baseSettings.serverArgon2
+  hashingConcurrency <- intEnv "SHOMEI_HASHING_MAX_CONCURRENCY" baseSettings.serverHashingMaxConcurrency
   iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
   aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
@@ -409,6 +427,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_ARGON2_MEMORY_KIB" "argon2MemoryKiB" argon2.memoryKiB
   requirePositive "SHOMEI_ARGON2_ITERATIONS" "argon2Iterations" argon2.iterations
   requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
+  -- Zero permits would block every login forever.
+  requirePositive "SHOMEI_HASHING_MAX_CONCURRENCY" "hashingMaxConcurrency" hashingConcurrency
   pure
     ( cfg,
       ServerSettings
@@ -417,7 +437,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverSweep = sweep,
-          serverArgon2 = argon2
+          serverArgon2 = argon2,
+          serverHashingMaxConcurrency = hashingConcurrency
         }
     )
   where

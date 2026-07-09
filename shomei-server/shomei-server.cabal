@@ -129,6 +129,7 @@ test-suite shomei-server-config-test
     , base
     , containers
     , shomei-core
+    , shomei-postgres
     , shomei-server
     , tasty
     , tasty-hunit

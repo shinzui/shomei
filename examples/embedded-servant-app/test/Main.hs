@@ -21,7 +21,7 @@ import Network.HTTP.Types (statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
-import Shomei.Crypto (Argon2Params (..))
+import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -49,8 +49,9 @@ tests =
           pool <- acquirePool 4 10 connStr
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
           envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
           testWithApplication (pure (embeddedApplication env)) \port -> do
             mgr <- newManager defaultManagerSettings
 

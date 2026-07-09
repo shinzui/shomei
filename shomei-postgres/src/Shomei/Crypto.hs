@@ -9,6 +9,11 @@ module Shomei.Crypto
     hashPasswordArgon2id,
     verifyPasswordArgon2id,
     dummyHashFor,
+    HashingLimiter,
+    newHashingLimiter,
+    withHashingPermit,
+    hashingLimit,
+    peakHashingConcurrency,
     runPasswordHasherCrypto,
     generateOpaqueToken,
     hashRefreshToken,
@@ -17,7 +22,18 @@ module Shomei.Crypto
   )
 where
 
-import Control.Exception (evaluate)
+import Control.Concurrent.STM
+  ( STM,
+    TVar,
+    atomically,
+    check,
+    modifyTVar',
+    newTVarIO,
+    readTVar,
+    readTVarIO,
+    writeTVar,
+  )
+import Control.Exception (bracket_, evaluate)
 import Crypto.Error (CryptoFailable (..))
 import Crypto.Hash (SHA256 (..), hashWith)
 import Crypto.KDF.Argon2 qualified as Argon2
@@ -215,21 +231,82 @@ sha256Hex :: Text -> Text
 sha256Hex t =
   TE.decodeUtf8 (convertToBase Base16 (hashWith SHA256 (TE.encodeUtf8 t)))
 
--- | Interpret the 'PasswordHasher' port with real Argon2id at @params@.
+-- Bounding the concurrency ----------------------------------------------------
+
+-- | A bounded-permit gate for Argon2 work.
 --
--- 'VerifyPassword' is forced with 'evaluate' rather than returned as a thunk. The pure
--- @verifyPasswordArgon2id@ is ~100 ms of work; left lazy it would be forced later, on whatever
+-- Two things make unbounded concurrent hashing dangerous, and neither is obvious from the
+-- Haskell side. First, crypton reaches the C implementation through
+-- @foreign import ccall unsafe@ (@Crypto.KDF.Argon2@), and an /unsafe/ foreign call cannot be
+-- preempted: the calling capability is pinned for the ~100 ms the hash takes, with no
+-- garbage-collection safepoint. GHC's default collector is stop-the-world and must synchronize
+-- every capability, so one in-flight hash can stall every other thread in the process —
+-- including requests that never touch a password. Second, each hash transiently allocates its
+-- full memory cost (64 MiB by default); ten concurrent logins spike ~640 MB.
+--
+-- Bounding the number of simultaneous hashes bounds both. 'peakInUse' records the high-water
+-- mark of simultaneous holders, which lets tests assert the bound directly instead of inferring
+-- it from timing.
+data HashingLimiter = HashingLimiter
+  { permits :: !(TVar Int),
+    peakInUse :: !(TVar Int),
+    limit :: !Int
+  }
+
+-- | A limiter admitting at most @n@ concurrent hashes. A non-positive @n@ would block every
+-- login forever, so it is clamped to 1.
+newHashingLimiter :: Int -> IO HashingLimiter
+newHashingLimiter n = do
+  let capped = max 1 n
+  free <- newTVarIO capped
+  peak <- newTVarIO 0
+  pure HashingLimiter {permits = free, peakInUse = peak, limit = capped}
+
+-- | How many concurrent hashes this limiter admits.
+hashingLimit :: HashingLimiter -> Int
+hashingLimit hl = hl.limit
+
+-- | The greatest number of hashes ever running simultaneously under this limiter. Never
+-- exceeds 'hashingLimit'; read by tests and available for future metrics.
+peakHashingConcurrency :: HashingLimiter -> IO Int
+peakHashingConcurrency hl = readTVarIO hl.peakInUse
+
+-- | Run @action@ holding one permit, blocking until one is free. The permit is released even
+-- if @action@ throws.
+withHashingPermit :: HashingLimiter -> IO a -> IO a
+withHashingPermit hl = bracket_ (atomically acquire) (atomically release)
+  where
+    acquire :: STM ()
+    acquire = do
+      free <- readTVar hl.permits
+      -- 'check' retries the transaction (parking this thread) until a permit appears.
+      check (free > 0)
+      writeTVar hl.permits (free - 1)
+      modifyTVar' hl.peakInUse (max (hl.limit - (free - 1)))
+
+    release :: STM ()
+    release = modifyTVar' hl.permits (+ 1)
+
+-- | Interpret the 'PasswordHasher' port with real Argon2id at @params@, admitting at most
+-- @limiter@'s worth of concurrent derivations.
+--
+-- Every operation here is forced with 'evaluate' /inside/ the permit. @verifyPasswordArgon2id@
+-- is a pure function costing ~100 ms; returned lazily it would be forced later, on whatever
 -- thread first looked at the 'Bool' — possibly during response assembly, and certainly outside
--- any bound a caller installs around this interpreter.
-runPasswordHasherCrypto :: (IOE :> es) => Argon2Params -> Eff (PasswordHasher : es) a -> Eff es a
-runPasswordHasherCrypto params = interpret_ \case
-  HashPassword (PlainPassword pw) -> liftIO (hashPasswordArgon2id params pw)
-  VerifyPassword (PlainPassword pw) hash -> liftIO (evaluate (verifyPasswordArgon2id pw hash))
+-- the bound this interpreter installs. A thunk that escapes the bracket is a bound that does
+-- nothing.
+runPasswordHasherCrypto ::
+  (IOE :> es) => HashingLimiter -> Argon2Params -> Eff (PasswordHasher : es) a -> Eff es a
+runPasswordHasherCrypto limiter params = interpret_ \case
+  HashPassword (PlainPassword pw) ->
+    liftIO (withHashingPermit limiter (hashPasswordArgon2id params pw))
+  VerifyPassword (PlainPassword pw) hash ->
+    liftIO (withHashingPermit limiter (evaluate (verifyPasswordArgon2id pw hash)))
   -- Derive against a dummy hash carrying the *configured* parameters, so this costs exactly
   -- what the 'VerifyPassword' above costs. Never a constant hash: its baked-in parameters
   -- would drift from the configured ones and reopen the login timing oracle.
   VerifyPasswordDummy (PlainPassword pw) ->
-    liftIO (void (evaluate (verifyPasswordArgon2id pw (dummyHashFor params))))
+    liftIO (withHashingPermit limiter (void (evaluate (verifyPasswordArgon2id pw (dummyHashFor params)))))
 
 -- | A fresh opaque refresh token: base64url of 32 random bytes (the secret handed to the
 -- client; only its hash is stored — see 'hashRefreshToken').

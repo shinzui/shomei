@@ -9,6 +9,7 @@ import Control.Exception (try)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), WebAuthnConfig (..))
+import Shomei.Crypto (Argon2Params (..))
 import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (UserId, genUserId, idText)
@@ -163,6 +164,50 @@ sweepRejectsNonPositive = do
   unsetEnv "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES"
   unsetEnv "PG_CONNECTION_STRING"
 
+-- | Argon2 defaults, env overrides, and the refusal of non-positive costs.
+argon2Settings :: Assertion
+argon2Settings = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv argon2EnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+
+  (_, defaults) <- loadConfigFromEnv
+  defaults.serverArgon2.memoryKiB @?= 65536
+  defaults.serverArgon2.iterations @?= 3
+  defaults.serverArgon2.parallelism @?= 1
+  defaults.serverHashingMaxConcurrency @?= 2
+
+  setEnv "SHOMEI_ARGON2_MEMORY_KIB" "32768"
+  setEnv "SHOMEI_ARGON2_ITERATIONS" "4"
+  setEnv "SHOMEI_HASHING_MAX_CONCURRENCY" "4"
+  (_, overridden) <- loadConfigFromEnv
+  overridden.serverArgon2.memoryKiB @?= 32768
+  overridden.serverArgon2.iterations @?= 4
+  overridden.serverArgon2.parallelism @?= 1
+  overridden.serverHashingMaxConcurrency @?= 4
+  mapM_ unsetEnv argon2EnvVars
+
+  -- crypton would reject these deep inside a login; the loader names the variable instead.
+  -- A zero permit count would block every login forever.
+  setEnv "SHOMEI_ARGON2_MEMORY_KIB" "0"
+  memResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" memResult
+  unsetEnv "SHOMEI_ARGON2_MEMORY_KIB"
+
+  setEnv "SHOMEI_HASHING_MAX_CONCURRENCY" "0"
+  concResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_HASHING_MAX_CONCURRENCY" concResult
+  mapM_ unsetEnv argon2EnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+argon2EnvVars :: [String]
+argon2EnvVars =
+  [ "SHOMEI_ARGON2_MEMORY_KIB",
+    "SHOMEI_ARGON2_ITERATIONS",
+    "SHOMEI_ARGON2_PARALLELISM",
+    "SHOMEI_HASHING_MAX_CONCURRENCY"
+  ]
+
 -- | Assert a config load failed with a 'userError' whose message names the offending variable.
 expectUserErrorNaming :: String -> Either IOError a -> Assertion
 expectUserErrorNaming name = \case
@@ -287,3 +332,4 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   sweepDefaults
   sweepEnvOverrides
   sweepRejectsNonPositive
+  argon2Settings
