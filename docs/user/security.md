@@ -85,6 +85,73 @@ meanwhile; the `/ready` probe, which checks for an active key, starts failing so
 notices. Fix the key table with `shomei-admin` and send `SIGHUP` (or wait one interval) to
 recover.
 
+## Signing-key encryption at rest
+
+**The threat.** The private signing key is the most powerful secret Shōmei holds: whoever has
+it can mint a valid token for any user of any downstream service that trusts the JWKS. By
+default it is stored as plaintext JWK JSON in `shomei_signing_keys.private_key_jwk`, so a
+database read — a dump, a backup, a misconfigured replica, a `SELECT` from a compromised
+reporting account — is enough to forge tokens indefinitely. Passwords and refresh tokens in
+this database are protected at rest; without the setting below, this key is not.
+
+**The fix.** Set `SHOMEI_KEY_ENCRYPTION_KEY` to a 32-byte base64 key-encryption key (KEK) that
+lives outside the database, and Shōmei envelope-encrypts every private key under it:
+
+```text
+private_key_jwk = "enc:v1:" <base64url nonce> ":" <base64url ciphertext+tag>
+```
+
+The cipher is ChaCha20-Poly1305 with a fresh 12-byte nonce per encryption. The AEAD
+*associated data* is the key's `kid`, which binds each ciphertext to its own row: an attacker
+with database **write** access cannot relabel an old, compromised key as the active one,
+because it no longer authenticates under the new `kid`. Forging tokens now requires the
+database **and** the application environment.
+
+There is no schema change — the format is versioned inside the existing `text` column — so
+plaintext and encrypted rows coexist and a backfill can run against a live server.
+
+**Only signing depends on the KEK.** The published JWKS and the verifier's key set are built
+from the `public_key_jwk` column, which is never encrypted. A missing or wrong KEK can
+therefore stop Shōmei minting *new* tokens, but can never break verification of outstanding
+ones, and never changes what `/.well-known/jwks.json` serves.
+
+**Boot policy.**
+
+| Rows | KEK set? | Behavior |
+|------|----------|----------|
+| encrypted | no | **refuses to start**: `signing keys are encrypted at rest but SHOMEI_KEY_ENCRYPTION_KEY is not set` |
+| encrypted | wrong | **refuses to start**, naming the key that failed to decrypt |
+| encrypted | yes | starts; new keys are written encrypted |
+| plaintext | no | starts, with a warning recommending encryption (nothing breaks on upgrade) |
+| plaintext | yes | starts, warns, and writes all *new* keys encrypted; run `keys encrypt-at-rest` |
+
+Refusing is the only safe response to encrypted-rows-without-a-KEK: the alternatives are a
+server that cannot sign, or one that silently generates a replacement key and orphans every
+outstanding token.
+
+**Operating it.** See [deployment.md](deployment.md) for the migration and KEK-rotation
+runbooks. Two commands matter:
+
+- `shomei-admin keys encrypt-at-rest` — encrypt every plaintext row. Idempotent; safe to run
+  against a live server (each row is one atomic `UPDATE`, and a running server reads both
+  forms).
+- `shomei-admin keys rewrap` — rotate the KEK itself, decrypting with
+  `SHOMEI_KEY_ENCRYPTION_KEY_OLD` and re-encrypting with `SHOMEI_KEY_ENCRYPTION_KEY`. It runs
+  the full decrypt pass in memory before its first write, so a wrong old KEK aborts having
+  modified nothing.
+
+**Losing the KEK loses the keys.** There is no recovery path — that is the point of the
+scheme. Back the KEK up exactly as carefully as the database, and separately from it. If it is
+truly lost, the honest remedy is to delete the encrypted rows and generate a fresh signing key;
+every outstanding token dies.
+
+**KMS/HSM** integration is the operator's layer: inject the KEK from your secret manager
+(Vault, AWS KMS, GCP Secret Manager, …) into the process environment. Shōmei deliberately
+knows nothing about where it came from.
+
+Note that `SHOMEI_KEY_ENCRYPTION_KEY` is **not** part of `ShomeiConfig`. That record derives
+`Show` and `ToJSON` and is logged; a secret in it would be one debug line from disclosure.
+
 ## No account-existence leakage
 
 Login returns a single generic `401 invalid_login` for a wrong password, an unknown account, and

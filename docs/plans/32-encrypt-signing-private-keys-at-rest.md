@@ -54,23 +54,23 @@ in full below).
 Use a checklist to summarize granular steps. Every stopping point must be documented here,
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 
-- [ ] M1: `Shomei.Jwt.KeyProtection` module: KEK type + base64 parser, ChaCha20-Poly1305
+- [x] M1: `Shomei.Jwt.KeyProtection` module: KEK type + base64 parser, ChaCha20-Poly1305
       encrypt/decrypt of the private JWK text with kid-bound AAD, `enc:v1:` format,
       `decryptStoredSigningKey` pure composition function; unit tests (round-trip, tamper,
-      wrong KEK, wrong kid, plaintext passthrough, format detection) pass.
-- [ ] M2: KEK loading from `SHOMEI_KEY_ENCRYPTION_KEY` in the server boot and the admin
+      wrong KEK, wrong kid, plaintext passthrough, format detection) pass. (2026-07-08)
+- [x] M2: KEK loading from `SHOMEI_KEY_ENCRYPTION_KEY` in the server boot and the admin
       CLI env; server key loading decrypts (signer) and reads public material from
       `public_key_jwk` (JWKS/verifier need no KEK); boot policy (refuse / warn) enforced
-      and tested.
-- [ ] M2: all insert paths encrypt when a KEK is present: server first-boot generation,
-      `shomei-admin keys generate`, `Shomei.Jwt.Rotation` insert path.
-- [ ] M3: `shomei-admin keys encrypt-at-rest` (idempotent backfill) and
+      and tested. (2026-07-08)
+- [x] M2: all insert paths encrypt when a KEK is present: server first-boot generation,
+      `shomei-admin keys generate`, `Shomei.Jwt.Rotation` insert path. (2026-07-08)
+- [x] M3: `shomei-admin keys encrypt-at-rest` (idempotent backfill) and
       `shomei-admin keys rewrap` (KEK rotation, old KEK via
-      `SHOMEI_KEY_ENCRYPTION_KEY_OLD`) implemented with integration tests.
-- [ ] M4: end-to-end proof (plaintext deployment → backfill → rotate → rewrap, tokens
+      `SHOMEI_KEY_ENCRYPTION_KEY_OLD`) implemented with integration tests. (2026-07-08)
+- [x] M4: end-to-end proof (plaintext deployment → backfill → rotate → rewrap, tokens
       verifying throughout) captured; `docs/user/security.md` + `docs/user/deployment.md`
-      updated; `cabal test all` green.
-- [ ] Living sections updated; Outcomes & Retrospective written.
+      updated; `cabal test all` green. (2026-07-08)
+- [x] Living sections updated; Outcomes & Retrospective written. (2026-07-08)
 
 
 ## Surprises & Discoveries
@@ -78,7 +78,58 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **Plan 29 had landed, and its loader was building the JWKS from *private* material.**
+  `assembleKeys` converted every publishable row with `fromStoredSigningKey` (the private
+  column) and then stripped it to public. That works only while rows are plaintext; under this
+  plan it would have made publication depend on the KEK. Restructured so publication and the
+  verifier set come from `publicJwkFromStored` and only the signer is decrypted — which is what
+  the Decision Log had already called for, and is simply more correct regardless of encryption.
+  The MasterPlan's "plan 29 owns the seam, plan 32 hooks into it" contract held: there was
+  exactly one place to change.
+
+- **The boot-policy warning only inspects *publishable* rows, so a plaintext `pending` key does
+  not trigger it.** Observed live: with a KEK set, `keys generate` under `env -u
+  SHOMEI_KEY_ENCRYPTION_KEY` wrote a plaintext pending row, and the next boot logged no
+  "some signing keys are still unencrypted" warning, because `loadKeyMaterial` reads only
+  `active`+`retired`. The warning does fire once that key is activated, and
+  `keys encrypt-at-rest` covers *all* rows (it uses the CLI's `listAllKeys`), so nothing is
+  silently left unprotected — but the notice arrives one step later than an operator might
+  expect. Closing this properly needs a `ListAllSigningKeys` port operation; noted rather than
+  scope-crept.
+
+- **`shomei-admin` did not depend on the `shomei-server` library.** The KEK env-loading helper
+  lives in `Shomei.Server.Keys`, so the CLI could not reach it. Added `shomei-server` to the
+  executable's `build-depends` (an exe depending on its own package's library is legal and is
+  what `shomei-admin-test` already did) rather than duplicating the parse-and-fail logic.
+
+- **`keyEncryptionKeyFromBase64`'s error message originally hardcoded
+  `SHOMEI_KEY_ENCRYPTION_KEY`,** which would be wrong when parsing
+  `SHOMEI_KEY_ENCRYPTION_KEY_OLD` for a rewrap. The message is now variable-agnostic
+  (`"is not a valid key-encryption key: …"`) and the caller prefixes the name it read:
+
+  ```text
+  user error (SHOMEI_KEY_ENCRYPTION_KEY is not a valid key-encryption key: it decodes to 31 bytes, not 32. Generate one with: head -c 32 /dev/urandom | base64)
+  ```
+
+- **`crypton`'s `Poly1305.Auth` already has a constant-time `Eq`** (`Data.ByteArray.constEq`),
+  so comparing the computed tag against the stored one with `==` is safe; no manual `constEq`
+  is needed. Confirmed by reading `crypton/Crypto/MAC/Poly1305.hs` (`instance Eq Auth`).
+
+- **`keysRewrap` aborts with `exitFailure`, which a test must catch as an `ExitCode`
+  exception.** That is how `testRewrapWithWrongOldKekModifiesNothing` asserts "zero rows
+  modified" — otherwise the abort would take the test process down with it.
+
+- **The first `protect → decrypt → sign → verify` test failed with `TokenExpired`,** not a
+  crypto error: it minted claims at a fixed 2026-07-08T00:00Z epoch and the verifier checks
+  expiry against the real clock. Fixed to use `getCurrentTime`, like the suite's other
+  sign/verify specs. Worth knowing before blaming the cipher.
+
+- **The dev database was left encrypted under a throwaway KEK and had to be restored.** After
+  the M4 runbook, `shomei.shomei_signing_keys` held five `enc:v1:` rows whose KEK existed only
+  in the session scratchpad — so the next plain `cabal run exe:shomei-server` would have
+  *refused to boot*, exactly as designed. Recovery, per the plan's Idempotence section: delete
+  the rows and let the next KEK-less boot regenerate one plaintext active key. Anyone repeating
+  this runbook on a database they care about must keep the KEK.
 
 
 ## Decision Log
@@ -166,13 +217,96 @@ Record every decision made while working on the plan.
   second place that parses `private_key_jwk`.
   Date: 2026-07-07
 
+- Decision (realized): plan 29 had landed, so the hook went into
+  `Shomei.Server.Keys.loadKeyMaterial`, and that function was restructured so publication uses
+  `publicJwkFromStored` while only the signer calls `decryptStoredSigningKey`.
+  Rationale: as written by plan 29, the loader parsed the *private* column for every publishable
+  key and then stripped it to public — which would have made the JWKS depend on the KEK. The
+  refinement was already in this plan's Decision Log; implementing it also removed a smaller
+  wrong (publication had no business touching private material).
+  Date: 2026-07-08
+
+- Decision: `Shomei.Server.App.Env` gains `envKek :: Maybe KeyEncryptionKey`.
+  Rationale: `reloadKeys` (plan 29's periodic/SIGHUP refresh) must decrypt the signer, so the
+  KEK has to outlive `buildEnv`. Re-reading the environment at reload time would work but could
+  silently pick up a *different* KEK mid-process. `KeyEncryptionKey` has no `Show`/`ToJSON`, so
+  carrying it in `Env` cannot leak it into a log line — unlike putting it in `ShomeiConfig`,
+  which this plan's Decision Log already rejected for exactly that reason.
+  Date: 2026-07-08
+
+- Decision: `shomei-admin` (the executable) now depends on the `shomei-server` library.
+  Rationale: `loadKekFromEnv`/`loadNamedKekFromEnv` live in `Shomei.Server.Keys`; duplicating
+  the base64-parse-and-die logic in the CLI would create a second place for the KEK contract to
+  drift. An executable depending on its own package's library is ordinary Cabal, and the
+  `shomei-admin-test` suite already did it.
+  Date: 2026-07-08
+
+- Decision: `keyEncryptionKeyFromBase64` returns a variable-agnostic error; callers prefix the
+  environment variable name.
+  Rationale: `keys rewrap` parses two different variables. A hardcoded
+  `SHOMEI_KEY_ENCRYPTION_KEY` in the message would misdirect an operator whose
+  `SHOMEI_KEY_ENCRYPTION_KEY_OLD` was the malformed one.
+  Date: 2026-07-08
+
+- Decision: The boot-policy warning inspects only publishable rows; a plaintext `pending` key
+  does not warn.
+  Rationale: `loadKeyMaterial` lists exactly the rows it reads, and adding a "list every row"
+  query would mean a new `SigningKeyStore` port operation for a warning. The exposure is
+  bounded — `keys encrypt-at-rest` covers all rows, and the warning fires as soon as the key is
+  activated. Recorded in Surprises & Discoveries as a known gap rather than fixed here.
+  Date: 2026-07-08
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**The purpose is met, and it is checkable in one query.** After
+`shomei-admin keys encrypt-at-rest`, `SELECT count(*) … WHERE private_key_jwk LIKE '%"d"%'`
+returns `0`: no private scalar survives anywhere in the table. A database read, a backup, or a
+dump no longer yields the ability to forge tokens for every downstream service. Forging now
+needs the database *and* the process environment.
+
+Everything the plan promised exists: `enc:v1:` envelopes under ChaCha20-Poly1305 with kid-bound
+AAD; a KEK type that cannot be printed; transparent decryption at load; an idempotent backfill;
+an all-or-nothing KEK rewrap; a server that refuses to start on encrypted-rows-without-a-KEK and
+merely warns on plaintext-without-a-KEK, so no existing deployment breaks on upgrade. No schema
+migration was needed. All of it was observed against a live server, not only unit-tested.
+
+**The decision that paid off most was making publication independent of the KEK.** Plan 29's
+loader parsed the private column for every publishable key; this plan repointed publication and
+the verifier key set at `public_key_jwk`. The consequence is that a wrong or missing KEK can stop
+Shōmei minting *new* tokens but can never break verification of outstanding ones, and never
+changes what `/.well-known/jwks.json` serves — demonstrated by the rewrap step, where a token
+issued before the KEK rotation still returned `200` afterwards.
+
+**Gaps, none blocking:**
+
+- The boot warning inspects publishable rows only, so a plaintext `pending` key goes unremarked
+  until it is activated. Fixing it properly wants a `ListAllSigningKeys` port operation.
+- There is no `keys decrypt-at-rest`. Returning to plaintext means a rewrap-style pass or
+  deleting and regenerating the keys — fine for development, and deliberately awkward for
+  production, but the asymmetry is worth naming.
+- Rollback ordering is load-bearing and only documented, not enforced: once rows are encrypted,
+  an older binary cannot read them. `deployment.md` says to backfill only after the binary you
+  would roll back *to* is running. Nothing checks this.
+- `rotateSigningKeyFor` (the library rotation) still writes plaintext by default; encrypted
+  deployments must call `rotateSigningKeyForWith`. It has no in-tree callers today
+  (`rg -n "rotateSigningKey" --type haskell` finds only its own module and a comment), and
+  `shomei-admin keys generate` — the path operators actually use — encrypts. But a library
+  consumer who follows the older name silently writes a plaintext row into an encrypted table.
+  Its haddock says so; nothing enforces it.
+
+`rg -n "fromStoredSigningKey" --type haskell` now finds only its own definition and tests, which
+is the check that no second load path was introduced.
+
+**Lesson.** The plan's instruction to write decryption as a *pure* `StoredSigningKey -> Either
+KeyDecryptError JWK` function, and its insistence that plan 29 keep exactly one stored→live
+conversion point, meant this plan changed one call site rather than hunting for parsers of
+`private_key_jwk`. The `rg` sweep the plan prescribed found no others. Cross-plan integration
+contracts written before either plan is implemented actually work — when they name a function
+signature rather than a vague seam.
 
 
 ## Context and Orientation
@@ -557,6 +691,103 @@ Acceptance is the full lifecycle, observed:
    returns `0`).
 
 `cabal test all` green closes the plan.
+
+### Executed transcript (2026-07-08)
+
+`cabal test all -j1`: 12 of 12 suites PASS, exit 0. `shomei-jwt` gained 19 unit cases
+(`KeyProtection`), `shomei-admin-test` gained 7 integration cases. Run against the dev database,
+which already held five plaintext keys from plan 29's rotation runbook. Server binary from
+`cabal list-bin exe:shomei-server`, port 8099.
+
+**1. Plaintext deployment warns.**
+
+```text
+[shomei] warning: signing keys are stored unencrypted; set SHOMEI_KEY_ENCRYPTION_KEY and run 'shomei-admin keys encrypt-at-rest' to protect them
+[shomei] listening on :8099
+```
+
+**2. Backfill, and its idempotence.**
+
+```text
+$ export SHOMEI_KEY_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
+$ shomei-admin keys encrypt-at-rest
+encrypted 5 key(s), skipped 0 already-encrypted
+$ shomei-admin keys encrypt-at-rest
+encrypted 0 key(s), skipped 5 already-encrypted
+
+$ psql -tAq -d shomei -c "SELECT key_id, status, left(private_key_jwk,7) FROM shomei.shomei_signing_keys"
+nuGfPxo…|retired|enc:v1:
+OcnLm3J…|retired|enc:v1:
+KoWTZm_…|revoked|enc:v1:
+T2KaW0m…|retired|enc:v1:
+LAJ3hT4…|active |enc:v1:
+```
+
+**The security claim, checked directly** — no private scalar `"d"` survives anywhere:
+
+```text
+$ psql -tAq -d shomei -c "SELECT count(*) FROM shomei.shomei_signing_keys WHERE private_key_jwk LIKE '%\"d\"%'"
+0
+```
+
+**3. Clean boot under the KEK; signing and verifying through the envelope.**
+
+```text
+[shomei] listening on :8099          # no warning
+signup token kid: LAJ3hT4R1SK8RHGBFyjP8df2KRlBXwf52Y_OlcNN2YM
+/auth/me -> 200
+jwks keys: 4
+```
+
+**4. Refusal, in both directions.** Exit code 1 in each case; the server never starts.
+
+```text
+# KEK removed
+user error (signing keys are encrypted at rest but SHOMEI_KEY_ENCRYPTION_KEY is not set)
+
+# wrong KEK
+user error (signing key LAJ3hT4R1SK8RHGBFyjP8df2KRlBXwf52Y_OlcNN2YM did not decrypt: SHOMEI_KEY_ENCRYPTION_KEY is wrong, or the row was tampered with)
+```
+
+A malformed KEK is fatal too, rather than being silently ignored:
+
+```text
+user error (SHOMEI_KEY_ENCRYPTION_KEY is not a valid key-encryption key: it decodes to 31 bytes, not 32. Generate one with: head -c 32 /dev/urandom | base64)
+```
+
+**5. Rewrap is all-or-nothing, then rotates.**
+
+```text
+# wrong old KEK: aborts, md5 of all private columns unchanged
+$ shomei-admin keys rewrap
+shomei-admin: cannot decrypt key nuGfPxo… with SHOMEI_KEY_ENCRYPTION_KEY_OLD (KeyDecryptFailed); no rows were modified
+exit=1
+rows unchanged? YES
+
+# real old KEK
+$ shomei-admin keys rewrap
+rewrapped 5 key(s)
+exit=0
+```
+
+**6. After the rewrap: the old KEK is dead, the new one boots, and outstanding tokens live.**
+
+```text
+# old KEK
+user error (signing key LAJ3hT4… did not decrypt: SHOMEI_KEY_ENCRYPTION_KEY is wrong, or the row was tampered with)
+
+# new KEK
+[shomei] listening on :8099
+pre-rewrap token /auth/me -> 200     # public material never changed
+fresh login /auth/me     -> 200      # signs under the new KEK
+```
+
+**Write paths.** `keys generate` with a KEK writes `enc:v1:`; without one it writes `{"crv":…`
+(and — see Surprises & Discoveries — a plaintext *pending* row does not trip the boot warning,
+because the loader reads only publishable rows).
+
+Acceptance items 1–5 of this section all observed. The dev database was afterwards restored to a
+single plaintext active key (see Surprises & Discoveries); a real deployment must keep its KEK.
 
 
 ## Idempotence and Recovery

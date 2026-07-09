@@ -24,6 +24,8 @@ twelve-factor — env always wins):
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
+| `SHOMEI_KEY_ENCRYPTION_KEY` | 32 bytes, base64. Envelope-encrypts signing keys at rest. Unset means keys are stored in plaintext (a warning is logged) | unset |
+| `SHOMEI_KEY_ENCRYPTION_KEY_OLD` | the previous KEK; read only by `shomei-admin keys rewrap` | unset |
 | `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |
 | `SHOMEI_PASSWORD_REJECT_COMMON` | reject passwords from the built-in common-password dictionary | `true` |
 | `SHOMEI_PASSWORD_REJECT_CONTEXTUAL` | reject passwords equal to the login email/local-part/display name | `true` |
@@ -103,6 +105,51 @@ published JWKS. First-boot key generation is **guarded on "no active key"**, so 
 `keys generate --alg <desired>` then `keys activate <kid>` (zero-downtime — both keys publish
 during the overlap). A running server applies the rotation at its next key reload — within
 `SHOMEI_KEY_REFRESH_INTERVAL` seconds, or immediately on `kill -HUP <pid>` — with no restart.
+
+## Encrypting signing keys at rest
+
+Without `SHOMEI_KEY_ENCRYPTION_KEY`, private signing keys sit in the database as plaintext, and
+anyone who can read the database can forge tokens for every downstream service. See
+[security.md](security.md#signing-key-encryption-at-rest) for the threat model and the scheme.
+
+**Enabling it on an existing deployment.** Encrypted rows cannot be read by a binary that has
+no KEK, so do the backfill *after* the binary you would roll back to is the one running:
+
+```bash
+# 1. Generate a KEK and store it in your secret manager. Back it up separately from the
+#    database — losing it loses the signing keys, with no recovery path.
+head -c 32 /dev/urandom | base64
+
+# 2. Set SHOMEI_KEY_ENCRYPTION_KEY in the server's environment and restart. Nothing changes
+#    yet: existing plaintext rows still read, and any NEW key is written encrypted.
+
+# 3. Backfill. Idempotent, and safe against the running server: each row is one atomic
+#    UPDATE, and a running server reads plaintext and encrypted rows alike.
+shomei-admin keys encrypt-at-rest      # → encrypted 3 key(s), skipped 0 already-encrypted
+
+# 4. Verify: no private scalar "d" is left anywhere in the table.
+psql -d "$PGDATABASE" -tAc \
+  "SELECT count(*) FROM shomei.shomei_signing_keys WHERE private_key_jwk LIKE '%\"d\"%'"   # → 0
+```
+
+From here on, a server started **without** the KEK refuses to boot rather than run unable to
+sign. `shomei-admin` needs the KEK for `keys generate` (so the new key is written encrypted);
+the pure status transitions — `activate`, `retire`, `revoke`, `list` — never touch key material
+and need nothing.
+
+**Rotating the KEK.** Rows are few, so a rewrap takes milliseconds:
+
+```bash
+export SHOMEI_KEY_ENCRYPTION_KEY_OLD="$OLD_KEK"
+export SHOMEI_KEY_ENCRYPTION_KEY="$NEW_KEK"
+shomei-admin keys rewrap               # → rewrapped 3 key(s)
+```
+
+`rewrap` decrypts every row in memory before writing any of them, so a wrong
+`SHOMEI_KEY_ENCRYPTION_KEY_OLD` aborts with `no rows were modified` — a half-rewrapped table
+would be readable by neither KEK. It also encrypts any row still in plaintext, so it subsumes
+`encrypt-at-rest`. Afterwards, deploy the new KEK to the servers and restart them; the public
+keys never changed, so **every outstanding token keeps verifying** across the rotation.
 
 ## Local development/test stack (`process-compose`)
 

@@ -89,7 +89,7 @@ verifiable behaviors.
 | 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Complete |
 | 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Complete |
 | 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Not Started |
-| 5 | Encrypt Signing Private Keys at Rest | docs/plans/32-encrypt-signing-private-keys-at-rest.md | None | EP-2 | In Progress |
+| 5 | Encrypt Signing Private Keys at Rest | docs/plans/32-encrypt-signing-private-keys-at-rest.md | None | EP-2 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -157,8 +157,8 @@ rename existing ones.
 - [ ] EP-4: Decision recorded: complete cookie transport (vs. remove read path)
 - [ ] EP-4: Set-Cookie emission on login/refresh/logout honoring `TokenTransport`, with `HttpOnly`/`Secure`/`SameSite`
 - [ ] EP-4: CSRF defense for cookie-authenticated mutations
-- [ ] EP-5: Envelope encryption of `private_key_jwk` behind a configured key-encryption key
-- [ ] EP-5: Migration/backfill path for existing plaintext rows; `shomei-admin` support
+- [x] EP-5: Envelope encryption of `private_key_jwk` behind a configured key-encryption key (2026-07-08)
+- [x] EP-5: Migration/backfill path for existing plaintext rows; `shomei-admin` support (2026-07-08)
 
 
 ## Surprises & Discoveries
@@ -257,6 +257,46 @@ rename existing ones.
 - **There is no `SHOMEI_EMAIL_VERIFICATION_REQUIRED` environment variable**; the flag is
   Dhall-file-only. Do not document one without adding it. (A one-line `boolEnv` addition in
   `Shomei.Server.Config.overlayCoreFromEnv` is an easy follow-up, noted in EP-3's Outcomes.)
+
+- **The EP-2 ↔ EP-5 integration contract held exactly as written, and EP-5 corrected EP-2's
+  loader.** EP-2's `assembleKeys` parsed the *private* column for every publishable key and then
+  stripped it to public; EP-5 repointed publication and the verifier key set at
+  `publicJwkFromStored` so only the signer is decrypted. Net rule for every later plan:
+  **`private_key_jwk` is parsed in exactly one place** —
+  `Shomei.Jwt.KeyProtection.decryptStoredSigningKey`, called only from
+  `Shomei.Server.Keys.loadKeyMaterial`. `Shomei.Jwt.Key.fromStoredSigningKey` does *not*
+  decrypt and now survives only in tests. Verify with
+  `rg -n "fromStoredSigningKey|privateKeyJwk" --type haskell` before adding a key reader.
+
+- **`Shomei.Server.App.Env` gained `envKek :: Maybe KeyEncryptionKey`** (needed so `reloadKeys`
+  can decrypt the signer), and `bootstrapKeys` / `loadKeyMaterial` / `reloadKeys` all take a
+  `Maybe KeyEncryptionKey` as their first argument. The four hand-built `Env` assemblies pass
+  `Nothing`. `KeyEncryptionKey` has no `Show`/`ToJSON` by design — a secret in a loggable record
+  is one debug line from disclosure, which is also why it is deliberately *not* in `ShomeiConfig`.
+
+- **A wrong or missing key-encryption key cannot break token verification, only signing.**
+  Publication and the verifier key set come from `public_key_jwk`, which is never encrypted. Any
+  plan touching key loading must preserve that asymmetry: it is what makes a KEK misconfiguration
+  a failed boot rather than a fleet-wide outage of outstanding tokens.
+
+- **`shomei-admin` (the executable) now depends on the `shomei-server` library**, for
+  `loadKekFromEnv`/`loadNamedKekFromEnv`. `shomei-admin-test` additionally depends on `ram` (for
+  `Data.ByteArray.Encoding` in its KEK fixtures).
+
+- **`Shomei.Admin.Keys.keysGenerate` changed shape to `Maybe KeyEncryptionKey -> SigningAlgorithm
+  -> Pool -> IO ()`,** and `Shomei.Jwt.Rotation` gained `rotateSigningKeyForWith`.
+  `rotateSigningKeyFor` still writes plaintext (no in-tree callers); library consumers of an
+  encrypted deployment must use the `…With` variant.
+
+- **A plaintext `pending` signing key does not trigger the at-rest warning**, because the boot
+  check inspects only publishable (`active`/`retired`) rows. Closing this needs a
+  `ListAllSigningKeys` port operation — a candidate for a future plan, recorded in EP-5's
+  Surprises & Discoveries.
+
+- **Running EP-5's M4 runbook encrypts the dev database under a throwaway key.** If the KEK is
+  not preserved, the next `exe:shomei-server` boot refuses to start (correctly). Recovery on a
+  dev database: `DELETE FROM shomei.shomei_signing_keys` and boot once without a KEK to
+  regenerate a plaintext active key.
 
 
 ## Decision Log
