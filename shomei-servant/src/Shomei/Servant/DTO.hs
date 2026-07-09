@@ -47,11 +47,13 @@ module Shomei.Servant.DTO
 where
 
 import Data.Aeson (Value, object, withObject, (.:))
+import Data.Maybe (catMaybes)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser)
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Data.UUID qualified as UUID
+import Shomei.Config (ShomeiConfig (..), transportIncludesBodyTokens)
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginId (loginIdText)
 import Shomei.Domain.Passkey (PasskeyCredential (..))
@@ -78,13 +80,32 @@ data SignupRequest = SignupRequest
   deriving anyclass (FromJSON, ToJSON)
 
 -- | A token pair as wire JSON: @{ accessToken, refreshToken, expiresIn }@.
+--
+-- The token fields are absent in cookie-only transport, where the values live in @HttpOnly@
+-- cookies instead. They are __omitted__, not null or empty: the honest wire shape for "there
+-- is no body token", and one an XSS payload cannot read. @expiresIn@ is always present.
 data TokenPairResponse = TokenPairResponse
-  { accessToken :: !Text,
-    refreshToken :: !Text,
+  { accessToken :: !(Maybe Text),
+    refreshToken :: !(Maybe Text),
     expiresIn :: !Int
   }
   deriving stock (Generic)
-  deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON TokenPairResponse where
+  toJSON r =
+    object $
+      catMaybes
+        [ ("accessToken" Aeson..=) <$> r.accessToken,
+          ("refreshToken" Aeson..=) <$> r.refreshToken,
+          Just ("expiresIn" Aeson..= r.expiresIn)
+        ]
+
+instance FromJSON TokenPairResponse where
+  parseJSON = withObject "TokenPairResponse" \o ->
+    TokenPairResponse
+      <$> o Aeson..:? "accessToken"
+      <*> o Aeson..:? "refreshToken"
+      <*> o .: "expiresIn"
 
 -- | A user as wire JSON: @{ userId, loginId, email, displayName, status }@ (status lowercased).
 data UserResponse = UserResponse
@@ -179,8 +200,12 @@ data PasskeyLoginCompleteRequest = PasskeyLoginCompleteRequest
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /auth/refresh@ body: just the opaque refresh token.
-newtype RefreshRequest = RefreshRequest {refreshToken :: Text}
+-- | @POST /auth/refresh@ body: the opaque refresh token.
+--
+-- Optional, because in cookie transport the token arrives in the @shomei_refresh@ cookie and
+-- a browser client posts @{}@. A present body value takes precedence, so bearer clients are
+-- unaffected and mixed-mode is deterministic.
+newtype RefreshRequest = RefreshRequest {refreshToken :: Maybe Text}
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -293,24 +318,28 @@ userToResponse u =
     renderStatus UserDeleted = "deleted"
 
 -- | Render a domain 'TokenPair' to the wire DTO (lifetime as whole seconds).
-tokenPairToResponse :: TokenPair -> TokenPairResponse
-tokenPairToResponse tp =
+--
+-- Token values appear in the body only when the configured transport puts them there. In
+-- cookie-only mode they are omitted and travel as @Set-Cookie@ headers instead.
+tokenPairToResponse :: ShomeiConfig -> TokenPair -> TokenPairResponse
+tokenPairToResponse cfg tp =
   TokenPairResponse
-    { accessToken = unAccess tp.accessToken,
-      refreshToken = unRefresh tp.refreshToken,
+    { accessToken = whenBodyTokens (unAccess tp.accessToken),
+      refreshToken = whenBodyTokens (unRefresh tp.refreshToken),
       expiresIn = round (realToFrac tp.expiresIn :: Double)
     }
   where
+    whenBodyTokens t = if transportIncludesBodyTokens cfg.tokenTransport then Just t else Nothing
     unAccess (AccessToken t) = t
     unRefresh (RefreshToken t) = t
 
 -- | Map the core 'LoginResult' to the wire 'LoginResponse'. 'MfaChallenge' is read via a
 -- record pattern (not @ch.ceremonyId@ dot syntax) for consistency with the rest of the
 -- passkey-touching code.
-loginResultToResponse :: LoginResult -> LoginResponse
-loginResultToResponse = \case
+loginResultToResponse :: ShomeiConfig -> LoginResult -> LoginResponse
+loginResultToResponse cfg = \case
   LoginComplete user pair ->
-    LoginCompleteResponse {user = userToResponse user, token = tokenPairToResponse pair}
+    LoginCompleteResponse {user = userToResponse user, token = tokenPairToResponse cfg pair}
   MfaRequired (MfaChallenge cid opts) ->
     LoginMfaRequiredResponse {ceremonyId = idText cid, options = opts}
 

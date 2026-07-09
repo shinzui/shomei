@@ -19,9 +19,9 @@ import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Socket (SockAddr (..))
-import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, throwError)
+import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Config (ServiceAccountId (..))
+import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
@@ -54,8 +54,9 @@ import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetI
 import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..))
-import Shomei.Servant.Auth (AuthUser (..))
+import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
 import Shomei.Servant.Authz (requireRole)
+import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
   ( AuditEventsPage (..),
     ChangePasswordRequest (..),
@@ -134,7 +135,7 @@ shomeiServer env =
       ready = readyH env
     }
 
-signupH :: Env -> SignupRequest -> Handler SignupResponse
+signupH :: Env -> SignupRequest -> Handler (WithCookies SignupResponse)
 signupH env req = do
   (loginId, mEmail) <- resolvePrincipal req.loginId req.email
   let cmd =
@@ -145,9 +146,11 @@ signupH env req = do
             displayName = mkDisplayName req.displayName
           }
   (user, pair) <- runAuth env (Wf.signup env.config cmd)
-  pure SignupResponse {user = userToResponse user, token = tokenPairToResponse pair}
+  pure $
+    applyCookies env.config (tokenCookies env.config pair) $
+      SignupResponse {user = userToResponse user, token = tokenPairToResponse env.config pair}
 
-loginH :: Env -> SockAddr -> LoginRequest -> Handler LoginResponse
+loginH :: Env -> SockAddr -> LoginRequest -> Handler (WithCookies LoginResponse)
 loginH env peer req = do
   (loginId, _mEmail) <- resolvePrincipal req.loginId req.email
   let cmd = LoginCommand {loginId = loginId, password = PlainPassword req.password}
@@ -157,7 +160,11 @@ loginH env peer req = do
             accountKey = env.accountKeyOf (loginIdText loginId)
           }
   result <- runAuth env (Wf.login env.config ctx cmd)
-  pure (loginResultToResponse result)
+  -- The mfa_required arm issued no token, so there is nothing to put in a cookie.
+  pure case result of
+    Wf.LoginComplete _ pair ->
+      applyCookies env.config (tokenCookies env.config pair) (loginResultToResponse env.config result)
+    Wf.MfaRequired _ -> noHeader (noHeader (loginResultToResponse env.config result))
 
 -- | Resolve the @(LoginId, optional Email)@ principal from a request's optional @loginId@/
 -- @email@ fields (the SH-25 compatibility rule). A /present/ email is parsed through 'mkEmail'
@@ -184,10 +191,23 @@ clientIpText = \case
   SockAddrInet6 _ _ host _ -> Text.pack (show host)
   other -> Text.pack (show other)
 
-refreshH :: Env -> RefreshRequest -> Handler TokenPairResponse
-refreshH env req =
-  tokenPairToResponse
-    <$> runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken req.refreshToken}))
+-- | @POST /auth/refresh@. The token comes from the body, or — in cookie transport — from the
+-- @shomei_refresh@ cookie. A cookie-borne token gets the same CSRF gate as any other
+-- cookie-authenticated mutation: the browser attaches it automatically, so a foreign page
+-- could otherwise rotate a victim's session.
+refreshH :: Env -> Maybe Text -> Maybe Text -> Maybe Text -> RefreshRequest -> Handler (WithCookies TokenPairResponse)
+refreshH env mCookieHeader mOrigin mReferer req = do
+  presented <- case req.refreshToken of
+    Just t -> pure t
+    Nothing
+      | transportUsesCookies env.config.tokenTransport,
+        Just raw <- mCookieHeader,
+        Just t <- refreshTokenFromCookie raw -> do
+          unless (originHeaderAllowed env.config.cookieConfig.allowedOrigins mOrigin mReferer) (throwError csrfRejected)
+          pure t
+    Nothing -> throwError err400 {errBody = "refreshToken required"}
+  pair <- runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken presented}))
+  pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
 serviceTokenH :: Env -> ServiceTokenRequest -> Handler ServiceTokenResponse
 serviceTokenH env req = do
@@ -271,10 +291,10 @@ denyUnderImpersonation env action user =
               }
       throwError (authErrorToServerError ImpersonationActionBlocked)
 
-logoutH :: Env -> AuthUser -> Handler NoContent
+logoutH :: Env -> AuthUser -> Handler (WithCookies NoContent)
 logoutH env user = do
   runAuth env (Wf.logout env.config (LogoutCommand {sessionId = user.authSessionId}))
-  pure NoContent
+  pure (applyCookies env.config (clearedCookies env.config) NoContent)
 
 meH :: Env -> AuthUser -> Handler UserResponse
 meH env user = do
@@ -321,11 +341,11 @@ passkeyDeleteH env user pid = do
 -- @mfa_required@ arm. Unauthenticated — completing the second factor is how a session is
 -- obtained. A malformed ceremony id is a 400 before the workflow runs; a missing/expired/
 -- consumed ceremony is a 404 and a failed assertion a 401 (via 'authErrorToServerError').
-mfaCompleteH :: Env -> MfaCompleteRequest -> Handler TokenPairResponse
+mfaCompleteH :: Env -> MfaCompleteRequest -> Handler (WithCookies TokenPairResponse)
 mfaCompleteH env req = do
   cid <- either (\_ -> throwError err400 {errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid req.assertion)
-  pure (tokenPairToResponse pair)
+  pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
 -- | @POST /auth/login/passkey/begin@: start a passwordless passkey login (no password).
 passkeyLoginBeginH :: Env -> Handler PasskeyLoginBeginResponse
@@ -334,11 +354,11 @@ passkeyLoginBeginH env = do
   pure PasskeyLoginBeginResponse {ceremonyId = idText cid, options = options}
 
 -- | @POST /auth/login/passkey/complete@: finish a passwordless passkey login → token pair.
-passkeyLoginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler TokenPairResponse
+passkeyLoginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler (WithCookies TokenPairResponse)
 passkeyLoginCompleteH env req = do
   cid <- either (\_ -> throwError err400 {errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
-  pure (tokenPairToResponse pair)
+  pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
 -- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
 -- token acting on behalf of 'req.userId'. A malformed target id is a 400 before the workflow

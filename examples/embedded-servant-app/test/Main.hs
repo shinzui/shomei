@@ -63,7 +63,7 @@ tests =
             lr <- expect "login" =<< C.login cenv LoginRequest {loginId = Nothing, email = Just email, password = password}
 
             -- /projects with the Bearer token → 200.
-            withTok <- getProjects mgr port (Just lr.token.accessToken)
+            withTok <- getProjects mgr port lr.token.accessToken
             withTok @?= 200
 
             -- The Raw static route serves the passkey-demo page (resolved from www/,

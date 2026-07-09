@@ -16,10 +16,11 @@
 
 module Main (main) where
 
-import Data.Aeson (Value (..), decode, encode)
+import Data.Aeson (ToJSON (..), Value (..), decode, encode)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Proxy (Proxy (..))
-import Servant.API (NamedRoutes)
+import Servant.API (NamedRoutes, NoContent (..))
+import Data.OpenApi (NamedSchema (..), ToSchema (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
 import Shomei.Servant.API (ShomeiAPI)
 import Shomei.Servant.DTO
@@ -27,6 +28,21 @@ import Shomei.Servant.OpenApi (shomeiOpenApi)
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), oneof)
 import Test.QuickCheck.Instances ()
+
+-- | @logout@ answers @204@ with @Set-Cookie@ headers. Servant models a header-carrying empty
+-- response as a JSON-typed 'NoContent' body ('NoContentVerb' cannot carry headers), so
+-- 'validateEveryToJSON' needs to generate and encode one. Test-only orphans; the wire response
+-- is a genuine @204@ with no body.
+instance Arbitrary NoContent where
+  arbitrary = pure NoContent
+
+-- Encoded as an empty object so it validates against the empty schema below. Nothing is
+-- serialized on the wire: a 204 carries no body, and servant renders 'NoContent' as "".
+instance ToJSON NoContent where
+  toJSON NoContent = Object mempty
+
+instance ToSchema NoContent where
+  declareNamedSchema _ = pure (NamedSchema (Just "NoContent") mempty)
 
 main :: IO ()
 main = hspec spec

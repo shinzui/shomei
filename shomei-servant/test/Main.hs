@@ -97,7 +97,7 @@ import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiAPI)
-import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler)
+import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Authz (requireRole, requireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Handlers (shomeiServer)
@@ -141,7 +141,7 @@ app :: Env -> Application
 app env = serveWithContext (Proxy @TestAPI) ctx (testServer env)
   where
     ctx :: Context '[AuthHandler Request AuthUser]
-    ctx = authHandler env.verifier :. EmptyContext
+    ctx = authHandler (cookiePolicyFromConfig env.config) env.verifier :. EmptyContext
 
 -- | The hybrid runner: in-memory stores + real @jose@ signer/verifier, in the same
 -- effect order as EP-2's @runInMemory@ (so 'AppEffects' lines up).

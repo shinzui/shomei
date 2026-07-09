@@ -44,7 +44,7 @@ import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.API (shomeiAPI)
-import Shomei.Servant.Auth (AuthUser, authHandler)
+import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
@@ -151,7 +151,7 @@ application env = serveWithContext shomeiAPI (authContext senv) (shomeiServer se
 -- 'AuthHandler', built from the seam env's verifier. A host app embedding 'ShomeiAPI'
 -- serves with this same context.
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser]
-authContext senv = authHandler senv.verifier :. EmptyContext
+authContext senv = authHandler (cookiePolicyFromConfig senv.config) senv.verifier :. EmptyContext
 
 -- | Build EP-5's seam 'Seam.Env' from this server's assembly 'Env'. The port runner
 -- bridges EP-5's smaller stack onto the PostgreSQL stack with @inject@; an

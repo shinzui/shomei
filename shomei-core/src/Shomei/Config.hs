@@ -6,6 +6,11 @@
 module Shomei.Config
   ( ShomeiConfig (..),
     TokenTransport (..),
+    transportUsesCookies,
+    transportIncludesBodyTokens,
+    SameSitePolicy (..),
+    CookieConfig (..),
+    defaultCookieConfig,
     SessionCheckMode (..),
     SigningKeyConfig (..),
     NotifierConfig (..),
@@ -43,9 +48,66 @@ import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromT
 import Shomei.Id (UserId)
 import Shomei.Prelude
 
+-- | How access and refresh tokens travel between Shōmei and its clients.
+--
+-- 'BearerToken' (the default) puts them in the JSON body and reads them from
+-- @Authorization: Bearer@; cookies are neither set nor accepted. 'HttpOnlyCookie' puts them
+-- in @HttpOnly@ cookies and omits them from response bodies, so page JavaScript — and
+-- therefore an XSS payload — can never read them. 'BearerAndCookie' does both, for clients
+-- migrating between the two.
+--
+-- Bearer credentials are accepted in every mode: a foreign page cannot set an
+-- @Authorization@ header, and non-browser callers (services, CLIs, service tokens) need it.
 data TokenTransport = BearerToken | HttpOnlyCookie | BearerAndCookie
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
+
+-- | Whether the configured transport ever accepts or sets cookies.
+transportUsesCookies :: TokenTransport -> Bool
+transportUsesCookies = \case
+  BearerToken -> False
+  HttpOnlyCookie -> True
+  BearerAndCookie -> True
+
+-- | Whether response bodies still carry token values. False only in cookie-only mode, where
+-- omitting them is the point: an XSS payload cannot exfiltrate what the body never contained.
+transportIncludesBodyTokens :: TokenTransport -> Bool
+transportIncludesBodyTokens = \case
+  BearerToken -> True
+  HttpOnlyCookie -> False
+  BearerAndCookie -> True
+
+-- | How browsers may carry Shōmei's cookies cross-site. Rendered into the @SameSite@
+-- attribute of every cookie Shōmei sets.
+data SameSitePolicy = SameSiteStrict | SameSiteLax | SameSiteNone
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Cookie-transport and CSRF policy. Consulted only when 'tokenTransport' is
+-- 'HttpOnlyCookie' or 'BearerAndCookie'.
+data CookieConfig = CookieConfig
+  { -- | Mark cookies @Secure@ (HTTPS only). Default 'True'; browsers exempt @localhost@ from
+    -- the HTTPS requirement, so this is safe for development too.
+    secure :: !Bool,
+    -- | The @SameSite@ attribute. Default 'SameSiteLax', which already stops browsers
+    -- attaching these cookies to cross-site POSTs.
+    sameSite :: !SameSitePolicy,
+    -- | Origins allowed to make cookie-authenticated /mutating/ requests, compared exactly
+    -- against the @Origin@ header (@scheme://host[:port]@). The localhost default matches
+    -- 'defaultWebAuthnConfig' so the turnkey dev experience works; __production deployments
+    -- must set their real origins__.
+    allowedOrigins :: ![Text]
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+defaultCookieConfig :: CookieConfig
+defaultCookieConfig =
+  CookieConfig
+    { secure = True,
+      sameSite = SameSiteLax,
+      allowedOrigins = ["http://localhost:8080"]
+    }
 
 data SessionCheckMode = VerifyTokenOnly | VerifyTokenAndSession
   deriving stock (Generic, Eq, Show)
@@ -245,7 +307,8 @@ data ShomeiConfig = ShomeiConfig
     observabilityConfig :: !ObservabilityConfig,
     webauthnConfig :: !WebAuthnConfig,
     impersonationConfig :: !ImpersonationConfig,
-    serviceTokenConfig :: !ServiceTokenConfig
+    serviceTokenConfig :: !ServiceTokenConfig,
+    cookieConfig :: !CookieConfig
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -312,5 +375,6 @@ defaultShomeiConfig iss aud =
       observabilityConfig = defaultObservabilityConfig,
       webauthnConfig = defaultWebAuthnConfig,
       impersonationConfig = defaultImpersonationConfig,
-      serviceTokenConfig = defaultServiceTokenConfig
+      serviceTokenConfig = defaultServiceTokenConfig,
+      cookieConfig = defaultCookieConfig
     }

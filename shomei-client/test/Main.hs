@@ -52,7 +52,7 @@ tests =
             lr <-
               expect "login"
                 =<< C.login cenv LoginRequest {loginId = Nothing, email = Just email, password = password}
-            let tok = C.Token lr.token.accessToken
+            tok <- C.Token <$> requireBodyToken lr.token.accessToken
 
             ur <- expect "me" =<< C.me cenv tok
             ur.email @?= Just email
@@ -66,3 +66,8 @@ tests =
 
 expect :: (Show e) => String -> Either e a -> IO a
 expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pure
+
+-- | Body tokens are optional on the wire (cookie transport omits them). This client runs in
+-- the default bearer mode, where they are always present.
+requireBodyToken :: Maybe Text -> IO Text
+requireBodyToken = maybe (assertFailure "expected a body token in bearer mode") pure

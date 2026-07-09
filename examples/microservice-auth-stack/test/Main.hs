@@ -70,7 +70,7 @@ tests =
               cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show authPort)
               _ <- expect "signup" =<< C.signup cenv SignupRequest {loginId = Nothing, email = Just email, password = password, displayName = "MS"}
               lr <- expect "login" =<< C.login cenv LoginRequest {loginId = Nothing, email = Just email, password = password}
-              let token = lr.token.accessToken
+              token <- maybe (assertFailure "expected a body token in bearer mode") pure lr.token.accessToken
 
               valid <- getProjects mgr downPort (Just token)
               valid @?= 200

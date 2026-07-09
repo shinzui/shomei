@@ -28,12 +28,14 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
 import Shomei.Config
   ( AttestationPolicy (..),
+    CookieConfig (..),
     NotifierConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
     ServiceAccountConfig (..),
     ServiceAccountId (..),
     ServiceTokenConfig (..),
+    SameSitePolicy (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
     SigningKeyConfig (..),
@@ -98,7 +100,14 @@ data FileConfig = FileConfig
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     signingAlgorithm :: !(Maybe Text),
     -- | seconds between background reloads of signing-key material; 0 disables them
-    keyRefreshIntervalSeconds :: !(Maybe Int)
+    keyRefreshIntervalSeconds :: !(Maybe Int),
+    -- | @bearer@ | @cookie@ | @both@
+    tokenTransport :: !(Maybe Text),
+    cookieSecure :: !(Maybe Bool),
+    -- | @strict@ | @lax@ | @none@
+    cookieSameSite :: !(Maybe Text),
+    -- | origins allowed to make cookie-authenticated mutating requests
+    csrfAllowedOrigins :: !(Maybe [Text])
   }
   deriving stock (Show, Generic)
   deriving anyclass (FromJSON)
@@ -159,6 +168,8 @@ baseFromFile :: Maybe FileConfig -> IO (ShomeiConfig, ServerSettings)
 baseFromFile Nothing = baseDefaults
 baseFromFile (Just fc) = do
   algFile <- traverse (normalizeSigningAlg "signingAlgorithm (config file)") fc.signingAlgorithm
+  transportFile <- traverse (parseTransport "tokenTransport (config file)") fc.tokenTransport
+  sameSiteFile <- traverse (parseSameSite "cookieSameSite (config file)") fc.cookieSameSite
   let iss = fromMaybe "shomei" fc.issuer
       aud = fromMaybe "shomei-clients" fc.audience
       cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
@@ -202,6 +213,13 @@ baseFromFile (Just fc) = do
                 { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile,
                   refreshIntervalSeconds =
                     fromMaybe cfg0.signingKeyConfig.refreshIntervalSeconds fc.keyRefreshIntervalSeconds
+                },
+            tokenTransport = fromMaybe cfg0.tokenTransport transportFile,
+            cookieConfig =
+              cfg0.cookieConfig
+                { secure = fromMaybe cfg0.cookieConfig.secure fc.cookieSecure,
+                  sameSite = fromMaybe cfg0.cookieConfig.sameSite sameSiteFile,
+                  allowedOrigins = fromMaybe cfg0.cookieConfig.allowedOrigins fc.csrfAllowedOrigins
                 }
           }
       settings = ServerSettings {serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
@@ -243,6 +261,9 @@ overlayCoreFromEnv base = do
   -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
+  cookieSecure' <- boolEnv "SHOMEI_COOKIE_SECURE"
+  cookieSameSite' <- sameSiteEnv
+  csrfOrigins <- csrfOriginsEnv
   pure
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
@@ -258,6 +279,12 @@ overlayCoreFromEnv base = do
         refreshTokenTTL = fromMaybe base.refreshTokenTTL ref,
         sessionTTL = fromMaybe base.sessionTTL ses,
         tokenTransport = fromMaybe base.tokenTransport tr,
+        cookieConfig =
+          base.cookieConfig
+            { secure = fromMaybe base.cookieConfig.secure cookieSecure',
+              sameSite = fromMaybe base.cookieConfig.sameSite cookieSameSite',
+              allowedOrigins = fromMaybe base.cookieConfig.allowedOrigins csrfOrigins
+            },
         sessionCheckMode = fromMaybe base.sessionCheckMode sc,
         webauthnConfig = wa,
         serviceTokenConfig = serviceTokenCfg,
@@ -508,10 +535,41 @@ transportEnv = do
   case m of
     Nothing -> pure Nothing
     Just "" -> pure Nothing
-    Just "bearer" -> pure (Just BearerToken)
-    Just "cookie" -> pure (Just HttpOnlyCookie)
-    Just "both" -> pure (Just BearerAndCookie)
-    Just other -> ioError (userError ("SHOMEI_TOKEN_TRANSPORT must be bearer|cookie|both, got " <> other))
+    Just s -> Just <$> parseTransport "SHOMEI_TOKEN_TRANSPORT" (Text.pack s)
+
+-- | @bearer@ | @cookie@ | @both@. @label@ names the source in the error.
+parseTransport :: Text -> Text -> IO TokenTransport
+parseTransport label t = case Text.toLower (Text.strip t) of
+  "bearer" -> pure BearerToken
+  "cookie" -> pure HttpOnlyCookie
+  "both" -> pure BearerAndCookie
+  other -> ioError (userError (Text.unpack label <> " must be bearer|cookie|both, got " <> Text.unpack other))
+
+-- | @strict@ | @lax@ | @none@. Rejects anything else rather than silently defaulting: a typo
+-- that quietly became @Lax@ when the operator meant @None@ would break their deployment in a
+-- way that looks like a browser bug.
+parseSameSite :: Text -> Text -> IO SameSitePolicy
+parseSameSite label t = case Text.toLower (Text.strip t) of
+  "strict" -> pure SameSiteStrict
+  "lax" -> pure SameSiteLax
+  "none" -> pure SameSiteNone
+  other -> ioError (userError (Text.unpack label <> " must be strict|lax|none, got " <> Text.unpack other))
+
+sameSiteEnv :: IO (Maybe SameSitePolicy)
+sameSiteEnv = do
+  m <- lookupEnv "SHOMEI_COOKIE_SAMESITE"
+  case m of
+    Nothing -> pure Nothing
+    Just "" -> pure Nothing
+    Just s -> Just <$> parseSameSite "SHOMEI_COOKIE_SAMESITE" (Text.pack s)
+
+-- | A comma-separated origin allow-list, e.g. @https://app.example.com,https://admin.example.com@.
+csrfOriginsEnv :: IO (Maybe [Text])
+csrfOriginsEnv = do
+  m <- lookupEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
+  pure case m of
+    Just v | not (null v) -> Just (filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v))))
+    _ -> Nothing
 
 -- | Read @SHOMEI_KEY_REFRESH_INTERVAL@ (seconds between signing-key reloads; 0 disables
 -- the periodic reload). Rejects a negative value, which would otherwise silently disable

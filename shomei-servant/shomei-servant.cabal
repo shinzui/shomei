@@ -38,6 +38,7 @@ library
     Shomei.Servant.API
     Shomei.Servant.Auth
     Shomei.Servant.Authz
+    Shomei.Servant.Cookie
     Shomei.Servant.DTO
     Shomei.Servant.Error
     Shomei.Servant.Handlers
@@ -50,6 +51,7 @@ library
     , bytestring
     , containers
     , cookie
+    , http-api-data
     , effectful
     , effectful-core
     , insert-ordered-containers

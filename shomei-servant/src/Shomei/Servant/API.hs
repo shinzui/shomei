@@ -20,6 +20,7 @@ import Shomei.Domain.User (User)
 import Shomei.Id (PasskeyId)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
+import Shomei.Servant.Cookie (WithCookies)
 import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.DTO
   ( AuditEventsPage,
@@ -58,20 +59,27 @@ data ShomeiAPI mode = ShomeiAPI
         :- "auth"
           :> "signup"
           :> ReqBody '[JSON] SignupRequest
-          :> Post '[JSON] SignupResponse,
+          :> Post '[JSON] (WithCookies SignupResponse),
     login ::
       mode
         :- "auth"
           :> "login"
           :> RemoteHost
           :> ReqBody '[JSON] LoginRequest
-          :> Post '[JSON] LoginResponse,
+          :> Post '[JSON] (WithCookies LoginResponse),
+    -- | The refresh token may arrive in the body or in the @shomei_refresh@ cookie. A
+    --     cookie-borne token gets the same CSRF gate as any cookie-authenticated mutation, so
+    --     this route reads @Origin@/@Referer@ itself — it carries no 'Authenticated' combinator
+    --     to do it for them.
     refresh ::
       mode
         :- "auth"
           :> "refresh"
+          :> Header "Cookie" Text
+          :> Header "Origin" Text
+          :> Header "Referer" Text
           :> ReqBody '[JSON] RefreshRequest
-          :> Post '[JSON] TokenPairResponse,
+          :> Post '[JSON] (WithCookies TokenPairResponse),
     serviceToken ::
       mode
         :- "auth"
@@ -114,12 +122,14 @@ data ShomeiAPI mode = ShomeiAPI
           :> Authenticated
           :> ReqBody '[JSON] ChangePasswordRequest
           :> PostNoContent,
+    -- 204, but carrying Set-Cookie headers that clear the cookies, so 'PostNoContent'
+    -- (which cannot carry headers) will not do.
     logout ::
       mode
         :- "auth"
           :> "logout"
           :> Authenticated
-          :> PostNoContent,
+          :> Verb 'POST 204 '[JSON] (WithCookies NoContent),
     me ::
       mode
         :- "auth"
@@ -171,7 +181,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> "mfa"
           :> "complete"
           :> ReqBody '[JSON] MfaCompleteRequest
-          :> Post '[JSON] TokenPairResponse,
+          :> Post '[JSON] (WithCookies TokenPairResponse),
     -- | Begin a passwordless passkey login (no account named; the browser's discoverable
     --     credential picker chooses one). Unauthenticated.
     passkeyLoginBegin ::
@@ -190,7 +200,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> "passkey"
           :> "complete"
           :> ReqBody '[JSON] PasskeyLoginCompleteRequest
-          :> Post '[JSON] TokenPairResponse,
+          :> Post '[JSON] (WithCookies TokenPairResponse),
     -- | @POST /auth/impersonate@: exchange the caller's token for a short-lived delegated
     --     token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
     --     client IP for the audit record.

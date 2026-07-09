@@ -40,6 +40,7 @@ where
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as TLS
 import Servant.API.Experimental.Auth (AuthProtect)
+import Servant.API.ResponseHeaders (getResponse)
 import Servant.Client
   ( BaseUrl (..),
     ClientEnv,
@@ -117,7 +118,7 @@ runClient env act = runClientM act env
 -- reduces it to the concrete client function.
 
 signup :: ClientEnv -> SignupRequest -> IO (Either ClientError SignupResponse)
-signup env body = runClient env (API.signup shomeiClient body)
+signup env body = runClient env (getResponse <$> API.signup shomeiClient body)
 
 -- | Log in with email + password.
 --
@@ -128,10 +129,12 @@ signup env body = runClient env (API.signup shomeiClient body)
 -- with the @ceremonyId@ and the browser's @assertion@ JSON to obtain tokens. The Haskell
 -- signature is unchanged; only the meaning of 'LoginResponse' widened.
 login :: ClientEnv -> LoginRequest -> IO (Either ClientError LoginResponse)
-login env body = runClient env (API.login shomeiClient body)
+login env body = runClient env (getResponse <$> API.login shomeiClient body)
 
+-- | Rotate a refresh token. This is a bearer-mode client, so the token travels in the body and
+-- the cookie/origin headers the route also accepts are left unset.
 refresh :: ClientEnv -> RefreshRequest -> IO (Either ClientError TokenPairResponse)
-refresh env body = runClient env (API.refresh shomeiClient body)
+refresh env body = runClient env (getResponse <$> API.refresh shomeiClient Nothing Nothing Nothing body)
 
 -- | Authenticated routes take the 'AuthenticatedRequest' built from the Bearer token.
 logout :: ClientEnv -> Token -> IO (Either ClientError ())
@@ -182,7 +185,7 @@ deletePasskey env tok pid =
 -- Returns the access/refresh token pair.
 mfaComplete ::
   ClientEnv -> MfaCompleteRequest -> IO (Either ClientError TokenPairResponse)
-mfaComplete env body = runClient env (API.mfaComplete shomeiClient body)
+mfaComplete env body = runClient env (getResponse <$> API.mfaComplete shomeiClient body)
 
 -- | Begin a passwordless passkey login. Returns the ceremony id and the WebAuthn @options@
 -- the browser feeds to @navigator.credentials.get()@ (the discoverable-credential picker
@@ -196,4 +199,4 @@ passkeyLoginBegin env = runClient env (API.passkeyLoginBegin shomeiClient)
 -- (never an MFA challenge).
 passkeyLoginComplete ::
   ClientEnv -> PasskeyLoginCompleteRequest -> IO (Either ClientError TokenPairResponse)
-passkeyLoginComplete env body = runClient env (API.passkeyLoginComplete shomeiClient body)
+passkeyLoginComplete env body = runClient env (getResponse <$> API.passkeyLoginComplete shomeiClient body)
