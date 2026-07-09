@@ -40,6 +40,7 @@ library
     Shomei.Server.BreachChecker
     Shomei.Server.Config
     Shomei.Server.Keys
+    Shomei.Server.Middleware.BodyLimit
     Shomei.Server.Middleware.RateLimit
     Shomei.Server.Observability.Logging
     Shomei.Server.Observability.Metrics
@@ -180,6 +181,7 @@ test-suite shomei-server-test
   main-is:        Main.hs
   other-modules:
     Shomei.Server.E2ESpec
+    Shomei.Server.MiddlewareSpec
     Shomei.Server.NotifySpec
     Shomei.Server.SupervisorSpec
 
@@ -188,6 +190,8 @@ test-suite shomei-server-test
     , aeson
     , base
     , bytestring
+    , containers
+    , directory
     , hasql
     , hasql-pool
     , http-client
@@ -200,4 +204,5 @@ test-suite shomei-server-test
     , tasty-hunit
     , text
     , time
+    , wai
     , warp

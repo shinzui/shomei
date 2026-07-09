@@ -55,8 +55,9 @@ import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
+import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
 import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
-import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
+import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
@@ -83,9 +84,12 @@ main = do
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
       -- IP-4 realized middleware order (outermost first): EP-3 request-id + JSON logging,
-      -- then EP-3 HTTP metrics, then EP-3's raw /metrics endpoint, then EP-2's rate limiter,
-      -- then the Servant app. Logging is outermost so even a 429 is logged with a
-      -- correlation id; metrics wrap the limiter so a throttled request is still counted.
+      -- then EP-3 HTTP metrics, then EP-3's raw /metrics endpoint, then EP-4's request-body
+      -- cap, then EP-2's rate limiter, then the Servant app. Logging is outermost so even a
+      -- 429 is logged with a correlation id; metrics wrap the limiter so a throttled request
+      -- is still counted. The body cap sits inside metrics so its 413s are counted and logged
+      -- like any other response, and outside the limiter so a flood of oversized bodies is
+      -- refused without draining anyone's token bucket.
       withMetrics =
         if obs.metricsEnabled
           then metricsMiddleware metrics . metricsEndpointMiddleware metrics
@@ -93,6 +97,7 @@ main = do
       stack =
         requestLoggingMiddleware obs
           . withMetrics
+          . bodyLimitMiddleware defaultBodyLimitBytes
           . rateLimitMiddleware rl
       -- Graceful shutdown: SIGTERM (orchestrator stop) and SIGINT (Ctrl-C) trigger warp's
       -- shutdown action, which stops accepting new connections and waits up to the
@@ -103,9 +108,17 @@ main = do
         _ <- installHandler sigTERM (Signals.Catch (stop "SIGTERM")) Nothing
         _ <- installHandler sigINT (Signals.Catch (stop "SIGINT")) Nothing
         pure ()
+      -- An exception escaping a handler must land on stdout as a structured line, next to the
+      -- request lines, rather than as warp's default unstructured prose on stderr.
+      -- 'Warp.defaultShouldDisplayException' filters the routine ones (a client hanging up
+      -- mid-request is not an incident).
+      onServerException mreq e =
+        when (Warp.defaultShouldDisplayException e) (logServerError mreq e)
       warpSettings =
         Warp.setPort settings.serverPort
           . Warp.setGracefulShutdownTimeout (Just obs.gracefulShutdownTimeoutSeconds)
+          . Warp.setServerName "shomei"
+          . Warp.setOnException onServerException
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
   Warp.runSettings warpSettings (stack (application env))

@@ -26,6 +26,7 @@ module Shomei.Server.Observability.Metrics
   )
 where
 
+import Control.Exception (finally)
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder (Builder, byteString, doubleDec, intDec, toLazyByteString)
 import Data.ByteString.Lazy qualified as BL
@@ -84,17 +85,29 @@ observeDuration m secs = do
 
 -- | Instrument every request: in-flight gauge, total counter, latency histogram, and the
 -- HTTP-derived domain counters.
+--
+-- The in-flight gauge is decremented in a 'finally', not in the response continuation: an
+-- application that throws instead of responding (the infrastructure path — @Shomei.Server.Boot@
+-- raises an 'IOError' when the database is unreachable, which flies past this middleware to
+-- warp) would otherwise inflate the gauge permanently, and after a week of sporadic 500s the
+-- gauge — and every dashboard and alert built on it — reads a fiction. Placing the decrement in
+-- the release action rather than alongside the latency observation is what makes it run exactly
+-- once on every path, including an async exception delivered after the continuation returned.
+--
+-- The latency histogram and the request counter deliberately stay in the continuation: a
+-- request aborted by an exception produced no response status to label, so it is counted
+-- nowhere rather than counted wrong.
 metricsMiddleware :: Metrics -> Middleware
 metricsMiddleware m app req respond = do
   bumpInt m.inFlight 1
   start <- getPOSIXTime
-  app req \res -> do
-    received <- respond res
-    end <- getPOSIXTime
-    bumpInt m.inFlight (-1)
-    observeDuration m (realToFrac (end - start))
-    recordRequest m req (statusCode (responseStatus res))
-    pure received
+  let handleResponse res = do
+        received <- respond res
+        end <- getPOSIXTime
+        observeDuration m (realToFrac (end - start))
+        recordRequest m req (statusCode (responseStatus res))
+        pure received
+  app req handleResponse `finally` bumpInt m.inFlight (-1)
 
 recordRequest :: Metrics -> Request -> Int -> IO ()
 recordRequest m req status = do
