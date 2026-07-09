@@ -1009,7 +1009,7 @@
                     }
                 },
                 "responses": {
-                    "202": {
+                    "200": {
                         "content": {
                             "application/json;charset=utf-8": {}
                         },
@@ -1199,7 +1199,7 @@
                     }
                 },
                 "responses": {
-                    "200": {
+                    "201": {
                         "content": {
                             "application/json;charset=utf-8": {
                                 "schema": {
@@ -1235,7 +1235,7 @@
                     }
                 },
                 "responses": {
-                    "202": {
+                    "200": {
                         "content": {
                             "application/json;charset=utf-8": {}
                         },

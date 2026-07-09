@@ -440,6 +440,35 @@ scenarioVersionBoundary port = do
   v1Jwks <- getRaw mgr port "/v1/.well-known/jwks.json" []
   assertProblem "no /v1/.well-known/jwks.json" 404 "not_found" v1Jwks
 
+-- | The three status-code corrections, on one account.
+--
+-- Logout is the interesting one: it is now idempotent. A retry after a network blip, or a
+-- double-tapped button, must succeed — "you are already logged out" is what the caller asked
+-- for, not a failure. The second call reaches the handler because the default @sessionCheckMode@
+-- is @VerifyTokenOnly@, so the access token still verifies against a revoked session; the
+-- handler then swallows exactly 'SessionNotFound'.
+scenarioStatusCodes :: Int -> IO ()
+scenarioStatusCodes port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "statuscodes@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+
+  -- Signup creates a user: 201, not 200.
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  sStatus @?= 201
+  sresp <- must "signup body" sBody
+  access <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
+
+  -- The lifecycle *request* endpoints stay 202: the mail leaves the process later.
+  (reqStatus, _) <- postJSON mgr port "/v1/auth/password-reset/request" (object ["email" .= email])
+  reqStatus @?= 202
+
+  -- Logging out twice succeeds twice.
+  (out1, _) <- postJSONAuth mgr port "/v1/auth/logout" (bearer access) Null
+  out1 @?= 204
+  (out2, _) <- postJSONAuth mgr port "/v1/auth/logout" (bearer access) Null
+  out2 @?= 204
+
 type RawResponse = (Int, [Header], Maybe Value)
 
 headersOf :: RawResponse -> [Header]
@@ -502,6 +531,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "the /v1 boundary: application routes are versioned, probes and JWKS are not" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioVersionBoundary,
+      testCase "status codes: signup 201, lifecycle requests still 202, logout idempotent (204/204)" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) scenarioStatusCodes,
       testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
         testWithApplication (pure (app env)) (scenario ref adminToken impToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
@@ -541,7 +573,7 @@ scenarioNoEmail port = do
   let pw = "correct horse battery staple" :: Text
       signupB = object ["loginId" .= ("agent-x" :: Text), "password" .= pw, "displayName" .= ("" :: Text)]
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupB
-  sStatus @?= 200
+  sStatus @?= 201
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just "agent-x"
   dig ["user", "email"] sresp @?= Just Null
@@ -559,7 +591,7 @@ scenarioEmailDefaultsLoginId port = do
       pw = "correct horse battery staple" :: Text
       signupB = object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)]
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupB
-  sStatus @?= 200
+  sStatus @?= 201
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just em
   (dig ["user", "email"] sresp >>= asText) @?= Just em
@@ -575,7 +607,7 @@ scenarioEmailVerificationRequired ref port = do
       pw = "correct horse battery staple" :: Text
       loginBody = object ["loginId" .= em, "password" .= pw]
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
-  sStatus @?= 200
+  sStatus @?= 201
   sresp <- must "signup body" sBody
   refreshTok <- must "signup refreshToken" (dig ["token", "refreshToken"] sresp >>= asText)
 
@@ -592,7 +624,7 @@ scenarioEmailVerificationRequired ref port = do
   reqStatus @?= 202
   token <- latestVerificationToken ref
   (confirmStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= token])
-  confirmStatus @?= 202
+  confirmStatus @?= 200 -- the verification completes synchronously; nothing is pending
   (okLogin, okBody) <- postJSON mgr port "/v1/auth/login" loginBody
   okLogin @?= 200
   okResp <- must "login body" okBody
@@ -620,7 +652,7 @@ foreignOrigin = ("Origin", "https://evil.example.com")
 cookieSignup :: Manager -> Int -> IO (Text, Text, Maybe Value)
 cookieSignup mgr port = do
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
-  status @?= 200
+  status @?= 201
   let cookies = setCookies hdrs
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
   refr <- must "shomei_refresh cookie" (cookieValueOf "shomei_refresh" cookies)
@@ -638,7 +670,7 @@ scenarioCookieTransport :: Int -> IO ()
 scenarioCookieTransport port = do
   mgr <- newManager defaultManagerSettings
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
-  status @?= 200
+  status @?= 201
   let cookies = setCookies hdrs
   length cookies @?= 2
 
@@ -714,7 +746,7 @@ scenarioCsrfMatrix port = do
 cookieSignupAs :: Manager -> Int -> Text -> IO (Text, Text, Maybe Value)
 cookieSignupAs mgr port email = do
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] (object ["email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
-  status @?= 200
+  status @?= 201
   let cookies = setCookies hdrs
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
   refr <- must "shomei_refresh cookie" (cookieValueOf "shomei_refresh" cookies)
@@ -749,7 +781,7 @@ scenarioBearerRejectsCookies :: Int -> IO ()
 scenarioBearerRejectsCookies port = do
   mgr <- newManager defaultManagerSettings
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
-  status @?= 200
+  status @?= 201
   setCookies hdrs @?= []
   resp <- must "signup body" body
   access <- must "accessToken" (dig ["token", "accessToken"] resp >>= asText)
@@ -769,7 +801,7 @@ scenarioBothTransport :: Int -> IO ()
 scenarioBothTransport port = do
   mgr <- newManager defaultManagerSettings
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
-  status @?= 200
+  status @?= 201
   length (setCookies hdrs) @?= 2
   resp <- must "signup body" body
   assertBool "accessToken present in both mode" (isJust (dig ["token", "accessToken"] resp))
@@ -835,7 +867,7 @@ scenario ref adminToken impToken port = do
 
   -- (a) signup
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupBody
-  sStatus @?= 200
+  sStatus @?= 201
   sresp <- must "signup body" sBody
   (dig ["user", "email"] sresp >>= asText) @?= Just email
   (dig ["user", "status"] sresp >>= asText) @?= Just "active"
@@ -848,7 +880,7 @@ scenario ref adminToken impToken port = do
   verifyReqStatus @?= 202
   emailVerificationToken <- latestVerificationToken ref
   (verifyConfirmStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= emailVerificationToken])
-  verifyConfirmStatus @?= 202
+  verifyConfirmStatus @?= 200
 
   -- (b) login
   (lStatus, lBody) <- postJSON mgr port "/v1/auth/login" loginBody
@@ -943,7 +975,7 @@ scenario ref adminToken impToken port = do
       port
       "/v1/auth/password-reset/confirm"
       (object ["token" .= resetToken, "newPassword" .= changedPassword])
-  resetConfirmStatus @?= 202
+  resetConfirmStatus @?= 200
   (newLoginStatus, newLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= changedPassword])
   newLoginStatus @?= 200
   newLoginResp <- must "new login body" newLoginBody

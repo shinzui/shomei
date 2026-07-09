@@ -15,8 +15,8 @@
 --   * @shomei_logins_succeeded_total@ / @shomei_logins_failed_total@ /
 --     @shomei_tokens_issued_total@ — domain counters derived from the HTTP method/path/status
 --     (a @POST /v1/auth/login@ → 200 is a success and issues a token; → 401 is a failure;
---     @POST /v1/auth/signup@ and @/v1/auth/refresh@ → 200 issue a token). This HTTP-derived
---     approach avoids instrumenting the effect stack; see the Decision Log.
+--     @POST /v1/auth/signup@ → 201 and @/v1/auth/refresh@ → 200 issue a token). This
+--     HTTP-derived approach avoids instrumenting the effect stack; see the Decision Log.
 module Shomei.Server.Observability.Metrics
   ( Metrics,
     newMetrics,
@@ -117,7 +117,7 @@ recordRequest m req status = do
   case (requestMethod req, path, status) of
     ("POST", "/v1/auth/login", 200) -> bumpInt m.loginsOk 1 >> bumpInt m.tokensIssued 1
     ("POST", "/v1/auth/login", 401) -> bumpInt m.loginsFail 1
-    ("POST", "/v1/auth/signup", 200) -> bumpInt m.tokensIssued 1
+    ("POST", "/v1/auth/signup", 201) -> bumpInt m.tokensIssued 1
     ("POST", "/v1/auth/refresh", 200) -> bumpInt m.tokensIssued 1
     _ -> pure ()
 

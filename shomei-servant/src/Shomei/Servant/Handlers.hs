@@ -53,7 +53,7 @@ import Shomei.Effect.Clock (now)
 import Shomei.Effect.SessionStore (findSessionById)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
 import Shomei.Effect.UserStore (findUserById)
-import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid))
+import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid, SessionNotFound))
 import Shomei.Id (PasskeyId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
@@ -307,10 +307,23 @@ denyUnderImpersonation env action user =
               }
       throwError (authErrorToServerError ImpersonationActionBlocked)
 
+-- | @POST /v1/auth/logout@, idempotent: a session that is already gone is success, not a
+-- @404@. Retrying a logout after a network blip, or double-tapping the button, must not report
+-- failure for having achieved exactly what the caller asked for. The cookies are cleared either
+-- way, so a client whose session was revoked out from under it (by an admin, or by refresh-reuse
+-- detection) can still log out cleanly.
+--
+-- Only 'SessionNotFound' is intercepted; every other 'AuthError' still maps through
+-- 'authErrorToServerError'.
 logoutH :: Env -> AuthUser -> Handler (WithCookies NoContent)
 logoutH env user = do
-  runAuth env (Wf.logout env.config (LogoutCommand {sessionId = user.authSessionId}))
-  pure (applyCookies env.config (clearedCookies env.config) NoContent)
+  outcome <- runPort env (Wf.logout env.config (LogoutCommand {sessionId = user.authSessionId}))
+  case outcome of
+    Left SessionNotFound -> pure cleared
+    Left err -> throwError (authErrorToServerError err)
+    Right () -> pure cleared
+  where
+    cleared = applyCookies env.config (clearedCookies env.config) NoContent
 
 meH :: Env -> AuthUser -> Handler UserResponse
 meH env user = do

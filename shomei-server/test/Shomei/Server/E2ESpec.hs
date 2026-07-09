@@ -68,9 +68,9 @@ scenario :: Pool -> Int -> IO ()
 scenario pool port = do
   mgr <- newManager defaultManagerSettings
 
-  -- (a) signup: 200 with a token pair and an active user.
+  -- (a) signup: 201 with a token pair and an active user.
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupBody
-  sStatus @?= 200
+  sStatus @?= 201
   sresp <- must "signup body" sBody
   (dig ["user", "email"] sresp >>= asText) @?= Just email
   (dig ["user", "status"] sresp >>= asText) @?= Just "active"
@@ -115,12 +115,15 @@ scenario pool port = do
   (deadStatus, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= rotatedRefresh])
   deadStatus @?= 401
 
-  -- (h) logout the login session → 204.
+  -- (h) logout the login session → 204, and again → 204: logout is idempotent, so a retry
+  -- after a network blip succeeds instead of reporting session_not_found.
   (logoutStatus, _) <- postJSON mgr port "/v1/auth/logout" (object [])
   -- logout needs a Bearer token; send it as a header-only POST.
   logoutStatus' <- postNoBody mgr port "/v1/auth/logout" (bearer loginAccess)
   logoutStatus @?= 401 -- no token → 401
   logoutStatus' @?= 204
+  logoutAgain <- postNoBody mgr port "/v1/auth/logout" (bearer loginAccess)
+  logoutAgain @?= 204
 
   -- (i) JWKS: a public key with a kid and no private "d".
   (jStatus, jBody) <- getJSON mgr port "/.well-known/jwks.json" []

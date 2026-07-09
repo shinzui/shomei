@@ -59,14 +59,16 @@ import Shomei.Servant.DTO
 
 -- | The application API. @signup@/@login@/@refresh@/@logout@/@me@/@session@ live under
 -- @\/auth@; the audit trail under @\/admin@. Every route here is versioned: 'ShomeiRoutes'
--- mounts the whole record under @\/v1@, so @signup@ answers at @\/v1\/v1\/auth\/signup@.
+-- mounts the whole record under @\/v1@, so @signup@ answers at @\/v1\/auth\/signup@.
 data ShomeiAPI mode = ShomeiAPI
-  { signup ::
+  { -- | @201@: signup creates a user. No @Location@ header — the created resource is the
+    --     response body (the user plus its first token pair), not a URL the caller can fetch.
+    signup ::
       mode
         :- "auth"
           :> "signup"
           :> ReqBody '[JSON] SignupRequest
-          :> Post '[JSON] (WithCookies SignupResponse),
+          :> Verb 'POST 201 '[JSON] (WithCookies SignupResponse),
     login ::
       mode
         :- "auth"
@@ -93,6 +95,10 @@ data ShomeiAPI mode = ShomeiAPI
           :> "service-token"
           :> ReqBody '[JSON] ServiceTokenRequest
           :> Post '[JSON] ServiceTokenResponse,
+    -- | @202@, honestly: the reply says nothing about the address, and the mail leaves the
+    --     process later through the 'Shomei.Effect.Notifier.Notifier'. The unconditional
+    --     response is also the anti-enumeration contract — an unknown address gets the same
+    --     @202@ as a known one.
     verifyEmailRequest ::
       mode
         :- "auth"
@@ -100,13 +106,16 @@ data ShomeiAPI mode = ShomeiAPI
           :> "request"
           :> ReqBody '[JSON] VerifyEmailRequest
           :> Verb 'POST 202 '[JSON] NoContent,
+    -- | @200@: the token is consumed and the address marked verified inside this request.
+    --     Nothing is pending, so @202@ would be a lie.
     verifyEmailConfirm ::
       mode
         :- "auth"
           :> "verify-email"
           :> "confirm"
           :> ReqBody '[JSON] ConfirmEmailVerificationRequest
-          :> Verb 'POST 202 '[JSON] NoContent,
+          :> Verb 'POST 200 '[JSON] NoContent,
+    -- | @202@ for the same two reasons as @verify-email\/request@.
     passwordResetRequest ::
       mode
         :- "auth"
@@ -114,13 +123,14 @@ data ShomeiAPI mode = ShomeiAPI
           :> "request"
           :> ReqBody '[JSON] PasswordResetRequest
           :> Verb 'POST 202 '[JSON] NoContent,
+    -- | @200@: the password is replaced inside this request.
     passwordResetConfirm ::
       mode
         :- "auth"
           :> "password-reset"
           :> "confirm"
           :> ReqBody '[JSON] ConfirmPasswordResetRequest
-          :> Verb 'POST 202 '[JSON] NoContent,
+          :> Verb 'POST 200 '[JSON] NoContent,
     passwordChange ::
       mode
         :- "auth"

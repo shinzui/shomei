@@ -116,9 +116,16 @@ Milestone 2 — The `/v1` boundary: **done 2026-07-09**
 - [x] All servant/e2e tests moved to `/v1/...`; new `scenarioVersionBoundary` asserts old paths → 404 problem doc, `/v1/auth/me` → 401 (so it routes), probes and JWKS at the root with `Cache-Control`, and `/v1/health`/`/v1/.well-known/jwks.json` → 404. New `testThrottledPathsAreVersioned` pins the limiter's list.
 - [x] `OpenApi.hs` generates from `ShomeiRoutes`; `servers` gained a description. `camel` drops the leading `v1` segment so `operationId`s are unchanged by the move (Decision Log). Spec regenerated: 24 paths, byte-for-byte reproducible. `cabal test all` green (11 suites, exit 0).
 
-Milestone 3 — Status-code corrections:
+Milestone 3 — Status-code corrections: **done 2026-07-09**
 
-- [ ] Signup → `Verb 'POST 201`; confirm endpoints → `Verb 'POST 200`; logout handler idempotent (SessionNotFound → 204); tests updated; wire-compat notes written.
+- [x] Signup → `Verb 'POST 201`; `verify-email/confirm` and `password-reset/confirm` → `Verb 'POST 200`; `logoutH` intercepts exactly `SessionNotFound` → 204 (via `runPort`, not `runAuth`). The two lifecycle *request* endpoints stay 202.
+- [x] `Metrics.recordRequest` follows signup to 201 — a fourth instance of the path/status-literal hazard from M2. Verified live: `shomei_tokens_issued_total` reads 2 after a signup + login (it would read 1 if the table had not been updated).
+- [x] Tests: nine signup assertions → 201; three confirm assertions → 200; new `scenarioStatusCodes` (servant) covers 201 + still-202 + 204/204; `E2ESpec` gains a double-logout. Spec regenerated (signup `201`, confirms `200`).
+- [x] Wire-compat notes for the CHANGELOG (written up in M5):
+  - `POST /v1/auth/signup` `200 → 201`. Affects any client that compares `status == 200`. Change to `status < 300`, or to `201`. The body is unchanged.
+  - `POST /v1/auth/verify-email/confirm` and `POST /v1/auth/password-reset/confirm` `202 → 200`. Both always completed synchronously; the `202` advertised pending work that never existed. Clients that accept 2xx are unaffected.
+  - `POST /v1/auth/logout` on an already-revoked session `404 session_not_found → 204`. A client that treated the 404 as "already logged out, fine" can drop that branch; one that treated it as an error stops seeing the error. Logout is now idempotent.
+  - Note for `sessionCheckMode = VerifyTokenAndSession` deployments: the second logout is a `401` from the auth handler (the token no longer verifies against the revoked session), not a `204`. Idempotence there means "does not fail with 404", and the credential is genuinely dead.
 
 Milestone 4 — OpenAPI truth:
 
@@ -201,6 +208,22 @@ found only by grepping for the string rather than trusting the list:
 Servant route type is not the only place a path is written down; the WAI layer (which runs
 before routing), the cookie scope, and the metrics vocabulary all hard-code strings that no
 type checks. `grep -rn '"/auth' --include='*.hs'` before declaring a path move done.
+
+**2026-07-09 (M3) — logout's idempotence depends on `sessionCheckMode`, and the default is what
+makes the test meaningful.** With `VerifyTokenOnly` (the default) a revoked session's access
+token still verifies, so a second `POST /v1/auth/logout` reaches `logoutH`, hits `SessionNotFound`,
+and now answers `204`. With `VerifyTokenAndSession` the auth handler rejects the token first and
+the caller sees `401` — never the old `404`. Both are the intended contract ("retrying a logout
+does not fail"), but a deployment reading the CHANGELOG needs to know which it gets. The servant
+suite runs the default, so `scenarioStatusCodes` exercises the handler branch.
+
+**2026-07-09 (M3) — the metrics counter table was a fourth path/status literal.**
+`Metrics.recordRequest` matches `("POST", "/v1/auth/signup", 200)`. Moving signup to `201`
+silently zeroed `shomei_tokens_issued_total` for every signup, with the whole suite green — the
+same failure shape as M2's rate limiter, now keyed on status rather than path. Caught only by
+reading the table while changing the status. Live check after the fix: signup + login leaves the
+counter at 2, not 1. **Any later plan that changes a route's success status must grep this
+table** — EP-4's `/oauth/token` will want its own entry.
 
 **2026-07-09 (M2) — `operationId`s are stable across the move because `camel` drops the `v1`
 segment.** `withOperationIds` derives ids from the path, so `/v1/auth/me` would have become
