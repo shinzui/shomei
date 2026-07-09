@@ -4,6 +4,7 @@ slug: enforce-absolute-session-expiry-and-atomic-token-state-transitions
 title: "Enforce Absolute Session Expiry and Atomic Token-State Transitions"
 kind: exec-plan
 created_at: 2026-07-07T17:22:22Z
+intention: "intention_01kx25bwnqecss3zgjtj70zpce"
 master_plan: "docs/masterplans/5-security-correctness-hardening-make-existing-guarantees-hold.md"
 ---
 
@@ -59,10 +60,14 @@ without a database, and new concurrency regression tests exercise the actual rac
 Use a checklist to summarize granular steps. Every stopping point must be documented here,
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 
-- [ ] M1: `refresh` rejects a session past `expiresAt` with `SessionExpired`; new refresh
-      tokens are capped at the session's absolute deadline; core regression test passes.
-- [ ] M1: `verifyToken` (in `VerifyTokenAndSession` mode) rejects a session past
-      `expiresAt`; `Clock` constraint added; core regression test passes.
+- [x] M1: `refresh` rejects a session past `expiresAt` with `SessionExpired`; new refresh
+      tokens are capped at the session's absolute deadline; core regression tests
+      `testRefreshRejectsExpiredSession` and `testSlidingRefreshStillDiesAtDeadline` pass
+      (2026-07-08; both observed failing against the pre-fix code — see Surprises).
+- [x] M1: `verifyToken` (in `VerifyTokenAndSession` mode) rejects a session past
+      `expiresAt`; `Clock` constraint added (no caller needed a change — the only callers
+      are tests, whose stacks already interpret `Clock`); core regression test passes
+      (2026-07-08).
 - [ ] M2: `MarkRefreshTokenUsed` effect operation returns `Bool` (won/lost the CAS); all
       call sites updated.
 - [ ] M2: Postgres `markUsedStmt` converted to `UPDATE … AND status = 'active' RETURNING`;
@@ -90,7 +95,43 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The pre-fix code really does refresh an expired session forever (M1, confirmed).** The
+  three new M1 cases were written first and observed red against the unmodified workflow:
+
+  ```text
+  refresh rejects a session past its absolute expiry:      FAIL
+    expected: Left SessionExpired
+     but got: Right (TokenPair {accessToken = "{...\"expiresAt\":\"2026-01-31T00:15:01Z\"...}",
+                                refreshToken = "rt-1", expiresIn = 900s})
+  sliding refresh still dies at the session deadline:      FAIL
+  verifyToken (token+session) rejects an expired session:  FAIL
+    expected: Left SessionExpired
+     but got: Right (AuthClaims {...})
+  ```
+
+  Note the *minted* access token in the first failure: the session's deadline was 30 days
+  after signup and the clock stood at day 31, yet `refresh` issued a token valid for another
+  15 minutes.
+
+- **The `SessionExpired` error was unreachable at the shared deadline until the guard order
+  changed (M1).** With the new cap, a rotated token's `expiresAt` *equals* its session's
+  `expiresAt`, and `refresh` checked `tok.expiresAt <= ts` before it ever looked the session
+  up — so every deadline crossing would have reported `RefreshTokenExpired` and
+  `session_expired` would never be observable in the default configuration
+  (`sessionTTL == refreshTokenTTL == 30 d`). `refresh` now looks the session up first and
+  checks, in order: session expiry, session status, token expiry. See the Decision Log.
+
+- **Tokens minted by `signup`/`issueSession` are *not* capped at the session deadline.** The
+  Decision Log argued no cap is needed there because `sessionTTL >= refreshTokenTTL` "by
+  construction"; that holds only for the *default* config. A deployment that sets
+  `refreshTokenTTL > sessionTTL` gets a signup token that outlives its session — harmless
+  (the session check in `refresh` catches it, which is exactly what
+  `testRefreshRejectsExpiredSession` exercises) but it means `testSlidingRefreshStillDiesAtDeadline`
+  asserts the cap over *rotated* tokens only.
+
+- **`Shomei.Error.SessionExpired` and `Shomei.Domain.Session.SessionExpired` collide.** The
+  `AuthError` constructor and the `SessionStatus` constructor share a name; test modules that
+  import both must qualify one. `WorkflowSpec` imports `Shomei.Error qualified as Err`.
 
 
 ## Decision Log
@@ -165,6 +206,19 @@ Record every decision made while working on the plan.
   `shomei-postgres/src/Shomei/Postgres/RefreshTokenStore.hs`; plan 33 must preserve the CAS
   statement shape.
   Date: 2026-07-07
+
+- Decision: In `refresh`, evaluate the session's guards (`expiresAt`, then `status`) *before*
+  the presented token's own `expiresAt`, rather than the plan's original order.
+  Rationale: the plan sketched an expiry-first session branch but left the token-expiry check
+  where it was — ahead of the session lookup. Combined with the new cap
+  (`min (now + refreshTokenTTL) session.expiresAt`), a rotated token expires at exactly the
+  session's deadline, so `RefreshTokenExpired` would always fire first and `SessionExpired`
+  would be dead code in the default configuration. Session-first makes `401 session_expired`
+  the answer at the absolute deadline ("log in again") and keeps `401 token_expired` for the
+  case it describes: a stale token presented against a still-live session. Both are 401s
+  reachable only by presenting a valid token secret, so neither leaks. No existing test
+  asserted `RefreshTokenExpired`.
+  Date: 2026-07-08
 
 - Decision: `confirmPasswordReset` performs the CAS-consume *after* password-policy
   validation but *before* `updatePasswordHash`; `confirmEmailVerification` CAS-consumes

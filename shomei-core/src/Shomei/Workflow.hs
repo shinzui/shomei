@@ -287,34 +287,38 @@ refresh cfg cmd = do
       RT.RefreshTokenUsed -> reuseDetected tok ts
       RT.RefreshTokenRevoked -> reuseDetected tok ts
       RT.RefreshTokenExpired -> pure (Left RefreshTokenExpired)
-      RT.RefreshTokenActive
-        | tok.expiresAt <= ts -> pure (Left RefreshTokenExpired)
-        | otherwise -> do
-            mSession <- findSessionById tok.sessionId
-            case mSession of
-              Nothing -> pure (Left SessionNotFound)
-              Just s
-                | s.status /= SessionActive -> pure (Left SessionRevoked)
-                | otherwise -> do
-                    markRefreshTokenUsed tok.refreshTokenId ts
-                    rawNew <- generateOpaqueToken
-                    newHash <- hashRefreshToken rawNew
-                    _ <-
-                      createRefreshToken
-                        NewRefreshToken
-                          { sessionId = tok.sessionId,
-                            tokenHash = newHash,
-                            parentTokenId = Just tok.refreshTokenId,
-                            createdAt = ts,
-                            expiresAt = addUTCTime cfg.refreshTokenTTL ts
-                          }
-                    access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
-                    publishAuthEvent
-                      (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
-                    pure
-                      ( Right
-                          TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
-                      )
+      RT.RefreshTokenActive -> do
+        mSession <- findSessionById tok.sessionId
+        case mSession of
+          Nothing -> pure (Left SessionNotFound)
+          Just s
+            -- The session's absolute deadline is checked before the presented token's own
+            -- expiry: rotation caps every child token at 's.expiresAt', so at the deadline
+            -- both are expired and 'SessionExpired' ("log in again") is the informative one.
+            | s.expiresAt <= ts -> pure (Left SessionExpired)
+            | s.status /= SessionActive -> pure (Left SessionRevoked)
+            | tok.expiresAt <= ts -> pure (Left RefreshTokenExpired)
+            | otherwise -> do
+                markRefreshTokenUsed tok.refreshTokenId ts
+                rawNew <- generateOpaqueToken
+                newHash <- hashRefreshToken rawNew
+                _ <-
+                  createRefreshToken
+                    NewRefreshToken
+                      { sessionId = tok.sessionId,
+                        tokenHash = newHash,
+                        parentTokenId = Just tok.refreshTokenId,
+                        createdAt = ts,
+                        -- Never mint a token that outlives its session.
+                        expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
+                      }
+                access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
+                publishAuthEvent
+                  (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
+                pure
+                  ( Right
+                      TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
+                  )
   where
     reuseDetected tok ts = do
       revokeRefreshTokenFamily tok.refreshTokenId ts
@@ -345,7 +349,7 @@ logout _cfg cmd = do
       pure (Right ())
 
 verifyToken ::
-  (TokenVerifier :> es, SessionStore :> es) =>
+  (TokenVerifier :> es, SessionStore :> es, Clock :> es) =>
   ShomeiConfig ->
   AccessToken ->
   Eff es (Either AuthError AuthClaims)
@@ -356,9 +360,11 @@ verifyToken cfg token = do
     Right claims -> case cfg.sessionCheckMode of
       VerifyTokenOnly -> pure (Right claims)
       VerifyTokenAndSession -> do
+        ts <- now
         mSession <- findSessionById claims.sessionId
         case mSession of
           Nothing -> pure (Left SessionNotFound)
           Just s
+            | s.expiresAt <= ts -> pure (Left SessionExpired)
             | s.status /= SessionActive -> pure (Left SessionRevoked)
             | otherwise -> pure (Right claims)

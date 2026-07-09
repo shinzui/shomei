@@ -4,6 +4,7 @@ slug: security-correctness-hardening-make-existing-guarantees-hold
 title: "Security Correctness Hardening: Make Existing Guarantees Hold"
 kind: master-plan
 created_at: 2026-07-07T17:22:07Z
+intention: "intention_01kx25bwnqecss3zgjtj70zpce"
 ---
 
 # Security Correctness Hardening: Make Existing Guarantees Hold
@@ -84,7 +85,7 @@ verifiable behaviors.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | Not Started |
+| 1 | Enforce Absolute Session Expiry and Atomic Token-State Transitions | docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md | None | None | In Progress |
 | 2 | Publish and Hot-Reload the Full JWKS with Retired Keys | docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md | None | None | Not Started |
 | 3 | Login Timing-Oracle Fix, Email-Verification Enforcement, and Notifier Token Redaction | docs/plans/30-login-timing-oracle-fix-email-verification-enforcement-and-notifier-token-redaction.md | None | None | Not Started |
 | 4 | Complete Cookie Token Transport with CSRF Defenses | docs/plans/31-complete-cookie-token-transport-with-csrf-defenses.md | None | None | Not Started |

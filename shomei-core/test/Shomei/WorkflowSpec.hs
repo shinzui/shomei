@@ -7,12 +7,12 @@
 -- 'Either' and, for state-changing cases, on the 'World' read back from the 'IORef'.
 module Shomei.WorkflowSpec (tests) where
 
-import Data.IORef (newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Data.Time (UTCTime (..), fromGregorian)
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
+import Shomei.Config (SessionCheckMode (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -29,7 +29,10 @@ import Shomei.Error
   ( AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
     PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
   )
-import Shomei.Workflow (LoginResult (..), login, logout, refresh, signup)
+-- Qualified: 'Shomei.Error.SessionExpired' (an 'AuthError') and
+-- 'Shomei.Domain.Session.SessionExpired' (a 'SessionStatus') share a name.
+import Shomei.Error qualified as Err
+import Shomei.Workflow (LoginResult (..), login, logout, refresh, signup, verifyToken)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -85,6 +88,17 @@ ctxFor = ctxForLogin . loginIdFromEmail
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
 
+-- | Move the in-memory clock to @fixedTime + delta@. The interpreters read 'World.clock' on
+-- every 'Shomei.Effect.Clock.now', so this is how a test travels forward in time.
+advanceTo :: IORef World -> NominalDiffTime -> IO ()
+advanceTo ref delta = modifyIORef' ref \w -> w {clock = addUTCTime delta fixedTime}
+
+-- | A config whose refresh tokens outlive the session, so a token minted at signup is still
+-- unexpired when the session's absolute deadline passes. Without it the two deadlines
+-- coincide and 'SessionExpired' would be masked by 'RefreshTokenExpired'.
+longTokenCfg :: ShomeiConfig
+longTokenCfg = cfg {refreshTokenTTL = 61 * 24 * 60 * 60}
+
 -- Tests ----------------------------------------------------------------------
 
 tests :: TestTree
@@ -94,6 +108,9 @@ tests =
     [ testSignupLogin,
       testSignupLoginByIdentifierNoEmail,
       testRefreshRotates,
+      testRefreshRejectsExpiredSession,
+      testSlidingRefreshStillDiesAtDeadline,
+      testVerifyTokenRejectsExpiredSession,
       testReuseDetected,
       testReuseRevokesSession,
       testLogoutRevokes,
@@ -157,6 +174,55 @@ testRefreshRotates = testCase "refresh rotates token and old token becomes Used"
   let toks = Map.elems w.refreshTokens
   assertBool "exactly one token is marked Used" (length (filter (\t -> t.status == RefreshTokenUsed) toks) == 1)
   assertBool "the rotated token links to its parent" (any (\t -> isJust t.parentTokenId) toks)
+
+testRefreshRejectsExpiredSession :: TestTree
+testRefreshRejectsExpiredSession = testCase "refresh rejects a session past its absolute expiry" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (_, pair) <- expectRight =<< runInMemory ref (signup longTokenCfg (signupEmail aliceEmail strongPw Nothing))
+  advanceTo ref (longTokenCfg.sessionTTL + 1)
+  res <- runInMemory ref (refresh longTokenCfg (RefreshCommand pair.refreshToken))
+  res @?= Left Err.SessionExpired
+
+testSlidingRefreshStillDiesAtDeadline :: TestTree
+testSlidingRefreshStillDiesAtDeadline = testCase "sliding refresh still dies at the session deadline" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (_, pair) <- expectRight =<< runInMemory ref (signup longTokenCfg (signupEmail aliceEmail strongPw Nothing))
+  -- Two successful rotations well inside the 30-day session lifetime.
+  pair1 <- rotateAt ref (10 * day) pair.refreshToken
+  pair2 <- rotateAt ref (20 * day) pair1.refreshToken
+  -- Every *rotated* token is capped at the session deadline, so refreshing buys no extra
+  -- lifetime. (The token minted at signup is uncapped — see this plan's Surprises.)
+  w <- readIORef ref
+  session <- case Map.elems w.sessions of
+    (s : _) -> pure s
+    [] -> assertFailure "expected a session"
+  let rotated = filter (isJust . (.parentTokenId)) (Map.elems w.refreshTokens)
+  length rotated @?= 2
+  assertBool
+    "no rotated refresh token expires after the session"
+    (all (\t -> t.expiresAt <= session.expiresAt) rotated)
+  -- Past the deadline the freshest token still cannot buy another rotation.
+  advanceTo ref (longTokenCfg.sessionTTL + 1)
+  res <- runInMemory ref (refresh longTokenCfg (RefreshCommand pair2.refreshToken))
+  res @?= Left Err.SessionExpired
+  where
+    day = 24 * 60 * 60 :: NominalDiffTime
+    rotateAt ref delta tok = do
+      advanceTo ref delta
+      expectRight =<< runInMemory ref (refresh longTokenCfg (RefreshCommand tok))
+
+testVerifyTokenRejectsExpiredSession :: TestTree
+testVerifyTokenRejectsExpiredSession = testCase "verifyToken (token+session) rejects an expired session" do
+  let checkCfg = longTokenCfg {sessionCheckMode = VerifyTokenAndSession}
+  ref <- newIORef (emptyWorld fixedTime)
+  (_, pair) <- expectRight =<< runInMemory ref (signup checkCfg (signupEmail aliceEmail strongPw Nothing))
+  ok <- runInMemory ref (verifyToken checkCfg pair.accessToken)
+  assertBool "the fresh access token verifies" (isRight ok)
+  advanceTo ref (checkCfg.sessionTTL + 1)
+  res <- runInMemory ref (verifyToken checkCfg pair.accessToken)
+  res @?= Left Err.SessionExpired
+  where
+    isRight = either (const False) (const True)
 
 testReuseDetected :: TestTree
 testReuseDetected = testCase "presenting an already-used refresh token detects reuse" do
