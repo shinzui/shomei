@@ -75,13 +75,20 @@ This section must always reflect the actual current state of the work.
 - [x] M2 (2026-07-09): `Env` gains the limiter; all six `Env`/`AdminEnv` construction sites
       updated; four concurrency tests green, including a mutation-checked assertion that the
       *interpreter* takes a permit.
-- [ ] M3: `deploy/entrypoint.sh` computes CPU count from cgroup v2/v1 and exports `GHCRTS`;
-      Dockerfile comment block updated; deployment docs updated with the reasoning and the
-      cgroup caveat (verified or hedged — see M3).
-- [ ] M4: `scripts/argon2-load-test.sh` committed; baseline (pre-change) numbers captured on a
-      throwaway branch/stash; post-change numbers captured; relative acceptance evaluated and
+- [x] M3 (2026-07-09): `deploy/entrypoint.sh` computes the CPU count from cgroup v2/v1 and passes
+      RTS options as `+RTS … -RTS` — **not** via `GHCRTS`, which breaks `dhall-to-json` (see
+      Surprises). `-A64m` is applied only when a quota was found. Dockerfile comment block and
+      deployment docs updated.
+- [x] M3 (2026-07-09): `deploy/entrypoint-test.sh` — ten cases over cgroup v1/v2 fixtures with
+      stubbed binaries, no container runtime required, mutation-checked against a floor/ceil bug.
+      The Docker-based verification the plan asked for could not run (no Docker daemon in this
+      environment); what replaced it is recorded in Surprises & Discoveries.
+- [x] M4 (2026-07-09): `scripts/argon2-load-test.sh` committed; baseline captured with
+      `SHOMEI_HASHING_MAX_CONCURRENCY=64` on the same binary (better isolation than a scratch
+      worktree); post-change numbers captured; acceptance rewritten to the measurable reality and
       recorded in Outcomes.
-- [ ] `nix fmt` clean; `cabal build all` / `cabal test all` green; MasterPlan 6 Progress and
+- [x] `nix fmt` clean; `cabal build all --enable-tests` green; `cabal test all -j1
+      --test-options="-j1"` green; `sh deploy/entrypoint-test.sh` green; MasterPlan 6 Progress and
       registry updated.
 
 
@@ -173,6 +180,77 @@ at OWASP floor -- hit(wrong pw) avg 15.81 ms   miss(dummy) avg 15.84 ms   ratio 
   runtime for no benefit. The Argon2 parameters themselves are covered by the dedicated tests in
   `shomei-postgres/test/Main.hs`, which do use `defaultArgon2Params`.
 
+- **This plan's M3 design — `export GHCRTS` — would have broken the server at boot in every
+  deployment that uses a Dhall config file.** `GHCRTS` is read by *every* GHC-compiled program in
+  the environment, and `Shomei.Server.Config.loadDhallFile` shells out to `dhall-to-json`, which
+  is built without `-threaded` and without `-rtsopts`. It rejects the flags and exits 1:
+
+```text
+$ SHOMEI_CONFIG=… GHCRTS="-N4 -A64m --nonmoving-gc" shomei-server
+dhall-to-json: the flag -N4 requires the program to be built with -threaded
+dhall-to-json: Most RTS options are disabled. Link with -rtsopts to enable them.
+shomei-server: readCreateProcess: dhall-to-json "--file" … (exit 1): failed
+```
+
+  Discovered by actually running the load test with the flags set — it never boots. The plan's
+  Decision Log had chosen `GHCRTS` precisely because it "survives `exec`", which is the property
+  that causes the bug. The entrypoint now passes `+RTS … -RTS` on the server's own command line,
+  consumed by its runtime and never inherited by a child:
+
+```text
+=== OLD WAY (export GHCRTS) + Dhall config ===
+dhall-to-json: the flag -N4 requires the program to be built with -threaded
+=== NEW WAY (+RTS ... -RTS) + Dhall config ===
+[shomei] listening on :8093
+```
+
+  `deploy/entrypoint-test.sh` asserts `GHCRTS=<unset>` reaches the server, so this cannot return.
+
+- **`-A64m` is a *per-capability* nursery, and the entrypoint's `nproc` fallback makes that
+  expensive.** Under a CPU quota (the case the flag exists for) capabilities are few and the cost
+  is ~128 MiB at `--cpus=2`. With no quota, `-N` follows the host's core count, and on this
+  10-core machine `-A64m` raised resident memory from 230 MB to 956 MB with no reproducible
+  latency benefit. The entrypoint therefore applies `-A64m` only when a quota was actually found.
+
+- **The Docker verification this plan specified could not be run: no Docker daemon in this
+  environment** (`docker info` fails; macOS has no `/sys/fs/cgroup`). Two things were verified
+  instead, and they cover the parts that can actually be wrong. (1) The cgroup arithmetic, by
+  running the real entrypoint against v1/v2 fixtures via a new `SHOMEI_CGROUP_ROOT` seam —
+  including the ceiling-division case, confirmed to fail when mutated to floor division. (2) That
+  the RTS accepts the flags and rejects typos, using the real binary:
+
+```text
+$ GHCRTS="-N2 --no-such-flag" shomei-server
+shomei-server: unknown RTS option: --no-such-flag
+```
+
+  So a bad `SHOMEI_RTS_OPTS` fails the container at boot rather than silently reverting to
+  defaults. **Still unverified:** that GHC 9.12.4's `-N` ignores CFS quotas. The claim is only
+  load-bearing for *why* the entrypoint exists; if GHC has since grown quota awareness the
+  entrypoint is redundant, not wrong.
+
+- **The plan's M4 acceptance criteria were not achievable, and one of them was based on a false
+  premise.** "Login throughput after must be at least 80% of before … since the CPU work is
+  identical" — it is not identical. Argon2 with `p=1` on 10 cores runs ten hashes in parallel when
+  unbounded; a bound of 2 caps throughput near 20 logins/second no matter how many cores exist.
+  Measured 33.4 → 18.8 logins/s (56%). That is the trade the plan is buying, not a regression.
+
+- **This load harness cannot resolve p95/p99.** The generator shares the host and forks a curl per
+  request. Three consecutive runs of *the same* configuration gave p99 degradation factors of
+  20.9×, 34.2× and 62.5×. Meanwhile p50 degradation (1.07–1.11×) and peak RSS (239 MB ±1 MB) were
+  stable to within noise. Any tail-latency claim from this script is unsupported; the
+  measurements that survive repetition are p50 and RSS.
+
+- **What the limiter demonstrably buys** (medians of three runs each, 8 concurrent login loops):
+
+```text
+BEFORE (unbounded hashing, stock RTS)      p50=1.83x  p95=35.8x  p99=47.5x  logins/s=33.4  rss=618MB
+AFTER  (bounded 2, -N10 --nonmoving-gc)    p50=1.09x  p95=33.3x  p99=62.0x  logins/s=18.8  rss=239MB
+```
+
+  Median hot-path degradation nearly vanishes and peak memory drops 2.6×. The p99 column is noise
+  (see above), not a regression.
+
 
 ## Decision Log
 
@@ -246,6 +324,36 @@ Record every decision made while working on the plan.
   untouched. The entrypoint is already the deployment's init logic
   (`deploy/entrypoint.sh` runs migrations and key bootstrap before `exec shomei-server`).
   Date: 2026-07-07
+  **SUPERSEDED 2026-07-09 — this design does not boot.** See the next entry.
+
+- Decision: Pass the RTS options as `+RTS … -RTS` on the server's command line, via a new
+  `SHOMEI_RTS_OPTS` variable, instead of exporting `GHCRTS`.
+  Rationale: `GHCRTS` surviving `exec` — the property the superseded decision relied on — is
+  exactly the bug. It is inherited by *every* GHC program, and `shomei-server` shells out to
+  `dhall-to-json` to render `$SHOMEI_CONFIG`. `dhall-to-json` is built without
+  `-threaded`/`-rtsopts` and exits 1 on `-N4`, so the server never boots with a Dhall config.
+  Reproduction and evidence in Surprises & Discoveries. `+RTS` is consumed by the server's own
+  runtime and never reaches a child process.
+  Date: 2026-07-09
+
+- Decision: Apply `-A64m` only when a cgroup CPU quota was actually found; otherwise pass just
+  `-N<nproc> --nonmoving-gc`.
+  Rationale: `-A` is a per-capability nursery. Under a quota, capabilities are few (≈128 MiB at
+  `--cpus=2`) and the plan's reasoning holds. With no quota the entrypoint falls back to the host
+  core count, and 64 MiB × N gets expensive: measured 230 MB → 956 MB of resident memory on a
+  10-core host, with no reproducible latency benefit. Confirmed with the repository owner.
+  Date: 2026-07-09
+
+- Decision: Rewrite M4's acceptance criteria to what the harness can actually measure — p50
+  degradation and peak RSS — and record the tail-latency question as follow-up work in
+  MasterPlan 6 rather than gating this plan on it.
+  Rationale: Three runs of one configuration produced p99 degradation factors of 20.9×, 34.2× and
+  62.5×; the load generator shares the host and forks a process per request. Gating on a metric
+  this harness cannot resolve would either block the plan on noise or, worse, bless a lucky run.
+  The original throughput criterion additionally assumed "the CPU work is identical", which is
+  false when core count exceeds the concurrency bound. Confirmed with the repository owner, who
+  asked that the open question be recorded outside this plan so a follow-up can pick it up.
+  Date: 2026-07-09
 
 - Decision: State the cgroup claim carefully and verify it during M3: as of GHC 9.12, `-N`
   sizes capabilities from the processor count / CPU *affinity mask* (`sched_getaffinity` on
@@ -301,7 +409,67 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete (2026-07-09), with two of the plan's own designs corrected on contact with running
+code.** Measured against the four things the Purpose promised an operator could observe:
+
+**(1) Hot-path latency under concurrent logins.** The committed `scripts/argon2-load-test.sh`
+drives a real server. Medians of three runs each, 8 concurrent login loops, 150 hot-path samples:
+
+```text
+BEFORE (unbounded hashing, stock RTS)      p50=1.83x  p95=35.8x  p99=47.5x  logins/s=33.4  rss=618MB
+AFTER  (bounded 2, -N10 --nonmoving-gc)    p50=1.09x  p95=33.3x  p99=62.0x  logins/s=18.8  rss=239MB
+```
+
+Median hot-path degradation nearly vanishes (1.83× → 1.09×) and peak resident memory drops 2.6×
+(618 MB → 239 MB); both were stable across runs. Login throughput falls to 56%, which is the trade
+being bought, not a regression — see the Decision Log. **The p95/p99 columns are noise on this
+harness** (the same configuration yielded p99 factors of 20.9×, 34.2× and 62.5×), so the original
+"p99 degradation halved" criterion was replaced rather than reported as met or missed.
+
+**(2) At most `SHOMEI_HASHING_MAX_CONCURRENCY` hashes run at once.** Proven by four tests, not
+inferred from timing: the limiter tracks a high-water mark, and 16 threads racing for permits
+never push it above the bound. One of those tests was itself found vacuous (it asserted only
+`peak <= 2`, which a completely unbounded interpreter satisfies with `peak == 0`) and now asserts
+`peak >= 1` as well; the fix was validated by deleting the permit bracket and watching the test go
+red.
+
+**(3) The container starts the server with quota-aware RTS options.** `deploy/entrypoint.sh` reads
+the cgroup v1/v2 quota, rounds up, and passes `+RTS -N<quota> [-A64m] --nonmoving-gc -RTS`.
+`deploy/entrypoint-test.sh` covers ten cases against fixtures. The plan's `export GHCRTS` design
+was found to break the server at boot whenever a Dhall config is used, because `dhall-to-json`
+inherits `GHCRTS` and cannot parse `-N4`; a test now pins `GHCRTS=<unset>`.
+
+**(4) Argon2 parameters are configurable and hashes are self-describing.** New hashes carry
+`$argon2id$v=19$m=…,t=…,p=…$…`; a committed fixture proves legacy hashes still verify;
+`SHOMEI_ARGON2_MEMORY_KIB=32768` demonstrably lands `m=32768` in the stored string; a below-floor
+configuration warns loudly at boot without refusing to start.
+
+**The most important thing this plan did was not in the plan.** Making the cost configurable would
+have reopened the login timing oracle, because the miss path verified against a hardcoded 64 MiB
+dummy hash. At the OWASP floor a miss would cost 102 ms and a hit 19 ms — a 5.4× signal revealing
+whether an account exists — and `TimingSpec` would have stayed green, since it counts hasher
+invocations and its own header justified that as a cost proxy "because `dummyPasswordHash` carries
+the production parameters". The `VerifyPasswordDummy` port operation makes the miss path cost
+whatever the configured parameters cost (measured 15.84 ms vs 15.81 ms), and incidentally removed
+an Argon2id hash string from `shomei-core`, a package that is supposed to contain no
+infrastructure.
+
+**Gaps and follow-ups** (also recorded in MasterPlan 6, so a later plan can pick them up):
+
+- *Tail latency is unmeasured.* The load generator shares the host with the server and forks a
+  curl per request. A dedicated load-generation machine and a connection-reusing client are needed
+  before any p95/p99 claim — including the central "GC stalls cross request boundaries" claim —
+  can be substantiated or refuted.
+- *The `-N`-ignores-CFS-quotas premise is unverified* on GHC 9.12.4. No Docker daemon was available
+  here. If GHC has grown quota awareness, the entrypoint is redundant rather than wrong.
+- *`--nonmoving-gc` and `-A64m` were not shown to help.* On an unconstrained host `--nonmoving-gc`
+  was neutral and `-A64m` cost 726 MB of RSS. Their justification is the container case, which
+  could not be exercised. A follow-up should measure inside a quota-limited container.
+- *The default `hashingMaxConcurrency = 2` is not adaptive.* On a 10-core host it leaves throughput
+  on the table (18.8 vs 33.4 logins/s); on a 1-CPU container it may still be one too many. Scaling
+  it from the capability count is worth investigating.
+- *`config/shomei-types.dhall` still does not list the new `argon2*` / `hashingMaxConcurrency`
+  keys* (a pre-existing gap for every recent plan's keys). The loader accepts them regardless.
 
 
 ## Context and Orientation
@@ -565,12 +733,29 @@ Procedure: run it **twice** — once on the pre-plan commit (stash or a scratch 
 and for the "after" run also `GHCRTS="-N4 -A64m --nonmoving-gc"` to include M3's tuning.
 Paste both summaries into Outcomes.
 
-Acceptance (relative, per the Decision Log): the **p99 degradation factor** (loaded p99 ÷
-idle p99) after must be at most **half** the before factor, and login throughput after must
-be at least **80%** of before (queueing two-at-a-time must not collapse throughput — it
-should barely change it, since the CPU work is identical). Peak RSS under load must be lower
-after; report the numbers. If the before build is too noisy to show a stable factor on your
-machine, increase the load loops to 40 and the probe count to 500 and note it.
+Acceptance (relative, per the Decision Log). **These criteria were rewritten on 2026-07-09 after
+measurement; the original ones were unmeasurable or rested on a false premise — see Surprises &
+Discoveries and the Decision Log entry of that date.** The criteria that survived contact with
+data:
+
+1. The **median (p50) hot-path degradation factor** must fall materially. Measured: 1.83× → 1.09×
+   (medians of three runs each). This is the stable signal — it varied by less than 0.1× across
+   runs — and it is the one an end user feels on every request.
+2. **Peak RSS under load must fall.** Measured: 618 MB → 239 MB. Rock stable (±1 MB across runs).
+3. **Login throughput will fall, and that is the intended trade**, not a regression. Measured:
+   33.4 → 18.8 logins/second. The original "≥ 80% of before" criterion assumed "the CPU work is
+   identical"; it is not. With 10 cores and Argon2 `p=1`, unbounded hashing genuinely runs ten
+   hashes in parallel, while a bound of 2 caps throughput near `2 / 0.1 s = 20/s` regardless of
+   core count. Bounding trades login throughput for hot-path latency and memory — deliberately.
+4. **p95/p99 are reported but must not gate**, because this harness cannot resolve them: the
+   load generator shares the host and forks a curl per request. The same configuration produced
+   p99 degradation factors of 20.9×, 34.2×, and 62.5× on consecutive runs. Resolving the tail
+   needs a separate load-generation machine; that is recorded as follow-up work in
+   `docs/masterplans/6-operational-and-performance-hardening.md`.
+
+Procedure note: the plan originally called for building the pre-plan commit in a scratch worktree.
+That is unnecessary and confounded — `SHOMEI_HASHING_MAX_CONCURRENCY=64` reproduces the unbounded
+behavior on the *same binary*, isolating the single variable under test.
 
 
 ## Concrete Steps

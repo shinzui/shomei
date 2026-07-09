@@ -83,7 +83,7 @@ unrelated verification strategies.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Transactional Auth Workflows and Configurable Connection Pool | docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md | None | None | Complete |
 | 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | Complete |
-| 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | In Progress |
+| 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | Complete |
 | 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Not Started |
 | 5 | Resilient Downstream JWKS Cache Template | docs/plans/37-resilient-downstream-jwks-cache-template.md | None | None | Not Started |
 
@@ -155,9 +155,13 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 - [x] EP-2: `expires_at` indexes added; dead `status` indexes dropped; audit composite index decision recorded
 - [x] EP-2: Retention windows for `shomei_auth_events` and `shomei_login_attempts` (config + docs)
 - [x] EP-2: `shomei-admin sweep` CLI trigger for operators who schedule maintenance externally
-- [ ] EP-3: Semaphore bounding concurrent Argon2 hashing; parameters configurable
-- [ ] EP-3: Container-aware RTS flags in Dockerfile/entrypoint; deployment docs updated
-- [ ] EP-3: Concurrent-login load test demonstrating bounded latency impact on the hot path
+- [x] EP-3: Semaphore bounding concurrent Argon2 hashing; parameters configurable
+- [x] EP-3: Argon2 hashes made self-describing (PHC format); legacy hashes still verify
+- [x] EP-3: Login timing oracle closed — a `VerifyPasswordDummy` port operation replaces the
+      hardcoded dummy hash, which configurable parameters would otherwise have desynchronized
+- [x] EP-3: Container-aware RTS flags in Dockerfile/entrypoint; deployment docs updated
+- [x] EP-3: Concurrent-login load test (`scripts/argon2-load-test.sh`) demonstrating bounded
+      latency impact on the hot path (p50 degradation 1.83× → 1.09×, peak RSS 618 → 239 MB)
 - [ ] EP-4: Rate-limiter bucket eviction (idle sweep) and contention note
 - [ ] EP-4: In-flight gauge exception-safe; Warp `setOnException` routed to structured logger
 - [ ] EP-5: Example JWKS cache rewritten: lock-free reads, single-flight refresh, refresh-ahead, stale-on-error
@@ -238,6 +242,67 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   MasterPlan should treat their own specified SQL as a hypothesis and check the schema's foreign
   keys before trusting it. Details and reproductions are in plan 34's Surprises & Discoveries.
 
+- **Never set `GHCRTS` for `shomei-server`.** EP-3's plan specified exporting it from the
+  container entrypoint; doing so breaks the server at boot whenever `$SHOMEI_CONFIG` is set,
+  because `Shomei.Server.Config.loadDhallFile` shells out to `dhall-to-json`, which inherits
+  `GHCRTS` and is built without `-threaded`/`-rtsopts` (`the flag -N4 requires the program to be
+  built with -threaded`). RTS options must be passed as `+RTS … -RTS` on the server's own command
+  line — `deploy/entrypoint.sh` now does, and `deploy/entrypoint-test.sh` pins it. This applies to
+  any future plan touching deployment.
+
+- **EP-3 changed `shomei-core`'s `PasswordHasher` port**, which EP-1 of MasterPlan 6 did not
+  anticipate. `VerifyPasswordDummy :: PlainPassword -> PasswordHasher m ()` was added and
+  `Shomei.Domain.Password.dummyPasswordHash` was **deleted**. Any plan writing a `PasswordHasher`
+  interpreter (including in-memory fakes) must handle the new constructor; the compiler finds
+  them. The reason is a security property: making Argon2 parameters configurable desynchronizes
+  any *constant* dummy hash from the configured cost, reopening the account-enumeration timing
+  oracle (a miss would cost 102 ms against a hit's 19 ms at the OWASP floor). Detail in plan 35's
+  Surprises & Discoveries.
+
+- **`Env` (`shomei-server/src/Shomei/Server/App.hs`) now has six construction sites**, not the
+  five EP-3's plan listed: `Boot.buildEnv`, `shomei-server/test/Shomei/Server/E2ESpec.hs`,
+  `shomei-client/test/Main.hs`, `examples/embedded-servant-app/test/Main.hs`,
+  `examples/microservice-auth-stack/test/Main.hs`, plus `AdminEnv` in
+  `shomei-server/test/Admin/Main.hs`. EP-3 added `envArgon2Params` and `envHashingLimiter` to all
+  of them. Note `cabal build all` does **not** build test suites here, so a cross-cutting change
+  compiles green while the test modules are broken; use `cabal build all --enable-tests`.
+
+- **Test suites now hash passwords with cheap Argon2 parameters** (`m=8192,t=1,p=1`) via a local
+  `testArgon2Params`. EP-4 and EP-5 should not "fix" this back to the defaults: at ~100 ms per
+  hash the production parameters dominated six suites' runtime for no coverage benefit.
+
+
+## Follow-up work (recorded for a later plan)
+
+These are open questions this MasterPlan surfaced but did not resolve. They are recorded here,
+outside any child plan, so a follow-up initiative can pick them up.
+
+**Tail latency is unmeasured, and the review's central performance claim is therefore
+unsubstantiated.** The whole premise of EP-3 — that an Argon2 hash pinned in an unsafe foreign
+call stalls unrelated requests through stop-the-world GC — predicts a p95/p99 effect.
+`scripts/argon2-load-test.sh` cannot resolve one: the load generator shares the host with the
+server and forks a `curl` per request, and three runs of an identical configuration produced p99
+degradation factors of 20.9×, 34.2× and 62.5×. What *is* stable is median degradation (1.83× →
+1.09× with the limiter) and peak RSS (618 → 239 MB). A follow-up needs a separate
+load-generation machine and a connection-reusing client before any tail claim can be made.
+
+**The RTS guidance is unvalidated.** Two of the three flags were not shown to help. On an
+unconstrained host `--nonmoving-gc` was neutral and `-A64m` cost 726 MB of resident memory
+(230 → 956 MB) for no reproducible latency gain, which is why the entrypoint now applies `-A64m`
+only under a CPU quota. Their justification is the container case, and no Docker daemon was
+available. Also unverified: that GHC 9.12.4's `-N` really does ignore CFS bandwidth quotas. If it
+does not, `deploy/entrypoint.sh`'s quota arithmetic is redundant (though not wrong).
+
+**`hashingMaxConcurrency = 2` is a fixed default in a world of varying core counts.** On a 10-core
+host it caps login throughput at 18.8/s against an unbounded 33.4/s; on a 1-CPU container it may
+still admit one hash too many. Deriving it from the capability count (or from `-N`) is worth
+investigating, together with whether the memory bound or the GC bound is the binding constraint.
+
+**`config/shomei-types.dhall` lags the loader.** It is a closed record type and now omits the
+`sweep*`, `*RetentionDays`, `argon2*` and `hashingMaxConcurrency` keys, on top of the six keys
+MasterPlan 5 already recorded. The loader accepts them all, but a file annotated
+`: ./shomei-types.dhall` cannot use them. Widening the schema is mechanical and overdue.
+
 
 ## Decision Log
 
@@ -266,6 +331,27 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
   Rationale: Single-instance posture is documented in `docs/user/security.md`; multi-instance
   coordination is a scaling initiative with different requirements, not a hardening fix.
   Date: 2026-07-07
+
+- Decision: EP-3 was allowed to change `shomei-core`'s `PasswordHasher` port and delete
+  `Shomei.Domain.Password.dummyPasswordHash`, despite this MasterPlan declaring "anything that
+  changes a security property" out of scope.
+  Rationale: The out-of-scope rule exists to stop this initiative from *altering* security
+  properties. EP-3's configurable Argon2 parameters would have *broken* one — the login timing
+  oracle — because verification cost follows the parameters embedded in the hash being verified,
+  and the miss path verified a hardcoded 64 MiB constant. Preserving the existing guarantee is
+  squarely in scope; shipping the knob without the fix would not have been. Measured: a miss would
+  cost 102 ms against a hit's 19 ms at the OWASP floor. Confirmed with the repository owner before
+  implementation.
+  Date: 2026-07-09
+
+- Decision: EP-3's load-test acceptance was rewritten to p50 degradation and peak RSS, with
+  p95/p99 reported but not gating, and the tail-latency question recorded as follow-up work above.
+  Rationale: The harness cannot resolve the tail (three runs of one configuration: p99 factors of
+  20.9×, 34.2×, 62.5×), and gating on it would either block the plan on noise or bless a lucky run.
+  The original throughput criterion assumed "the CPU work is identical", which is false when core
+  count exceeds the concurrency bound. Confirmed with the repository owner, who asked that the open
+  question live outside the child plan so a follow-up can pick it up.
+  Date: 2026-07-09
 
 - Decision: EP-2 also migrated the existing signing-key reload thread onto its new
   `supervisedLoop`, rather than leaving that to the Security MasterPlan's EP-2 (plan 29).

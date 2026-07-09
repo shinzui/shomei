@@ -55,6 +55,12 @@ twelve-factor — env always wins):
 | `SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES` | grace before expired WebAuthn ceremonies are deleted | `60` |
 | `SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS` | maximum age of `shomei_login_attempts` rows. Must be positive | `90` |
 | `SHOMEI_AUTH_EVENT_RETENTION_DAYS` | maximum age of audit events. **Unset, `0`, or negative retains the audit trail forever** | unset |
+| `SHOMEI_ARGON2_MEMORY_KIB` | Argon2id memory cost, KiB, for **newly hashed** passwords. Must be positive | `65536` (64 MiB) |
+| `SHOMEI_ARGON2_ITERATIONS` | Argon2id time cost for newly hashed passwords. Must be positive | `3` |
+| `SHOMEI_ARGON2_PARALLELISM` | Argon2id lanes for newly hashed passwords. Must be positive | `1` |
+| `SHOMEI_HASHING_MAX_CONCURRENCY` | how many Argon2 hashes may run at once, process-wide. Must be positive | `2` |
+| `SHOMEI_RTS_OPTS` | GHC runtime options the container entrypoint passes as `+RTS … -RTS`. Empty string passes none. **Do not use `GHCRTS`** — it leaks into `dhall-to-json` and breaks config loading | `-N<cpu-quota> [-A64m] --nonmoving-gc` |
+| `SHOMEI_CGROUP_ROOT` | where the entrypoint looks for the CPU quota. A test seam; leave unset | `/sys/fs/cgroup` |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
 
 `SHOMEI_SERVICE_ACCOUNTS_JSON` replaces the configured service-account list when set. Example:
@@ -80,6 +86,63 @@ at all, so the pool only has to cover the write workflows (signup, login, refres
 replica, not against request concurrency, and prefer shedding load with a short acquisition
 timeout over queueing behind a saturated pool.
 
+### Password hashing cost and concurrency
+
+Passwords are hashed with **Argon2id** at 64 MiB / 3 iterations / 1 lane, which is at or above
+every OWASP-recommended configuration. `SHOMEI_ARGON2_*` changes the cost for **newly hashed**
+passwords only: every stored hash records the parameters it was made with, so retuning the cost
+never invalidates an existing credential, and old and new hashes coexist indefinitely. Below
+19 MiB / 2 iterations the server logs a prominent warning at boot but still starts — test rigs
+legitimately want cheap hashing.
+
+`SHOMEI_HASHING_MAX_CONCURRENCY` (default 2) bounds how many hashes run at once, and it matters
+more than it looks. The Argon2 implementation is reached through an *unsafe* foreign call, which
+cannot be interrupted: for the ~100 ms a hash takes, that capability reaches no
+garbage-collection safepoint. GHC's default collector is stop-the-world and must synchronize
+every capability, so **one password hash can stall every other request in the process**, including
+ones that never touch a password. Each hash also transiently allocates its full memory cost, so
+ten concurrent logins would spike ~640 MB.
+
+Two concurrent hashes still sustain roughly 13–40 logins/second — far above any single-instance
+deployment's login rate — while bounding the transient allocation at ~128 MiB. Raise it if you
+have CPU and memory headroom and measure a login-throughput ceiling; the failure mode of
+too-small is queued logins, and of too-large is global GC stalls.
+
+### GHC runtime options in containers
+
+The container entrypoint (`deploy/entrypoint.sh`) starts the server as:
+
+```sh
+exec shomei-server +RTS -N<cpu-quota> -A64m --nonmoving-gc -RTS   # when a CPU quota exists
+exec shomei-server +RTS -N<nproc> --nonmoving-gc -RTS             # when it does not
+```
+
+**Why not just let GHC decide?** `-N` sizes GHC's capability count from the CPU affinity mask.
+An affinity mask reflects *cpuset* pinning, but not CFS *bandwidth* quotas — and `docker --cpus`
+and Kubernetes CPU **limits** are CFS quotas. A container limited to 2 CPUs on a 32-core node
+therefore starts 32 capabilities, and every stop-the-world collection has to synchronize all 32
+across 2 CPUs' worth of actual scheduling. The entrypoint reads the quota from
+`/sys/fs/cgroup/cpu.max` (cgroup v2) or `cpu.cfs_quota_us`/`cpu.cfs_period_us` (v1), rounds up,
+and falls back to `nproc` when there is no quota.
+
+`--nonmoving-gc` makes old-generation collection run concurrently with the mutator, removing the
+long global pauses that turn a pinned Argon2 hash into p99 latency.
+
+`-A64m` enlarges each capability's nursery, so young-generation collections — each a
+stop-the-world sync that may queue behind a pinned hash — happen less often. **It is applied
+only when a CPU quota bounds the capability count**, because `-A` is *per capability*: at a
+2-CPU quota it costs ~128 MiB, but on an unconstrained 10-core host it cost 726 MB of extra
+resident memory (230 MB → 956 MB) with no reproducible latency benefit in our measurements.
+
+**Why `+RTS` and not `GHCRTS`?** `GHCRTS` is inherited by *every* GHC-compiled program in the
+environment. `shomei-server` shells out to `dhall-to-json` to render `$SHOMEI_CONFIG`, and
+`dhall-to-json` is built without `-threaded`/`-rtsopts`, so it exits 1 on `-N4` and the server
+never boots. `+RTS` is consumed by the server's own runtime and never reaches a child.
+
+Override with `SHOMEI_RTS_OPTS` (set it to the empty string to pass nothing). The RTS **rejects
+unknown options and exits**, so a typo fails the container at boot rather than silently reverting
+to defaults. Bare-metal and `cabal run` deployments are unaffected — they keep GHC's plain `-N`.
+
 ### Dhall config file
 
 The schema is `config/shomei-types.dhall`; a worked example is `config/shomei.example.dhall`.
@@ -104,14 +167,15 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPool
 `cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, the sweeper keys `sweepEnabled`,
 `sweepIntervalSeconds`, `sweepBatchSize`, `sweepDeadSessionGraceDays`,
 `sweepOneTimeTokenGraceDays`, `sweepCeremonyGraceMinutes`, `loginAttemptRetentionDays`,
-`authEventRetentionDays`, and `serviceToken` (see
+`authEventRetentionDays`, the hashing keys `argon2MemoryKiB`, `argon2Iterations`,
+`argon2Parallelism`, `hashingMaxConcurrency`, and `serviceToken` (see
 [passkeys.md](passkeys.md) for WebAuthn and [service-tokens.md](service-tokens.md) for service
 accounts).
 
 > **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
 > newer keys (`signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`, `cookieSecure`,
-> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`, and the
-> `sweep*` / `*RetentionDays` keys). The
+> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`, the
+> `sweep*` / `*RetentionDays` keys, and the `argon2*` / `hashingMaxConcurrency` keys). The
 > loader accepts them regardless — every field is
 > optional at decode time — but a file that annotates itself `: ./shomei-types.dhall` cannot use
 > them until the schema is widened. Use the environment variables, or drop the annotation.
@@ -251,10 +315,19 @@ docker load < result             # loads shomei-server:latest
 
 `flake.module.nix` defines it with `dockerTools.buildLayeredImage` (the server, the admin CLI,
 and `dhall-to-json`). Its `deploy/entrypoint.sh` runs migrations, ensures an active signing key,
-then `exec`s the server so SIGTERM (e.g. on pod termination) reaches it; the server drains
-in-flight requests (up to `gracefulShutdownTimeoutSeconds`), closes the connection pool, and
-exits 0. A plain `Dockerfile` is provided as the documented, non-reproducible secondary path.
-Point the container at your own managed PostgreSQL with `PG_CONNECTION_STRING`.
+computes container-aware GHC RTS options (see [GHC runtime options in
+containers](#ghc-runtime-options-in-containers)), then `exec`s the server so SIGTERM (e.g. on pod
+termination) reaches it; the server drains in-flight requests (up to
+`gracefulShutdownTimeoutSeconds`), closes the connection pool, and exits 0. A plain `Dockerfile`
+is provided as the documented, non-reproducible secondary path. Point the container at your own
+managed PostgreSQL with `PG_CONNECTION_STRING`.
+
+The entrypoint's CPU-quota arithmetic is covered by `deploy/entrypoint-test.sh`, which runs the
+real script against cgroup v1/v2 fixtures with stubbed binaries and needs no container runtime:
+
+```bash
+sh deploy/entrypoint-test.sh
+```
 
 > Verification status: the OCI image build was authored but not executed in the development
 > sandbox; run `nix build .#dockerImage` on a Nix+Docker build host or in CI to validate.
