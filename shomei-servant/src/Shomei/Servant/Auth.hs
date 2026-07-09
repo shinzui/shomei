@@ -43,7 +43,7 @@ import Data.Set (Set)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Network.Wai (Request, requestHeaders, requestMethod)
-import Servant (Handler, ServerError, err401, err403, errBody, errHeaders, throwError)
+import Servant (Handler, ServerError, throwError)
 import Servant.API.Experimental.Auth (AuthProtect)
 import Servant.Server.Experimental.Auth
   ( AuthHandler,
@@ -55,6 +55,7 @@ import Shomei.Domain.Claims (AuthClaims (..), Role, Scope)
 import Shomei.Error (TokenError)
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
+import Shomei.Servant.Error (pcCsrfRejected, pcMissingToken, pcTokenInvalidAuth, toProblemError)
 import Web.Cookie (parseCookies)
 
 -- | Shōmei's principal: the value the 'AuthHandler' hands to every authenticated
@@ -119,12 +120,12 @@ authHandler policy verify = mkAuthHandler handle
     handle :: Request -> Handler AuthUser
     handle req = do
       (source, tok) <-
-        maybe (throwError err401 {errBody = "missing token"}) pure (extractToken policy.transport req)
+        maybe (throwError (toProblemError pcMissingToken Nothing)) pure (extractToken policy.transport req)
       when (source == FromCookie && not (isSafeMethod req) && not (originAllowed policy.allowedOrigins req)) $
         throwError csrfRejected
       res <- liftIO (verify tok)
       case res of
-        Left _ -> throwError err401 {errBody = "invalid token"}
+        Left _ -> throwError (toProblemError pcTokenInvalidAuth Nothing)
         Right claims -> pure (authUserFromClaims claims)
 
 -- | Extract the presented token and record where it came from.
@@ -190,8 +191,4 @@ originHeaderAllowed allowed mOrigin mReferer = maybe refererAllowed (`elem` allo
 -- This is an HTTP-layer error, not an 'Shomei.Error.AuthError': CSRF is a property of /how the
 -- credential arrived/, which the core workflows never see.
 csrfRejected :: ServerError
-csrfRejected =
-  err403
-    { errBody = "{\"error\":\"csrf_rejected\",\"message\":\"Origin not allowed for cookie-authenticated request\"}",
-      errHeaders = [("Content-Type", "application/json")]
-    }
+csrfRejected = toProblemError pcCsrfRejected Nothing

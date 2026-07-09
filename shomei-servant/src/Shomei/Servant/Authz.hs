@@ -35,7 +35,6 @@ module Shomei.Servant.Authz
   )
 where
 
-import Data.Aeson qualified as Aeson
 import Data.Kind (Type)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -44,10 +43,7 @@ import Network.Wai (Request)
 import Servant
   ( Context,
     Handler,
-    Proxy (..),
-    ServerError (..),
-    err403,
-    errBody,
+    ServerError,
     throwError,
     type (:>),
   )
@@ -66,6 +62,7 @@ import Shomei.Domain.Claims (Role (..), Scope (..))
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))
+import Shomei.Servant.Error (pcMissingRole, pcMissingScope, toProblemError)
 
 -- | Enforcing combinator: the route demands the named role. (The type parameter is named @r@,
 -- not @role@: under GHC2024 @RoleAnnotations@ is on, so @role@ is a context-sensitive keyword
@@ -83,26 +80,19 @@ data RequireScope s
 requireRole :: Role -> AuthUser -> Handler ()
 requireRole role u
   | role `Set.member` u.authRoles = pure ()
-  | otherwise = throwError (forbidden "missing_role" "missing required role")
+  | otherwise = throwError missingRole
 
 -- | Guard: fail with @403@ unless the principal carries the scope. See 'requireRole'.
 requireScope :: Scope -> AuthUser -> Handler ()
 requireScope scope u
   | scope `Set.member` u.authScopes = pure ()
-  | otherwise = throwError (forbidden "missing_scope" "missing required scope")
+  | otherwise = throwError missingScope
 
--- | A @403@ carrying the same @{"error":…,"message":…}@ JSON body shape that
--- 'Shomei.Servant.Error.authErrorToServerError' produces, so a client sees one error format
--- across the API. (The universal problem-details envelope of MasterPlan 7 EP-3 will sweep this
--- along with every other error site; that plan owns the change.)
-forbidden :: Text -> Text -> ServerError
-forbidden code msg =
-  err403
-    { errBody =
-        Aeson.encode
-          (Aeson.object ["error" Aeson..= code, "message" Aeson..= msg]),
-      errHeaders = [("Content-Type", "application/json")]
-    }
+-- | The two 403 problem documents these combinators and guards raise. Shared so the type-level
+-- and handler-level paths cannot answer differently.
+missingRole, missingScope :: ServerError
+missingRole = toProblemError pcMissingRole Nothing
+missingScope = toProblemError pcMissingScope Nothing
 
 -- | Authenticate the request with the context-registered 'AuthHandler' — the same one
 -- 'Shomei.Servant.Auth.Authenticated' uses — and hand the 'AuthUser' to @check@. A failure from
@@ -137,7 +127,7 @@ instance
       needed = Role (Text.pack (symbolVal (Proxy :: Proxy r)))
       check user
         | needed `Set.member` user.authRoles = Right user
-        | otherwise = Left (forbidden "missing_role" "missing required role")
+        | otherwise = Left missingRole
 
 instance
   ( HasServer api ctx,
@@ -157,4 +147,4 @@ instance
       needed = Scope (Text.pack (symbolVal (Proxy :: Proxy s)))
       check user
         | needed `Set.member` user.authScopes = Right user
-        | otherwise = Left (forbidden "missing_scope" "missing required scope")
+        | otherwise = Left missingScope

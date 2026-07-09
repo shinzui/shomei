@@ -37,6 +37,7 @@ import Network.Wai (Application, Request)
 import Network.Wai.Handler.Warp qualified as Warp
 import Servant
   ( Context (EmptyContext, (:.)),
+    ErrorFormatters,
     serveWithContext,
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
@@ -56,7 +57,9 @@ import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.API (shomeiAPI)
 import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
+import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiServer)
+import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
@@ -292,16 +295,23 @@ millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 -- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification
 -- uses exactly the keys the server signs with.
+-- | 'problemMiddleware' converts Servant's one un-formattable failure — the bare @405@ a method
+-- mismatch raises below any 'ErrorFormatters' hook — into a problem document, so /every/ error
+-- the process emits carries the same envelope.
 application :: Env -> Application
-application env = serveWithContext shomeiAPI (authContext senv) (shomeiServer senv)
+application env = problemMiddleware (serveWithContext shomeiAPI (authContext senv) (shomeiServer senv))
   where
     senv = seamEnv env
 
--- | The single-entry Servant 'Context' carrying the @AuthProtect "shomei-jwt"@
--- 'AuthHandler', built from the seam env's verifier. A host app embedding 'ShomeiAPI'
--- serves with this same context.
-authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser]
-authContext senv = authHandler (cookiePolicyFromConfig senv.config) senv.verifier :. EmptyContext
+-- | The Servant 'Context' carrying the @AuthProtect "shomei-jwt"@ 'AuthHandler' (built from the
+-- seam env's verifier) and the 'ErrorFormatters' that render Servant's own body-parse,
+-- url-parse, header-parse, and not-found failures as RFC 7807 problem documents. A host app
+-- embedding 'ShomeiAPI' serves with this same context.
+authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
+authContext senv =
+  authHandler (cookiePolicyFromConfig senv.config) senv.verifier
+    :. shomeiErrorFormatters
+    :. EmptyContext
 
 -- | Build EP-5's seam 'Seam.Env' from this server's assembly 'Env'. The port runner
 -- bridges EP-5's smaller stack onto the PostgreSQL stack with @inject@; an

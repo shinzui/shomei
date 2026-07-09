@@ -96,13 +96,15 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — The universal problem-details envelope:
+Milestone 1 — The universal problem-details envelope: **done 2026-07-09**
 
-- [ ] Rebuild `shomei-servant/src/Shomei/Servant/Error.hs` around `ProblemSpec` constants + `toProblemError` (adds `application/problem+json`, `WWW-Authenticate` on 401, `Retry-After` on 429); `authErrorToServerError` delegates to the catalog.
-- [ ] Convert the bypass sites: `authHandler` 401s (`Auth.hs`), `requireRole`/`requireScope` guards (and plan 38's combinator bodies if present), `resolvePrincipal`, `serviceTokenH` 400s, `meH`/`sessionH` 404s, ceremony/actor/target `parseId` 400s, `auditEventsH` `badRequest` (all in `Handlers.hs`).
-- [ ] Add Servant `ErrorFormatters` (body-parse 400, no-route 404, 405) to the `Context` in `shomei-server/src/Shomei/Server/Boot.hs` (and the servant test's context).
-- [ ] Convert the WAI rate-limiter 429 body (`shomei-server/src/Shomei/Server/Middleware/RateLimit.hs`) to the same document + `Retry-After`.
-- [ ] Servant tests: problem shape + headers asserted for missing token, invalid token, missing role, malformed JSON body, unknown route, throttle 429.
+- [x] Rebuild `shomei-servant/src/Shomei/Servant/Error.hs` around `ProblemSpec` constants + `toProblemError` (adds `application/problem+json`, `WWW-Authenticate: Bearer` on 401, `Retry-After: 60` on 429); `authErrorToServerError` is now a pure dispatch over the catalog. `problemCatalog` exports all 41 specs; `problemBody`/`problemHeaders` are exported for the WAI layer, which has no `ServerError` to throw.
+- [x] Convert the bypass sites: `authHandler`'s two 401s and `csrfRejected` (`Auth.hs`); the `requireRole`/`requireScope` guards **and** EP-1's `HasServer` combinator bodies, now sharing one `missingRole`/`missingScope` value (`Authz.hs`); `resolvePrincipal`, `refreshH`'s "refreshToken required", `serviceTokenH`'s two 400s, `meH`/`sessionH` 404s, the three `parseId` ceremony 400s, and `auditEventsH.badRequest` (`Handlers.hs`). Each ad-hoc message became a `detail`, keeping `title` stable for the OpenAPI catalog. `readyH`'s 503 left alone (Decision Log).
+- [x] Add Servant `ErrorFormatters` to the `Context` in `Boot.hs` and in the servant test. **`ErrorFormatters` cannot reach 405** — see Surprises; `Shomei.Servant.Middleware.problemMiddleware` (new module) converts that one, and wraps the app in both `Boot.application` and the test's `app`.
+- [x] Convert the WAI rate-limiter 429 body (`RateLimit.hs`) to the same document + `Retry-After`, sharing the `pcTooManyRequests` catalog constant through `problemResponse`.
+- [x] Servant test `scenarioProblemEnvelope` asserts status, `Content-Type`, `code`, `type`, `title`, and the `status` member for **all seven** layers: missing token (+`WWW-Authenticate: Bearer`), invalid token, missing role (and *no* `WWW-Authenticate` — the credential was fine), a handler's own 400 with its `detail`, Servant's body-parse 400 with the parse message as `detail`, an unknown route 404, and a method-mismatch 405.
+- [x] Updated the two existing assertions that read `.error` (`email_not_verified`, `csrf_rejected`) to read `.code`.
+- [x] `grep -rn 'errBody = "' shomei-servant/src shomei-server/src` finds only the two base `err422`/`err429` constructors, which are never sent as-is. `cabal test all` green (12 suites).
 
 Milestone 2 — The `/v1` boundary:
 
@@ -134,7 +136,49 @@ Milestone 5 — Docs and closure:
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-09 — Servant's `ErrorFormatters` cannot format a 405.** The plan states "Servant
+supports replacing these [400/404/405] via `ErrorFormatters`". It supports exactly four hooks,
+and 405 is not among them:
+
+```haskell
+data ErrorFormatters = ErrorFormatters
+  { bodyParserErrorFormatter :: ErrorFormatter
+  , urlParseErrorFormatter :: ErrorFormatter
+  , headerParseErrorFormatter :: ErrorFormatter
+  , notFoundErrorFormatter :: NotFoundErrorFormatter
+  }
+```
+
+A method mismatch is raised as a hardcoded, empty-bodied `err405` from `methodCheck` in
+`Servant.Server.Internal`, below every hook:
+
+```haskell
+methodCheck method request
+  | allowedMethod method request = pure ()
+  | otherwise = delayedFail err405
+```
+
+Resolved with a new module `shomei-servant/src/Shomei/Servant/Middleware.hs`: `problemMiddleware`
+is a WAI layer that rewrites any 405 response into the problem document. Shōmei never returns 405
+from a handler, so the rewrite is unconditional and safe. It is applied in `Boot.application`
+**and** in the servant test's `app`, so the 405 assertion exercises the real stack rather than a
+test-only wrapper. The module also exports `problemResponse`, which the rate-limit middleware
+uses — it too answers before Servant routes anything and has no `ServerError` to throw.
+
+**2026-07-09 — the bypass-site list was incomplete.** Two sites the plan's Context section does
+not name also emitted the old shape, and `grep -rn 'errBody' shomei-servant/src shomei-server/src`
+found them: `Shomei.Servant.Auth.csrfRejected` (a hand-written
+`{"error":"csrf_rejected","message":…}` JSON literal) and `refreshH`'s plain-text
+`"refreshToken required"` 400. Both are converted. The lesson: run the grep, do not trust the
+list — which is exactly what the plan's Concrete Steps tell you to do.
+
+**2026-07-09 — `RoleNotDefined`'s message was dynamic; it is now a `title` + `detail`.** The
+pre-7807 mapping produced `"Role not defined: " <> r`, folding a request-specific value into the
+human message. A `ProblemSpec` title must be a constant, because the OpenAPI document quotes it.
+The role name moved to the `detail` member, which is what `detail` is for (RFC 7807 §3.1: "a
+human-readable explanation specific to this occurrence"). Same for every ad-hoc handler message
+(`"loginId or email required"`, `"invalid ceremonyId"`, the audit query parse errors): they are
+now `bad_request` + `detail`, so the catalog stays finite and the specific reason survives.
 
 
 ## Decision Log
@@ -217,6 +261,33 @@ Record every decision made while working on the plan.
   per-route lists). This follows the spec-enrichment precedent of `withOperationIds` in
   `shomei-servant/src/Shomei/Servant/OpenApi.hs`.
   Date: 2026-07-07
+
+- Decision: Servant's un-formattable `405` is converted by a WAI middleware
+  (`Shomei.Servant.Middleware.problemMiddleware`), applied in `Boot.application` **and** in the
+  servant test's `app`, rather than left as a bare empty-bodied response.
+  Rationale: `ErrorFormatters` has no 405 hook (Surprises), and "every error from every layer"
+  is this plan's headline promise — a 405 with no body and no `Content-Type` is precisely the
+  class of bug the plan exists to remove. Wrapping the app in both places (rather than only in
+  the server's middleware stack) keeps the test honest: it asserts against the same composition
+  the server serves. The rewrite is unconditional because Shōmei never raises 405 from a handler.
+  Date: 2026-07-09
+
+- Decision: Request-specific text moves from `title` to the `detail` member; `title` stays a
+  per-code constant.
+  Rationale: the OpenAPI document quotes titles, so a title that varies per request cannot be
+  documented. RFC 7807 §3.1 designates `detail` for "a human-readable explanation specific to
+  this occurrence", which is exactly `RoleNotDefined`'s role name, Servant's body-parse message,
+  and the audit query parser's complaint. The catalog therefore stays finite and the specific
+  reason still reaches the client.
+  Date: 2026-07-09
+
+- Decision: The `token_invalid` code appears three times in `problemCatalog` (an invalid access
+  token, an invalid refresh token, and the auth handler's rejection), with different titles.
+  Rationale: the code is what clients switch on, and to a client those three are the same
+  condition — "your credential is not usable, re-authenticate". The titles differ because the
+  causes do, and a human reading a log wants to know which. The drift-guard test (M4) must
+  therefore assert code *membership*, not uniqueness.
+  Date: 2026-07-09
 
 - Decision: Future `/oauth/*` token-endpoint errors (RFC 6749 §5.2 —
   `{"error":"invalid_grant",…}`) are **exempt** from the problem envelope; they belong to

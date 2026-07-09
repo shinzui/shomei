@@ -52,10 +52,12 @@ import Data.ByteString.Char8 qualified as Char8
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Network.HTTP.Types (methodPost, status429)
+import Network.HTTP.Types (methodPost)
 import Network.Socket (SockAddr (..))
-import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod, responseLBS)
+import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
+import Shomei.Servant.Error (pcTooManyRequests)
+import Shomei.Servant.Middleware (problemResponse)
 
 -- | One bucket per client IP: current token level + last-refill time (POSIX seconds).
 data Bucket = Bucket
@@ -146,11 +148,10 @@ rateLimitMiddleware rl app req respond
       allowed <- takeToken rl (clientKey req) nowSecs
       if allowed then app req respond else respond tooMany
   where
-    tooMany =
-      responseLBS
-        status429
-        [("Content-Type", "application/json")]
-        "{\"error\":\"too_many_requests\"}"
+    -- The same RFC 7807 document every other error path returns, with @Retry-After@. This
+    -- answers before Servant ever routes the request, so it cannot go through the handler
+    -- error mapping — it shares the catalog constant instead.
+    tooMany = problemResponse pcTooManyRequests Nothing
 
 -- | The unauthenticated POST endpoints the limiter guards. Authenticated routes (which carry
 -- a bearer token) are intentionally excluded.

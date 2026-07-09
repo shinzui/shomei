@@ -11,15 +11,14 @@ module Shomei.Servant.Handlers
   )
 where
 
-import Data.Aeson (Value, encode, object)
-import Data.Aeson qualified as Aeson
+import Data.Aeson (Value, encode)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Socket (SockAddr (..))
-import Servant (Handler, NoContent (..), ServerError (..), err400, err404, err503, errBody, errHeaders, noHeader, throwError)
+import Servant (Handler, NoContent (..), ServerError (..), err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (AuthClaims (..), Scope (..))
@@ -94,7 +93,13 @@ import Shomei.Servant.DTO
     tokenPairToResponse,
     userToResponse,
   )
-import Shomei.Servant.Error (authErrorToServerError)
+import Shomei.Servant.Error
+  ( authErrorToServerError,
+    pcBadRequest,
+    pcSessionNotFound,
+    pcUserNotFound,
+    toProblemError,
+  )
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
@@ -177,7 +182,7 @@ resolvePrincipal mLoginId mEmailText = do
     Just t -> either (throwError . authErrorToServerError) pure (mkLoginId t)
     Nothing -> case mEmail of
       Just e -> pure (loginIdFromEmail e)
-      Nothing -> throwError err400 {errBody = "loginId or email required"}
+      Nothing -> throwError (toProblemError pcBadRequest (Just "loginId or email required"))
   pure (loginId, mEmail)
 
 -- | The source IP of the request as text, used as the per-IP throttle key. Behind a reverse
@@ -204,13 +209,13 @@ refreshH env mCookieHeader mOrigin mReferer req = do
         Just t <- refreshTokenFromCookie raw -> do
           unless (originHeaderAllowed env.config.cookieConfig.allowedOrigins mOrigin mReferer) (throwError csrfRejected)
           pure t
-    Nothing -> throwError err400 {errBody = "refreshToken required"}
+    Nothing -> throwError (toProblemError pcBadRequest (Just "refreshToken required"))
   pair <- runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken presented}))
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
 serviceTokenH :: Env -> ServiceTokenRequest -> Handler ServiceTokenResponse
 serviceTokenH env req = do
-  when (null req.scopes) (throwError err400 {errBody = "scopes must not be empty"})
+  when (null req.scopes) (throwError (toProblemError pcBadRequest (Just "scopes must not be empty")))
   actorId <- traverse parseActor req.actorId
   serviceTokenToResponse
     <$> runAuth
@@ -226,7 +231,7 @@ serviceTokenH env req = do
       )
   where
     parseActor t =
-      either (\_ -> throwError err400 {errBody = "invalid actorId"}) pure (parseId t)
+      either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid actorId"))) pure (parseId t)
 
 verifyEmailRequestH :: Env -> VerifyEmailRequest -> Handler NoContent
 verifyEmailRequestH env req = do
@@ -300,14 +305,14 @@ meH env user = do
   mUser <- runPort env (findUserById user.authUserId)
   case mUser of
     Just u -> pure (userToResponse u)
-    Nothing -> throwError err404 {errBody = "user not found"}
+    Nothing -> throwError (toProblemError pcUserNotFound Nothing)
 
 sessionH :: Env -> AuthUser -> Handler SessionResponse
 sessionH env user = do
   mSession <- runPort env (findSessionById user.authSessionId)
   case mSession of
     Just s -> pure (sessionToResponse s)
-    Nothing -> throwError err404 {errBody = "session not found"}
+    Nothing -> throwError (toProblemError pcSessionNotFound Nothing)
 
 passkeyRegisterBeginH :: Env -> AuthUser -> Handler PasskeyRegisterBeginResponse
 passkeyRegisterBeginH env user = do
@@ -318,7 +323,7 @@ passkeyRegisterBeginH env user = do
 passkeyRegisterCompleteH :: Env -> AuthUser -> PasskeyRegisterCompleteRequest -> Handler PasskeyResponse
 passkeyRegisterCompleteH env user req = do
   denyUnderImpersonation env "passkey_register" user
-  cid <- either (\_ -> throwError err400 {errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+  cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
   passkey <-
     runAuth
       env
@@ -342,7 +347,7 @@ passkeyDeleteH env user pid = do
 -- consumed ceremony is a 404 and a failed assertion a 401 (via 'authErrorToServerError').
 mfaCompleteH :: Env -> MfaCompleteRequest -> Handler (WithCookies TokenPairResponse)
 mfaCompleteH env req = do
-  cid <- either (\_ -> throwError err400 {errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+  cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid req.assertion)
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
@@ -355,7 +360,7 @@ passkeyLoginBeginH env = do
 -- | @POST /auth/login/passkey/complete@: finish a passwordless passkey login → token pair.
 passkeyLoginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler (WithCookies TokenPairResponse)
 passkeyLoginCompleteH env req = do
-  cid <- either (\_ -> throwError err400 {errBody = "invalid ceremonyId"}) pure (parseId req.ceremonyId)
+  cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
 
@@ -417,12 +422,7 @@ auditEventsH env _user mUser mSession types mSince mUntil mLimit mBefore = do
     lastMay = \case
       [] -> Nothing
       xs -> Just (last xs)
-    badRequest msg =
-      throwError
-        err400
-          { errBody = encode (object ["error" Aeson..= ("bad_request" :: Text), "message" Aeson..= (msg :: Text)]),
-            errHeaders = [("Content-Type", "application/json")]
-          }
+    badRequest msg = throwError (toProblemError pcBadRequest (Just (msg :: Text)))
 
 -- | Parse the textual query params into an 'AuditEventQuery'. Total: any parse failure is a
 -- 'Left' the handler maps to 400. The limit defaults to 50 and is clamped inside the query

@@ -42,6 +42,7 @@ library
     Shomei.Servant.DTO
     Shomei.Servant.Error
     Shomei.Servant.Handlers
+    Shomei.Servant.Middleware
     Shomei.Servant.OpenApi
     Shomei.Servant.Seam
 
@@ -54,6 +55,7 @@ library
     , http-api-data
     , effectful
     , effectful-core
+    , http-types
     , insert-ordered-containers
     , lens
     , network
@@ -121,6 +123,7 @@ test-suite shomei-servant-test
     , aeson
     , base
     , bytestring
+    , case-insensitive
     , containers
     , effectful
     , generic-lens

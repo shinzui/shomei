@@ -12,6 +12,8 @@ module Main (main) where
 
 import Crypto.JOSE.JWK (JWK, JWKSet)
 import Data.Aeson (Value (..), decode, encode, object, (.=))
+import Data.ByteString.Lazy qualified as LBS
+import Data.CaseInsensitive qualified as CI
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
@@ -45,6 +47,7 @@ import Network.Wai (Application, Request)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant
   ( Context (EmptyContext, (:.)),
+    ErrorFormatters,
     Get,
     Handler,
     JSON,
@@ -102,10 +105,12 @@ import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
 import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiAPI)
-import Shomei.Servant.Auth (AuthUser, Authenticated, authHandler, cookiePolicyFromConfig)
+import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO (UserResponse)
+import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiServer)
+import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
@@ -148,11 +153,16 @@ testServer env = shomeiServer env :<|> adminUsersH :<|> ingestH
     ingestH :: AuthUser -> Handler [UserResponse]
     ingestH _user = pure []
 
+-- | The test app wraps the Servant application in 'problemMiddleware', exactly as
+-- 'Shomei.Server.Boot.application' does, so the 405 assertions exercise the real stack.
 app :: Env -> Application
-app env = serveWithContext (Proxy @TestAPI) ctx (testServer env)
+app env = problemMiddleware (serveWithContext (Proxy @TestAPI) ctx (testServer env))
   where
-    ctx :: Context '[AuthHandler Request AuthUser]
-    ctx = authHandler (cookiePolicyFromConfig env.config) env.verifier :. EmptyContext
+    ctx :: Context '[AuthHandler Request AuthUser, ErrorFormatters]
+    ctx =
+      authHandler (cookiePolicyFromConfig env.config) env.verifier
+        :. shomeiErrorFormatters
+        :. EmptyContext
 
 -- | The hybrid runner: in-memory stores + real @jose@ signer/verifier, in the same
 -- effect order as EP-2's @runInMemory@ (so 'AppEffects' lines up).
@@ -337,11 +347,120 @@ seedServiceUser ref jwk jwkset cfg = do
     Right (user, _) -> pure user
     Left err -> assertFailure ("service user signup failed: " <> show err)
 
+-- | Every failure, from every layer, is an RFC 7807 problem document.
+--
+-- Each assertion names the layer it exercises, because they fail for different reasons: the
+-- auth handler and the authz combinator throw before any handler runs; @resolvePrincipal@
+-- throws inside one; Servant's @ErrorFormatters@ handle its own request parsers; and the bare
+-- 405 a method mismatch raises sits below every Servant hook, converted by 'problemMiddleware'.
+scenarioProblemEnvelope :: Int -> IO ()
+scenarioProblemEnvelope port = do
+  mgr <- newManager defaultManagerSettings
+
+  -- (1) The auth handler: no credential at all. The commonest failure in any deployment.
+  r1 <- getRaw mgr port "/auth/me" []
+  assertProblem "missing token" 401 "missing_token" r1
+  headerValue "WWW-Authenticate" (headersOf r1) @?= Just "Bearer"
+
+  -- (2) The auth handler: a credential that fails verification. Deliberately indistinguishable
+  --     from an expired one -- the code is the same.
+  r2 <- getRaw mgr port "/auth/me" (bearer "garbage.token.value")
+  assertProblem "invalid token" 401 "token_invalid" r2
+  headerValue "WWW-Authenticate" (headersOf r2) @?= Just "Bearer"
+
+  -- (3) The authorization combinator: authenticated, but lacking the role. 403, and no
+  --     WWW-Authenticate -- the credential itself was fine.
+  let signupBody' =
+        object
+          [ "email" .= ("envelope@example.com" :: Text),
+            "password" .= ("correct horse battery staple" :: Text),
+            "displayName" .= ("Envelope" :: Text)
+          ]
+  (_, sBody) <- postJSON mgr port "/auth/signup" signupBody'
+  sresp <- must "signup body" sBody
+  access <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
+  r3 <- getRaw mgr port "/admin/users" (bearer access)
+  assertProblem "missing role" 403 "missing_role" r3
+  headerValue "WWW-Authenticate" (headersOf r3) @?= Nothing
+
+  -- (4) A handler's own rejection, with the specific reason carried in `detail`.
+  r4 <- postRaw' mgr port "/auth/login" [] (object ["password" .= ("x" :: Text)])
+  assertProblem "handler bad request" 400 "bad_request" r4
+  (bodyOf r4 >>= dig ["detail"] >>= asText) @?= Just "loginId or email required"
+
+  -- (5) Servant's own body parser, via ErrorFormatters. The parse message rides in `detail`.
+  r5 <- postRawBytes mgr port "/auth/signup" "{"
+  assertProblem "body parse error" 400 "body_parse_error" r5
+  assertBool "body_parse_error carries a detail" (isJust (bodyOf r5 >>= dig ["detail"]))
+
+  -- (6) Servant's not-found formatter.
+  r6 <- getRaw mgr port "/no/such/route" []
+  assertProblem "unknown route" 404 "not_found" r6
+
+  -- (7) The method check -- below every Servant hook, rewritten by problemMiddleware.
+  r7 <- getRaw mgr port "/auth/login" []
+  assertProblem "method not allowed" 405 "method_not_allowed" r7
+
+type RawResponse = (Int, [Header], Maybe Value)
+
+headersOf :: RawResponse -> [Header]
+headersOf (_, h, _) = h
+
+bodyOf :: RawResponse -> Maybe Value
+bodyOf (_, _, b) = b
+
+-- | Assert the response is a problem document: the right status, @application/problem+json@, and
+-- a body whose @code@ matches, whose @status@ member mirrors the HTTP status, and which carries
+-- @type@ and @title@.
+assertProblem :: String -> Int -> Text -> RawResponse -> IO ()
+assertProblem what expectedStatus expectedCode (status, hdrs, body) = do
+  status @?= expectedStatus
+  headerValue "Content-Type" hdrs @?= Just "application/problem+json"
+  doc <- must (what <> ": body") body
+  (dig ["code"] doc >>= asText) @?= Just expectedCode
+  (dig ["type"] doc >>= asText) @?= Just "about:blank"
+  assertBool (what <> ": has a title") (isJust (dig ["title"] doc))
+  case dig ["status"] doc of
+    Just (Number n) -> (round n :: Int) @?= expectedStatus
+    _ -> assertFailure (what <> ": problem document has no numeric status")
+
+headerValue :: Text -> [Header] -> Maybe Text
+headerValue name hdrs =
+  listToMaybe [Text.decodeUtf8 v | (n, v) <- hdrs, n == CI.mk (Text.encodeUtf8 name)]
+
+-- | GET, exposing status, headers, and the decoded body.
+getRaw :: Manager -> Int -> String -> [Header] -> IO RawResponse
+getRaw mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "GET", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
+-- | POST a JSON value, exposing status, headers, and the decoded body.
+postRaw' :: Manager -> Int -> String -> [Header] -> Value -> IO RawResponse
+postRaw' mgr port path hdrs body = postRaw mgr port path hdrs body
+
+-- | POST an arbitrary (here: malformed) body, to exercise Servant's body parser.
+postRawBytes :: Manager -> Int -> String -> LBS.ByteString -> IO RawResponse
+postRawBytes mgr port path raw = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req =
+        req0
+          { method = "POST",
+            requestHeaders = [("Content-Type", "application/json")],
+            requestBody = RequestBodyLBS raw
+          }
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
 tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> Text -> Text -> TestTree
 tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
+    [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) scenarioProblemEnvelope,
+      testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
         testWithApplication (pure (app env)) (scenario ref adminToken impToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
         e <- freshEnv
@@ -422,7 +541,7 @@ scenarioEmailVerificationRequired ref port = do
   (blockedLogin, blockedBody) <- postJSON mgr port "/auth/login" loginBody
   blockedLogin @?= 403
   bresp <- must "blocked login body" blockedBody
-  (dig ["error"] bresp >>= asText) @?= Just "email_not_verified"
+  (dig ["code"] bresp >>= asText) @?= Just "email_not_verified"
   (blockedRefresh, _) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= refreshTok])
   blockedRefresh @?= 403
 
@@ -524,7 +643,7 @@ scenarioCsrfMatrix port = do
   (noneStatus, _, noneBody) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess] Null
   noneStatus @?= 403
   nb <- must "csrf body" noneBody
-  (dig ["error"] nb >>= asText) @?= Just "csrf_rejected"
+  (dig ["code"] nb >>= asText) @?= Just "csrf_rejected"
 
   -- A foreign origin: refused.
   (evilStatus, _, _) <- postRaw mgr port "/auth/logout" [sessionCookieHeader sess, foreignOrigin] Null
