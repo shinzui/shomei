@@ -7,7 +7,7 @@ module Main (main) where
 
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Shomei.Config (RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), WebAuthnConfig (..))
+import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), WebAuthnConfig (..))
 import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (UserId, genUserId, idText)
@@ -57,12 +57,16 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   unsetEnv "SHOMEI_SERVICE_TOKEN_TTL"
   unsetEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
   unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
+  unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   (cfg, settings) <- loadConfig
   -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
   settings.serverPort @?= 8080
   cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
   -- The signing-key refresh interval loads from the file (default is 60):
   cfg.signingKeyConfig.refreshIntervalSeconds @?= 15
+  -- Raw one-time tokens are never logged unless the env flag opts in (there is deliberately
+  -- no Dhall field for it):
+  cfg.notifierConfig.logRawTokens @?= False
   -- File values beat the default password policy (default minLength is 12, rejectCommon True):
   cfg.passwordPolicy.minLength @?= 16
   cfg.passwordPolicy.rejectCommonPasswords @?= False
@@ -120,9 +124,13 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   setEnv "SHOMEI_PASSWORD_MIN_LENGTH" "20"
   -- and the file's signing-key refresh interval (file says 15); 0 disables the reload:
   setEnv "SHOMEI_KEY_REFRESH_INTERVAL" "0"
+  -- SHOMEI_NOTIFIER_LOG_SECRETS is env-only; it is the sole way to turn raw-token logging on:
+  setEnv "SHOMEI_NOTIFIER_LOG_SECRETS" "true"
   (cfg3, _) <- loadConfig
   cfg3.passwordPolicy.minLength @?= 20
   cfg3.signingKeyConfig.refreshIntervalSeconds @?= 0
+  cfg3.notifierConfig.logRawTokens @?= True
+  unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
   unsetEnv "SHOMEI_PASSWORD_MIN_LENGTH"
   unsetEnv "SHOMEI_CONFIG"

@@ -81,7 +81,13 @@ data NotifierConfig = NotifierConfig
     verificationTokenTTL :: !NominalDiffTime,
     passwordResetTokenTTL :: !NominalDiffTime,
     notifierTransport :: !NotifierTransport,
-    publicBaseUrl :: !Text
+    publicBaseUrl :: !Text,
+    -- | When 'True' the 'LogNotifier' writes the full one-time link — including the raw
+    -- token — to the log. That is a development convenience only: anyone who can read the
+    -- log can then complete a password reset for the account. Default 'False' logs a
+    -- SHA-256 prefix of the token instead, which correlates with the stored token hash but
+    -- cannot be redeemed.
+    logRawTokens :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -299,7 +305,8 @@ defaultShomeiConfig iss aud =
             verificationTokenTTL = defaultVerificationTokenTTL,
             passwordResetTokenTTL = defaultPasswordResetTokenTTL,
             notifierTransport = LogNotifier,
-            publicBaseUrl = "http://localhost:8080"
+            publicBaseUrl = "http://localhost:8080",
+            logRawTokens = False
           },
       rateLimitConfig = defaultRateLimitConfig,
       observabilityConfig = defaultObservabilityConfig,

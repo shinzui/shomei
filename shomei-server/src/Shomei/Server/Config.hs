@@ -240,9 +240,16 @@ overlayCoreFromEnv base = do
   pwBreachTo <- intEnvMaybe "SHOMEI_PASSWORD_BREACH_TIMEOUT_MS"
   alg <- signingAlgEnv
   keyRefresh <- keyRefreshIntervalEnv
+  -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
+  -- explicit per-process decision, not something that lingers unnoticed in a committed file.
+  logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   pure
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
+        notifierConfig =
+          base.notifierConfig
+            { logRawTokens = fromMaybe base.notifierConfig.logRawTokens logSecrets
+            },
         signingKeyConfig =
           base.signingKeyConfig
             { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
