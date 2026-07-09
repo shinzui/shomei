@@ -71,8 +71,8 @@ This section must always reflect the actual current state of the work.
 - [x] M1: `cabal build all` green; `cabal test shomei-server-config-test` green with new cases
       for the Dhall fields, the env overrides, the defaults, and the non-positive rejection
       (2026-07-08).
-- [ ] M1 (remaining): full `cabal test all` against a live database, and the boot transcript
-      showing the configured pool values, captured into Outcomes.
+- [x] M1 (remaining): full `cabal test all -j1` against a live database, and the boot transcript
+      showing the configured pool values, captured into Outcomes (2026-07-08).
 - [x] M2: `clearAccountLockout` call in `shomei-core/src/Shomei/Workflow.hs` made conditional
       on a lockout row actually existing (reuses the `getAccountLockout` result already read;
       the read is hoisted out of the `when rl.rateLimitEnabled` block) (2026-07-08).
@@ -95,10 +95,14 @@ This section must always reflect the actual current state of the work.
 - [x] M3: `cabal test all -j1` green — all 12 suites, including `shomei-postgres-test` (24 cases
       against a real database) and the server E2E signup → login → refresh → reuse-detect →
       logout (2026-07-08).
-- [ ] M4: counting `Database` interpreter test proving login = 7 round-trips, refresh = 3.
-- [ ] M4: statement-log transcript showing `BEGIN`/`COMMIT` around the login tail.
-- [ ] `nix fmt` clean; Decision Log, Surprises, Outcomes updated; MasterPlan 6 Progress and
-      registry row updated.
+- [x] M4: counting `Database` interpreter test proving login = 7 round-trips, refresh = 3, in
+      `shomei-postgres/test/Main.hs` (not `shomei-server`; see the Decision Log). Verified
+      non-vacuous by mutation: an unconditional `clearAccountLockout` makes the login case read
+      8 (2026-07-08).
+- [x] M4: statement-log transcript showing `BEGIN`/`COMMIT` around the login and refresh tails,
+      captured in Outcomes (2026-07-08).
+- [x] `nix fmt` clean (scoped to this plan's files); Decision Log, Surprises, Outcomes updated;
+      MasterPlan 6 Progress and registry row updated (2026-07-08).
 
 
 ## Surprises & Discoveries
@@ -274,6 +278,19 @@ Record every decision made while working on the plan.
   Date: 2026-07-08
 
 
+- Decision: Put the round-trip budget tests in `shomei-postgres/test/Main.hs` rather than in
+  `shomei-server`'s suite, as this plan's M4 and Validation section originally specified.
+  Rationale: The budget is a property of the workflows plus the PostgreSQL interpreters, and
+  `shomei-postgres-test` already owns exactly that stack (now including `AuthUnitOfWork`) plus a
+  migrated-database harness. `shomei-server`'s `runAppIO` hardcodes `runDatabasePool env.envPool`
+  with no seam to interpose a counter, so testing there would have meant duplicating some sixty
+  lines of interpreter assembly to count the same dispatches through the same interpreters. The
+  acceptance is unchanged in substance — `cabal test all` contains passing assertions that a
+  login performs exactly 7 `Database` operations and a refresh exactly 3 — only the suite differs.
+  The counter is installed with `interpose`, whose handler re-`send`s each operation to the real
+  `runDatabasePool` upstream, so the workflows still hit PostgreSQL.
+  Date: 2026-07-08
+
 - Decision: `RotateRefreshToken` carries an explicit `UTCTime` (the `used_at` stamp) that the
   plan's original sketch omitted.
   Rationale: The compare-and-swap statement `markUsedStmt` is
@@ -345,8 +362,92 @@ an unset environment with no file yields 10 / 10000, and that `SHOMEI_DB_POOL_SI
 `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS=-1` each raise a `userError` naming the offending
 variable.
 
-Still outstanding for M1: the live boot transcript and a full `cabal test all` against a
-running PostgreSQL, both of which need the dev database up. Milestones M2–M4 remain.
+The boot transcript, against the dev database:
+
+```text
+$ PG_CONNECTION_STRING=… SHOMEI_DB_POOL_SIZE=25 SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS=2000 \
+    cabal run -v0 exe:shomei-server
+[shomei] db pool: size 25, acquisition timeout 2000ms
+[shomei] listening on :8080
+
+$ PG_CONNECTION_STRING=… cabal run -v0 exe:shomei-server        # no pool variables
+[shomei] db pool: size 10, acquisition timeout 10000ms
+
+$ PG_CONNECTION_STRING=… SHOMEI_DB_POOL_SIZE=0 cabal run -v0 exe:shomei-server
+shomei-server: Uncaught exception …IOException:
+user error (SHOMEI_DB_POOL_SIZE (Dhall field dbPoolSize) must be a positive integer, got 0)
+```
+
+**M2 (conditional lockout clear) — complete.** `login` hoists the `getAccountLockout` read out of
+the `when rateLimitEnabled` block and clears only when a row was found, removing one round-trip
+from virtually every successful login.
+
+**M3 (the `AuthUnitOfWork` port) — complete.** `Shomei.Effect.AuthUnitOfWork` names the two write
+tails as single operations; `Shomei.Postgres.AuthUnitOfWork` is the first and only caller of
+`Database.RunTransaction`, composing the *existing* prepared statements with
+`Hasql.Transaction.statement` so no SQL is duplicated and plan 28's compare-and-swap is moved,
+never rewritten. `signup`, `login` (via `issueSession`), both MFA completion paths, and `refresh`
+now go through it; the per-table ports remain for logout, revocation, impersonation, and admin.
+
+**M4 (the budget and the atomicity) — complete.** `shomei-postgres-test` now pins both counts:
+
+```text
+  a successful login costs exactly 7 database round-trips:   OK (2.51s)
+  a token refresh costs exactly 3 database round-trips:      OK (2.28s)
+```
+
+The mutation check confirms the login assertion bites — restoring the unconditional
+`clearAccountLockout` yields:
+
+```text
+  a successful login costs exactly 7 database round-trips:   FAIL
+    expected: 7
+     but got: 8
+```
+
+And with `log_statement = 'all'` on the dev database, one HTTP login produces exactly six
+standalone statements followed by one transaction (SQL elided to its first line; no lockout
+`DELETE` appears, which is M2 working):
+
+```text
+SELECT count(*) FROM shomei.shomei_login_attempts
+SELECT failed_count, locked_until, updated_at
+SELECT credential_id, user_id, login_id, email, password_hash, created_at, updated_at
+SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at
+INSERT INTO shomei.shomei_login_attempts
+SELECT count(*) FROM shomei.shomei_webauthn_credentials WHERE user_id = $1
+BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE
+INSERT INTO shomei.shomei_sessions
+INSERT INTO shomei.shomei_refresh_tokens
+INSERT INTO shomei.shomei_auth_events
+INSERT INTO shomei.shomei_auth_events
+COMMIT
+```
+
+One HTTP refresh produces two reads and one transaction carrying the compare-and-swap, the child
+token, and the rotation event:
+
+```text
+SELECT refresh_token_id, session_id, token_hash, parent_token_id, status,
+SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id
+BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE
+UPDATE shomei.shomei_refresh_tokens
+INSERT INTO shomei.shomei_refresh_tokens
+INSERT INTO shomei.shomei_auth_events
+COMMIT
+```
+
+**Result against the original purpose.** Login fell from eleven round-trips to seven and refresh
+from five to three, both now pinned by tests that fail on drift. The write tails are atomic:
+a crash mid-tail can no longer leave a session without its refresh token, nor a retired token
+without its replacement. The pool is operator-tunable and logs what it acquired, and a
+non-positive value fails the boot loudly instead of deadlocking every request.
+
+**What remains.** The front half of login (four conditional reads that steer control flow in the
+pure workflow) is still four round-trips; folding it in would push domain branching into SQL and
+was explicitly scoped out. `cabal test all` must be run with `-j1` on this machine — see
+Surprises. No API behavior changed: the full twelve-suite matrix, including the server E2E
+signup → login → refresh → reuse-detect → logout against a real database, passes unchanged.
 
 
 ## Context and Orientation

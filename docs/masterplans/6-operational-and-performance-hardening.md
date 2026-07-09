@@ -81,7 +81,7 @@ unrelated verification strategies.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Transactional Auth Workflows and Configurable Connection Pool | docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md | None | None | In Progress |
+| 1 | Transactional Auth Workflows and Configurable Connection Pool | docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md | None | None | Complete |
 | 2 | Expired-Data Sweeper, Retention Windows, and Supporting Indexes | docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md | None | None | Not Started |
 | 3 | Bound Argon2 Hashing Concurrency and Container-Aware Runtime Tuning | docs/plans/35-bound-argon2-hashing-concurrency-and-container-aware-runtime-tuning.md | None | None | Not Started |
 | 4 | Middleware Hardening: Rate-Limiter Eviction, Metrics Accuracy, and Warp Settings | docs/plans/36-middleware-hardening-rate-limiter-eviction-metrics-accuracy-and-warp-settings.md | None | None | Not Started |
@@ -142,10 +142,10 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 
 ## Progress
 
-- [ ] EP-1: Pool size and acquisition timeout configurable (`SHOMEI_DB_POOL_SIZE`, Dhall field)
-- [ ] EP-1: Login workflow tail batched into transactions; round-trips measured before/after
-- [ ] EP-1: Refresh workflow batched (mark-used + child insert + events in one transaction)
-- [ ] EP-1: `clearAccountLockout` made conditional (no unconditional DELETE per login)
+- [x] EP-1: Pool size and acquisition timeout configurable (`SHOMEI_DB_POOL_SIZE`, Dhall field)
+- [x] EP-1: Login workflow tail batched into transactions; round-trips measured before/after (11 → 7)
+- [x] EP-1: Refresh workflow batched (mark-used + child insert + events in one transaction) (5 → 3)
+- [x] EP-1: `clearAccountLockout` made conditional (no unconditional DELETE per login)
 - [ ] EP-2: Supervised background-sweeper thread with per-table delete batches
 - [ ] EP-2: `expires_at` indexes added; dead `status` indexes dropped; audit composite index decision recorded
 - [ ] EP-2: Retention windows for `shomei_auth_events` and `shomei_login_attempts` (config + docs)
@@ -160,7 +160,40 @@ independent, but if EP-3 runs its load test first it should expect the gauge dri
 
 ## Surprises & Discoveries
 
-(None yet.)
+- **The Security MasterPlan's EP-1 (`docs/plans/28-…`) had already landed when EP-1 began.**
+  `markRefreshTokenUsed` already returns `Bool` and `markUsedStmt` is already the conditional
+  `UPDATE … AND status='active' RETURNING`. The Integration Points contract below therefore
+  resolved in its "28 landed first" direction: EP-1 lifted that statement into its rotation
+  transaction verbatim, changing neither its WHERE clause nor its decoder, and reads "no row
+  returned" as the reuse signal. Later plans touching
+  `shomei-postgres/src/Shomei/Postgres/RefreshTokenStore.hs` should know the statement now has
+  two consumers: `runRefreshTokenStorePostgres` and `Shomei.Postgres.AuthUnitOfWork`.
+
+- **EP-1 established a statement-sharing convention the later plans should follow.** Store
+  interpreters now export their prepared `Statement` values (and row-type synonyms) so a
+  transaction can lift them with `Hasql.Transaction.statement` instead of restating the SQL. If
+  EP-2's sweeper or any later plan needs to compose existing statements, extend that pattern
+  rather than copying SQL.
+
+- **`Shomei.Servant.Seam.AppEffects` and `Shomei.Server.App.AppEffects` must stay in sync.** EP-1
+  added `AuthUnitOfWork` to both at the same relative position (after `RefreshTokenStore`), plus
+  the `shomei-postgres`, `shomei-servant`, `TimingSpec` and `shomei-admin` harness stacks. Any
+  plan adding an effect must touch all six sites; the compiler finds them, but expect the sweep.
+
+- **`cabal test all` is flaky in parallel on this machine, independent of any plan.** Several
+  suites each start an ephemeral PostgreSQL cluster; concurrently they exceed the 60-second
+  startup budget and fail with `Failed to start ephemeral PostgreSQL: TimeoutError`. Validate
+  with `cabal test all -j1 --test-options="-j1"`. EP-2 through EP-5 should expect this.
+
+- **`nix fmt` with no arguments reformats the entire repository**, producing import-order churn in
+  files a plan never touched. Pass explicit paths (`nix fmt -- <files>`) to keep a plan's diff
+  focused.
+
+- **A concurrent session's `git commit` swept EP-1's uncommitted working tree into an unrelated,
+  already-pushed docs commit (`cd7deec`), which carries MasterPlan 5's trailers.** Nothing was
+  lost and the history was deliberately left un-rewritten. The practical lesson for EP-2 through
+  EP-5: commit each milestone as soon as it is green rather than accumulating a large
+  uncommitted tree, and check `git log` before assuming your work is still uncommitted.
 
 
 ## Decision Log

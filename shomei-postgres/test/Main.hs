@@ -6,14 +6,14 @@
 module Main (main) where
 
 import Control.Monad (forM_)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
-import Effectful.Dispatch.Dynamic (interpret_)
+import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
@@ -115,7 +115,7 @@ import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
 import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
-import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Postgres.Database (Database (..), runDatabasePool)
 import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
@@ -335,6 +335,8 @@ tests =
     testPublishEvent,
     testAuditEventReader,
     testWorkflowSignup,
+    testLoginRoundTripBudget,
+    testRefreshRoundTripBudget,
     testWorkflowRefreshRotation,
     testWorkflowReuseRevokesFamily,
     testWorkflowAccountVerification,
@@ -664,6 +666,65 @@ testWorkflowSignup = testCase "workflow: signup persists user + session + token"
   users @?= 1
   sessions @?= 1
   toks @?= 1
+
+-- Round-trip budget ----------------------------------------------------------
+
+-- | Count every 'Database' dispatch a workflow makes.
+--
+-- 'interpose' replaces the 'Database' handler for the wrapped action only; re-'send'ing the
+-- operation from inside the handler dispatches to the /upstream/ handler ('runDatabasePool'),
+-- not back into this one, so the workflow still talks to PostgreSQL and there is no recursion.
+-- Both constructors are counted: a @RunSession@ is one pool checkout for one
+-- statement, and a @RunTransaction@ is one pool checkout for the whole transaction. That is
+-- exactly the quantity these tests pin — network round-trips, not statements.
+countingDatabase :: (Database :> es, IOE :> es) => IORef Int -> Eff es a -> Eff es a
+countingDatabase counter = interpose \_env op -> do
+  liftIO (atomicModifyIORef' counter \n -> (n + 1, ()))
+  case op of
+    RunSession sess -> send (RunSession sess)
+    RunTransaction t -> send (RunTransaction t)
+
+-- | A successful password login costs exactly seven database round-trips:
+--
+--   1. @countRecentFailuresByIp@   (per-IP throttle)
+--   2. @getAccountLockout@         (lockout gate)
+--   3. @findPasswordCredentialByLoginId@
+--   4. @findUserById@
+--   5. @recordLoginAttempt@        (success row)
+--   6. @countPasskeysByUser@       (MFA gate)
+--   7. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
+--
+-- There is deliberately no @clearAccountLockout@: the lockout read at step 2 found nothing.
+-- Password verification and access-token signing are CPU-only and cost no round-trip.
+--
+-- If this number drifts, something added a round-trip to the login path. Find it before
+-- changing the constant.
+testLoginRoundTripBudget :: TestTree
+testLoginRoundTripBudget = testCase "a successful login costs exactly 7 database round-trips" $ withDb \pool -> do
+  signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+  _ <- expectApp signupRes >>= expectRight
+  counter <- newIORef 0
+  let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
+  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
+  _ <- expectApp loginRes >>= expectRight
+  readIORef counter >>= (@?= 7)
+
+-- | A token refresh costs exactly three database round-trips:
+--
+--   1. @findRefreshTokenByHash@
+--   2. @findSessionById@
+--   3. @rotateRefreshToken@  (ONE transaction: mark-used CAS + child insert + rotation event)
+--
+-- The user row is not read because @emailVerificationRequired@ is off in 'cfg'; turning it on
+-- adds a fourth round-trip by design.
+testRefreshRoundTripBudget :: TestTree
+testRefreshRoundTripBudget = testCase "a token refresh costs exactly 3 database round-trips" $ withDb \pool -> do
+  signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+  (_, pair) <- expectApp signupRes >>= expectRight
+  counter <- newIORef 0
+  refreshRes <- runApp pool (countingDatabase counter (refresh cfg (RefreshCommand pair.refreshToken)))
+  _ <- expectApp refreshRes >>= expectRight
+  readIORef counter >>= (@?= 3)
 
 testWorkflowRefreshRotation :: TestTree
 testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + inserts child" $ withDb \pool -> do
