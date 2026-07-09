@@ -4,13 +4,18 @@
 -- overlapping-key JWKS verification.
 module Main (main) where
 
+import Control.Exception (IOException, try)
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
+import Data.ByteArray.Encoding (Base (Base64), convertToBase)
+import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, isInfixOf)
 import Data.Maybe (mapMaybe)
+import Data.Text.Encoding qualified as TE
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
@@ -24,9 +29,11 @@ import Shomei.Admin.Audit (runAuditReader)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
   ( keysActivate,
+    keysEncryptAtRest,
     keysGenerate,
     keysRetire,
     keysRevoke,
+    keysRewrap,
     listAllKeys,
     listPublishableSigningKeys,
   )
@@ -49,6 +56,14 @@ import Shomei.Effect.AuthEventReader
 import Shomei.Error (AuthError)
 import Shomei.Id (genSessionId, genUserId)
 import Shomei.Jwt.Key (fromStoredSigningKey, keyKid)
+import Shomei.Jwt.KeyProtection
+  ( KeyDecryptError (KeyDecryptFailed),
+    KeyEncryptionKey,
+    decryptStoredSigningKey,
+    isEncryptedPrivateJwk,
+    keyEncryptionKeyFromBase64,
+    publicJwkFromStored,
+  )
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -58,6 +73,7 @@ import Shomei.Postgres.Pool (acquirePool)
 -- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
 import Shomei.Server.Keys qualified as Keys
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
+import System.Exit (ExitCode)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -87,10 +103,143 @@ main =
           testLifecycleOverlap,
           testReloadPicksUpRotation,
           testReloadKeepsLastGoodMaterial,
+          testGeneratesEncryptedWithKek,
+          testBootRefusesEncryptedWithoutKek,
+          testPlaintextWithoutKekStillWorks,
+          testJwksNeedsNoKek,
+          testEncryptAtRestBackfillIsIdempotent,
+          testRewrapRotatesTheKek,
+          testRewrapWithWrongOldKekModifiesNothing,
           testUserCreate,
           testAuditQuery
         ]
     )
+
+-- Encryption at rest ---------------------------------------------------------
+
+-- | With a KEK configured, a fresh deployment never writes a plaintext private key — and
+-- the key it wrote still signs tokens that verify.
+testGeneratesEncryptedWithKek :: TestTree
+testGeneratesEncryptedWithKek = testCase "first boot with a KEK stores encrypted private material" $ withDb \pool _ -> do
+  kek <- testKek 'a'
+  keys <- bootstrapKeys (Just kek) ES256 pool
+  priv <- storedPrivate pool
+  assertBool ("expected an enc:v1: prefix, got " <> Text.unpack (Text.take 12 priv)) (isEncryptedPrivateJwk priv)
+  token <- signWith keys.signingKey
+  v <- verifyToken keys.verifierJwks cfg token
+  assertBool "a token signed by the decrypted key verifies" (isRight v)
+
+-- | Encrypted rows with no KEK must abort the boot, naming the variable — never a server
+-- that silently cannot sign.
+testBootRefusesEncryptedWithoutKek :: TestTree
+testBootRefusesEncryptedWithoutKek = testCase "boot refuses encrypted keys when no KEK is set" $ withDb \pool _ -> do
+  kek <- testKek 'a'
+  _ <- bootstrapKeys (Just kek) ES256 pool
+  result <- try (bootstrapKeys Nothing ES256 pool)
+  case result of
+    Right _ -> assertFailure "boot must refuse to load encrypted keys without a KEK"
+    Left (e :: IOException) ->
+      assertBool
+        ("the error must name the variable: " <> show e)
+        ("SHOMEI_KEY_ENCRYPTION_KEY" `isInfixOf` show e)
+
+-- | The upgrade path: an existing plaintext deployment with no KEK keeps working exactly as
+-- before, so adopting this feature is opt-in.
+testPlaintextWithoutKekStillWorks :: TestTree
+testPlaintextWithoutKekStillWorks = testCase "plaintext keys with no KEK keep working" $ withDb \pool _ -> do
+  keys <- bootstrapKeys Nothing ES256 pool
+  priv <- storedPrivate pool
+  assertBool "stays plaintext" (not (isEncryptedPrivateJwk priv))
+  token <- signWith keys.signingKey
+  v <- verifyToken keys.verifierJwks cfg token
+  assertBool "still signs and verifies" (isRight v)
+
+-- | Publication is independent of the KEK: the JWKS and the verifier key set come from the
+-- public column, so a wrong or missing KEK can never break verification of live tokens.
+testJwksNeedsNoKek :: TestTree
+testJwksNeedsNoKek = testCase "JWKS and verification need no KEK, even for encrypted keys" $ withDb \pool _ -> do
+  kek <- testKek 'a'
+  keys <- bootstrapKeys (Just kek) ES256 pool
+  token <- signWith keys.signingKey
+  row <- onlyKey pool
+  assertBool "the row is encrypted" (isEncryptedPrivateJwk row.privateKeyJwk)
+  pub <- liftEither (publicJwkFromStored row)
+  v <- verifyToken (JWKSet [pub]) cfg token
+  assertBool "a token verifies against public material recovered without the KEK" (isRight v)
+
+-- | The backfill converts plaintext rows, recovers a working key, and is a true no-op on
+-- re-run — byte-identical, so it does not churn a fresh nonce over every row each time.
+testEncryptAtRestBackfillIsIdempotent :: TestTree
+testEncryptAtRestBackfillIsIdempotent = testCase "keys encrypt-at-rest backfills once and is idempotent" $ withDb \pool _ -> do
+  _ <- bootstrapKeys Nothing ES256 pool -- a plaintext deployment
+  before <- storedPrivate pool
+  assertBool "starts plaintext" (not (isEncryptedPrivateJwk before))
+
+  kek <- testKek 'a'
+  keysEncryptAtRest kek pool
+  afterFirst <- storedPrivate pool
+  assertBool "now encrypted" (isEncryptedPrivateJwk afterFirst)
+
+  row <- onlyKey pool
+  jwk <- either (assertFailure . show) pure (decryptStoredSigningKey (Just kek) row)
+  token <- signWith jwk
+  pub <- liftEither (publicJwkFromStored row)
+  v <- verifyToken (JWKSet [pub]) cfg token
+  assertBool "the backfilled key still signs verifiable tokens" (isRight v)
+
+  keysEncryptAtRest kek pool
+  afterSecond <- storedPrivate pool
+  afterSecond @?= afterFirst
+
+-- | Rotating the KEK: after a rewrap the old KEK no longer opens the row and the new one
+-- does, while the public material — and therefore every outstanding token — is untouched.
+testRewrapRotatesTheKek :: TestTree
+testRewrapRotatesTheKek = testCase "keys rewrap moves rows from the old KEK to the new one" $ withDb \pool _ -> do
+  oldKek <- testKek 'a'
+  newKek <- testKek 'b'
+  keys <- bootstrapKeys (Just oldKek) ES256 pool
+  publicBefore <- storedPublic pool
+  token <- signWith keys.signingKey
+
+  keysRewrap oldKek newKek pool
+
+  row <- onlyKey pool
+  assertBool "still encrypted" (isEncryptedPrivateJwk row.privateKeyJwk)
+  case decryptStoredSigningKey (Just oldKek) row of
+    Left KeyDecryptFailed -> pure ()
+    Left e -> assertFailure ("expected KeyDecryptFailed from the old KEK, got " <> show e)
+    Right _ -> assertFailure "the old KEK must no longer decrypt the row"
+  jwk <- either (assertFailure . show) pure (decryptStoredSigningKey (Just newKek) row)
+
+  storedPublic pool >>= (@?= publicBefore)
+  pub <- liftEither (publicJwkFromStored row)
+  v <- verifyToken (JWKSet [pub]) cfg token
+  assertBool "the pre-rewrap token still verifies" (isRight v)
+  newToken <- signWith jwk
+  v2 <- verifyToken (JWKSet [pub]) cfg newToken
+  assertBool "the rewrapped key still signs" (isRight v2)
+
+-- | A wrong old KEK must abort before the first write: a half-rewrapped table would be
+-- readable by neither KEK.
+testRewrapWithWrongOldKekModifiesNothing :: TestTree
+testRewrapWithWrongOldKekModifiesNothing = testCase "keys rewrap with a wrong old KEK modifies no rows" $ withDb \pool _ -> do
+  realKek <- testKek 'a'
+  wrongKek <- testKek 'c'
+  newKek <- testKek 'b'
+  _ <- bootstrapKeys (Just realKek) ES256 pool
+  before <- storedPrivate pool
+
+  -- 'keysRewrap' aborts via exitFailure, which surfaces here as an ExitCode exception.
+  outcome <- try (keysRewrap wrongKek newKek pool)
+  case outcome of
+    Left (_ :: ExitCode) -> pure ()
+    Right () -> assertFailure "rewrap with a wrong old KEK must abort"
+  after <- storedPrivate pool
+  after @?= before
+  row <- onlyKey pool
+  case decryptStoredSigningKey (Just realKek) row of
+    Right _ -> pure ()
+    Left e -> assertFailure ("the original KEK must still work after an aborted rewrap: " <> show e)
 
 testMigrateEmpty :: TestTree
 testMigrateEmpty = testCase "after migration the keys table exists and is empty" $ withDb \pool _ -> do
@@ -245,6 +394,35 @@ statusOf pool kid = (.status) <$> requireKey pool kid
 -- | The @kid@ of the key that currently signs.
 signerKid :: Keys.LoadedKeys -> Text
 signerKid ks = keyKid ks.signingKey
+
+-- | A deterministic 32-byte KEK, distinct per character.
+testKek :: Char -> IO KeyEncryptionKey
+testKek c =
+  either
+    (assertFailure . Text.unpack)
+    pure
+    (keyEncryptionKeyFromBase64 (TE.decodeUtf8 (convertToBase Base64 (BS8.replicate 32 c))))
+
+-- | The exactly-one key row the encryption tests seed.
+onlyKey :: Pool -> IO StoredSigningKey
+onlyKey pool =
+  listAllKeys pool >>= \case
+    [k] -> pure k
+    ks -> assertFailure ("expected exactly one signing key, got " <> show (length ks))
+
+-- | Read the raw column, bypassing every conversion — the tests assert on stored bytes.
+storedPrivate :: Pool -> IO Text
+storedPrivate pool = scalarText pool "SELECT private_key_jwk FROM shomei.shomei_signing_keys"
+
+storedPublic :: Pool -> IO Text
+storedPublic pool = scalarText pool "SELECT public_key_jwk FROM shomei.shomei_signing_keys"
+
+scalarText :: Pool -> Text -> IO Text
+scalarText pool sql = do
+  res <- Pool.use pool (Session.statement () stmt)
+  either (\e -> assertFailure ("scalar query failed: " <> show e)) pure res
+  where
+    stmt = preparable sql E.noParams (D.singleRow (D.column (D.nonNullable D.text)))
 
 buildJwks :: [StoredSigningKey] -> IO JWKSet
 buildJwks stored = do
