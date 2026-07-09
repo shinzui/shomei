@@ -53,6 +53,8 @@ authErrorToServerError = \case
   VerificationTokenInvalid -> json err400 "verification_token_invalid" "Verification token is invalid"
   PasswordResetTokenInvalid -> json err400 "password_reset_token_invalid" "Password reset token is invalid"
   EmailAlreadyVerified -> json err409 "email_already_verified" "Email is already verified"
+  -- 403, not 401: the credential WAS correct; the account is simply not yet eligible.
+  EmailNotVerified -> json err403 "email_not_verified" "Email address is not verified"
   TokenInvalid _ -> json err401 "token_invalid" "Token is invalid"
   PasskeyNotFound -> json err404 "passkey_not_found" "Passkey not found"
   PendingCeremonyNotFound -> json err404 "ceremony_not_found" "Registration ceremony not found or expired"

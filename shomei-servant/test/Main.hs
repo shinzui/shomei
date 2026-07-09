@@ -55,7 +55,7 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
@@ -238,6 +238,12 @@ main = do
           }
       mkEnv = mkEnvWith cfg
       freshEnv = mkEnv <$> newIORef (emptyWorld t0)
+      -- 'emailVerificationRequired' on, over its own World. The World ref comes back too, so
+      -- the scenario can read the verification token the notifier captured.
+      freshGatedEnv = do
+        r <- newIORef (emptyWorld t0)
+        pure (r, mkEnvWith gatedCfg r)
+      gatedCfg = cfg {notifierConfig = cfg.notifierConfig {emailVerificationRequired = True}}
       freshServiceEnv = do
         r <- newIORef (emptyWorld t0)
         serviceUser <- seedServiceUser r jwk jwkset cfg
@@ -260,7 +266,7 @@ main = do
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshServiceEnv adminToken impToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshServiceEnv adminToken impToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -285,8 +291,8 @@ seedServiceUser ref jwk jwkset cfg = do
     Right (user, _) -> pure user
     Left err -> assertFailure ("service user signup failed: " <> show err)
 
-tests :: IORef World -> Env -> IO Env -> IO Env -> Text -> Text -> TestTree
-tests ref env freshEnv freshServiceEnv adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshServiceEnv adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
@@ -299,7 +305,10 @@ tests ref env freshEnv freshServiceEnv adminToken impToken =
         testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId,
       testCase "service token with allowed scope passes RequireScope while normal login token fails" $ do
         e <- freshServiceEnv
-        testWithApplication (pure (app e)) scenarioServiceToken
+        testWithApplication (pure (app e)) scenarioServiceToken,
+      testCase "emailVerificationRequired blocks login with 403 until the email is verified" $ do
+        (r, e) <- freshGatedEnv
+        testWithApplication (pure (app e)) (scenarioEmailVerificationRequired r)
     ]
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
@@ -332,6 +341,40 @@ scenarioEmailDefaultsLoginId port = do
   sresp <- must "signup body" sBody
   (dig ["user", "loginId"] sresp >>= asText) @?= Just em
   (dig ["user", "email"] sresp >>= asText) @?= Just em
+
+-- | With @emailVerificationRequired@ on, signup still hands out its initial pair (changing
+-- that would break the response shape), but the first re-login and the first refresh are
+-- refused with @403 email_not_verified@ — a distinct code, because the password was correct.
+-- Confirming the emailed token unblocks both.
+scenarioEmailVerificationRequired :: IORef World -> Int -> IO ()
+scenarioEmailVerificationRequired ref port = do
+  mgr <- newManager defaultManagerSettings
+  let em = "unverified@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+      loginBody = object ["loginId" .= em, "password" .= pw]
+  (sStatus, sBody) <- postJSON mgr port "/auth/signup" (object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
+  sStatus @?= 200
+  sresp <- must "signup body" sBody
+  refreshTok <- must "signup refreshToken" (dig ["token", "refreshToken"] sresp >>= asText)
+
+  -- Unverified: a correct password is refused, and so is a silent renewal.
+  (blockedLogin, blockedBody) <- postJSON mgr port "/auth/login" loginBody
+  blockedLogin @?= 403
+  bresp <- must "blocked login body" blockedBody
+  (dig ["error"] bresp >>= asText) @?= Just "email_not_verified"
+  (blockedRefresh, _) <- postJSON mgr port "/auth/refresh" (object ["refreshToken" .= refreshTok])
+  blockedRefresh @?= 403
+
+  -- Verify the email, and both work again.
+  (reqStatus, _) <- postJSON mgr port "/auth/verify-email/request" (object ["email" .= em])
+  reqStatus @?= 202
+  token <- latestVerificationToken ref
+  (confirmStatus, _) <- postJSON mgr port "/auth/verify-email/confirm" (object ["token" .= token])
+  confirmStatus @?= 202
+  (okLogin, okBody) <- postJSON mgr port "/auth/login" loginBody
+  okLogin @?= 200
+  okResp <- must "login body" okBody
+  assertBool "verified login yields a token" (isJust (dig ["token", "accessToken"] okResp >>= asText))
 
 scenarioServiceToken :: Int -> IO ()
 scenarioServiceToken port = do

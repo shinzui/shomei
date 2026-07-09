@@ -60,6 +60,15 @@ data AuthError
   | VerificationTokenInvalid
   | PasswordResetTokenInvalid
   | EmailAlreadyVerified
+  | -- | Token issuance was refused because runtime configuration requires a verified email
+    -- and the account's email is present but unverified. Maps to 403.
+    --
+    -- Deliberately distinct from 'InvalidCredentials': every path that can raise it has
+    -- already proven control of the account (a correct password, a valid refresh token, or
+    -- a verified passkey assertion), so naming the reason leaks no existence information —
+    -- while a generic 401 would strand a legitimate user with no idea they must click the
+    -- verification link.
+    EmailNotVerified
   | -- | INTERNAL audit signal raised when a login hits a locked account; the HTTP layer
     --       maps it to the SAME generic 401 as 'InvalidCredentials' so a locked account is
     --       indistinguishable from a wrong password. (The 'Shomei.Workflow.login' workflow itself

@@ -63,7 +63,7 @@ import Shomei.Effect.WebAuthnCeremony
 import Shomei.Error (AuthError (..))
 import Shomei.Id (CeremonyId, UserId, genCeremonyId)
 import Shomei.Prelude
-import Shomei.Workflow.Session (issueSession)
+import Shomei.Workflow.Session (ensureEmailVerified, issueSession)
 
 -- | The step-up branch of 'Shomei.Workflow.login'. Begins a WebAuthn authentication
 -- ceremony whose @allowCredentials@ is restricted to this user's enrolled passkeys, stashes
@@ -131,6 +131,9 @@ completeMfa cfg ceremonyId assertion = runErrorNoCallStack do
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById uid
   let User {status = userStatus} = user
   when (userStatus /= UserActive) (throwError UserNotActive)
+  -- 'login' already gates before handing out a ceremony id, so this rarely fires; it keeps
+  -- the guarantee local to every path that can issue a token.
+  either throwError pure (ensureEmailVerified cfg user)
   (passkey, verified) <- verifyAssertion (Just uid) optionsBlob assertion
   let PasskeyCredential {userId = pkUid, passkeyId} = passkey
       VerifiedAuthentication {newSignCounter} = verified
@@ -196,6 +199,8 @@ completePasswordlessLogin cfg ceremonyId assertion = runErrorNoCallStack do
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById pkUid
   let User {status = userStatus} = user
   when (userStatus /= UserActive) (throwError UserNotActive)
+  -- The assertion is already verified above, so the account's existence is not in question.
+  either throwError pure (ensureEmailVerified cfg user)
   updatePasskeySignCounter passkeyId newSignCounter ts
   (sid, pair) <- issueSession cfg user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData pkUid sid ts))

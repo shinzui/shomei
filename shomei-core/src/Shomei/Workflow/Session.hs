@@ -16,6 +16,7 @@ module Shomei.Workflow.Session
   ( buildClaims,
     buildClaimsWith,
     issueSession,
+    ensureEmailVerified,
   )
 where
 
@@ -23,7 +24,7 @@ import Data.Aeson (Object)
 import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
-import Shomei.Config (ShomeiConfig (..))
+import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..), mkExtraClaims, noExtraClaims)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.RefreshToken (NewRefreshToken (..))
@@ -36,10 +37,27 @@ import Shomei.Effect.SessionStore (SessionStore, createSession)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Id (SessionId, UserId)
+import Shomei.Error (AuthError (EmailNotVerified))
 import Shomei.Prelude
 
 -- | Build the access-token claims for a freshly-authenticated session. The MVP issues no
 -- scopes or roles.
+-- | The @emailVerificationRequired@ gate, called by every token-issuing path.
+--
+-- Blocks only an account that /has/ an email which is unverified. An account with no email
+-- is exempt: it can never complete verification, so gating it would permanently brick
+-- login-id-only deployments that enable the flag for their email accounts.
+--
+-- Pure 'Either' so callers in both the @Error@-effect and the explicit-@Either@ styles can
+-- use it.
+ensureEmailVerified :: ShomeiConfig -> User -> Either AuthError ()
+ensureEmailVerified cfg user
+  | cfg.notifierConfig.emailVerificationRequired
+      && isJust user.email
+      && isNothing user.emailVerifiedAt =
+      Left EmailNotVerified
+  | otherwise = Right ()
+
 buildClaims :: ShomeiConfig -> UserId -> SessionId -> UTCTime -> AuthClaims
 buildClaims cfg uid sid ts =
   AuthClaims

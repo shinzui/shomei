@@ -126,6 +126,7 @@ test-suite shomei-core-test
     Shomei.PasskeyStoreSpec
     Shomei.WebAuthnCeremonySpec
     Shomei.Workflow.ConcurrencySpec
+    Shomei.Workflow.EmailVerificationSpec
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec

@@ -28,7 +28,7 @@ import Data.Aeson (Value)
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
-import Shomei.Config (RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..), WebAuthnConfig (..))
+import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..), WebAuthnConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -81,7 +81,7 @@ import Shomei.Id (CeremonyId)
 import Shomei.Prelude
 import Shomei.Workflow.Breach (enforceBreachPolicy)
 import Shomei.Workflow.Mfa (prepareMfaChallenge)
-import Shomei.Workflow.Session (buildClaims, issueSession)
+import Shomei.Workflow.Session (buildClaims, ensureEmailVerified, issueSession)
 
 -- | The WebAuthn step-up challenge handed back when an account with a passkey logs in with
 -- the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once pending-MFA
@@ -224,6 +224,10 @@ login cfg ctx cmd = runErrorNoCallStack do
         occurredAt = ts
       }
   clearAccountLockout ctx.accountKey
+  -- Gate before the MFA branch, so an account with an unverified email is not even offered a
+  -- ceremony. The password was already proven correct here, so naming the reason discloses
+  -- nothing the caller does not know (see 'EmailNotVerified').
+  either throwError pure (ensureEmailVerified cfg user)
   -- The password factor succeeded; success is recorded and the lockout cleared above,
   -- regardless of whether a second factor is then demanded (so an attacker who guesses the
   -- password but cannot pass MFA cannot lock out the legitimate user). NOW branch: if the
@@ -293,6 +297,8 @@ failLogin rl ctx loginId ts = do
 refresh ::
   ( SessionStore :> es,
     RefreshTokenStore :> es,
+    -- only consulted when 'emailVerificationRequired' is enabled
+    UserStore :> es,
     TokenSigner :> es,
     AuthEventPublisher :> es,
     Clock :> es,
@@ -323,32 +329,48 @@ refresh cfg cmd = do
             | s.status /= SessionActive -> pure (Left SessionRevoked)
             | tok.expiresAt <= ts -> pure (Left RefreshTokenExpired)
             | otherwise -> do
-                -- Compare-and-swap: only the caller that transitions this token active → used
-                -- may rotate it. Losing the race means someone else has already spent the
-                -- token, which is indistinguishable from theft — so take the reuse path.
-                won <- markRefreshTokenUsed tok.refreshTokenId ts
-                if not won
-                  then reuseDetected tok ts
-                  else do
-                    rawNew <- generateOpaqueToken
-                    newHash <- hashRefreshToken rawNew
-                    _ <-
-                      createRefreshToken
-                        NewRefreshToken
-                          { sessionId = tok.sessionId,
-                            tokenHash = newHash,
-                            parentTokenId = Just tok.refreshTokenId,
-                            createdAt = ts,
-                            -- Never mint a token that outlives its session.
-                            expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
-                          }
-                    access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
-                    publishAuthEvent
-                      (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
-                    pure
-                      ( Right
-                          TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
-                      )
+                -- The emailVerificationRequired gate, before rotation: a silent renewal must
+                -- not keep an unverified account alive past its first access-token lifetime.
+                -- The user row is loaded ONLY when the flag is on — refresh otherwise never
+                -- touches the user table, and most deployments leave the flag off.
+                gate <-
+                  if cfg.notifierConfig.emailVerificationRequired
+                    then do
+                      mUser <- findUserById s.userId
+                      -- A session whose user row is gone is corrupt state; SessionNotFound is
+                      -- the existing least-leaking fit.
+                      pure (maybe (Left SessionNotFound) (ensureEmailVerified cfg) mUser)
+                    else pure (Right ())
+                case gate of
+                  Left e -> pure (Left e)
+                  Right () -> do
+                    -- Compare-and-swap: only the caller that transitions this token
+                    -- active → used may rotate it. Losing the race means someone else has
+                    -- already spent the token, which is indistinguishable from theft — so
+                    -- take the reuse path.
+                    won <- markRefreshTokenUsed tok.refreshTokenId ts
+                    if not won
+                      then reuseDetected tok ts
+                      else do
+                        rawNew <- generateOpaqueToken
+                        newHash <- hashRefreshToken rawNew
+                        _ <-
+                          createRefreshToken
+                            NewRefreshToken
+                              { sessionId = tok.sessionId,
+                                tokenHash = newHash,
+                                parentTokenId = Just tok.refreshTokenId,
+                                createdAt = ts,
+                                -- Never mint a token that outlives its session.
+                                expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
+                              }
+                        access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
+                        publishAuthEvent
+                          (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
+                        pure
+                          ( Right
+                              TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
+                          )
   where
     reuseDetected tok ts = do
       revokeRefreshTokenFamily tok.refreshTokenId ts
