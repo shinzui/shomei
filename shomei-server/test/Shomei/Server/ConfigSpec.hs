@@ -12,7 +12,7 @@ import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), ServiceAccountC
 import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (UserId, genUserId, idText)
-import Shomei.Server.Config (ServerSettings (..), loadConfig, loadConfigFromEnv)
+import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
 import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isUserError)
 import Test.Tasty (TestTree, defaultMain)
@@ -77,14 +77,100 @@ poolRejectsNonPositive = do
   expectUserErrorNaming "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" timeoutResult
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "PG_CONNECTION_STRING"
-  where
-    expectUserErrorNaming :: String -> Either IOError a -> Assertion
-    expectUserErrorNaming name = \case
-      Left e ->
-        assertBool
-          ("expected a userError naming " <> name <> ", got: " <> show e)
-          (isUserError e && Text.isInfixOf (Text.pack name) (Text.pack (show e)))
-      Right _ -> assertFailure (name <> " out of range should have failed the config load")
+
+sweepEnvVars :: [String]
+sweepEnvVars =
+  [ "SHOMEI_SWEEP_ENABLED",
+    "SHOMEI_SWEEP_INTERVAL_SECONDS",
+    "SHOMEI_SWEEP_BATCH_SIZE",
+    "SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS",
+    "SHOMEI_SWEEP_ONE_TIME_TOKEN_GRACE_DAYS",
+    "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES",
+    "SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS",
+    "SHOMEI_AUTH_EVENT_RETENTION_DAYS"
+  ]
+
+-- | With no file and no env, the sweeper is on, hourly, and retains the audit trail forever.
+sweepDefaults :: Assertion
+sweepDefaults = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv sweepEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  (_, settings) <- loadConfigFromEnv
+  let sweep = settings.serverSweep
+  sweep.sweepEnabled @?= True
+  sweep.sweepIntervalSeconds @?= 3600
+  sweep.sweepBatchSize @?= 1000
+  sweep.sweepDeadSessionGraceDays @?= 30
+  sweep.sweepOneTimeTokenGraceDays @?= 7
+  sweep.sweepCeremonyGraceMinutes @?= 60
+  sweep.sweepLoginAttemptRetentionDays @?= 90
+  -- The one conservative default: never delete the compliance record on your own initiative.
+  sweep.sweepAuthEventRetentionDays @?= Nothing
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | Every sweep knob is settable from the environment, and a non-positive audit-retention
+-- window means "retain forever" rather than "delete everything" — the failure mode of getting
+-- that backwards is unrecoverable.
+sweepEnvOverrides :: Assertion
+sweepEnvOverrides = do
+  unsetEnv "SHOMEI_CONFIG"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_SWEEP_ENABLED" "false"
+  setEnv "SHOMEI_SWEEP_INTERVAL_SECONDS" "900"
+  setEnv "SHOMEI_SWEEP_BATCH_SIZE" "250"
+  setEnv "SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS" "0"
+  setEnv "SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS" "30"
+  setEnv "SHOMEI_AUTH_EVENT_RETENTION_DAYS" "365"
+  (_, settings) <- loadConfigFromEnv
+  let sweep = settings.serverSweep
+  sweep.sweepEnabled @?= False
+  sweep.sweepIntervalSeconds @?= 900
+  sweep.sweepBatchSize @?= 250
+  -- A zero grace period is legal: sweep a session the moment it expires.
+  sweep.sweepDeadSessionGraceDays @?= 0
+  sweep.sweepLoginAttemptRetentionDays @?= 30
+  sweep.sweepAuthEventRetentionDays @?= Just 365
+
+  -- Zero (or negative) turns audit deletion back off.
+  setEnv "SHOMEI_AUTH_EVENT_RETENTION_DAYS" "0"
+  (_, offSettings) <- loadConfigFromEnv
+  offSettings.serverSweep.sweepAuthEventRetentionDays @?= Nothing
+
+  mapM_ unsetEnv sweepEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | A zero interval would spin the sweeper thread and a zero batch size would make it delete
+-- nothing forever, so the loader refuses both. @sweepEnabled = false@ is the off-switch.
+sweepRejectsNonPositive :: Assertion
+sweepRejectsNonPositive = do
+  unsetEnv "SHOMEI_CONFIG"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_SWEEP_INTERVAL_SECONDS" "0"
+  intervalResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SWEEP_INTERVAL_SECONDS" intervalResult
+  unsetEnv "SHOMEI_SWEEP_INTERVAL_SECONDS"
+
+  setEnv "SHOMEI_SWEEP_BATCH_SIZE" "0"
+  batchResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SWEEP_BATCH_SIZE" batchResult
+  unsetEnv "SHOMEI_SWEEP_BATCH_SIZE"
+
+  -- A negative grace period would sweep rows that have not expired yet.
+  setEnv "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" "-1"
+  graceResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" graceResult
+  unsetEnv "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES"
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | Assert a config load failed with a 'userError' whose message names the offending variable.
+expectUserErrorNaming :: String -> Either IOError a -> Assertion
+expectUserErrorNaming name = \case
+  Left e ->
+    assertBool
+      ("expected a userError naming " <> name <> ", got: " <> show e)
+      (isUserError e && Text.isInfixOf (Text.pack name) (Text.pack (show e)))
+  Right _ -> assertFailure (name <> " out of range should have failed the config load")
 
 testLoadAndOverride :: UserId -> TestTree
 testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars override it" do
@@ -198,3 +284,6 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   -- environment variables, and tasty runs the members of a test group in parallel.
   poolDefaults
   poolRejectsNonPositive
+  sweepDefaults
+  sweepEnvOverrides
+  sweepRejectsNonPositive

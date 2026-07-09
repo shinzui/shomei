@@ -20,13 +20,14 @@ where
 -- 'Context' is hidden from the prelude (it re-exports lens's 'Context'); we mean
 -- servant's 'Servant.Context' here.
 
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Exception (SomeException, catch)
-import Control.Monad (forever)
+import Control.Concurrent (forkIO)
+import Data.Aeson ((.=))
+import Data.Aeson.Key qualified as Key
 import Data.IORef (newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
 import Effectful (Eff, inject)
+import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Pool qualified as Pool
 import Network.HTTP.Client.TLS (newTlsManager)
 import Network.Wai (Application, Request)
@@ -41,18 +42,22 @@ import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
+import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
 import Shomei.Postgres.Pool (acquirePool)
-import Shomei.Prelude hiding (Context)
+-- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
+-- we mean aeson's JSON pair constructor here.
+import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.API (shomeiAPI)
 import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
-import Shomei.Server.Config (ServerSettings (..), loadConfig)
+import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
+import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.Posix.Signals (installHandler, sigHUP, sigINT, sigTERM)
 import System.Posix.Signals qualified as Signals
@@ -67,6 +72,7 @@ main = do
   (cfg, settings) <- loadConfig
   env <- buildEnv cfg settings
   installKeyReload cfg env
+  installSweeper settings env
   rl <- newRateLimiter cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
@@ -107,23 +113,69 @@ main = do
 -- for a deterministic "apply now". Both call 'reloadKeys', which keeps the last good
 -- material if a reload fails.
 --
--- The background thread catches and logs per-cycle exceptions so one failure never kills
--- the loop, and it dies with the process (no shutdown plumbing needed). When
--- @docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md@ lands
--- @Shomei.Server.Supervisor.supervisedLoop@, this loop should move onto it — that plan
--- owns the supervised-background-thread idiom for @shomei-server@.
+-- The periodic reload runs on 'supervisedLoop', the shared supervised-background-thread
+-- idiom: a crash is logged and retried with backoff rather than killing the loop, and the
+-- thread dies with the process. Note that 'supervisedLoop' runs its first cycle immediately,
+-- so a reload happens right after 'bootstrapKeys' — harmless, since 'reloadKeys' is idempotent
+-- and keeps the last good material on failure.
 installKeyReload :: ShomeiConfig -> Env -> IO ()
 installKeyReload cfg env = do
-  when (interval > 0) (void (forkIO periodic))
+  when (interval > 0) (void (forkIO (supervisedLoop "key-reload" interval reload)))
   void (installHandler sigHUP (Signals.Catch onHup) Nothing)
   where
     interval = cfg.signingKeyConfig.refreshIntervalSeconds
     reload = reloadKeys env.envKek env.envPool env.envKeys
     onHup = hPutStrLn stderr "[shomei] SIGHUP: reloading signing keys" >> reload
-    periodic = forever do
-      threadDelay (interval * 1_000_000)
-      reload `catch` \(e :: SomeException) ->
-        hPutStrLn stderr ("[shomei] periodic key reload raised: " <> show e)
+
+-- | Fork the background expired-data sweeper, unless the operator disabled it in favor of
+-- scheduling @shomei-admin sweep@ externally. It shares the server's connection pool.
+--
+-- A 'Left' from 'sweepOnce' means the database was unreachable or a statement failed. That is
+-- an ordinary outcome for periodic maintenance, not a crash: it is logged and the loop sleeps
+-- a normal interval rather than entering 'supervisedLoop''s backoff, which is reserved for
+-- genuine exceptions.
+installSweeper :: ServerSettings -> Env -> IO ()
+installSweeper settings env =
+  when sweep.sweepEnabled do
+    hPutStrLn
+      stderr
+      ( "[shomei] sweeper: every "
+          <> show sweep.sweepIntervalSeconds
+          <> "s, audit retention "
+          <> maybe "disabled (retain forever)" (\d -> show d <> " days") sweep.sweepAuthEventRetentionDays
+      )
+    void (forkIO (supervisedLoop "sweeper" sweep.sweepIntervalSeconds oneCycle))
+  where
+    sweep = settings.serverSweep
+    oneCycle = do
+      -- Wall-clock time decides which rows are expired; a monotonic clock measures how long
+      -- the sweep took, so an NTP step cannot produce a negative duration.
+      cutoffNow <- getCurrentTime
+      startTick <- getMonotonicTimeNSec
+      result <- sweepOnce env.envPool (toSweepConfig sweep) cutoffNow
+      endTick <- getMonotonicTimeNSec
+      logSweepCycle (durationMs startTick endTick) result
+
+    durationMs startTick endTick =
+      fromIntegral (endTick - startTick) / 1_000_000 :: Double
+
+    logSweepCycle elapsed = \case
+      Left err ->
+        logJsonLine
+          [ "level" .= ("error" :: Text),
+            "msg" .= ("sweep failed" :: Text),
+            "task" .= ("sweeper" :: Text),
+            "error" .= Text.pack (show err),
+            "duration_ms" .= elapsed
+          ]
+      Right report ->
+        logJsonLine
+          ( [ "level" .= ("info" :: Text),
+              "msg" .= ("sweep" :: Text)
+            ]
+              <> [Key.fromText table .= deleted | (table, deleted) <- sweepReportCounts report]
+              <> ["duration_ms" .= elapsed]
+          )
 
 -- | Run the schema migrations (idempotent), acquire the pool, and bootstrap the signing
 -- key, yielding the assembled 'Env'. Shared by 'main' and by host applications that embed

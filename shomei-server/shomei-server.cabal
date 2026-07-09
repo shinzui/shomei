@@ -43,6 +43,7 @@ library
     Shomei.Server.Middleware.RateLimit
     Shomei.Server.Observability.Logging
     Shomei.Server.Observability.Metrics
+    Shomei.Server.Supervisor
 
   build-depends:
     , aeson
@@ -177,6 +178,7 @@ test-suite shomei-server-test
   other-modules:
     Shomei.Server.E2ESpec
     Shomei.Server.NotifySpec
+    Shomei.Server.SupervisorSpec
 
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:

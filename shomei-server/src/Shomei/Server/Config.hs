@@ -13,6 +13,9 @@
 -- remains as the env-only entry point EP-4's @shomei-admin@ and the legacy path use.
 module Shomei.Server.Config
   ( ServerSettings (..),
+    SweepSettings (..),
+    defaultSweepSettings,
+    toSweepConfig,
     loadConfig,
     loadConfigFromEnv,
     FileConfig (..),
@@ -47,6 +50,7 @@ import Shomei.Config
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Id (parseId)
+import Shomei.Postgres.Maintenance (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
@@ -64,9 +68,60 @@ data ServerSettings = ServerSettings
     -- | connections held open by the @hasql@ pool
     serverDbPoolSize :: !Int,
     -- | how long a request waits for a free pooled connection before failing
-    serverDbPoolAcquisitionTimeoutMs :: !Int
+    serverDbPoolAcquisitionTimeoutMs :: !Int,
+    -- | the background expired-data sweeper
+    serverSweep :: !SweepSettings
   }
   deriving stock (Show, Generic)
+
+-- | Settings for the background expired-data sweeper (see 'Shomei.Postgres.Maintenance').
+--
+-- These live here rather than in the core 'ShomeiConfig' for the same reason the pool knobs
+-- do: retention is a deployment and storage concern with no domain meaning, and 'ShomeiConfig'
+-- is deliberately infrastructure-agnostic.
+--
+-- 'sweepEnabled' is the off-switch. An operator who prefers external scheduling (cron, a
+-- Kubernetes CronJob) sets @SHOMEI_SWEEP_ENABLED=false@ and runs @shomei-admin sweep@ instead;
+-- both triggers call the same 'sweepOnce', and running them concurrently is harmless.
+data SweepSettings = SweepSettings
+  { sweepEnabled :: !Bool,
+    -- | seconds between sweep cycles
+    sweepIntervalSeconds :: !Int,
+    sweepBatchSize :: !Int,
+    sweepDeadSessionGraceDays :: !Int,
+    sweepOneTimeTokenGraceDays :: !Int,
+    sweepCeremonyGraceMinutes :: !Int,
+    sweepLoginAttemptRetentionDays :: !Int,
+    -- | 'Nothing' retains the audit trail forever, which is the default
+    sweepAuthEventRetentionDays :: !(Maybe Int)
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Sweeper defaults: on, hourly, and with the grace periods documented on 'SweepConfig'.
+defaultSweepSettings :: SweepSettings
+defaultSweepSettings =
+  SweepSettings
+    { sweepEnabled = True,
+      sweepIntervalSeconds = 3600,
+      sweepBatchSize = defaultSweepConfig.batchSize,
+      sweepDeadSessionGraceDays = defaultSweepConfig.deadSessionGraceDays,
+      sweepOneTimeTokenGraceDays = defaultSweepConfig.oneTimeTokenGraceDays,
+      sweepCeremonyGraceMinutes = defaultSweepConfig.ceremonyGraceMinutes,
+      sweepLoginAttemptRetentionDays = defaultSweepConfig.loginAttemptRetentionDays,
+      sweepAuthEventRetentionDays = defaultSweepConfig.authEventRetentionDays
+    }
+
+-- | Project the deployment-facing settings onto the sweep engine's own config record.
+toSweepConfig :: SweepSettings -> SweepConfig
+toSweepConfig s =
+  SweepConfig
+    { batchSize = s.sweepBatchSize,
+      deadSessionGraceDays = s.sweepDeadSessionGraceDays,
+      oneTimeTokenGraceDays = s.sweepOneTimeTokenGraceDays,
+      ceremonyGraceMinutes = s.sweepCeremonyGraceMinutes,
+      loginAttemptRetentionDays = s.sweepLoginAttemptRetentionDays,
+      authEventRetentionDays = s.sweepAuthEventRetentionDays
+    }
 
 -- | The pool size a server boots with when neither the Dhall file nor the environment says
 -- otherwise. Ten preserves the value that was hardcoded in @Shomei.Server.Boot.buildEnv@.
@@ -90,6 +145,16 @@ data FileConfig = FileConfig
     dbPoolSize :: !(Maybe Int),
     -- | how long a request waits for a free pooled connection, in milliseconds
     dbPoolAcquisitionTimeoutMs :: !(Maybe Int),
+    -- | run the background expired-data sweeper in-process
+    sweepEnabled :: !(Maybe Bool),
+    sweepIntervalSeconds :: !(Maybe Int),
+    sweepBatchSize :: !(Maybe Int),
+    sweepDeadSessionGraceDays :: !(Maybe Int),
+    sweepOneTimeTokenGraceDays :: !(Maybe Int),
+    sweepCeremonyGraceMinutes :: !(Maybe Int),
+    loginAttemptRetentionDays :: !(Maybe Int),
+    -- | absent retains the audit trail forever; a value of 0 or less also means "forever"
+    authEventRetentionDays :: !(Maybe Int),
     accessTokenTtlSeconds :: !(Maybe Int),
     refreshTokenTtlSeconds :: !(Maybe Int),
     sessionTtlSeconds :: !(Maybe Int),
@@ -187,7 +252,8 @@ baseDefaults =
         { serverPort = 8080,
           serverConnStr = "",
           serverDbPoolSize = defaultDbPoolSize,
-          serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs
+          serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
+          serverSweep = defaultSweepSettings
         }
     )
 
@@ -255,9 +321,36 @@ baseFromFile (Just fc) = do
             serverConnStr = fromMaybe "" fc.databaseUrl,
             serverDbPoolSize = fromMaybe defaultDbPoolSize fc.dbPoolSize,
             serverDbPoolAcquisitionTimeoutMs =
-              fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs
+              fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
+            serverSweep = mergeSweep defaultSweepSettings fc
           }
   pure (cfg, settings)
+
+-- | Apply the optional @sweep*@ / @*RetentionDays@ fields of a decoded Dhall 'FileConfig' onto
+-- the sweeper defaults. A non-positive @authEventRetentionDays@ means "retain forever", the
+-- same as omitting it — there is no other way to spell "disable" for a 'Maybe' field, and an
+-- operator who writes @0@ plainly means "do not delete audit history".
+--
+-- 'SweepSettings' is constructed in full rather than record-updated: 'FileConfig' shares most
+-- of these field names, and under @DuplicateRecordFields@ an update would rely on type-directed
+-- disambiguation (a @-Wambiguous-fields@ warning, and a mechanism GHC plans to drop). Naming
+-- the constructor resolves the fields unambiguously.
+mergeSweep :: SweepSettings -> FileConfig -> SweepSettings
+mergeSweep base fc =
+  SweepSettings
+    { sweepEnabled = fromMaybe base.sweepEnabled fc.sweepEnabled,
+      sweepIntervalSeconds = fromMaybe base.sweepIntervalSeconds fc.sweepIntervalSeconds,
+      sweepBatchSize = fromMaybe base.sweepBatchSize fc.sweepBatchSize,
+      sweepDeadSessionGraceDays = fromMaybe base.sweepDeadSessionGraceDays fc.sweepDeadSessionGraceDays,
+      sweepOneTimeTokenGraceDays = fromMaybe base.sweepOneTimeTokenGraceDays fc.sweepOneTimeTokenGraceDays,
+      sweepCeremonyGraceMinutes = fromMaybe base.sweepCeremonyGraceMinutes fc.sweepCeremonyGraceMinutes,
+      sweepLoginAttemptRetentionDays = fromMaybe base.sweepLoginAttemptRetentionDays fc.loginAttemptRetentionDays,
+      sweepAuthEventRetentionDays = maybe base.sweepAuthEventRetentionDays positiveOrForever fc.authEventRetentionDays
+    }
+
+-- | A retention window of zero or fewer days disables deletion rather than deleting everything.
+positiveOrForever :: Int -> Maybe Int
+positiveOrForever n = if n > 0 then Just n else Nothing
 
 -- Env overrides --------------------------------------------------------------
 
@@ -267,6 +360,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
+  sweep <- overlaySweepFromEnv baseSettings.serverSweep
   iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
   aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
@@ -276,29 +370,70 @@ overlayFromEnvBoth baseCfg baseSettings = do
   -- checkout, so neither is a survivable "disable" setting: refuse to start.
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
+  -- A zero interval would spin the sweeper; a zero batch size would make it delete nothing
+  -- forever. Neither is a survivable "disable" setting — sweepEnabled=false is.
+  requirePositive "SHOMEI_SWEEP_INTERVAL_SECONDS" "sweepIntervalSeconds" sweep.sweepIntervalSeconds
+  requirePositive "SHOMEI_SWEEP_BATCH_SIZE" "sweepBatchSize" sweep.sweepBatchSize
+  requirePositive "SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS" "loginAttemptRetentionDays" sweep.sweepLoginAttemptRetentionDays
+  -- Grace periods may legitimately be zero ("sweep as soon as it expires"), only not negative,
+  -- which would sweep rows that have not expired yet.
+  requireNonNegative "SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS" "sweepDeadSessionGraceDays" sweep.sweepDeadSessionGraceDays
+  requireNonNegative "SHOMEI_SWEEP_ONE_TIME_TOKEN_GRACE_DAYS" "sweepOneTimeTokenGraceDays" sweep.sweepOneTimeTokenGraceDays
+  requireNonNegative "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" "sweepCeremonyGraceMinutes" sweep.sweepCeremonyGraceMinutes
   pure
     ( cfg,
       ServerSettings
         { serverPort = portV,
           serverConnStr = connStr,
           serverDbPoolSize = poolSize,
-          serverDbPoolAcquisitionTimeoutMs = poolTimeout
+          serverDbPoolAcquisitionTimeoutMs = poolTimeout,
+          serverSweep = sweep
         }
     )
   where
     issuerText (Issuer t) = t
     audienceText (Audience t) = t
-    requirePositive envName dhallField n =
-      when (n <= 0) do
+    requirePositive = requireBound (> 0) "a positive integer"
+    requireNonNegative = requireBound (>= 0) "a non-negative integer"
+    requireBound ok expected envName dhallField n =
+      unless (ok n) do
         ioError
           ( userError
               ( Text.unpack envName
                   <> " (Dhall field "
                   <> Text.unpack dhallField
-                  <> ") must be a positive integer, got "
+                  <> ") must be "
+                  <> expected
+                  <> ", got "
                   <> show n
               )
           )
+
+-- | Overlay the @SHOMEI_SWEEP_*@ / @SHOMEI_*_RETENTION_DAYS@ environment variables onto the
+-- sweeper settings. As on the Dhall path, a non-positive @SHOMEI_AUTH_EVENT_RETENTION_DAYS@
+-- means "retain forever" — that is how an operator turns audit deletion back off without
+-- editing the config file.
+overlaySweepFromEnv :: SweepSettings -> IO SweepSettings
+overlaySweepFromEnv base = do
+  enabled <- boolEnv "SHOMEI_SWEEP_ENABLED"
+  interval <- intEnvMaybe "SHOMEI_SWEEP_INTERVAL_SECONDS"
+  batch <- intEnvMaybe "SHOMEI_SWEEP_BATCH_SIZE"
+  deadSession <- intEnvMaybe "SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS"
+  oneTimeToken <- intEnvMaybe "SHOMEI_SWEEP_ONE_TIME_TOKEN_GRACE_DAYS"
+  ceremony <- intEnvMaybe "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES"
+  loginAttempts <- intEnvMaybe "SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS"
+  authEvents <- intEnvMaybe "SHOMEI_AUTH_EVENT_RETENTION_DAYS"
+  pure
+    SweepSettings
+      { sweepEnabled = fromMaybe base.sweepEnabled enabled,
+        sweepIntervalSeconds = fromMaybe base.sweepIntervalSeconds interval,
+        sweepBatchSize = fromMaybe base.sweepBatchSize batch,
+        sweepDeadSessionGraceDays = fromMaybe base.sweepDeadSessionGraceDays deadSession,
+        sweepOneTimeTokenGraceDays = fromMaybe base.sweepOneTimeTokenGraceDays oneTimeToken,
+        sweepCeremonyGraceMinutes = fromMaybe base.sweepCeremonyGraceMinutes ceremony,
+        sweepLoginAttemptRetentionDays = fromMaybe base.sweepLoginAttemptRetentionDays loginAttempts,
+        sweepAuthEventRetentionDays = maybe base.sweepAuthEventRetentionDays positiveOrForever authEvents
+      }
 
 overlayCoreFromEnv :: ShomeiConfig -> IO ShomeiConfig
 overlayCoreFromEnv base = do
