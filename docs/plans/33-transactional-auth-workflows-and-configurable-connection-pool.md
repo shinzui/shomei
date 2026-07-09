@@ -73,9 +73,12 @@ This section must always reflect the actual current state of the work.
       (2026-07-08).
 - [ ] M1 (remaining): full `cabal test all` against a live database, and the boot transcript
       showing the configured pool values, captured into Outcomes.
-- [ ] M2: `clearAccountLockout` call in `shomei-core/src/Shomei/Workflow.hs` made conditional
-      on a lockout row actually existing (uses the `getAccountLockout` result already read).
-- [ ] M2: workflow test asserting no `ClearAccountLockout` op is issued on a lockout-free login.
+- [x] M2: `clearAccountLockout` call in `shomei-core/src/Shomei/Workflow.hs` made conditional
+      on a lockout row actually existing (reuses the `getAccountLockout` result already read;
+      the read is hoisted out of the `when rl.rateLimitEnabled` block) (2026-07-08).
+- [x] M2: workflow tests asserting no `ClearAccountLockout` op is issued on a lockout-free login,
+      and that a standing lockout is still cleared. Verified non-vacuous by mutation: restoring
+      the unconditional clear makes the first test fail (2026-07-08).
 - [ ] M3: new core effect `Shomei.Effect.AuthUnitOfWork` with `PersistNewSession` and
       `RotateRefreshToken` operations; smart constructors exported.
 - [ ] M3: PostgreSQL interpreter `Shomei.Postgres.AuthUnitOfWork` running each operation as one

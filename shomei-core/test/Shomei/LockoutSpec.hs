@@ -11,6 +11,8 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Effectful (Eff, IOE, liftIO, (:>))
+import Effectful.Dispatch.Dynamic (interpose, passthrough, send)
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
@@ -19,6 +21,7 @@ import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientI
 import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
+import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Workflow (login, signup)
 import Test.Tasty (TestTree, testGroup)
@@ -88,6 +91,33 @@ isLocked w k = case Map.lookup k w.accountLockouts of
   Just lo -> maybe False (> t0) lo.lockedUntil
   Nothing -> False
 
+-- | Record every 'LoginAttemptStore' operation a workflow issues, then forward it unchanged to
+-- the in-memory interpreter underneath.
+--
+-- 'interpose' replaces the handler of an effect that is already in the stack, for the duration
+-- of the wrapped action. Sending the operation again from inside the handler dispatches to the
+-- /upstream/ (original) handler rather than recursing, and 'passthrough' forwards the
+-- operations this wrapper does not care about. The point is to observe which operations were
+-- issued: the in-memory 'ClearAccountLockout' is a @Map.delete@, so a clear of an absent key
+-- leaves the 'World' identical to no clear at all and cannot be detected by reading state.
+recordAttemptOps :: (LoginAttemptStore :> es, IOE :> es) => IORef [Text] -> Eff es a -> Eff es a
+recordAttemptOps traceRef = interpose \env -> \case
+  ClearAccountLockout k -> do
+    liftIO (modifyIORef' traceRef ("ClearAccountLockout" :))
+    send (ClearAccountLockout k)
+  op -> passthrough env op
+
+-- | Run a successful login, returning the 'LoginAttemptStore' operations it issued.
+tracedGoodLogin :: IORef World -> ClientIp -> Email -> IO (Either AuthError (), [Text])
+tracedGoodLogin ref ip e = do
+  traceRef <- newIORef []
+  r <-
+    runInMemory
+      ref
+      (recordAttemptOps traceRef (login cfg (ctxOf ip e) (LoginCommand (loginIdFromEmail e) strongPw)))
+  ops <- readIORef traceRef
+  pure (fmap (const ()) r, ops)
+
 -- Tests ----------------------------------------------------------------------
 
 tests :: TestTree
@@ -99,8 +129,42 @@ tests =
       testUnknownAndWrongIndistinguishable,
       testUnlockAfterCooldown,
       testSuccessClearsCounter,
-      testPerIpThrottle
+      testPerIpThrottle,
+      testNoLockoutIssuesNoClear,
+      testStandingLockoutStillCleared
     ]
+
+-- | The round-trip saving of MasterPlan 6 EP-1 M2: a login on an account with no lockout row
+-- must not issue the DELETE at all. Lockouts are rare, so the unconditional clear this
+-- replaces cost a wasted database round-trip on virtually every successful login.
+testNoLockoutIssuesNoClear :: TestTree
+testNoLockoutIssuesNoClear = testCase "a successful login with no standing lockout issues no ClearAccountLockout" do
+  ref <- newIORef (emptyWorld t0)
+  seedAlice ref
+  (ok, ops) <- tracedGoodLogin ref ip1 aliceEmail
+  ok @?= Right ()
+  assertBool
+    ("expected no ClearAccountLockout, got: " <> show ops)
+    (notElem "ClearAccountLockout" ops)
+
+-- | The other half of the same change: when a lockout row does exist, the clear still happens.
+-- Three failures lock alice; advancing past the cooldown lets the correct password through, and
+-- that login must delete the (now expired) row exactly as the unconditional version did.
+testStandingLockoutStillCleared :: TestTree
+testStandingLockoutStillCleared = testCase "a successful login with a standing lockout still issues ClearAccountLockout" do
+  ref <- newIORef (emptyWorld t0)
+  seedAlice ref
+  _ <- badLogin ref ip1 aliceEmail
+  _ <- badLogin ref ip1 aliceEmail
+  _ <- badLogin ref ip1 aliceEmail
+  advanceClock ref (addUTCTime (16 * 60) t0)
+  (ok, ops) <- tracedGoodLogin ref ip1 aliceEmail
+  ok @?= Right ()
+  assertBool
+    ("expected a ClearAccountLockout, got: " <> show ops)
+    (elem "ClearAccountLockout" ops)
+  w <- readIORef ref
+  assertBool "the lockout row is gone" (not (Map.member (keyOf aliceEmail) w.accountLockouts))
 
 testLocksAfterN :: TestTree
 testLocksAfterN = testCase "account locks after N failed logins" do

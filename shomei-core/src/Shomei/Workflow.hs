@@ -195,15 +195,23 @@ login cfg ctx cmd = runErrorNoCallStack do
       cutoff = addUTCTime (negate rl.lockoutWindow) ts
   -- Per-IP throttle first: a read-only, account-agnostic gate that leaks nothing. We do
   -- NOT record a new attempt here (that would let an attacker keep themselves throttled).
-  when rl.rateLimitEnabled do
-    ipFails <- countRecentFailuresByIp ctx.clientIp cutoff
-    when (ipFails >= rl.maxFailedLoginsPerIp) do
-      publishAuthEvent (Event.LoginThrottled (Event.LoginThrottledData ctx.clientIp ipFails ts))
-      throwError TooManyRequests
-    -- Account lockout: a still-locked account returns the SAME generic error as a wrong
-    -- password (never 'AccountLocked'), so a locked account is indistinguishable.
-    mLock <- getAccountLockout ctx.accountKey
-    when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) mLock) (throwError InvalidCredentials)
+  --
+  -- The lockout row this reads is carried to the success path below, which clears it only when
+  -- one actually exists. When rate limiting is off no lockout can exist — only the rate-limited
+  -- failure path ever writes one — so 'Nothing' is correct for that branch too.
+  mLock <-
+    if rl.rateLimitEnabled
+      then do
+        ipFails <- countRecentFailuresByIp ctx.clientIp cutoff
+        when (ipFails >= rl.maxFailedLoginsPerIp) do
+          publishAuthEvent (Event.LoginThrottled (Event.LoginThrottledData ctx.clientIp ipFails ts))
+          throwError TooManyRequests
+        -- Account lockout: a still-locked account returns the SAME generic error as a wrong
+        -- password (never 'AccountLocked'), so a locked account is indistinguishable.
+        lockRow <- getAccountLockout ctx.accountKey
+        when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) lockRow) (throwError InvalidCredentials)
+        pure lockRow
+      else pure Nothing
   -- Every failure path below performs exactly one 'verifyPassword'. The paths that never
   -- reach a stored hash verify against 'dummyPasswordHash' instead, so a miss costs the same
   -- Argon2id work as a wrong password and cannot be told apart by response time.
@@ -223,7 +231,10 @@ login cfg ctx cmd = runErrorNoCallStack do
         outcome = LoginSuccess,
         occurredAt = ts
       }
-  clearAccountLockout ctx.accountKey
+  -- Only delete a lockout row that the read above actually found. Lockouts are rare, so the
+  -- unconditional DELETE this replaces cost a wasted round-trip on virtually every login. A row
+  -- whose 'lockedUntil' has already passed is still cleared, exactly as before.
+  when (isJust mLock) (clearAccountLockout ctx.accountKey)
   -- Gate before the MFA branch, so an account with an unverified email is not even offered a
   -- ceremony. The password was already proven correct here, so naming the reason discloses
   -- nothing the caller does not know (see 'EmailNotVerified').
