@@ -65,7 +65,7 @@ runRefreshTokenStorePostgres = interpret_ \case
     traverse rebuild row
   MarkRefreshTokenUsed rid t -> do
     res <- runSession (Session.statement (refreshTokenIdToUUID rid, t) markUsedStmt)
-    either dbFail (const (pure ())) res
+    either dbFail (pure . isJust) res
   RevokeRefreshTokenFamily rid t -> do
     res <- runSession (Session.statement (refreshTokenIdToUUID rid, t) revokeFamilyStmt)
     either dbFail (const (pure ())) res
@@ -159,16 +159,22 @@ findByHashStmt =
     (E.param (E.nonNullable E.text))
     (D.rowMaybe tokenRowDecoder)
 
-markUsedStmt :: Statement (UUID, UTCTime) ()
+-- | Compare-and-swap: the @status = 'active'@ guard and the write are one statement, so two
+-- concurrent presentations of the same refresh token cannot both transition it. Under READ
+-- COMMITTED the second UPDATE blocks on the first's row lock, re-evaluates the guard against
+-- the committed row (now @used@), matches nothing, and returns no row.
+markUsedStmt :: Statement (UUID, UTCTime) (Maybe UUID)
 markUsedStmt =
   preparable
     """
     UPDATE shomei.shomei_refresh_tokens
     SET status = 'used', used_at = $2
     WHERE refresh_token_id = $1
+      AND status = 'active'
+    RETURNING refresh_token_id
     """
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
-    D.noResult
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 -- Walk up from the presented token to the family root (the ancestor with no parent),
 -- then walk down from that root to collect every descendant, and revoke the whole family.

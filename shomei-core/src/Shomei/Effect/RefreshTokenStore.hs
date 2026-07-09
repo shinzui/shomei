@@ -24,7 +24,10 @@ import Shomei.Prelude
 data RefreshTokenStore :: Effect where
   CreateRefreshToken :: NewRefreshToken -> RefreshTokenStore m PersistedRefreshToken
   FindRefreshTokenByHash :: RefreshTokenHash -> RefreshTokenStore m (Maybe PersistedRefreshToken)
-  MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
+  -- | Transition a token @active → used@ as one atomic compare-and-swap. 'True' means this
+  -- call performed the transition; 'False' means the token was no longer @active@ — someone
+  -- else spent it first, which 'Shomei.Workflow.refresh' treats as reuse.
+  MarkRefreshTokenUsed :: RefreshTokenId -> UTCTime -> RefreshTokenStore m Bool
   RevokeRefreshTokenFamily :: RefreshTokenId -> UTCTime -> RefreshTokenStore m ()
   RevokeSessionRefreshTokens :: SessionId -> UTCTime -> RefreshTokenStore m ()
   RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()
@@ -37,7 +40,7 @@ createRefreshToken = send . CreateRefreshToken
 findRefreshTokenByHash :: (RefreshTokenStore :> es) => RefreshTokenHash -> Eff es (Maybe PersistedRefreshToken)
 findRefreshTokenByHash = send . FindRefreshTokenByHash
 
-markRefreshTokenUsed :: (RefreshTokenStore :> es) => RefreshTokenId -> UTCTime -> Eff es ()
+markRefreshTokenUsed :: (RefreshTokenStore :> es) => RefreshTokenId -> UTCTime -> Eff es Bool
 markRefreshTokenUsed i t = send (MarkRefreshTokenUsed i t)
 
 revokeRefreshTokenFamily :: (RefreshTokenStore :> es) => RefreshTokenId -> UTCTime -> Eff es ()

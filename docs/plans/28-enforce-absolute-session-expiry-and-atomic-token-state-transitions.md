@@ -68,16 +68,21 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
       `expiresAt`; `Clock` constraint added (no caller needed a change — the only callers
       are tests, whose stacks already interpret `Clock`); core regression test passes
       (2026-07-08).
-- [ ] M2: `MarkRefreshTokenUsed` effect operation returns `Bool` (won/lost the CAS); all
-      call sites updated.
-- [ ] M2: Postgres `markUsedStmt` converted to `UPDATE … AND status = 'active' RETURNING`;
-      0 rows ⇒ `False`.
-- [ ] M2: In-memory `MarkRefreshTokenUsed` converted to an atomic CAS
-      (`atomicModifyIORef'`), returning whether the token was still active.
-- [ ] M2: `refresh` workflow treats a lost CAS as reuse (invokes the existing
-      `reuseDetected` path); core test for the sequential double-spend passes.
-- [ ] M2: Concurrency regression test (many parallel refreshes of one token; exactly one
-      succeeds) passes against the in-memory interpreter.
+- [x] M2: `MarkRefreshTokenUsed` effect operation returns `Bool` (won/lost the CAS); the
+      compiler flagged no call sites outside the two interpreters and `refresh` (2026-07-08).
+- [x] M2: Postgres `markUsedStmt` converted to `UPDATE … AND status = 'active' RETURNING`;
+      0 rows ⇒ `False`; `cabal test shomei-postgres` green (23/23) with a new statement-level
+      CAS assertion (first mark `True`, second `False`, winner's `used_at` preserved)
+      (2026-07-08).
+- [x] M2: In-memory `MarkRefreshTokenUsed` converted to an atomic CAS via a new `casWorld`
+      helper; *all* `World` mutations became atomic (`modifyWorld`) — see Decision Log
+      (2026-07-08).
+- [x] M2: `refresh` workflow treats a lost CAS as reuse (invokes the existing
+      `reuseDetected` path); `testMarkUsedIsCompareAndSwap` (sequential double-spend) passes
+      (2026-07-08).
+- [x] M2: Concurrency regression test `Shomei.Workflow.ConcurrencySpec` (100 parallel
+      refreshes × 10 rounds; exactly one winner, ≤1 child, session revoked) passes; observed
+      failing with **7 winners** against the pre-fix interpreter (2026-07-08).
 - [ ] M3: `MarkPasswordResetTokenConsumed` / `MarkVerificationTokenConsumed` return `Bool`;
       Postgres statements gain `AND status = 'active' RETURNING`; in-memory interpreters use
       the same atomic CAS.
@@ -128,6 +133,26 @@ implementation. Provide concise evidence.
   (the session check in `refresh` catches it, which is exactly what
   `testRefreshRejectsExpiredSession` exercises) but it means `testSlidingRefreshStillDiesAtDeadline`
   asserts the cap over *rotated* tokens only.
+
+- **The refresh race is real and wide: 7 winners out of 100 (M2, confirmed).** With the
+  in-memory `MarkRefreshTokenUsed` temporarily reverted to `modifyIORef'` + unconditional
+  `Map.adjust`, the new concurrency test reports:
+
+  ```text
+  100 concurrent refreshes: exactly one winner: FAIL
+    expected: 1
+     but got: 7
+  ```
+
+  Seven live branches of one token family, no reuse detection — exactly the coexistence an
+  attacker with a stolen refresh token wants. With the CAS in place the count is 1, over 10
+  rounds.
+
+- **A CAS loser can also observe `SessionRevoked`, not only `RefreshTokenReuseDetected`.** The
+  plan predicted every loser sees `RefreshTokenReuseDetected`. In fact a thread that read the
+  token as `active` *before* another loser's reuse response revoked the session, and reached
+  `findSessionById` *after* it, gets `SessionRevoked`. Both are 401s and both mean "the family
+  is dead"; the concurrency test accepts either.
 
 - **`Shomei.Error.SessionExpired` and `Shomei.Domain.Session.SessionExpired` collide.** The
   `AuthError` constructor and the `SessionStatus` constructor share a name; test modules that
@@ -218,6 +243,18 @@ Record every decision made while working on the plan.
   case it describes: a stale token presented against a still-live session. Both are 401s
   reachable only by presenting a valid token secret, so neither leaks. No existing test
   asserted `RefreshTokenExpired`.
+  Date: 2026-07-08
+
+- Decision: Make *every* in-memory `World` mutation atomic, not just the three CAS
+  operations: `Data.IORef.modifyIORef'` is replaced throughout `Shomei.Effect.InMemory` by a
+  local `modifyWorld` built on `atomicModifyIORef'`, plus a `casWorld` helper for the
+  conditional transitions.
+  Rationale: the concurrency tests drive whole *workflows* — signup, refresh, reuse response —
+  from many threads against one shared `IORef World`. An atomic CAS surrounded by
+  read-modify-write neighbours (`createRefreshToken`, `revokeSession`, `publishAuthEvent`)
+  would let a neighbour's stale write clobber the CAS's result, making the test assert on
+  corrupted state rather than on the property under test. Single-threaded behavior is
+  unchanged.
   Date: 2026-07-08
 
 - Decision: `confirmPasswordReset` performs the CAS-consume *after* password-policy

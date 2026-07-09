@@ -50,7 +50,7 @@ import Data.Aeson.Types (Parser, parseMaybe, withObject, (.:))
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
-import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import Data.List (sortBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -213,6 +213,21 @@ emptyWorld t =
       breachCheckAvailable = True
     }
 
+-- | Strict, /atomic/ world update. Every store shares one 'IORef' 'World', and the
+-- concurrency regression tests run workflows from many green threads, so the plain
+-- read-modify-write of 'Data.IORef.modifyIORef'' would silently drop updates.
+-- 'atomicModifyIORef'' serializes them.
+modifyWorld :: IORef World -> (World -> World) -> IO ()
+modifyWorld ref f = atomicModifyIORef' ref \w -> (f w, ())
+
+-- | Atomic compare-and-swap over the world: inspect and transition in one uninterruptible
+-- step, answering whether this caller performed the transition. The in-memory analogue of a
+-- conditional @UPDATE … WHERE status = 'active' RETURNING@.
+casWorld :: IORef World -> (World -> Maybe World) -> IO Bool
+casWorld ref f = atomicModifyIORef' ref \w -> case f w of
+  Just w' -> (w', True)
+  Nothing -> (w, False)
+
 -- Token signer/verifier fakes: round-trip claims through JSON.
 
 renderClaims :: AuthClaims -> Text
@@ -245,15 +260,15 @@ runUserStore ref = interpret_ \case
               createdAt = w.clock,
               updatedAt = w.clock
             }
-    liftIO (modifyIORef' ref (#users %~ Map.insert uid u))
+    liftIO (modifyWorld ref (#users %~ Map.insert uid u))
     pure u
   FindUserById uid -> liftIO ((Map.lookup uid . (.users)) <$> readIORef ref)
   FindUserByLoginId lid -> liftIO (findByLoginId lid <$> readIORef ref)
   FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
   UpdateUserStatus uid st ->
-    liftIO (modifyIORef' ref (#users %~ Map.adjust (#status .~ st) uid))
+    liftIO (modifyWorld ref (#users %~ Map.adjust (#status .~ st) uid))
   MarkUserEmailVerified uid t ->
-    liftIO (modifyIORef' ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
+    liftIO (modifyWorld ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
   where
     findByLoginId lid w = listToMaybe [u | u <- Map.elems w.users, u.loginId == lid]
     findByEmail e w = listToMaybe [u | u <- Map.elems w.users, u.email == Just e]
@@ -273,7 +288,7 @@ runCredentialStore ref = interpret_ \case
               createdAt = w.clock,
               updatedAt = w.clock
             }
-    liftIO (modifyIORef' ref (#credsByLoginId %~ Map.insert lid c))
+    liftIO (modifyWorld ref (#credsByLoginId %~ Map.insert lid c))
     pure c
   FindPasswordCredentialByLoginId lid ->
     liftIO ((Map.lookup lid . (.credsByLoginId)) <$> readIORef ref)
@@ -283,7 +298,7 @@ runCredentialStore ref = interpret_ \case
     liftIO ((\w -> listToMaybe [c | c <- Map.elems w.credsByLoginId, c.email == Just e]) <$> readIORef ref)
   UpdatePasswordHash uid h ->
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           (#credsByLoginId %~ Map.map (\c -> if c.userId == uid then c & #passwordHash .~ h else c))
       )
@@ -293,14 +308,14 @@ runSessionStore ref = interpret_ \case
   CreateSession ns -> do
     sid <- genSessionId
     let s = mkSession sid ns
-    liftIO (modifyIORef' ref (#sessions %~ Map.insert sid s))
+    liftIO (modifyWorld ref (#sessions %~ Map.insert sid s))
     pure s
   FindSessionById sid -> liftIO ((Map.lookup sid . (.sessions)) <$> readIORef ref)
   RevokeSession sid t ->
-    liftIO (modifyIORef' ref (#sessions %~ Map.adjust (revoke t) sid))
+    liftIO (modifyWorld ref (#sessions %~ Map.adjust (revoke t) sid))
   RevokeAllUserSessions uid t ->
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           (#sessions %~ Map.map (\s -> if s.userId == uid then revoke t s else s))
       )
@@ -326,7 +341,7 @@ runRefreshTokenStore ref = interpret_ \case
     rid <- genRefreshTokenId
     let prt = mkPersisted rid nrt
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           ( (#refreshTokens %~ Map.insert rid prt)
               . (#refreshByHash %~ Map.insert nrt.tokenHash rid)
@@ -336,18 +351,24 @@ runRefreshTokenStore ref = interpret_ \case
   FindRefreshTokenByHash h ->
     liftIO (lookupByHash h <$> readIORef ref)
   MarkRefreshTokenUsed rid t ->
-    liftIO (modifyIORef' ref (#refreshTokens %~ Map.adjust (markUsed t) rid))
+    liftIO
+      ( casWorld ref \w -> case Map.lookup rid w.refreshTokens of
+          Just tok
+            | tok.status == RefreshTokenActive ->
+                Just (w & #refreshTokens %~ Map.adjust (markUsed t) rid)
+          _ -> Nothing
+      )
   RevokeRefreshTokenFamily rid t ->
-    liftIO (modifyIORef' ref (revokeFamily rid t))
+    liftIO (modifyWorld ref (revokeFamily rid t))
   RevokeSessionRefreshTokens sid t ->
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           (#refreshTokens %~ Map.map (\tok -> if tok.sessionId == sid then revoke t tok else tok))
       )
   RevokeAllUserRefreshTokens uid t ->
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           ( \w ->
               w
@@ -392,7 +413,7 @@ runVerificationTokenStore ref = interpret_ \case
     tid <- genVerificationTokenId
     let tok = mkVerificationToken tid nvt
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           ( (#verificationTokens %~ Map.insert tid tok)
               . (#verificationByHash %~ Map.insert nvt.tokenHash tid)
@@ -402,9 +423,9 @@ runVerificationTokenStore ref = interpret_ \case
   FindVerificationTokenByHash h ->
     liftIO (lookupVerification h <$> readIORef ref)
   MarkVerificationTokenConsumed tid t ->
-    liftIO (modifyIORef' ref (#verificationTokens %~ Map.adjust (consume t) tid))
+    liftIO (modifyWorld ref (#verificationTokens %~ Map.adjust (consume t) tid))
   RevokeUserVerificationTokens uid t ->
-    liftIO (modifyIORef' ref (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+    liftIO (modifyWorld ref (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
   where
     lookupVerification h w = do
       tid <- Map.lookup h w.verificationByHash
@@ -431,7 +452,7 @@ runPasswordResetTokenStore ref = interpret_ \case
     tid <- genPasswordResetTokenId
     let tok = mkPasswordResetToken tid nrt
     liftIO
-      ( modifyIORef'
+      ( modifyWorld
           ref
           ( (#passwordResetTokens %~ Map.insert tid tok)
               . (#passwordResetByHash %~ Map.insert nrt.tokenHash tid)
@@ -441,9 +462,9 @@ runPasswordResetTokenStore ref = interpret_ \case
   FindPasswordResetTokenByHash h ->
     liftIO (lookupReset h <$> readIORef ref)
   MarkPasswordResetTokenConsumed tid t ->
-    liftIO (modifyIORef' ref (#passwordResetTokens %~ Map.adjust (consume t) tid))
+    liftIO (modifyWorld ref (#passwordResetTokens %~ Map.adjust (consume t) tid))
   RevokeUserPasswordResetTokens uid t ->
-    liftIO (modifyIORef' ref (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+    liftIO (modifyWorld ref (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
   where
     lookupReset h w = do
       tid <- Map.lookup h w.passwordResetByHash
@@ -467,7 +488,7 @@ mkPasswordResetToken tid nrt =
 runLoginAttemptStore :: (IOE :> es) => IORef World -> Eff (LoginAttemptStore : es) a -> Eff es a
 runLoginAttemptStore ref = interpret_ \case
   RecordLoginAttempt na ->
-    liftIO (modifyIORef' ref (#loginAttempts %~ (toAttempt na :)))
+    liftIO (modifyWorld ref (#loginAttempts %~ (toAttempt na :)))
   CountRecentFailuresByAccount k cutoff ->
     liftIO (countAccountFailures k cutoff <$> readIORef ref)
   CountRecentFailuresByIp ip cutoff ->
@@ -475,9 +496,9 @@ runLoginAttemptStore ref = interpret_ \case
   GetAccountLockout k ->
     liftIO ((Map.lookup k . (.accountLockouts)) <$> readIORef ref)
   SetAccountLockout lo ->
-    liftIO (modifyIORef' ref (#accountLockouts %~ Map.insert lo.accountKey lo))
+    liftIO (modifyWorld ref (#accountLockouts %~ Map.insert lo.accountKey lo))
   ClearAccountLockout k ->
-    liftIO (modifyIORef' ref (#accountLockouts %~ Map.delete k))
+    liftIO (modifyWorld ref (#accountLockouts %~ Map.delete k))
   where
     toAttempt na =
       LoginAttempt
@@ -544,7 +565,7 @@ runPasskeyStore ref = interpret_ \case
               createdAt,
               lastUsedAt = Nothing
             }
-    liftIO (modifyIORef' ref (#passkeys %~ Map.insert pid pc))
+    liftIO (modifyWorld ref (#passkeys %~ Map.insert pid pc))
     pure pc
   FindPasskeysByUser uid ->
     liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
@@ -553,16 +574,16 @@ runPasskeyStore ref = interpret_ \case
   FindPasskeysByUserHandle uh ->
     liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserHandle p == uh]) <$> readIORef ref)
   UpdatePasskeySignCounter pid c t ->
-    liftIO (modifyIORef' ref (#passkeys %~ Map.adjust (\p -> p & #signCounter .~ c & #lastUsedAt .~ Just t) pid))
+    liftIO (modifyWorld ref (#passkeys %~ Map.adjust (\p -> p & #signCounter .~ c & #lastUsedAt .~ Just t) pid))
   DeletePasskey uid pid ->
-    liftIO (modifyIORef' ref (#passkeys %~ Map.update (\p -> if pkUserId p == uid then Nothing else Just p) pid))
+    liftIO (modifyWorld ref (#passkeys %~ Map.update (\p -> if pkUserId p == uid then Nothing else Just p) pid))
   CountPasskeysByUser uid ->
     liftIO ((\w -> length [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
 
 runPendingCeremonyStore :: (IOE :> es) => IORef World -> Eff (PendingCeremonyStore : es) a -> Eff es a
 runPendingCeremonyStore ref = interpret_ \case
   PutPendingCeremony pc ->
-    liftIO (modifyIORef' ref (#pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc))
+    liftIO (modifyWorld ref (#pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc))
   TakePendingCeremony cid now' -> liftIO do
     w <- readIORef ref
     case Map.lookup cid w.pendingCeremonies of
@@ -570,10 +591,10 @@ runPendingCeremonyStore ref = interpret_ \case
       Just pc -> do
         -- Consume-once: remove the row regardless, so an expired take also
         -- clears the stale row; return it only if it is still live.
-        modifyIORef' ref (#pendingCeremonies %~ Map.delete cid)
+        modifyWorld ref (#pendingCeremonies %~ Map.delete cid)
         pure (if pcExpiresAt pc > now' then Just pc else Nothing)
   DeleteExpiredCeremonies now' ->
-    liftIO (modifyIORef' ref (#pendingCeremonies %~ Map.filter (\pc -> pcExpiresAt pc > now')))
+    liftIO (modifyWorld ref (#pendingCeremonies %~ Map.filter (\pc -> pcExpiresAt pc > now')))
 
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
@@ -602,7 +623,7 @@ runTokenVerifier = interpret_ \case
 
 runAuthEventPublisher :: (IOE :> es) => IORef World -> Eff (AuthEventPublisher : es) a -> Eff es a
 runAuthEventPublisher ref = interpret_ \case
-  PublishAuthEvent ev -> liftIO (modifyIORef' ref (#publishedEvents %~ (ev :)))
+  PublishAuthEvent ev -> liftIO (modifyWorld ref (#publishedEvents %~ (ev :)))
 
 -- | In-memory mirror of 'Shomei.Postgres.AuthEventReader.runAuthEventReaderPostgres' over the
 -- 'World''s @publishedEvents@ log. Each event is projected with the shared
@@ -650,7 +671,7 @@ runAuthEventReader ref = interpret_ \case
 
 runNotifier :: (IOE :> es) => IORef World -> Eff (Notifier : es) a -> Eff es a
 runNotifier ref = interpret_ \case
-  SendNotification n -> liftIO (modifyIORef' ref (#sentNotifications %~ (n :)))
+  SendNotification n -> liftIO (modifyWorld ref (#sentNotifications %~ (n :)))
 
 runSigningKeyStore :: (IOE :> es) => IORef World -> Eff (SigningKeyStore : es) a -> Eff es a
 runSigningKeyStore ref = interpret_ \case
@@ -659,9 +680,9 @@ runSigningKeyStore ref = interpret_ \case
   FindSigningKeyByKid kid ->
     liftIO ((Map.lookup kid . (.signingKeys)) <$> readIORef ref)
   InsertSigningKey k ->
-    liftIO (modifyIORef' ref (#signingKeys %~ Map.insert k.keyId k))
+    liftIO (modifyWorld ref (#signingKeys %~ Map.insert k.keyId k))
   UpdateSigningKeyStatus kid st _t ->
-    liftIO (modifyIORef' ref (#signingKeys %~ Map.adjust (#status .~ st) kid))
+    liftIO (modifyWorld ref (#signingKeys %~ Map.adjust (#status .~ st) kid))
   where
     activeKeys w = [k | k <- Map.elems w.signingKeys, k.status == KeyActive]
 

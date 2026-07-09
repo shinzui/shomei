@@ -299,26 +299,32 @@ refresh cfg cmd = do
             | s.status /= SessionActive -> pure (Left SessionRevoked)
             | tok.expiresAt <= ts -> pure (Left RefreshTokenExpired)
             | otherwise -> do
-                markRefreshTokenUsed tok.refreshTokenId ts
-                rawNew <- generateOpaqueToken
-                newHash <- hashRefreshToken rawNew
-                _ <-
-                  createRefreshToken
-                    NewRefreshToken
-                      { sessionId = tok.sessionId,
-                        tokenHash = newHash,
-                        parentTokenId = Just tok.refreshTokenId,
-                        createdAt = ts,
-                        -- Never mint a token that outlives its session.
-                        expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
-                      }
-                access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
-                publishAuthEvent
-                  (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
-                pure
-                  ( Right
-                      TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
-                  )
+                -- Compare-and-swap: only the caller that transitions this token active → used
+                -- may rotate it. Losing the race means someone else has already spent the
+                -- token, which is indistinguishable from theft — so take the reuse path.
+                won <- markRefreshTokenUsed tok.refreshTokenId ts
+                if not won
+                  then reuseDetected tok ts
+                  else do
+                    rawNew <- generateOpaqueToken
+                    newHash <- hashRefreshToken rawNew
+                    _ <-
+                      createRefreshToken
+                        NewRefreshToken
+                          { sessionId = tok.sessionId,
+                            tokenHash = newHash,
+                            parentTokenId = Just tok.refreshTokenId,
+                            createdAt = ts,
+                            -- Never mint a token that outlives its session.
+                            expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) s.expiresAt
+                          }
+                    access <- signAccessToken (buildClaims cfg s.userId s.sessionId ts)
+                    publishAuthEvent
+                      (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
+                    pure
+                      ( Right
+                          TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
+                      )
   where
     reuseDetected tok ts = do
       revokeRefreshTokenFamily tok.refreshTokenId ts

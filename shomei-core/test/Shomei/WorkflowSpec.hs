@@ -25,6 +25,7 @@ import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
+import Shomei.Effect.RefreshTokenStore (markRefreshTokenUsed)
 import Shomei.Error
   ( AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
     PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
@@ -111,6 +112,7 @@ tests =
       testRefreshRejectsExpiredSession,
       testSlidingRefreshStillDiesAtDeadline,
       testVerifyTokenRejectsExpiredSession,
+      testMarkUsedIsCompareAndSwap,
       testReuseDetected,
       testReuseRevokesSession,
       testLogoutRevokes,
@@ -223,6 +225,19 @@ testVerifyTokenRejectsExpiredSession = testCase "verifyToken (token+session) rej
   res @?= Left Err.SessionExpired
   where
     isRight = either (const False) (const True)
+
+testMarkUsedIsCompareAndSwap :: TestTree
+testMarkUsedIsCompareAndSwap = testCase "mark-used CAS: the second sequential mark returns False" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  w <- readIORef ref
+  rid <- case Map.keys w.refreshTokens of
+    (r : _) -> pure r
+    [] -> assertFailure "expected a refresh token to exist after signup"
+  first <- runInMemory ref (markRefreshTokenUsed rid fixedTime)
+  second <- runInMemory ref (markRefreshTokenUsed rid fixedTime)
+  first @?= True
+  second @?= False
 
 testReuseDetected :: TestTree
 testReuseDetected = testCase "presenting an already-used refresh token detects reuse" do

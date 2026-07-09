@@ -125,6 +125,7 @@ test-suite shomei-core-test
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec
     Shomei.WebAuthnCeremonySpec
+    Shomei.Workflow.ConcurrencySpec
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
@@ -133,6 +134,7 @@ test-suite shomei-core-test
 
   build-depends:
     , aeson
+    , async
     , base
     , bytestring
     , containers

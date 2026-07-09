@@ -430,8 +430,12 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
   fmap (.actor) foundDelegated @?= Just (Just op)
   fmap (.actor) foundNormal @?= Just Nothing
 
+-- | Pins the compare-and-swap semantics of the @UPDATE … AND status = 'active' RETURNING@
+-- statement: the first mark wins and stamps @used_at@, a second mark of the same token loses
+-- and leaves the row (including the winner's @used_at@) untouched. This is the statement-level
+-- guarantee that makes two concurrent refreshes of one token impossible to both succeed.
 testRefreshTokenMarkUsed :: TestTree
-testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-used" $ withDb \pool -> do
+testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is a compare-and-swap" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
@@ -447,12 +451,19 @@ testRefreshTokenMarkUsed = testCase "create refresh token + find-by-hash + mark-
             expiresAt = addUTCTime 86400 t
           }
     beforeUse <- findRefreshTokenByHash h
-    markRefreshTokenUsed persisted.refreshTokenId t
+    firstMark <- markRefreshTokenUsed persisted.refreshTokenId t
     afterUse <- findRefreshTokenByHash h
-    pure (beforeUse, afterUse)
-  (beforeUse, afterUse) <- expectApp result
+    secondMark <- markRefreshTokenUsed persisted.refreshTokenId (addUTCTime 60 t)
+    afterSecond <- findRefreshTokenByHash h
+    pure (beforeUse, afterUse, firstMark, secondMark, afterSecond)
+  (beforeUse, afterUse, firstMark, secondMark, afterSecond) <- expectApp result
   fmap (.status) beforeUse @?= Just RefreshTokenActive
   fmap (.status) afterUse @?= Just RefreshTokenUsed
+  firstMark @?= True
+  secondMark @?= False
+  -- The loser overwrote nothing: the row still carries the winner's used_at.
+  fmap (.usedAt) afterSecond @?= fmap (.usedAt) afterUse
+  fmap (.status) afterSecond @?= Just RefreshTokenUsed
 
 testVerificationTokenRoundTrip :: TestTree
 testVerificationTokenRoundTrip = testCase "create verification token + consume" $ withDb \pool -> do
