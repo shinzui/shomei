@@ -82,8 +82,11 @@ data Env = Env
     config :: !ShomeiConfig,
     -- | the token verifier the 'Shomei.Servant.Auth.authHandler' is built from
     verifier :: !(Text -> IO (Either TokenError AuthClaims)),
-    -- | the precomputed public JWKS document served at @\/.well-known\/jwks.json@
-    jwksJson :: !Value,
+    -- | the precomputed public JWKS document served at @\/.well-known\/jwks.json@. An
+    --     'IO' getter rather than a 'Value' because the standalone server swaps its key
+    --     material on rotation (a 'readIORef'); tests pass @pure@ of a static document.
+    --     The document stays precomputed either way — no per-request re-encoding.
+    jwksJson :: !(IO Value),
     -- | derive the abuse store's hashed account key from the principal's login-id text (SH-25:
     --     the abuse key tracks the login identifier you actually authenticate with, not the email).
     --     The server supplies a SHA-256 hash; tests may supply a trivial mapping.

@@ -71,8 +71,8 @@ tests =
           Right ac' -> idText ac'.subject @?= idText base.subject
           Left e -> assertFailure ("verify failed: " <> show e),
       testCase "configSigningAlgorithm parses RS256 and falls back to ES256" $ do
-        let rs = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "RS256"}}
-            bad = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "nope"}}
+        let rs = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "RS256", refreshIntervalSeconds = 60}}
+            bad = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "nope", refreshIntervalSeconds = 60}}
         configSigningAlgorithm rs @?= RS256
         configSigningAlgorithm bad @?= ES256
     ]

@@ -20,8 +20,10 @@ where
 -- 'Context' is hidden from the prelude (it re-exports lens's 'Context'); we mean
 -- servant's 'Servant.Context' here.
 
-import Data.Aeson (Value (Object), decode)
-import Data.Aeson.KeyMap qualified as KM
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Exception (SomeException, catch)
+import Control.Monad (forever)
+import Data.IORef (newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Time (secondsToDiffTime)
 import Effectful (Eff, inject)
@@ -34,10 +36,9 @@ import Servant
     serveWithContext,
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), configSigningAlgorithm)
+import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
-import Shomei.Jwt.Jwks (jwksDocument)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
 import Shomei.Postgres.Pool (acquirePool)
@@ -48,12 +49,12 @@ import Shomei.Servant.Handlers (shomeiServer)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
-import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
-import System.Posix.Signals (installHandler, sigINT, sigTERM)
+import System.Posix.Signals (installHandler, sigHUP, sigINT, sigTERM)
 import System.Posix.Signals qualified as Signals
 
 -- | The full turnkey startup sequence.
@@ -65,6 +66,7 @@ main = do
   hSetBuffering stderr LineBuffering
   (cfg, settings) <- loadConfig
   env <- buildEnv cfg settings
+  installKeyReload cfg env
   rl <- newRateLimiter cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
@@ -99,6 +101,30 @@ main = do
   Pool.release env.envPool
   hPutStrLn stderr "[shomei] shutdown complete"
 
+-- | Install the two triggers that refresh signing-key material on a running server, so
+-- @shomei-admin keys activate@ / @keys revoke@ take effect with no restart: a periodic
+-- background reload every @refreshIntervalSeconds@ (0 disables it), and a @SIGHUP@ handler
+-- for a deterministic "apply now". Both call 'reloadKeys', which keeps the last good
+-- material if a reload fails.
+--
+-- The background thread catches and logs per-cycle exceptions so one failure never kills
+-- the loop, and it dies with the process (no shutdown plumbing needed). When
+-- @docs/plans/34-expired-data-sweeper-retention-windows-and-supporting-indexes.md@ lands
+-- @Shomei.Server.Supervisor.supervisedLoop@, this loop should move onto it — that plan
+-- owns the supervised-background-thread idiom for @shomei-server@.
+installKeyReload :: ShomeiConfig -> Env -> IO ()
+installKeyReload cfg env = do
+  when (interval > 0) (void (forkIO periodic))
+  void (installHandler sigHUP (Signals.Catch onHup) Nothing)
+  where
+    interval = cfg.signingKeyConfig.refreshIntervalSeconds
+    reload = reloadKeys env.envPool env.envKeys
+    onHup = hPutStrLn stderr "[shomei] SIGHUP: reloading signing keys" >> reload
+    periodic = forever do
+      threadDelay (interval * 1_000_000)
+      reload `catch` \(e :: SomeException) ->
+        hPutStrLn stderr ("[shomei] periodic key reload raised: " <> show e)
+
 -- | Run the schema migrations (idempotent), acquire the pool, and bootstrap the signing
 -- key, yielding the assembled 'Env'. Shared by 'main' and by host applications that embed
 -- the Shōmei API (the embedded demo builds its own 'Env' this way). Running
@@ -107,9 +133,10 @@ buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
   _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
   pool <- acquirePool 10 settings.serverConnStr
-  (key, jwks) <- bootstrapKeys (configSigningAlgorithm cfg) pool
+  keys <- bootstrapKeys (configSigningAlgorithm cfg) pool
+  keysRef <- newIORef keys
   mgr <- newTlsManager
-  pure Env {envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = mgr}
+  pure Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = mgr}
 
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
 -- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification
@@ -133,8 +160,12 @@ seamEnv env =
   Seam.Env
     { Seam.runPorts = runPorts,
       Seam.config = env.envConfig,
-      Seam.verifier = verifyToken env.envJwks env.envConfig,
-      Seam.jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [env.envKey])),
+      -- Both read the swappable key material, so a rotation applied by 'reloadKeys' takes
+      -- effect on the next request without rebuilding the WAI application.
+      Seam.verifier = \tok -> do
+        keys <- readIORef env.envKeys
+        verifyToken keys.verifierJwks env.envConfig tok,
+      Seam.jwksJson = (.jwksBody) <$> readIORef env.envKeys,
       Seam.accountKeyOf = AccountKey . sha256Hex
     }
   where

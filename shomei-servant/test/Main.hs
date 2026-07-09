@@ -233,7 +233,7 @@ main = do
           { runPorts = runHybrid r jwk jwkset cfg',
             config = cfg',
             verifier = verifyToken jwkset cfg',
-            jwksJson = fromMaybe (Object KM.empty) (decode (jwksDocument [jwk])),
+            jwksJson = pure (fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))),
             accountKeyOf = AccountKey
           }
       mkEnv = mkEnvWith cfg

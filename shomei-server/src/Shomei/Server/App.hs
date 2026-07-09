@@ -19,7 +19,7 @@ module Shomei.Server.App
   )
 where
 
-import Crypto.JOSE.JWK (JWK, JWKSet)
+import Data.IORef (IORef, readIORef)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
@@ -67,6 +67,7 @@ import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Prelude
 import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
+import Shomei.Server.Keys (LoadedKeys (..))
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
 
 -- | The single effect stack the assembled server interprets. The high-level ports
@@ -100,13 +101,16 @@ type AppEffects =
    ]
 
 -- | Everything the runtime needs to interpret 'AppEffects' down to IO: the live hasql
--- pool, the loaded config, the active /private/ signing key (used by the signer), and the
--- public 'JWKSet' (used by the verifier and the JWKS endpoint).
+-- pool, the loaded config, and the current signing-key material (the private signing key,
+-- the verifier's public key set, and the served JWKS document).
+--
+-- The key material is held in an 'IORef' rather than inlined, because
+-- 'Shomei.Server.Keys.reloadKeys' swaps it while the server runs — that is what makes
+-- @shomei-admin keys activate@ take effect without a restart.
 data Env = Env
   { envPool :: !Pool,
     envConfig :: !ShomeiConfig,
-    envKey :: !JWK,
-    envJwks :: !JWKSet,
+    envKeys :: !(IORef LoadedKeys),
     -- | shared TLS manager for the HIBP breach-check interpreter (EP-3)
     envHttpManager :: !Manager
   }
@@ -117,8 +121,13 @@ data Env = Env
 -- interpreted ABOVE 'runDatabasePool' (so 'Database' is still in scope when they run), and
 -- @Error AuthError@/'IOE' sit at the base. This is the same shape as @shomei-postgres@'s
 -- own test harness, extended with EP-4's real signer/verifier interpreters.
+--
+-- The key material is re-read once per invocation (one invocation ≈ one request's port
+-- batch), so a reload that lands between requests is picked up without rebuilding the WAI
+-- application; a request already in flight finishes with the material it started with.
 runAppIO :: Env -> Eff AppEffects a -> IO (Either AuthError a)
-runAppIO env =
+runAppIO env action = do
+  keys <- readIORef env.envKeys
   runEff
     . runErrorNoCallStack
     . runDatabasePool env.envPool
@@ -127,8 +136,8 @@ runAppIO env =
     . runSigningKeyStorePostgres
     . runAuthEventReaderPostgres
     . runAuthEventPublisherPostgres
-    . runTokenVerifierJwt env.envJwks env.envConfig
-    . runTokenSignerJwt env.envKey env.envConfig
+    . runTokenVerifierJwt keys.verifierJwks env.envConfig
+    . runTokenSignerJwt keys.signingKey env.envConfig
     . runPasswordHasherCrypto
     . runPasswordBreachCheckerHibp env.envHttpManager breachTimeoutMs
     . runWebAuthnCeremonyLibrary (webauthnConfig env.envConfig)
@@ -142,6 +151,7 @@ runAppIO env =
     . runSessionStorePostgres
     . runCredentialStorePostgres
     . runUserStorePostgres
+    $ action
   where
     policy :: PasswordPolicy
     policy = env.envConfig.passwordPolicy

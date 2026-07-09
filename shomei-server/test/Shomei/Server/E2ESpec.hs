@@ -11,6 +11,7 @@ import Data.Aeson (Value (Array, Object, String), decode, encode, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
+import Data.IORef (newIORef)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -54,10 +55,10 @@ tests =
     [ testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          (key, jwks) <- bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
           testWithApplication (pure (application env)) (scenario pool)
     ]
 

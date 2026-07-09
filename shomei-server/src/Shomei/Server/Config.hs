@@ -96,7 +96,9 @@ data FileConfig = FileConfig
     webauthnMfaRequired :: !(Maybe Bool),
     serviceToken :: !(Maybe FileServiceTokenConfig),
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
-    signingAlgorithm :: !(Maybe Text)
+    signingAlgorithm :: !(Maybe Text),
+    -- | seconds between background reloads of signing-key material; 0 disables them
+    keyRefreshIntervalSeconds :: !(Maybe Int)
   }
   deriving stock (Show, Generic)
   deriving anyclass (FromJSON)
@@ -197,7 +199,9 @@ baseFromFile (Just fc) = do
             serviceTokenConfig = serviceTokenCfg,
             signingKeyConfig =
               cfg0.signingKeyConfig
-                { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile
+                { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile,
+                  refreshIntervalSeconds =
+                    fromMaybe cfg0.signingKeyConfig.refreshIntervalSeconds fc.keyRefreshIntervalSeconds
                 }
           }
       settings = ServerSettings {serverPort = fromMaybe 8080 fc.port, serverConnStr = fromMaybe "" fc.databaseUrl}
@@ -235,10 +239,15 @@ overlayCoreFromEnv base = do
   pwBreachFC <- boolEnv "SHOMEI_PASSWORD_BREACH_FAIL_CLOSED"
   pwBreachTo <- intEnvMaybe "SHOMEI_PASSWORD_BREACH_TIMEOUT_MS"
   alg <- signingAlgEnv
+  keyRefresh <- keyRefreshIntervalEnv
   pure
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
-        signingKeyConfig = base.signingKeyConfig {algorithm = fromMaybe base.signingKeyConfig.algorithm alg},
+        signingKeyConfig =
+          base.signingKeyConfig
+            { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
+              refreshIntervalSeconds = fromMaybe base.signingKeyConfig.refreshIntervalSeconds keyRefresh
+            },
         refreshTokenTTL = fromMaybe base.refreshTokenTTL ref,
         sessionTTL = fromMaybe base.sessionTTL ses,
         tokenTransport = fromMaybe base.tokenTransport tr,
@@ -496,6 +505,16 @@ transportEnv = do
     Just "cookie" -> pure (Just HttpOnlyCookie)
     Just "both" -> pure (Just BearerAndCookie)
     Just other -> ioError (userError ("SHOMEI_TOKEN_TRANSPORT must be bearer|cookie|both, got " <> other))
+
+-- | Read @SHOMEI_KEY_REFRESH_INTERVAL@ (seconds between signing-key reloads; 0 disables
+-- the periodic reload). Rejects a negative value, which would otherwise silently disable
+-- the refresh the operator meant to tighten.
+keyRefreshIntervalEnv :: IO (Maybe Int)
+keyRefreshIntervalEnv = do
+  m <- intEnvMaybe "SHOMEI_KEY_REFRESH_INTERVAL"
+  case m of
+    Just n | n < 0 -> ioError (userError "SHOMEI_KEY_REFRESH_INTERVAL must be >= 0 (0 disables the periodic reload)")
+    _ -> pure m
 
 -- | Read and validate @SHOMEI_SIGNING_ALG@ (@ES256@|@RS256@); absent/empty → Nothing.
 signingAlgEnv :: IO (Maybe Text)

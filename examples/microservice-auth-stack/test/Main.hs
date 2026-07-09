@@ -9,6 +9,7 @@
 -- * no token → @401@.
 module Main (main) where
 
+import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
@@ -52,10 +53,10 @@ tests =
     [ testCase "valid token → 200 (offline), tampered → 401, none → 401" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          (key, jwks) <- bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
           -- Boot the auth service in-process.
           testWithApplication (pure (application env)) \authPort -> do
             mgr <- newManager defaultManagerSettings

@@ -445,7 +445,7 @@ buildQuery mUser mSession types mSince mUntil mLimit mBefore = do
       Just t -> maybe (Left "invalid before cursor") (Right . Just) (decodeCursor t)
 
 jwksH :: Env -> Handler Value
-jwksH env = pure env.jwksJson
+jwksH env = liftIO env.jwksJson
 
 healthH :: Handler HealthResponse
 healthH = pure HealthResponse {status = "ok"}

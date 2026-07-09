@@ -4,6 +4,7 @@
 -- @\/auth\/login@ route (obtained through the real typed @shomei-client@).
 module Main (main) where
 
+import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Text.Encoding qualified as Text
 import Embedded.App (embeddedApplication)
@@ -45,10 +46,10 @@ tests =
     [ testCase "/projects is 401 without a token and 200 with one" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          (key, jwks) <- bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
           testWithApplication (pure (embeddedApplication env)) \port -> do
             mgr <- newManager defaultManagerSettings
 

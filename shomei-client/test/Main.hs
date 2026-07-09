@@ -4,6 +4,7 @@
 -- server agree on the wire format end-to-end, including the Bearer-authenticated @me@ route.
 module Main (main) where
 
+import Data.IORef (newIORef)
 import Data.Text (Text)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.Wai.Handler.Warp (testWithApplication)
@@ -37,10 +38,10 @@ tests =
     [ testCase "signup → login → me → refresh" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 connStr
-          (key, jwks) <- bootstrapKeys ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys ES256 pool
           envMgr <- newManager defaultManagerSettings
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKey = key, envJwks = jwks, envHttpManager = envMgr}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envHttpManager = envMgr}
           testWithApplication (pure (application env)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
