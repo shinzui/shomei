@@ -106,7 +106,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Complete |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Complete |
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Complete |
-| 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | In Progress |
+| 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Complete |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Not Started |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Not Started |
 | 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Not Started |
@@ -179,16 +179,23 @@ expression each later plan adds an arm to. `Shomei.Servant.OAuth` exports the re
 `extractClientAuth` (RFC 6749 §2.3.1 `client_secret_basic` and `client_secret_post`), `oauthError`
 plus the `invalidClient`/`invalidRequest`/`unsupportedGrantType` constants, `lookupParam`,
 `parseScopeParam`, and `TokenResponse`. EP-5 registered `authorization_code` (+ PKCE) and
-`refresh_token`; **EP-6 registers `urn:ietf:params:oauth:grant-type:token-exchange`.** For EP-6:
-`TokenResponse` now carries optional `refreshToken`/`idToken` (omitted, not null, when absent — update
-its `Arbitrary` and `ToSchema` together if you add a field); the grant workflows and their RFC 6749
-error type live in `shomei-core/src/Shomei/Workflow/OAuthTokenGrant.hs` (`TokenGrantError`,
-`GrantInvalidClient`/`GrantInvalidGrant`/`GrantInvalidRequest`); public-client auth (a bare
-`client_id` with no secret) goes through `Handlers.oauthClientCredentials`; and introspection's
-client-auth-against-either-an-OAuth-client-or-a-service-account helper is
-`Handlers.authenticateOAuthCaller`. Exchanged tokens must build their claims through
-`Shomei.Workflow.Session.issueSessionWith`, which returns the signed `AuthClaims` for exactly this
-reason (ID-token construction from the same claims as the access token).
+`refresh_token`; **EP-6 arms landed 2026-07-10** — it registered
+`urn:ietf:params:oauth:grant-type:token-exchange` via `Handlers.tokenExchangeGrant`, whose client
+authentication is *optional* (`Handlers.resolveExchangeClient`: absent → impersonation mode, present →
+must resolve to an active service account), and it added `RemoteHost` to the `/oauth/token` route for
+the impersonation client IP. `TokenResponse` now also carries optional `issuedTokenType`
+(`issued_token_type`, omitted not null) beside `refreshToken`/`idToken` — update its `Arbitrary` and
+`ToSchema` together if you add a field. The exchange workflow is
+`shomei-core/src/Shomei/Workflow/TokenExchange.hs` (`exchangeToken`, both modes), which reuses
+`Shomei.Workflow.Impersonation.mintDelegatedToken` (the shared refresh-less delegated mint, extracted
+from `startImpersonation`) so the bespoke and standard paths cannot drift; its errors are `AuthError`
+constructors (`OAuthGrantInvalid`/`OAuthRequestMalformed` + EP-4's `OAuthClientInvalid`/
+`OAuthScopeInvalid`), rendered in the RFC 6749 shape by `Handlers.exchangeErrorFor` (no
+`TokenGrantError`, no new catalog codes). Public-client auth (a bare `client_id` with no secret) goes
+through `Handlers.oauthClientCredentials`; introspection's client-auth-against-either-an-OAuth-client-
+or-a-service-account helper is `Handlers.authenticateOAuthCaller`. (EP-6's delegated tokens are
+refresh-less and issue no ID token, so they build claims directly in `mintDelegatedToken` rather than
+through `issueSessionWith` — that route stays reserved for EP-5's ID-token-bearing exchanges.)
 
 The RFC 6749 §5.2 error shape is distinct from the EP-3 problem-details envelope, and the OpenAPI
 generator actively works against that boundary — see Surprises: any new `/oauth/*` route must join
@@ -286,7 +293,7 @@ the other.
 - [x] EP-5: `/.well-known/openid-configuration` discovery document
 - [x] EP-5: Authorization-code grant with mandatory PKCE for public clients; consent delegated to host redirect contract
 - [x] EP-5: Introspection, revocation, userinfo endpoints; ID tokens signed by the existing key machinery
-- [ ] EP-6: Token-exchange grant covering impersonation and service on-behalf-of; bespoke `/auth/impersonate` deprecated
+- [x] EP-6: Token-exchange grant covering impersonation and service on-behalf-of; bespoke `/auth/impersonate` deprecated
 - [ ] EP-7: TOTP enrollment/verification with encrypted secrets; login MFA union extended
 - [ ] EP-7: Hashed one-time recovery codes with generation and consumption flows
 - [ ] EP-8: SMTP `Notifier` interpreter with TLS and auth, configured via Dhall/env
@@ -298,6 +305,28 @@ the other.
 
 
 ## Surprises & Discoveries
+
+**2026-07-10 (EP-6) — an impersonation actor must be a real `shomei_users` row under PostgreSQL, a
+constraint the in-memory interpreter does not enforce.** The delegated session's `actor_user_id`
+is a foreign key (`shomei_sessions_actor_user_id_fkey`), so a token-exchange or `/auth/impersonate`
+that names a synthetic operator subject fails with `23503` at runtime — green in every in-memory and
+servant test, red only in the real-Postgres E2E. **EP-9's time-bound grants touch sessions/grants;
+any real-DB test that mints a delegated/operator token must back it with a persisted user.**
+
+**2026-07-10 (EP-6) — the `act` shape differs between the JWT and the introspection response.**
+`shomei-jwt`'s `Sign.withActor` writes the access-token `act` claim as a bare string
+(`idText actor`); `Handlers.activeAccess` renders the RFC 7662 introspection `act` as an object
+`{"sub": "<id>"}`. A test asserting on the acting party digs `["act","sub"]` for introspection but
+reads `act` directly from a decoded JWT. This is intended (each matches its own spec) and is the
+model for any future consumer reading the actor.
+
+**2026-07-10 (EP-6) — the token-exchange grant reused EP-4's `AuthError`+exemption pattern, not a
+new `TokenGrantError`.** Two new constructors (`OAuthGrantInvalid`, `OAuthRequestMalformed`) join
+`OAuthClientInvalid`/`OAuthScopeInvalid`, total-mapped in `authErrorToServerError` to existing
+catalog specs (no new codes, no `routeErrors` entry) because the `/oauth/token` handler renders them
+in the RFC 6749 shape via a local `exchangeErrorFor`. The path count stayed 39 and `/oauth/token`'s
+`oauthErrorResponsesByPath` list already covered every code the arm emits — **EP-9 adds no `/oauth/*`
+surface, so it is unaffected here.**
 
 **2026-07-10 (EP-5) — the effect stack grew by two ports (`OAuthClientStore`, `OAuthCodeStore`) and
 `Session`/`NewSession` gained an `oauth_client_id` field, touching all five stack sites and every
