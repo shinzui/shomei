@@ -42,6 +42,18 @@ module Shomei.Client
     mfaComplete,
     passkeyLoginBegin,
     passkeyLoginComplete,
+    -- administration (Bearer; the caller needs the @admin@ role or the @shomei:admin@ scope):
+    adminListUsers,
+    adminGetUser,
+    adminSuspendUser,
+    adminReinstateUser,
+    adminDeleteUser,
+    adminListSessions,
+    adminRevokeSessions,
+    adminRevokeSession,
+    adminPasswordReset,
+    adminGrantRole,
+    adminRevokeRole,
   )
 where
 
@@ -70,13 +82,15 @@ import Servant.Client.Core
   )
 import Servant.Client.Core.HasClient (AsClientT, HasClient (..))
 import Servant.Client.Generic (genericClient)
-import Shomei.Id (PasskeyId)
+import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI, ShomeiRoutes)
 import Shomei.Servant.API qualified as API
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.DTO
-  ( LoginRequest,
+  ( AdminUserResponse,
+    AdminUsersPage,
+    LoginRequest,
     LoginResponse,
     MfaCompleteRequest,
     PasskeyLoginBeginResponse,
@@ -241,3 +255,69 @@ passkeyLoginBegin env = runClient env (API.passkeyLoginBegin shomeiClient)
 passkeyLoginComplete ::
   ClientEnv -> PasskeyLoginCompleteRequest -> IO (Either ClientError TokenPairResponse)
 passkeyLoginComplete env body = runClient env (getResponse <$> API.passkeyLoginComplete shomeiClient body)
+
+-- Administration (EP-2). Every one of these is an 'Authenticated' route whose handler demands
+-- the @admin@ role or the @shomei:admin@ scope; a token without either gets a @403@.
+--
+-- The mutations answer @204@\/@202@ with no body, so their wrappers discard 'NoContent' and
+-- return @()@ — exactly as 'logout' and 'deletePasskey' do.
+
+-- | One keyset page of users. @status@ filters (@"active"@ | @"suspended"@ | @"deleted"@),
+-- @limit@ defaults to 50 and is clamped to 1000, and @before@ takes the previous page's
+-- @nextCursor@.
+adminListUsers ::
+  ClientEnv -> Token -> Maybe Text -> Maybe Int -> Maybe Text -> IO (Either ClientError AdminUsersPage)
+adminListUsers env tok status limit before =
+  runClient env (API.adminListUsers shomeiClient (bearer tok) status limit before)
+
+-- | One user plus the roles actually granted to them in the store.
+adminGetUser :: ClientEnv -> Token -> UserId -> IO (Either ClientError AdminUserResponse)
+adminGetUser env tok uid = runClient env (API.adminGetUser shomeiClient (bearer tok) uid)
+
+-- | Suspend an active user and revoke their sessions. @409@ if they are not active; @403@ if
+-- the caller is the target.
+adminSuspendUser :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
+adminSuspendUser env tok uid =
+  discard (runClient env (API.adminSuspendUser shomeiClient (bearer tok) uid))
+
+-- | Return a suspended user to service. @409@ if they are not suspended.
+adminReinstateUser :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
+adminReinstateUser env tok uid =
+  discard (runClient env (API.adminReinstateUser shomeiClient (bearer tok) uid))
+
+-- | Soft-delete a user (status becomes @deleted@) and revoke their sessions. The row survives.
+adminDeleteUser :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
+adminDeleteUser env tok uid =
+  discard (runClient env (API.adminDeleteUser shomeiClient (bearer tok) uid))
+
+-- | Every session of a user, newest first, in every status.
+adminListSessions :: ClientEnv -> Token -> UserId -> IO (Either ClientError [SessionResponse])
+adminListSessions env tok uid = runClient env (API.adminListSessions shomeiClient (bearer tok) uid)
+
+adminRevokeSessions :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
+adminRevokeSessions env tok uid =
+  discard (runClient env (API.adminRevokeSessions shomeiClient (bearer tok) uid))
+
+adminRevokeSession :: ClientEnv -> Token -> SessionId -> IO (Either ClientError ())
+adminRevokeSession env tok sid =
+  discard (runClient env (API.adminRevokeSession shomeiClient (bearer tok) sid))
+
+-- | Trigger the ordinary password-reset flow for a user named by id. @409@ if they have no email.
+adminPasswordReset :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
+adminPasswordReset env tok uid =
+  discard (runClient env (API.adminPasswordReset shomeiClient (bearer tok) uid))
+
+-- | Grant a role. Idempotent: re-granting a held role still succeeds. @422@ if the role is not
+-- in the registry.
+adminGrantRole :: ClientEnv -> Token -> UserId -> Text -> IO (Either ClientError ())
+adminGrantRole env tok uid role =
+  discard (runClient env (API.adminGrantRole shomeiClient (bearer tok) uid role))
+
+-- | Revoke a role. @404@ if the user did not hold it.
+adminRevokeRole :: ClientEnv -> Token -> UserId -> Text -> IO (Either ClientError ())
+adminRevokeRole env tok uid role =
+  discard (runClient env (API.adminRevokeRole shomeiClient (bearer tok) uid role))
+
+-- | Throw away a 'NoContent' body, keeping the error channel.
+discard :: (Functor f) => f (Either e a) -> f (Either e ())
+discard = fmap (fmap (const ()))

@@ -51,6 +51,8 @@ test-suite shomei-client-test
   build-depends:
     , base
     , http-client
+    , http-types
+    , servant-client
     , shomei-client
     , shomei-core
     , shomei-migrations:test-support

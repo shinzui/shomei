@@ -8,6 +8,8 @@ import Data.IORef (newIORef)
 import Data.Text (Text)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.Wai.Handler.Warp (testWithApplication)
+import Network.HTTP.Types (statusCode)
+import Servant.Client (ClientError (FailureResponse), responseStatusCode)
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
@@ -20,11 +22,13 @@ import Shomei.Servant.DTO
     LoginResponse (..),
     RefreshRequest (..),
     SignupRequest (..),
+    SignupResponse (..),
     TokenPairResponse (..),
     UserResponse (..),
   )
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
+import Shomei.Id (parseId)
 import Shomei.Server.Keys (bootstrapKeys)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -36,7 +40,7 @@ tests :: TestTree
 tests =
   testGroup
     "shomei-client round-trip against a live server"
-    [ testCase "signup → login → me → refresh" $
+    [ testCase "signup → login → me → refresh; then every admin wrapper reaches its route" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
           keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
@@ -47,7 +51,7 @@ tests =
           testWithApplication (pure (application env)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
-            _su <-
+            su <-
               expect "signup"
                 =<< C.signup cenv SignupRequest {loginId = Nothing, email = Just email, password = password, displayName = "Ada Lovelace"}
 
@@ -61,10 +65,40 @@ tests =
 
             tp <- expect "refresh" =<< C.refresh cenv RefreshRequest {refreshToken = lr.token.refreshToken}
             (tp.refreshToken /= lr.token.refreshToken) @?= True
+
+            -- EP-2. The admin wrappers are derived from the same route types the server serves,
+            -- so what is really under test is that the /paths/ they build reach the handlers --
+            -- including the capture segments and the PUT no other route in the API uses. This
+            -- token carries no admin role, so every route must answer 403: a 404 would mean the
+            -- client built a path the server does not serve, a 405 that it used the wrong verb.
+            uid <- either (\e -> assertFailure ("bad user id: " <> show e)) pure (parseId su.user.userId)
+            sid <- either (\e -> assertFailure ("bad session id: " <> show e)) pure (parseId straySessionId)
+
+            expect403 "adminListUsers" =<< C.adminListUsers cenv tok Nothing Nothing Nothing
+            expect403 "adminGetUser" =<< C.adminGetUser cenv tok uid
+            expect403 "adminSuspendUser" =<< C.adminSuspendUser cenv tok uid
+            expect403 "adminReinstateUser" =<< C.adminReinstateUser cenv tok uid
+            expect403 "adminDeleteUser" =<< C.adminDeleteUser cenv tok uid
+            expect403 "adminListSessions" =<< C.adminListSessions cenv tok uid
+            expect403 "adminRevokeSessions" =<< C.adminRevokeSessions cenv tok uid
+            expect403 "adminRevokeSession" =<< C.adminRevokeSession cenv tok sid
+            expect403 "adminPasswordReset" =<< C.adminPasswordReset cenv tok uid
+            expect403 "adminGrantRole" =<< C.adminGrantRole cenv tok uid "admin"
+            expect403 "adminRevokeRole" =<< C.adminRevokeRole cenv tok uid "admin"
     ]
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
+    -- A well-formed session id that belongs to nobody: the 403 fires before any lookup.
+    straySessionId = "session_01h455vb4pex5vsknk084sn02q" :: Text
+
+-- | The route was reached and the admin gate refused it. A 404 would mean the client built a
+-- path the server does not serve; a 405, that it used the wrong verb.
+expect403 :: String -> Either C.ClientError a -> IO ()
+expect403 label = \case
+  Left (FailureResponse _ resp) | statusCode (responseStatusCode resp) == 403 -> pure ()
+  Left e -> assertFailure (label <> ": expected a 403, got " <> show e)
+  Right _ -> assertFailure (label <> ": expected a 403, got success")
 
 expect :: (Show e) => String -> Either e a -> IO a
 expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pure
