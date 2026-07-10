@@ -79,10 +79,10 @@ This section must always reflect the actual current state of the work.
 - [x] M3 (2026-07-10): `Metrics.recordRequest` counts `POST /oauth/token` 200 toward `shomei_tokens_issued_total` (the "route path in four places" rule).
 - [x] M4 (2026-07-10): `shomei-admin service-accounts create|rotate-secret|revoke|list`, built on `generateOpaqueToken` (32 random bytes, base64url) rather than a new `crypton` dependency. Three admin integration tests; suite 19 → 22.
 - [x] M4 (2026-07-10): Verified live against the dev database and a running server: create → token over HTTP → ES256 signature verified against `/.well-known/jwks.json` → rotate (old secret 401) → revoke (401) → audit rows present with no secret in any payload.
-- [ ] M5: Deprecation notes + migration path in `docs/user/service-tokens.md` and `docs/user/api.md`.
-- [ ] M5: `shomei-client` support for the token endpoint.
-- [ ] M5: Postgres E2E scenario: create account, fetch token over HTTP, call a scope-guarded route.
-- [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
+- [x] M5 (2026-07-10): `docs/user/service-tokens.md` rewritten around `/oauth/token`, with the config path marked deprecated and a five-step migration recipe; `docs/user/api.md` documents the endpoint, the RFC 6749 error table, and the `/oauth/*` envelope boundary; CHANGELOG entry added.
+- [x] M5 (2026-07-10): `shomei-client` gains `oauthToken` (and re-exports `TokenResponse`), built on the `genericClient`-derived route.
+- [x] M5 (2026-07-10): Postgres E2E scenario in `E2ESpec`: seed account → `POST /oauth/token` over real Warp → the token authenticates on `/v1/auth/me` → its `kid` is in the served JWKS → wrong secret is an RFC 6749 object with `WWW-Authenticate` → one `service_token_issued` row, one session, zero refresh tokens.
+- [x] Final (2026-07-10): `nix fmt`; `cabal build all` clean; `TASTY_NUM_THREADS=1 cabal test all` green, exit 0, all twelve suites (see Surprises on why the env var is needed). Outcomes & Retrospective written.
 
 
 ## Surprises & Discoveries
@@ -455,10 +455,62 @@ Record every decision made while working on the plan.
 
 ## Outcomes & Retrospective
 
-Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
-Compare the result against the original purpose.
+The purpose is met. Both problems the plan opened with are gone.
 
-(To be filled during and after implementation.)
+A service credential now has a runtime lifecycle: `shomei-admin service-accounts create` prints a
+32-byte CSPRNG secret once and stores only its digest; `rotate-secret` kills the old secret
+immediately; `revoke` refuses every future token. None of it needs a redeploy. And Shōmei speaks
+the standard: a `curl -u client_id:secret -d grant_type=client_credentials` against
+`POST /oauth/token` returns an RFC 6749 §5.1 response, and the token it carries verifies — checked
+by an actual ES256 signature verification against the served `/.well-known/jwks.json`, not merely
+asserted — and satisfies the existing `RequireScope` combinator downstream. The deprecated
+`/v1/auth/service-token` and its config accounts are untouched and still pass their original tests.
+
+What the plan got wrong, and what that cost:
+
+- It was written before EP-3 landed, so three of its concrete instructions were stale: the route
+  belongs in `ShomeiRoutes` (not `ShomeiAPI`, which is now mounted under `/v1`), the OpenAPI path
+  count was 33 (not 24), and `authErrorToServerError` is now problem-details rather than the old
+  `{"error","message"}` shape. All cheap to detect, because each failed loudly at compile time.
+- Two of its own commands do not run: `just new-migration name=…` is rejected by the recipe, and
+  `cabal run shomei-server` is ambiguous. Both are corrected in place. The second was only found by
+  actually running it — and the machine's port 8080 was occupied by an unrelated process whose SPA
+  answered `/health` with HTTP 200, so `curl -sf …/health` reported a false green.
+- It called for four new `AuthError` constructors; only two are reachable from a workflow. The
+  other two describe HTTP-layer conditions the dispatcher detects itself.
+
+Three things the tests did not catch and a live run did. The `invalid_scope` description claimed
+the scope "exceeds the client's allowed scopes" even when the client had sent `scope=` and
+requested nothing — every test asserted the error *code*, never the prose. The OpenAPI generator
+would have documented a `problem+json` 400 on `/oauth/token` (because `baselineSpecs` attaches one
+to any operation with a request body), contradicting the endpoint's entire reason for existing, and
+no pre-existing conformance check looks at non-problem responses. And `Metrics.recordRequest`
+matches literal paths, so `shomei_tokens_issued_total` would have quietly stopped counting as
+services migrated onto the new endpoint. The first was found by curl, the other two by reading the
+integration points the MasterPlan names.
+
+Two self-inflicted bugs worth remembering. A `testCase` that is never added to the tasty list
+compiles, links, and contributes zero tests — it happened twice here, once in `shomei-core` and
+once in `shomei-servant`, and in both cases `cabal test` reported the suite green. The tell is the
+test count, never the exit status. And the first draft of the admin tests recovered the
+once-printed secret by redirecting the process's global `stdout`, which races with tasty's parallel
+cases; the suite alternated between "All 22 tests passed" and "2 out of 22 tests failed". The fix
+was to make the CLI actions return values and let a thin wrapper print them — better design, no
+lock, one fewer dependency.
+
+Deliberately not done, each recorded in the Decision Log: `/oauth/token` is not rate-limited
+(a per-IP bucket punishes a fleet behind one NAT and cannot slow a 256-bit random secret);
+`revoke` does not try to invalidate outstanding stateless JWTs, and says so; and no third-party
+OAuth2 server library was adopted — `oauth2-server` 0.3.0.0 has no `client_credentials` grant at
+all, keeps state in an `MVar`, signs through `servant-auth-server` rather than Shōmei's
+key-rotating signer, and drags in `cryptonite` and a `blaze-html` login form.
+
+What this leaves for the sibling plans. The grant dispatcher in `Handlers.oauthTokenH` is one
+`case` expression with a comment naming plans 42 and 43 as its extenders; `extractClientAuth`,
+`oauthError` and the `TokenResponse` shape are stable and reusable. `Shomei.Servant.OpenApi.oauthPaths`
+is the list every future `/oauth/*` endpoint must join or be documented with the wrong error
+envelope. And the effect stack must now be declared in **five** places, not the three the plan
+named — the two extra are private copies inside test suites, and only those suites will tell you.
 
 
 ## Context and Orientation

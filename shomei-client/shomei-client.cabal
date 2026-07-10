@@ -33,6 +33,9 @@ library
   exposed-modules: Shomei.Client
   build-depends:
     , base                 >=4.18 && <5
+    , base64
+    , bytestring
+    , http-api-data
     , http-client
     , http-client-tls
     , servant

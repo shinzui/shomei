@@ -18,6 +18,7 @@ consume them look:
 | `GET /openapi.json` | describes the whole server, including the non-`/v1` surface |
 | `GET /health`, `GET /ready` | deployment contracts a load balancer is configured against |
 | `GET /metrics` | scrape target (a WAI middleware; it never reaches the router) |
+| `POST /oauth/token` | OAuth2 clients expect the token endpoint at a conventional location |
 
 The unprefixed paths are **gone**, not redirected: `POST /auth/login` is a `404`. See the
 CHANGELOG for the migration.
@@ -51,9 +52,12 @@ locked account all return the same `401` with `code: "invalid_login"`, so the AP
 which emails are registered (see [security.md](security.md)).
 
 Two responses are exempt from the envelope. `GET /ready` answers `503` with a
-`{"status","database","signingKey"}` probe document — a status report, not an error. The future
-`POST /oauth/token` will use RFC 6749 §5.2's `{"error":"invalid_grant",…}` shape, which OAuth2
-clients require.
+`{"status","database","signingKey"}` probe document — a status report, not an error. And
+everything under **`/oauth/*`** answers with RFC 6749 §5.2's
+`{"error":"invalid_client","error_description":"…"}` shape, served as `application/json`, because
+that is what every stock OAuth2 client parses by field name. The boundary is exact and permanent:
+`/oauth/*` speaks the OAuth2 wire protocol; everything else speaks the problem-details envelope.
+The OpenAPI document declares a separate `OAuthError` schema for it.
 
 [rfc7807]: https://www.rfc-editor.org/rfc/rfc7807
 
@@ -106,7 +110,70 @@ Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only 
 ### `POST /v1/auth/refresh`
 Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
-### `POST /v1/auth/service-token`
+### `POST /oauth/token`
+
+The standard OAuth2 token endpoint (RFC 6749). **Unversioned**, form-encoded, and exempt from the
+problem-details envelope — see [Errors](#errors). Any stock OAuth2 client can use it with no
+Shōmei-specific code.
+
+Request: `Content-Type: application/x-www-form-urlencoded`. The `grant_type` parameter selects the
+flow; this deployment implements **`client_credentials`** (RFC 6749 §4.4). The client authenticates
+as itself with either method from §2.3.1:
+
+- `client_secret_basic` — `Authorization: Basic base64(client_id:client_secret)`. Preferred; if
+  the header is present it is used, even when body parameters also appear.
+- `client_secret_post` — `client_id` and `client_secret` as body parameters.
+
+| Parameter | Required | Meaning |
+|---|---|---|
+| `grant_type` | yes | `client_credentials` |
+| `scope` | no | Space-delimited. **Omit it** to be granted every scope the account is allowed. A present value must be a non-empty subset of `allowed_scopes`; `scope=` (empty) is `invalid_scope`. |
+| `client_id`, `client_secret` | only for `client_secret_post` | |
+
+```bash
+curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d 'grant_type=client_credentials&scope=kawa:ingest' \
+  http://localhost:8080/oauth/token
+```
+
+→ `200`, with `Cache-Control: no-store` and `Pragma: no-cache` (RFC 6749 §5.1 forbids caching a
+token response):
+
+```json
+{"access_token":"eyJ...","token_type":"Bearer","expires_in":300,"scope":"kawa:ingest"}
+```
+
+`scope` is always present and names exactly what was granted. The token has **no refresh token**:
+its session is refresh-less, so the credential cannot outlive its TTL (`serviceToken.ttlSeconds`,
+default 300). Its `sub` is the service account's backing user id, its `scopes` claim carries the
+granted scopes, and it is signed by the same key and verifies against the same
+`GET /.well-known/jwks.json` as any other Shōmei token. A normal login token still carries empty
+scopes, so a route guarded by `requireScope (Scope "kawa:ingest")` accepts this token and rejects
+a human's with `403`.
+
+Errors are RFC 6749 §5.2 objects, never problem documents:
+
+| `error` | HTTP | When |
+|---|---|---|
+| `invalid_client` | 401 | Unknown `client_id`, wrong secret, revoked account, inactive backing user, no credentials, or a malformed `Authorization` header. Carries `WWW-Authenticate: Basic realm="shomei"`. All of these are byte-identical: nothing discloses whether a `client_id` exists. |
+| `invalid_scope` | 400 | The requested scope is empty, or exceeds `allowed_scopes`. |
+| `invalid_request` | 400 | A required parameter is missing or malformed. |
+| `unsupported_grant_type` | 400 | A `grant_type` this deployment does not implement. |
+| `server_error` | 500 | An unexpected condition, still in the OAuth shape. |
+
+Every successful issuance writes a `service_token_issued` audit event whose `accountId` is the
+`client_id`. `/oauth/token` is **not** rate-limited; see
+[service-tokens.md](service-tokens.md#security-notes) for why.
+
+Manage accounts with `shomei-admin service-accounts create|rotate-secret|revoke|list`. See
+[service-tokens.md](service-tokens.md) for the full guide.
+
+### `POST /v1/auth/service-token` *(deprecated)*
+
+> **Deprecated.** Use [`POST /oauth/token`](#post-oauthtoken) with the `client_credentials` grant.
+> This endpoint and its config-defined accounts keep working unchanged; removal is a candidate for
+> the next major version boundary. [Migration recipe](service-tokens.md#migrating-from-config-accounts-to-oauthtoken).
+
 Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:
 the configured service account id and shared secret in the JSON body are the credential. The
 server hashes `secret` with SHA-256, encodes the digest as lowercase hex, and compares it with the

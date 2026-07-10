@@ -104,7 +104,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | Complete |
 | 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Complete |
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Complete |
-| 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | In Progress |
+| 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Complete |
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Not Started |
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Not Started |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Not Started |
@@ -171,14 +171,21 @@ persistent store plus a host-supplied enrichment function) that `issueSession` c
 ID-token/userinfo claims and EP-6's exchanged-token claims must be built through that same
 hook, never by re-reading stores in the HTTP layer.
 
-Token endpoint and grant dispatch (new module in `shomei-servant`, wired in
-`shomei-server`): involved plans EP-4 (owner), EP-5, EP-6. EP-4 defines `POST /oauth/token`
-accepting `application/x-www-form-urlencoded` with a `grant_type` dispatcher and the OAuth2
-error-response shape (`invalid_grant`, `invalid_client`, …, per RFC 6749 §5.2 — distinct from
-the EP-3 problem-details envelope; both plans document this boundary). EP-5 registers
-`authorization_code` (+ PKCE verification) and `refresh_token`; EP-6 registers
-`urn:ietf:params:oauth:grant-type:token-exchange`. Client authentication (secret post/basic)
-is defined by EP-4 and reused by both.
+Token endpoint and grant dispatch (`shomei-servant/src/Shomei/Servant/OAuth.hs`, wired in
+`Handlers.hs`): involved plans EP-4 (owner), EP-5, EP-6. **Landed 2026-07-10.**
+`POST /oauth/token` is a field of `ShomeiRoutes` (unversioned), takes a raw
+`Web.FormUrlEncoded.Form`, and dispatches on `grant_type` in `Handlers.oauthTokenH` — one `case`
+expression each later plan adds an arm to. `Shomei.Servant.OAuth` exports the reusable parts:
+`extractClientAuth` (RFC 6749 §2.3.1 `client_secret_basic` and `client_secret_post`), `oauthError`
+plus the `invalidClient`/`invalidRequest`/`unsupportedGrantType` constants, `lookupParam`,
+`parseScopeParam`, and `TokenResponse`. EP-5 registers `authorization_code` (+ PKCE) and
+`refresh_token`; EP-6 registers `urn:ietf:params:oauth:grant-type:token-exchange`.
+
+The RFC 6749 §5.2 error shape is distinct from the EP-3 problem-details envelope, and the OpenAPI
+generator actively works against that boundary — see Surprises: any new `/oauth/*` route must join
+`Shomei.Servant.OpenApi.oauthPaths` or it is documented with the wrong envelope. `AuthError` carries
+only `OAuthClientInvalid` and `OAuthScopeInvalid`; request-shape failures are the dispatcher's and
+never reach a workflow.
 
 Versioning boundary (`shomei-servant/src/Shomei/Servant/API.hs`): involved plans EP-3 (owner)
 and every plan adding routes (EP-2, EP-4, EP-5, EP-7). **Landed 2026-07-09.** The served tree is
@@ -209,17 +216,28 @@ of the change) and, read-only, the existing passkey flows. EP-7 extends the adve
 field and `/auth/mfa/complete` request union with `totp` and `recovery_code` variants; the
 extension must be additive so existing passkey-only clients keep parsing responses.
 
-Service-account storage (new migration in `shomei-migrations/sql-migrations/`, new port in
-`shomei-core/src/Shomei/Effect/`): EP-4 owns it. EP-6 reads service accounts for actor
-authentication in service on-behalf-of exchanges. The existing config-defined service accounts
-(`Shomei.Config` service-token sub-record) remain supported during a deprecation window; EP-4
-documents the migration path.
+Service-account storage (`shomei_service_accounts` table; `Shomei.Effect.ServiceAccountStore` with
+Postgres and in-memory interpreters; `Shomei.Domain.ServiceAccount`): EP-4 owns it.
+**Landed 2026-07-10.** Lookup is by `client_id` (the account's TypeID text, prefix `svcacct`);
+mutations are by `ServiceAccountDbId`. `findServiceAccountByClientId` returns revoked accounts too —
+refusing them is the workflow's job, and the refusal must be indistinguishable from a wrong secret.
+EP-6 reads service accounts for actor authentication in service on-behalf-of exchanges; note
+`ServiceAccount` shares the field names `userId`/`status`/`createdAt`/`displayName` with `User`, so
+co-importing both with `(..)` defeats `OverloadedRecordDot` — read one of them through generic-lens
+labels or record patterns. The config-defined service accounts (`Shomei.Config` service-token
+sub-record) remain supported and untouched; `docs/user/service-tokens.md` carries the migration
+recipe. `Shomei.Workflow.ServiceToken.verifyServiceSecret` is now exported and is the single
+constant-time secret comparison shared by both paths.
 
 `shomei-admin` CLI (`shomei-server/app/`): EP-1 adds `roles grant/revoke` plus the role
 registry subcommands (the bootstrap path for the first admin), EP-9 adds
-`roles allow/disallow/show` and grant-expiry flags, EP-4 adds
-`service-accounts create/rotate/revoke`. Additive subcommands; no shared code beyond the
-existing CLI plumbing.
+`roles allow/disallow/show` and grant-expiry flags, EP-4 added
+`service-accounts create/rotate-secret/revoke/list` (**landed 2026-07-10**). Additive subcommands;
+no shared code beyond the existing CLI plumbing. Two conventions EP-4 established and later plans
+should follow: a subcommand that prints a secret exposes an *action function* returning it, with
+`run…` as a thin printing wrapper (so tests need not capture stdout — see Surprises); and
+server-generated secrets come from `Shomei.Crypto.generateOpaqueToken` (32 CSPRNG bytes,
+base64url-unpadded) rather than a fresh `crypton` dependency.
 
 Role storage (`shomei_roles` registry and `shomei_role_grants` tables, `RoleStore` port in
 `shomei-core/src/Shomei/Effect/`): EP-1 owns the tables and the port; EP-9 extends them
@@ -254,8 +272,8 @@ the other.
 - [x] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
 - [x] EP-3: Universal problem-details envelope on every error path (including auth combinator 401s)
 - [x] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
-- [ ] EP-4: Service-account table, port, CLI; secrets hashed, rotatable, revocable at runtime
-- [ ] EP-4: `POST /oauth/token` with `client_credentials` grant and RFC 6749 error shape
+- [x] EP-4: Service-account table, port, CLI; secrets hashed, rotatable, revocable at runtime
+- [x] EP-4: `POST /oauth/token` with `client_credentials` grant and RFC 6749 error shape
 - [ ] EP-5: `/.well-known/openid-configuration` discovery document
 - [ ] EP-5: Authorization-code grant with mandatory PKCE for public clients; consent delegated to host redirect contract
 - [ ] EP-5: Introspection, revocation, userinfo endpoints; ID tokens signed by the existing key machinery
@@ -389,6 +407,77 @@ that adds a throttled endpoint must extend both the list and that test.
 `getAuthMe`. Generated clients keep their method names across this migration and across a future
 `/v2`. **EP-4 and EP-5 add unversioned `/oauth/*` and `/.well-known/*` routes**, which fall
 through that rule untouched — no action needed, but do not "fix" the drop by removing it.
+
+**2026-07-10 (EP-4) — the canonical effect stack is declared in FIVE places, not three.** Beyond
+`Shomei.Servant.Seam.AppEffects`, `Shomei.Server.App.AppEffects` (+ `runAppIO`) and
+`Shomei.Effect.InMemory.InMemoryPorts` (+ `runInMemoryWith`), two test suites keep private copies:
+`shomei-postgres/test/Main.hs` (its own `AppEffects` and two interpreter chains) and
+`shomei-servant/test/Main.hs` (`runHybrid`). A port missing from either compiles fine under
+`cabal build all` and fails only when that suite compiles. **EP-5, EP-6, EP-7 and EP-9 all add
+ports or interpreters.**
+
+**2026-07-10 (EP-4) — `Shomei.Servant.OpenApi.baselineSpecs` will document the WRONG error envelope
+on any `/oauth/*` route you add.** It attaches `pcBodyParseError` (a `problem+json` 400) to every
+operation carrying a request body. `/oauth/token` carries one, and its errors are RFC 6749 objects —
+so the generated spec promised a shape the endpoint cannot emit, and no existing conformance check
+noticed, because they all inspect only `problem+json` responses. EP-4 added an `oauthPaths`
+exclusion list, an `OAuthError` component schema, and two assertions ("documents no problem+json
+response on /oauth/token", "documents the RFC 6749 error codes it can actually emit").
+**EP-5's introspection and revocation endpoints are `/oauth/*` and MUST be added to `oauthPaths`.**
+Its `/.well-known/openid-configuration` is a GET with no body, so it escapes the baseline — but its
+error shape is still OIDC's, not problem-details, so document it deliberately.
+
+**2026-07-10 (EP-4) — a `testCase`/`it` that is never added to the runner's list is a silent no-op,
+and the suite still reports green.** It happened twice in EP-4 (once in `shomei-core`, once in
+`shomei-servant`): the spec module compiled, the `import … qualified` satisfied `-Wunused-imports`,
+and `cabal test` printed `All 159 tests passed` — the same count as before ten new tests were
+written. **Verify a new test by grepping the runner's output for its own name, or by checking the
+count rose.** Every remaining plan adds tests.
+
+**2026-07-10 (EP-4) — `cabal test all` fails nondeterministically here, and it is
+ephemeral-PostgreSQL contention, not your code.** Each DB-backed tasty case starts its own cluster
+through `Shomei.Migrations.TestSupport.withShomeiMigratedDatabase`; run in parallel, startup blows a
+60-second timeout and reports `Exception: Failed to start ephemeral PostgreSQL: TimeoutError`. The
+failing set differs run to run, the failures are never assertions, and every suite is green alone.
+**`TASTY_NUM_THREADS=1 cabal test all` is green, exit 0, all twelve suites** — use it before
+believing a red run. Do *not* pass `--test-options="--num-threads=1"`: `shomei-servant-openapi-test`
+is hspec and dies with `unrecognized option`, which then looks like a real failure. This subsumes
+the `SupervisorSpec` note below. EP-4 added four more ephemeral-database cases, so it trips more
+easily now.
+
+**2026-07-10 (EP-4) — `HEAD` is not `nix fmt`-clean, so the plans' final `nix fmt` step sweeps
+unrelated files into your diff.** On a pristine checkout of `5aa2dfb`, `nix fmt` reformats 18 files
+(`shomei-servant/src/Shomei/Servant/OpenApi.hs` alone moves ~103 lines), and on that file it
+*degrades* the module haddock — escaping the leading `|` and promoting the orphan note in its place.
+EP-4 ran `nix fmt`, then `git checkout --` on every file the milestone did not semantically change.
+**Every remaining plan is affected.** Making the tree formatter-clean deserves its own commit and is
+not any one plan's job.
+
+**2026-07-10 (EP-4) — capturing the process's stdout in a parallel test runner is a race.** The
+first draft of EP-4's admin tests recovered a once-printed secret with `hDuplicateTo` on the global
+`stdout`; tasty runs cases in parallel, so two capturing cases read each other's output and the
+suite alternated between `All 22 tests passed` and `2 out of 22 tests failed`. The fix was to make
+the CLI subcommands *return* what they did (`createAction`, `rotateSecretAction`, …) with a thin
+printing wrapper. **EP-7's recovery codes are printed exactly once too.**
+
+**2026-07-10 (EP-4) — the grant dispatcher and OAuth wire helpers are ready for EP-5 and EP-6.**
+`Shomei.Servant.Handlers.oauthTokenH` is a single `case` on `grant_type`; add an arm. Reuse
+`Shomei.Servant.OAuth.extractClientAuth` (both RFC 6749 §2.3.1 client-auth methods),
+`oauthError`/`invalidClient`/`invalidRequest`/`unsupportedGrantType`, `lookupParam`,
+`parseScopeParam`, and `TokenResponse`. The request body is a raw
+`Web.FormUrlEncoded.Form` precisely so each grant reads its own parameters. `AuthError` gained only
+`OAuthClientInvalid` and `OAuthScopeInvalid`: a missing or unrecognized `grant_type` is detected by
+the dispatcher before any workflow runs and needs no domain constructor.
+
+**2026-07-10 (EP-4) — no third-party OAuth2 server library is usable here, and EP-5 should not
+redo the survey blindly.** `oauth2-server` 0.3.0.0 (the only server-side candidate on the index)
+declares `grant_types_supported = ["authorization_code", "refresh_token"]` — no `client_credentials`
+at all — keeps state in an `MVar (OAuthState usr)` threaded through every handler, signs through
+`servant-auth-server` rather than Shōmei's key-rotating `jose` signer, and pulls in `cryptonite`
+(superseded by `crypton`, which Shōmei uses) plus `blaze-html` for a built-in login form the
+MasterPlan permanently excludes. `openid-connect` 0.2.0's entire provider surface is
+`OpenID.Connect.Provider.Key` (key generation). **EP-5 may want a second look at `oauth2-server` for
+`authorization_code`+PKCE and discovery, but the state, signer, and UI objections apply unchanged.**
 
 **2026-07-09 (EP-1) — `shomei-server-test`'s `SupervisorSpec` is flaky under `cabal test all`.**
 Two timing-based tests ("a crashing cycle is retried", "backoff resets after a clean cycle")

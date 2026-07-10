@@ -2,7 +2,6 @@
 -- @Client@ type to the @AuthProtect "shomei-jwt"@ instance, which GHC cannot see is
 -- terminating (the right-hand side is another application of the same family).
 {-# LANGUAGE UndecidableInstances #-}
-
 -- The @AuthClientData@ instance below is an unavoidable orphan (both the type family and
 -- @AuthProtect "shomei-jwt"@ belong to servant; 'Token' belongs here) — the standard
 -- servant generalized-auth client pattern. The two 'HasClient' instances are orphans for the
@@ -42,6 +41,9 @@ module Shomei.Client
     mfaComplete,
     passkeyLoginBegin,
     passkeyLoginComplete,
+    -- machine tokens (OAuth2 client_credentials):
+    oauthToken,
+    TokenResponse (..),
     -- administration (Bearer; the caller needs the @admin@ role or the @shomei:admin@ scope):
     adminListUsers,
     adminGetUser,
@@ -57,6 +59,10 @@ module Shomei.Client
   )
 where
 
+import Data.Base64.Types (extractBase64)
+import Data.ByteString.Base64 qualified as B64
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as TLS
 -- Explicitly, as a /type/: 'Shomei.Prelude' re-exports lens, whose @(:>)@ snoc pattern synonym
@@ -105,6 +111,8 @@ import Shomei.Servant.DTO
     TokenPairResponse,
     UserResponse,
   )
+import Shomei.Servant.OAuth (TokenResponse (..))
+import Web.FormUrlEncoded (toForm)
 
 -- | A Bearer access token (the signed JWT the server returned from @\/v1\/auth\/login@).
 newtype Token = Token {unToken :: Text}
@@ -306,6 +314,33 @@ adminRevokeSession env tok sid =
 adminPasswordReset :: ClientEnv -> Token -> UserId -> IO (Either ClientError ())
 adminPasswordReset env tok uid =
   discard (runClient env (API.adminPasswordReset shomeiClient (bearer tok) uid))
+
+-- | Fetch a machine token from @POST \/oauth\/token@ with the OAuth2 @client_credentials@ grant
+-- (EP-4), authenticating with @client_secret_basic@.
+--
+-- An empty @scopes@ list omits the @scope@ parameter entirely, which grants every scope the
+-- service account is allowed. Passing scopes narrows the token to that subset; a scope outside
+-- the account's allow-list is rejected with @invalid_scope@.
+--
+-- The failure channel is 'ClientError' as everywhere else in this module, but note that the
+-- endpoint's error /body/ is an RFC 6749 object (@{"error":…,"error_description":…}@), not the
+-- problem document the rest of the API returns — @\/oauth\/*@ speaks the OAuth2 wire protocol.
+-- A caller that wants the code inspects the 'ClientError''s response body.
+--
+-- Get a @client_id@ and secret with @shomei-admin service-accounts create@.
+oauthToken :: ClientEnv -> Text -> Text -> [Text] -> IO (Either ClientError TokenResponse)
+oauthToken env clientId clientSecret scopes =
+  fmap getResponse <$> runClient env (API.oauthToken shomeiRoutesClient (Just basicHeader) form)
+  where
+    basicHeader =
+      "Basic " <> extractBase64 (B64.encodeBase64 (TE.encodeUtf8 (clientId <> ":" <> clientSecret)))
+    -- An absent `scope` is a server-defined default (RFC 6749 §3.3); an empty one is a malformed
+    -- request. So a caller passing no scopes must send no parameter, not `scope=`.
+    form =
+      toForm
+        ( ("grant_type" :: Text, "client_credentials" :: Text)
+            : [("scope", Text.unwords scopes) | not (null scopes)]
+        )
 
 -- | Grant a role. Idempotent: re-granting a held role still succeeds. @422@ if the role is not
 -- in the registry.

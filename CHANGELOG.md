@@ -7,6 +7,35 @@ tagged release.
 
 ## Unreleased
 
+### Added — MasterPlan 7 (Interop Wave), EP-4: OAuth2 client credentials
+
+Shōmei now mints machine tokens through the standard OAuth2 token endpoint, backed by service
+accounts an operator manages at runtime. Any stock OAuth2 client — Spring, ASP.NET, Go's
+`clientcredentials`, `curl` — can fetch a token with zero Shōmei-specific code.
+
+- **`POST /oauth/token`** with the `client_credentials` grant (RFC 6749 §4.4), accepting
+  `application/x-www-form-urlencoded` bodies and both standard client-authentication methods
+  (`client_secret_basic` and `client_secret_post`). Unversioned, because that is where OAuth2
+  tooling looks. Omitting `scope` grants every scope the account is allowed; the response always
+  echoes what was granted. The token is refresh-less, signed by the existing key machinery, and
+  verifies against the existing `/.well-known/jwks.json`.
+- **Database-backed service accounts**, created, rotated, revoked and listed at runtime with
+  `shomei-admin service-accounts create|rotate-secret|revoke|list`. The secret is 32 bytes of
+  CSPRNG output shown exactly once; only its SHA-256 digest is stored. Previously a machine
+  credential lived in static configuration and could not be changed without a redeploy.
+- **Three new audit events**: `service_account_created`, `service_account_secret_rotated`,
+  `service_account_revoked`. Successful issuance still writes `service_token_issued`, so audit
+  consumers see one event type for "a machine token was minted" whichever endpoint minted it.
+
+`POST /v1/auth/service-token` and its config-defined accounts are **deprecated** but unchanged;
+nothing breaks. See [docs/user/service-tokens.md](docs/user/service-tokens.md) for the migration
+recipe.
+
+**Note the error-shape boundary.** Endpoints under `/oauth/*` answer with RFC 6749 §5.2's
+`{"error":…,"error_description":…}` object as `application/json`, *not* the RFC 7807
+problem-details envelope every other endpoint uses. This is deliberate and permanent: stock OAuth2
+clients parse those fields by name. The OpenAPI document declares a separate `OAuthError` schema.
+
 ### Added — MasterPlan 7 (Interop Wave), EP-2: the admin HTTP API
 
 A deployed Shōmei is now administrable over HTTP, not only with the `shomei-admin` CLI on the box.

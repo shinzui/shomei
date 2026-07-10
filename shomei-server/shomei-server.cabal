@@ -193,9 +193,12 @@ test-suite shomei-server-test
   build-depends:
     , aeson
     , base
+    , base64
     , bytestring
     , containers
     , directory
+    , effectful
+    , effectful-core
     , hasql
     , hasql-pool
     , http-client
