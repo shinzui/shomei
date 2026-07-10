@@ -22,6 +22,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Data.Time (addUTCTime, getCurrentTime)
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import Hasql.Decoders qualified as D
@@ -51,18 +52,20 @@ import Network.HTTP.Types (Header, statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Shomei.Config (OAuthConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Domain.LoginId (mkLoginId)
 import Shomei.Domain.OAuthClient (ClientType (..), NewOAuthClient (..))
 import Shomei.Domain.ServiceAccount (NewServiceAccount (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
+import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (NewUser (..), User (..))
 import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (createOAuthClient)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
 import Shomei.Effect.UserStore (createUser)
 import Shomei.Error (AuthError)
-import Shomei.Id (genOAuthClientId, genServiceAccountDbId, idText)
+import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, idText)
+import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (runDatabasePool)
@@ -72,7 +75,7 @@ import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
-import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
 import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
@@ -112,7 +115,39 @@ tests =
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
           clientId <- seedOAuthClient pool
-          testWithApplication (pure (application env)) (oidcScenario clientId)
+          testWithApplication (pure (application env)) (oidcScenario clientId),
+      testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 connStr
+          keys <- bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef keys
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+          clientId <- seedExchangeServiceAccount pool
+          -- The operator token must verify against the server's own key material, so it is signed
+          -- with the active signing key (scope granting is host-side; here the host is the test).
+          -- The operator must be a real user row: a delegated session's actor_user_id is a foreign
+          -- key into shomei_users.
+          opUid <- seedOperatorUser pool
+          opSid <- genSessionId
+          t <- getCurrentTime
+          let opClaims =
+                AuthClaims
+                  { subject = opUid,
+                    sessionId = opSid,
+                    issuer = cfg.issuer,
+                    audience = cfg.audience,
+                    issuedAt = t,
+                    expiresAt = addUTCTime 900 t,
+                    scopes = Set.singleton (Scope "impersonate:user"),
+                    roles = Set.empty,
+                    actor = Nothing,
+                    extraClaims = mempty
+                  }
+          AccessToken opTok <- either (assertFailure . ("could not sign the operator token: " <>) . show) pure =<< signAccessToken keys.signingKey opClaims
+          testWithApplication (pure (application env)) (exchangeScenario pool clientId opTok)
     ]
 
 -- | The secret the seeded OAuth client authenticates with; only its digest reaches the row.
@@ -338,6 +373,126 @@ oauthScenario pool clientId port = do
   -- A client_credentials session is refresh-less: the credential cannot outlive its TTL.
   refreshes <- scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens"
   refreshes @?= 0
+
+-- | The secret the EP-6 exchange service account authenticates with.
+exchangeSecret :: Text
+exchangeSecret = "e2e-exchange-secret"
+
+-- | Create the operator's user row directly, returning its id. Needed because a delegated session's
+-- @actor_user_id@ is a foreign key into @shomei_users@, so the operator naming @act@ must exist.
+seedOperatorUser :: Pool -> IO UserId
+seedOperatorUser pool = do
+  outcome <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool pool
+      . runClockIO
+      . runUserStorePostgres
+      $ do
+        loginId <- either (const (error "bad login id")) pure (mkLoginId "e2e-operator")
+        User {userId} <- createUser NewUser {loginId, email = Nothing, displayName = Just "e2e operator"}
+        pure userId
+  either (assertFailure . ("could not seed the operator user: " <>) . show) pure outcome
+
+-- | Seed a service account holding both @kawa:ingest@ and the @token-exchange:subject@ gate scope,
+-- so it can drive the RFC 8693 on-behalf-of grant. Returns its @client_id@.
+seedExchangeServiceAccount :: Pool -> IO Text
+seedExchangeServiceAccount pool = do
+  outcome <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool pool
+      . runClockIO
+      . runServiceAccountStorePostgres
+      . runUserStorePostgres
+      $ do
+        said <- genServiceAccountDbId
+        let cid = idText said
+        ts <- now
+        loginId <- either (const (error "bad login id")) pure (mkLoginId cid)
+        User {userId = backingUserId} <- createUser NewUser {loginId, email = Nothing, displayName = Just "e2e exchange svc"}
+        _ <-
+          createServiceAccount
+            NewServiceAccount
+              { serviceAccountId = said,
+                clientId = cid,
+                userId = backingUserId,
+                secretHash = sha256Hex exchangeSecret,
+                displayName = "e2e exchange svc",
+                allowedScopes = Set.fromList [Scope "kawa:ingest", Scope "token-exchange:subject"],
+                createdAt = ts
+              }
+        pure cid
+  either (assertFailure . ("could not seed the exchange service account: " <>) . show) pure outcome
+
+-- | The RFC 8693 token-exchange promise against the real stack: both modes mint a delegated token
+-- the server's own verifier and JWKS accept, and both write their audit event with subject + actor.
+exchangeScenario :: Pool -> Text -> Text -> Int -> IO ()
+exchangeScenario pool clientId opTok port = do
+  mgr <- newManager defaultManagerSettings
+  let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+      userIdType = "urn:shomei:params:oauth:token-type:user-id"
+      accessType = "urn:ietf:params:oauth:token-type:access_token"
+      accessTypeText = "urn:ietf:params:oauth:token-type:access_token" :: Text
+      enc = Text.encodeUtf8
+      pw = "correct horse battery staple" :: Text
+      signup loginId = do
+        (s, b) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= loginId, "password" .= pw, "displayName" .= ("" :: Text)])
+        s @?= 201
+        resp <- must (loginId <> " signup body") b
+        tok <- must (loginId <> " accessToken") (dig ["token", "accessToken"] resp >>= asText)
+        uid <- must (loginId <> " userId") (dig ["user", "userId"] resp >>= asText)
+        pure (tok, uid)
+
+  (subjectAccess, subjectId) <- signup "exchange-subject"
+  (_, targetId) <- signup "exchange-target"
+
+  -- ===== Service on-behalf-of =====
+  (obStatus, obHdrs, obBody) <-
+    postForm mgr port "/oauth/token" (Just (clientId, exchangeSecret)) [teGrant, ("subject_token", enc subjectAccess), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+  obStatus @?= 200
+  lookup "Cache-Control" obHdrs @?= Just "no-store"
+  obResp <- must "on-behalf body" obBody
+  (dig ["scope"] obResp >>= asText) @?= Just "kawa:ingest"
+  (dig ["issued_token_type"] obResp >>= asText) @?= Just accessTypeText
+  obAccess <- must "on-behalf access_token" (dig ["access_token"] obResp >>= asText)
+
+  -- The delegated token is signed by the published key: a downstream verifier checks it offline.
+  (jStatus, jBody) <- getJSON mgr port "/.well-known/jwks.json" []
+  jStatus @?= 200
+  jwks <- must "jwks body" jBody
+  assertBool "the on-behalf token's kid is published" (maybe False (`elem` jwksKids jwks) (jwtHeaderKid obAccess))
+
+  -- Introspection verifies the JWT server-side and reports sub (the user), the scope, and act (the
+  -- service) — sub/act/scopes asserted against a real verify, not a hand decode.
+  (iStatus, _, iBody) <- postForm mgr port "/oauth/introspect" (Just (clientId, exchangeSecret)) [("token", enc obAccess)]
+  iStatus @?= 200
+  intro <- must "on-behalf introspect body" iBody
+  dig ["active"] intro @?= Just (Bool True)
+  (dig ["sub"] intro >>= asText) @?= Just subjectId
+  (dig ["scope"] intro >>= asText) @?= Just "kawa:ingest"
+  assertBool "on-behalf token carries an act member" (isJust (dig ["act", "sub"] intro >>= asText))
+
+  -- ===== Impersonation =====
+  (impStatus, _, impBody) <-
+    postForm mgr port "/oauth/token" Nothing [teGrant, ("subject_token", enc targetId), ("subject_token_type", userIdType), ("actor_token", enc opTok), ("actor_token_type", accessType), ("reason", "e2e ticket")]
+  impStatus @?= 200
+  impResp <- must "impersonation body" impBody
+  (dig ["issued_token_type"] impResp >>= asText) @?= Just accessTypeText
+  impAccess <- must "impersonation access_token" (dig ["access_token"] impResp >>= asText)
+  (impIStatus, _, impIBody) <- postForm mgr port "/oauth/introspect" (Just (clientId, exchangeSecret)) [("token", enc impAccess)]
+  impIStatus @?= 200
+  impIntro <- must "impersonation introspect body" impIBody
+  (dig ["sub"] impIntro >>= asText) @?= Just targetId
+  assertBool "impersonation token carries an act member" (isJust (dig ["act", "sub"] impIntro >>= asText))
+
+  -- ===== Audit: both events written, each carrying subject and actor ids =====
+  onBehalf <-
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'service_on_behalf_issued' AND payload->>'subjectUserId' IS NOT NULL AND payload->>'actorUserId' IS NOT NULL"
+  onBehalf @?= 1
+  impStarted <-
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'impersonation_started' AND payload->>'subjectUserId' IS NOT NULL AND payload->>'actorUserId' IS NOT NULL"
+  impStarted @?= 1
 
 -- | The @kid@ from a JWT's header, without verifying anything.
 jwtHeaderKid :: Text -> Maybe Text

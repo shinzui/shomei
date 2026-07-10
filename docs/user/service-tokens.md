@@ -127,6 +127,85 @@ minted.
 
 ---
 
+## Acting on behalf of a user
+
+A plain `client_credentials` token says "this service is calling"; it carries the service's identity
+and nothing about any user. When service A handles a user's request and calls service B, that loses
+the user: B sees only "service A", not "user U, via service A". Forwarding the user's *own* token
+instead is over-broad (B gets the user's full token) and fragile (it expires mid-job). **Service
+on-behalf-of** — RFC 8693 token exchange — is the fix: service A exchanges the user's access token
+for a **narrowed, short-lived token that names both**, so B verifies `sub` = the user and `act` =
+service A, offline, from the JWKS it already trusts.
+
+Use it when a request genuinely acts for a user across a hop. Use plain `client_credentials` when the
+service acts as *itself* (a cron job, a batch import with no user in the loop).
+
+### The gate scope
+
+On-behalf-of is powerful — any user access token a service sees, it could re-mint with itself as
+actor — so it is **opt-in per account**. The service account must hold the dedicated scope
+`token-exchange:subject` in its `allowed_scopes`; an account without it gets `invalid_scope` and
+learns nothing else. The gate scope is a gate, **never carried**: it is stripped from every issued
+token, so an exchanged token can never itself perform another exchange.
+
+```bash
+shomei-admin service-accounts create \
+  --display-name svc-b --scope kawa:ingest --scope token-exchange:subject
+```
+
+### The exchange
+
+```bash
+curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$USER_ACCESS_TOKEN" \
+  -d 'subject_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  -d 'scope=kawa:ingest' \
+  http://localhost:8080/oauth/token
+```
+
+```json
+{"access_token":"<jwt>","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":300,"scope":"kawa:ingest"}
+```
+
+The issued token's `sub` is the user, its `act` is the service account's backing user, its lifetime is
+`serviceTokenConfig.ttl` (default 5 minutes), and it is **refresh-less**. The response always carries
+`issued_token_type` (RFC 8693), always the access-token URN — the exchange issues access tokens only.
+
+### Scope narrowing
+
+The granted scopes are `requested ∩ (allowed_scopes \ token-exchange:subject)`. When the `scope`
+parameter is absent it defaults to the account's whole allow-list minus the gate scope. A request for
+a scope the account does not hold, or for the gate scope itself, yields an empty grant and
+`invalid_scope`.
+
+There is one deliberate asymmetry. When the **subject token carries a non-empty scope set**, the
+grant must additionally be within it (`granted ⊆ subject.scopes`, else `invalid_scope`): the service
+acts with no more authority than the user had. But **today's interactive user tokens carry empty
+scopes by design** (Shōmei mints empty scope sets on login until role/scope enrichment populates
+them), where empty means "unscoped interactive session", **not** "no authority" — treating it as a
+bound would make on-behalf-of unusable. So an empty subject scope set imposes **no** bound; once user
+tokens carry scopes, the subject bound engages automatically. The service ceiling
+(`allowed_scopes`) is always enforced.
+
+### The downstream contract
+
+A resource server verifies the exchanged token exactly as it verifies any Shōmei token: fetch
+`/.well-known/jwks.json`, verify the signature and claims offline, then read **`sub` for the user**
+and **`act` for the acting service**. Attribute writes to `sub`, and log `act` so an audit trail
+records which service acted. Note that inside Shōmei itself the token is a delegated token (it carries
+`act`), so Shōmei's own credential-changing endpoints refuse it with `impersonation_action_blocked` —
+a service acting for a user must not change that user's credentials. Chained exchanges are refused: a
+token already carrying `act` cannot be presented as a `subject_token`.
+
+Every successful exchange writes a `service_on_behalf_issued` audit event carrying the service's
+`client_id`, the actor (its backing user), the subject user, the session, and the granted scopes.
+
+The full endpoint reference is in [api.md](api.md#token-exchange-rfc-8693); the security model is in
+[security.md](security.md#impersonation--delegated-tokens).
+
+---
+
 ## The deprecated path: config-defined accounts
 
 `POST /v1/auth/service-token` and the `serviceToken.accounts` configuration block still work

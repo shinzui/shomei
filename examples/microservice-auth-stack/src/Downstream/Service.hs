@@ -28,6 +28,14 @@
 -- Each request's Bearer token is verified offline with @shomei-jwt@'s 'verifyToken' against
 -- the cached keys. This service deliberately does not depend on @shomei-postgres@ and has no
 -- database.
+--
+-- __Reading the delegated-token claims (RFC 8693).__ 'projectsHandler' reads the verified
+-- 'AuthClaims': @sub@ is the user the request acts for, and @act@ (present only on a delegated
+-- token — a service on-behalf-of exchange or an impersonation token) is the acting party. This is
+-- the downstream half of the token-exchange contract: a resource server that already verified the
+-- JWT reads both out of the claims it holds — no extra call — attributes writes to @sub@, and logs
+-- @act@ so its own audit trail records which service or operator acted. See
+-- @docs\/user\/service-tokens.md@ (Acting on behalf of a user).
 module Downstream.Service
   ( JwksCache,
     newJwksCache,
@@ -73,7 +81,8 @@ import Servant.Server.Experimental.Auth
     mkAuthHandler,
   )
 import Shomei.Config (ShomeiConfig)
-import Shomei.Domain.Claims (AuthClaims)
+import Shomei.Domain.Claims (AuthClaims (..))
+import Shomei.Id (UserId, idText)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Prelude hiding (Context)
 import System.IO (stderr)
@@ -271,7 +280,13 @@ parseMaxAge hdrs = do
 -- | A trivial business resource this downstream service owns.
 data Project = Project
   { projectId :: !Text,
-    projectName :: !Text
+    projectName :: !Text,
+    -- | the verified principal this request acts for — the JWT @sub@. Attribute writes to it.
+    requestedBy :: !Text,
+    -- | when the presented token is a __delegated__ token (RFC 8693 token exchange or
+    --     impersonation), the acting party — the JWT @act@. 'Nothing' for an ordinary user token.
+    --     A downstream service logs it so its audit trail records which service (or operator) acted.
+    onBehalfOf :: !(Maybe Text)
   }
   deriving stock (Generic)
   deriving anyclass (ToJSON)
@@ -311,6 +326,22 @@ localAuthHandler cache cfg = mkAuthHandler \req -> do
         Right claims -> pure claims
         Left _ -> throwError err401 {errBody = "invalid token (local verification failed)"}
 
+-- | Reads the verified claims rather than ignoring them: @sub@ is the user this request acts for,
+-- and @act@ (present only on a delegated token — RFC 8693 on-behalf-of or impersonation) is the
+-- acting party. This is the downstream half of the token-exchange contract: a resource server that
+-- verified the JWT against the JWKS reads both out of the claims it already holds.
 projectsHandler :: AuthClaims -> Handler [Project]
-projectsHandler _claims =
-  pure [Project {projectId = "proj_ms_1", projectName = "Downstream-verified Project"}]
+projectsHandler claims =
+  pure
+    [ Project
+        { projectId = "proj_ms_1",
+          projectName = "Downstream-verified Project",
+          requestedBy = idText subject,
+          onBehalfOf = idText <$> actor
+        }
+    ]
+  where
+    subject :: UserId
+    subject = claims.subject
+    actor :: Maybe UserId
+    actor = claims.actor

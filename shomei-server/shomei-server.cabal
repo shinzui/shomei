@@ -206,6 +206,7 @@ test-suite shomei-server-test
     , http-client
     , http-types
     , shomei-core
+    , shomei-jwt
     , shomei-migrations:test-support
     , shomei-postgres
     , shomei-server

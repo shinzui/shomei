@@ -60,9 +60,9 @@ This section must always reflect the actual current state of the work.
 - [x] M2 (2026-07-10): `TokenResponse` extended with `issuedTokenType` (`issued_token_type`, omitted when absent) across `ToJSON`/`FromJSON`/`ToSchema`/`Arbitrary`; form-schema `grant_type` enum + exchange params documented; `docs/api/openapi.json` regenerated (schema-only, no new path — count stays 39).
 - [x] M3 (2026-07-10): `/auth/impersonate` shares the core after M1's refactor (its handler calls `startImpersonation`, now delegating to `mintDelegatedToken`); the unmodified servant impersonation scenario proves no drift. Deprecation notes added to `docs/user/api.md` (with the equivalent token-exchange curl) and `docs/user/security.md`; `DELETE /auth/impersonate` documented as the shared stop mechanism.
 - [x] M3 (2026-07-10): Introspection consistency (plan 42 landed): the token-exchange scenario asserts `/oauth/introspect` on an exchanged impersonation token returns `active:true` with an `act` member, and `active:false` after `DELETE /auth/impersonate`.
-- [ ] M4: Docs: `docs/user/service-tokens.md` on-behalf-of section; `docs/user/security.md` impersonation section updated; `examples/microservice-auth-stack` doc note (and optional act-claim read).
-- [ ] M4: E2E transcripts automated in `shomei-server` tests.
-- [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
+- [x] M4 (2026-07-10): Docs — `docs/user/service-tokens.md` "Acting on behalf of a user" section (gate scope, narrowing rule with the empty-subject-scope caveat verbatim, curl, downstream contract); `docs/user/api.md` token-exchange subsection + `/auth/impersonate` deprecation with equivalent curl; `docs/user/security.md` standards-surface note; `examples/microservice-auth-stack` `projectsHandler` now READS `act`/`sub` from the verified claims (chose the full demonstration, not just a doc note).
+- [x] M4 (2026-07-10): E2E transcript automated in `shomei-server/test/Shomei/Server/E2ESpec.hs` — real Postgres + Warp, both modes, kid-vs-JWKS verification, `sub`/`act`/`scope` via server-side introspection, and both audit rows (`service_on_behalf_issued`, `impersonation_started`) with subject + actor ids.
+- [x] Final (2026-07-10): `cabal build all` green; `cabal test all` (`TASTY_NUM_THREADS=1`) green; Outcomes & Retrospective written.
 
 
 ## Surprises & Discoveries
@@ -70,7 +70,19 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-10 (M4) — an impersonation actor must be a real user row under PostgreSQL, invisible
+in-memory.** The delegated session's `actor_user_id` is a foreign key into `shomei_users`
+(`shomei_sessions_actor_user_id_fkey`). The in-memory interpreter has no such constraint, so
+`TokenExchangeSpec` and the servant HTTP tests happily minted operator tokens with a random
+`genUserId` subject. The E2E's first impersonation exchange failed with `23503` (FK violation) until
+the operator was seeded as an actual user (`seedOperatorUser`). Any future test that signs a
+delegated/operator token to drive a *real-database* path must back it with a persisted user.
+
+**2026-07-10 (M4) — the OAuth introspection `act` member is a JSON object `{"sub": "<id>"}`, but the
+JWT `act` claim is a bare string.** `Handlers.activeAccess` renders `act` as
+`{"sub": idText actor}` (RFC 7662 style), while `shomei-jwt`'s `Sign.withActor` writes the access
+token's `act` claim as `Aeson.String (idText actor)`. Tests that assert on `act` must dig
+`["act","sub"]` for an introspection response but read `act` directly (a string) from a decoded JWT.
 
 
 ## Decision Log
@@ -189,6 +201,30 @@ Error-constructor decisions worth recording:
   `OAuthGrantInvalid` (→ `invalid_grant`, 400), not `invalid_client`: the service's secret already
   verified, so this is not a client-authentication failure; the exchange simply cannot mint. This is
   a deliberate narrowing of the plan's under-specified "require the service's backing user active".
+
+### Completion (2026-07-10)
+
+All four milestones landed; the plan's Purpose is met. `POST /oauth/token` now speaks
+`grant_type=urn:ietf:params:oauth:grant-type:token-exchange` in both modes — user impersonation
+(operator + `impersonate:user`, `urn:shomei:params:oauth:token-type:user-id` subject) and service
+on-behalf-of (a `token-exchange:subject`-gated service account narrowing a user's token) — over the
+same `mintDelegatedToken` core the bespoke `/auth/impersonate` uses, so the deprecation window cannot
+introduce drift. Exchanged tokens are delegation-shaped (`sub` + `act`), refresh-less, revocable via
+`DELETE /auth/impersonate` and `/oauth/revoke`, introspect with `act`, and inherit
+`denyUnderImpersonation`. Chained exchanges are refused.
+
+Verification: `cabal test all` green under `TASTY_NUM_THREADS=1` — `TokenExchangeSpec` (16 core
+cases), the servant HTTP scenario (both modes + `denyUnderImpersonation` inheritance + introspection
+flip + every wire refusal), the OpenAPI conformance suite (path count unchanged at 39, `TokenResponse`
+gains `issued_token_type`), the E2E transcript (real Postgres + Warp, kid-vs-JWKS, sub/act/scope via
+introspection, both audit rows), and the untouched `ImpersonationSpec` (the refactor-safety gate).
+
+Deviations from the plan, all recorded above: request-shape and grant errors are new `AuthError`
+constructors total-mapped to existing catalog specs (rather than `TokenGrantError`), matching EP-4's
+established `authErrorToServerError` exemption pattern; the E2E asserts `sub`/`act`/`scope` through
+server-side introspection plus a kid-in-JWKS check rather than a hand JWT decode; and the
+microservice example's `projectsHandler` was upgraded to actually read `act`/`sub` (the plan's "if
+quick" option), not merely documented. Nothing in the original scope was dropped.
 
 
 ## Context and Orientation
