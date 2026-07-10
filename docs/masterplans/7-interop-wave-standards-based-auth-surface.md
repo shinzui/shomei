@@ -107,7 +107,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Complete |
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Complete |
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Complete |
-| 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | In Progress |
+| 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Complete |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Not Started |
 | 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Not Started |
 | 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | Not Started |
@@ -228,9 +228,14 @@ validating against the published schema.
 
 MFA method union (`shomei-servant/src/Shomei/Servant/DTO.hs` `LoginResponse` /
 `MfaRequiredResponse`; `shomei-core/src/Shomei/Workflow/Mfa.hs`): involved plans EP-7 (owner
-of the change) and, read-only, the existing passkey flows. EP-7 extends the advertised-methods
-field and `/auth/mfa/complete` request union with `totp` and `recovery_code` variants; the
-extension must be additive so existing passkey-only clients keep parsing responses.
+of the change) and, read-only, the existing passkey flows. **EP-7 landed 2026-07-10.**
+`LoginMfaRequiredResponse` gained a `methods :: [Text]` field (missing → `["passkey"]` on
+decode, so pre-EP-7 fixtures still parse), and `MfaCompleteRequest` became an exactly-one union
+over `assertion` (passkey), `totpCode`, `recoveryCode` — the legacy `{ceremonyId, assertion}`
+shape parses unchanged. The core dispatch is `Shomei.Workflow.Mfa.MfaCompletion` (`MfaPasskey |
+MfaTotp | MfaRecoveryCode`); `completeMfa` takes it in place of the bare assertion `Value`. A
+TOTP-only user's challenge carries empty `options` (`{}`) — no WebAuthn ceremony is begun, and
+`completeMfa` refuses a passkey assertion whose ceremony blob is empty.
 
 Service-account storage (`shomei_service_accounts` table; `Shomei.Effect.ServiceAccountStore` with
 Postgres and in-memory interpreters; `Shomei.Domain.ServiceAccount`): EP-4 owns it.
@@ -294,8 +299,8 @@ the other.
 - [x] EP-5: Authorization-code grant with mandatory PKCE for public clients; consent delegated to host redirect contract
 - [x] EP-5: Introspection, revocation, userinfo endpoints; ID tokens signed by the existing key machinery
 - [x] EP-6: Token-exchange grant covering impersonation and service on-behalf-of; bespoke `/auth/impersonate` deprecated
-- [ ] EP-7: TOTP enrollment/verification with encrypted secrets; login MFA union extended
-- [ ] EP-7: Hashed one-time recovery codes with generation and consumption flows
+- [x] EP-7: TOTP enrollment/verification with encrypted secrets; login MFA union extended
+- [x] EP-7: Hashed one-time recovery codes with generation and consumption flows
 - [ ] EP-8: SMTP `Notifier` interpreter with TLS and auth, configured via Dhall/env
 - [ ] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
 - [ ] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
@@ -305,6 +310,33 @@ the other.
 
 
 ## Surprises & Discoveries
+
+**2026-07-10 (EP-7) — the login mint path grew a read, and the round-trip budget guard tripped
+(8 → 9).** The generalized MFA gate reads `findTotpByUser` alongside `countPasskeysByUser` on
+every login (the `recovery-codes` count is read only inside the challenge branch, so a no-factor
+login is +1, not +2). `shomei-postgres`'s `testLoginRoundTripBudget` was raised to 9 with a new
+haddock line. **EP-9's `permissions` claim touches the same `buildEnrichedClaims`/mint path and
+will trip this again — raise the constant only after finding and justifying the new round-trip,
+exactly as EP-1's note warned.**
+
+**2026-07-10 (EP-7) — two new ports hit the five-plus effect-stack sites AND `App.Env` grew a
+field.** `TotpCredentialStore` + `RecoveryCodeStore` went into all five stacks the EP-4/EP-5
+notes enumerate (`Servant.Seam.AppEffects`, `Server.App.AppEffects`+`runAppIO`, `InMemory`
+`InMemoryPorts`+`runInMemoryWith`, and the two private test copies), plus the login-only stacks
+in `shomei-core`'s `TimingSpec`. `Shomei.Server.App.Env` gained `envTotpKey :: TotpEncryptionKey`
+(the AES-256-GCM key held outside `ShomeiConfig`), which forced a matching field into every
+hand-written `Env` literal — including `shomei-client` and the two `examples/*` test suites (a
+dummy key, since they never reach the store). **EP-9 adds a port and a `permissions` claim and
+will hit the same five-plus sites; if it adds an `Env`-carried secret it will hit the Env
+literals too.**
+
+**2026-07-10 (EP-7) — crypton's `aeadSimpleEncrypt` returns `(AuthTag, ciphertext)`, not the
+reverse.** AES-256-GCM at the `shomei-postgres` boundary lays out `nonce || ciphertext || tag`;
+the tag comes first out of `aeadSimpleEncrypt` (verified in the crypton source). The compiler
+catches a swapped binding, but the error message misreads easily. `Data.ByteArray.Encoding`'s
+`Base32` (from `ram`) made the `base32` package unnecessary — a 20-byte secret is exactly 32
+unpadded Base32 chars. **EP-9 (`shomei_role_permissions`) builds no crypto but does build SQL the
+same way EP-5/EP-6 did — the `MultilineString`-drops-its-trailing-newline caveat still applies.**
 
 **2026-07-10 (EP-6) — an impersonation actor must be a real `shomei_users` row under PostgreSQL, a
 constraint the in-memory interpreter does not enforce.** The delegated session's `actor_user_id`
