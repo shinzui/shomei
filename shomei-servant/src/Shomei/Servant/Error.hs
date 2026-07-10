@@ -43,6 +43,7 @@ module Shomei.Servant.Error
     shomeiErrorFormatters,
 
     -- * Specs with an 'AuthError' counterpart
+
     --
     -- Exported in full so "Shomei.Servant.OpenApi" can name them in its route→codes
     -- table: the spec's documented status and title are then literally the ones the
@@ -419,6 +420,14 @@ authErrorToServerError = \case
   ServiceAccountSecretInvalid -> plain pcServiceAccountInvalid
   ServiceTokenScopeDenied -> plain pcServiceTokenScopeDenied
   ServiceTokenActorInvalid -> plain pcServiceTokenActorInvalid
+  -- EP-4's two OAuth errors are raised only by 'Shomei.Workflow.ClientCredentials', whose sole
+  -- caller is @POST \/oauth\/token@ — and that handler renders them through
+  -- 'Shomei.Servant.OAuth.oauthError' in the RFC 6749 §5.2 shape, never through this function
+  -- (see the exemption in this module's header). These two arms exist so the @\case@ stays total,
+  -- and reuse EXISTING catalog specs rather than adding codes no route can emit: were some
+  -- future non-OAuth route to surface them, it would still answer with a sane envelope.
+  OAuthClientInvalid -> plain pcServiceAccountInvalid
+  OAuthScopeInvalid -> plain pcServiceTokenScopeDenied
   UserNotFound -> plain pcUserNotFound
   -- The offending name is request-specific, so it belongs in 'detail', keeping 'title' stable
   -- for the OpenAPI catalog.

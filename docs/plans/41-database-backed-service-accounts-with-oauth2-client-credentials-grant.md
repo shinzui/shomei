@@ -69,8 +69,9 @@ This section must always reflect the actual current state of the work.
 - [x] M1 (2026-07-10): Postgres interpreter `Shomei.Postgres.ServiceAccountStore` with round-trip test (`testServiceAccountRoundTrip`).
 - [x] M1 (2026-07-10): Audit events `ServiceAccountCreated` / `ServiceAccountSecretRotated` / `ServiceAccountRevoked` in `Event.hs` + `EventCodec.hs` + codec spec (constructor count 28 → 31).
 - [x] M1 (2026-07-10): `ServiceAccountStore` registered in all four effect-stack declarations (`Seam.AppEffects`, `Server.App.AppEffects` + `runAppIO`, `InMemory.InMemoryPorts` + `runInMemoryWith`, and the private stack in `shomei-postgres/test/Main.hs`).
-- [ ] M2: `Shomei.Workflow.ClientCredentials` workflow with unit tests (happy path, bad secret, revoked account, scope violations, no refresh token).
-- [ ] M2: New `AuthError` constructors and their HTTP mappings.
+- [x] M2 (2026-07-10): `Shomei.Workflow.ClientCredentials` workflow with 10 unit tests (both happy paths, unknown client, bad secret, revoked account, inactive backing user, both scope violations, no refresh token, failure mints nothing). Core suite 159 → 169.
+- [x] M2 (2026-07-10): `verifyServiceSecret` exported from `Shomei.Workflow.ServiceToken`, so one constant-time comparison serves both machine-credential paths.
+- [x] M2 (2026-07-10): `AuthError` gains `OAuthClientInvalid` and `OAuthScopeInvalid` (two, not the four the plan named — see Decision Log), mapped in `authErrorToServerError` onto existing catalog specs.
 - [ ] M3: `http-api-data` + `base64` added to `shomei-servant.cabal`; `FormUrlEncoded` route compiles.
 - [ ] M3: `Shomei.Servant.OAuth` module: RFC 6749 error rendering, client-auth extraction, grant dispatcher.
 - [ ] M3: `POST /oauth/token` route + handler wired; in-process HTTP tests for both client-auth methods and all error codes.
@@ -124,6 +125,32 @@ a private copy in `shomei-postgres/test/Main.hs` (with a fake `TokenSigner` and 
 `AuthEventReader` ordering match), so a new port must be registered in *four* places, not the
 three the Plan of Work names. Omitting the fourth fails with an `effectful` "effect not in scope"
 type error only when the postgres suite compiles, long after `cabal build all` is green.
+
+**2026-07-10 (M2) — adding a spec module to `shomei-core.cabal` and importing it in `test/Main.hs`
+is not enough to run it, and nothing warns.** The suite is a hand-written tasty tree: a module
+whose `tests` is never added to the list in `Main.hs` compiles, is linked, and silently
+contributes zero tests. The `import … qualified` line satisfies `-Wunused-imports` because the
+module *is* referenced by the import itself. The tell is the test count, not the output:
+
+```text
+# before adding ClientCredentialsSpec to the tests list
+All 159 tests passed (0.05s)
+# after adding 10 tests, still:
+All 159 tests passed (0.05s)
+```
+
+The last entry of the list carries no trailing comma, so a naive scripted insertion after
+`Shomei.Workflow.ConcurrencySpec.tests,` matches nothing. **Always check that the reported test
+count rose by the number of cases you wrote.** EP-5, EP-6, EP-7 and EP-9 all add core spec modules.
+
+**2026-07-10 (M2) — co-importing `ServiceAccount (..)` and `User (..)` defeats
+`OverloadedRecordDot`.** Both records have `userId` and `status`, so `HasField` cannot resolve
+`user.status` and GHC reports `Could not deduce HasField "status" User UserStatus` — pointing at
+the *use* site, not the import. `Shomei.Workflow.ServiceToken` already avoids this by reading
+every field through a generic-lens label (`account ^. #secretHash`);
+`Shomei.Workflow.ClientCredentials` imports `ServiceAccount` without `(..)` and does the same.
+This is the same class of hazard as the passkey-record note in `Shomei.Effect.InMemory`. **EP-6
+reads service accounts alongside users** and will hit it.
 
 **2026-07-10 (M1) — core test modules do not import `Shomei.Prelude`.** `liftIO` is therefore not
 in scope inside a `runInMemory` block in a spec, and `MonadIO` needs an explicit
@@ -220,6 +247,29 @@ Record every decision made while working on the plan.
   would show the tokens an account minted but not the account's creation, rotation, or
   revocation — the three rows an auditor most wants beside them. Cost is one `UserId` per
   payload; the events are rare.
+  Date: 2026-07-10
+
+- Decision (M2): `AuthError` gains only two constructors — `OAuthClientInvalid` and
+  `OAuthScopeInvalid` — not the four (`OAuthGrantUnsupported`, `OAuthRequestMalformed Text`) the
+  Plan of Work named.
+  Rationale: An `AuthError` is what a *workflow* returns. `grantClientCredentials` can raise
+  exactly these two. A missing `grant_type`, an unparseable form, and an unrecognized grant are
+  HTTP-layer conditions detected by the dispatcher before any workflow runs, and the dispatcher
+  renders them directly with `Shomei.Servant.OAuth.oauthError`. Adding domain constructors no
+  workflow can produce would force every `case` over `AuthError` — in three packages — to handle
+  arms that are dead by construction. Plans 42 and 43 register new grants in the same dispatcher
+  and can raise `invalid_request` the same way, without a domain constructor.
+  Date: 2026-07-10
+
+- Decision (M2): `authErrorToServerError` maps the two OAuth errors onto the *existing*
+  `pcServiceAccountInvalid` / `pcServiceTokenScopeDenied` specs rather than introducing new
+  problem-details specs and catalog entries.
+  Rationale: The `\case` must stay total, but no route can actually reach these arms — the only
+  caller of the workflow is `POST /oauth/token`, which renders RFC 6749 §5.2 errors instead.
+  Minting `oauth_client_invalid` / `oauth_scope_invalid` catalog codes would document error codes
+  that no operation in the OpenAPI document can ever emit, which is precisely what EP-3's
+  conformance suite exists to prevent. Reusing the two semantically identical specs keeps the
+  catalog honest while still giving a sane envelope to any future non-OAuth caller.
   Date: 2026-07-10
 
 - Decision (M1): `ServiceAccountStore` sits between `PendingCeremonyStore` and `Notifier` in the
@@ -548,14 +598,20 @@ does (`NewSession` with `expiresAt = addUTCTime cfg.serviceTokenConfig.ttl ts` a
 identically. Note the DB path does not consult `serviceTokenConfig.enabled` — that flag
 gates only the config-account endpoint; database accounts are "enabled" by existing.
 
-Add the `AuthError` constructors in `shomei-core/src/Shomei/Error.hs`:
-`OAuthClientInvalid`, `OAuthScopeInvalid`, `OAuthGrantUnsupported`,
-`OAuthRequestMalformed Text` (the text is a safe parameter-name hint for
-`error_description`). Extend `authErrorToServerError` in
-`shomei-servant/src/Shomei/Servant/Error.hs` with mappings (401/400) so the total `\case`
-still compiles — but note the OAuth handler itself renders these through the RFC shape in
-M3, not through this function; the mapping exists only so the constructors are total
-everywhere.
+Add **two** `AuthError` constructors in `shomei-core/src/Shomei/Error.hs`: `OAuthClientInvalid`
+and `OAuthScopeInvalid` — the only two this workflow can raise. (An earlier draft of this plan
+also called for `OAuthGrantUnsupported` and `OAuthRequestMalformed Text`; those are HTTP-layer
+conditions the M3 dispatcher detects before any workflow runs, and it renders them directly.
+See the Decision Log.) Extend `authErrorToServerError` in
+`shomei-servant/src/Shomei/Servant/Error.hs` so the total `\case` still compiles, reusing the
+existing `pcServiceAccountInvalid` / `pcServiceTokenScopeDenied` specs — the OAuth handler itself
+renders these through the RFC shape in M3, never through this function, so no new problem-details
+code enters the catalog.
+
+Note that `Shomei.Domain.ServiceAccount` must be imported **without** `(..)` here: it shares the
+field names `userId` and `status` with `Shomei.Domain.User.User`, and co-importing both records'
+fields breaks `OverloadedRecordDot`. Read every field through a generic-lens label
+(`account ^. #secretHash`), as `Shomei.Workflow.ServiceToken` already does.
 
 Add `shomei-core/test/Shomei/Workflow/ClientCredentialsSpec.hs` mirroring
 `Workflow/ServiceTokenSpec.hs` (in-memory `runInMemory`, deterministic clock, fake signer):

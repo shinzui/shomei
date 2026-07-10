@@ -8,6 +8,7 @@ module Shomei.Workflow.ServiceToken
     IssuedServiceToken (..),
     issueServiceToken,
     sha256Hex,
+    verifyServiceSecret,
   )
 where
 
@@ -121,6 +122,12 @@ findAccount :: ServiceTokenConfig -> ServiceAccountId -> Maybe ServiceAccountCon
 findAccount cfg sid =
   find (\acct -> acct ^. #accountId == sid) (cfg ^. #accounts)
 
+-- | Constant-time check of a presented secret against a stored lowercase SHA-256 hex digest.
+--
+-- The single such comparison in the codebase: both the config-defined accounts here and EP-4's
+-- database-backed accounts ('Shomei.Workflow.ClientCredentials') store the same digest format
+-- and verify through this function, so the two paths cannot drift into differing timing or
+-- case-sensitivity behavior.
 verifyServiceSecret :: Text -> Text -> Bool
 verifyServiceSecret expectedHash presentedSecret =
   let expected = TE.encodeUtf8 (Text.toLower expectedHash)

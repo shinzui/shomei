@@ -9,6 +9,7 @@ import Shomei.PasskeyStoreSpec qualified
 import Shomei.ServiceAccountStoreSpec qualified
 import Shomei.WebAuthnCeremonySpec qualified
 import Shomei.Workflow.AdminSpec qualified
+import Shomei.Workflow.ClientCredentialsSpec qualified
 import Shomei.Workflow.ConcurrencySpec qualified
 import Shomei.Workflow.EmailVerificationSpec qualified
 import Shomei.Workflow.ImpersonationSpec qualified
@@ -42,6 +43,7 @@ main =
           Shomei.Workflow.TimingSpec.tests,
           Shomei.Workflow.EmailVerificationSpec.tests,
           Shomei.Workflow.PasskeySpec.tests,
+          Shomei.Workflow.ClientCredentialsSpec.tests,
           Shomei.Workflow.ConcurrencySpec.tests
         ]
     )

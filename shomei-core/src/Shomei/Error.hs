@@ -109,6 +109,17 @@ data AuthError
     ServiceTokenScopeDenied
   | -- | The configured service-account user or requested actor user is missing or inactive. Maps to 400.
     ServiceTokenActorInvalid
+  | -- | EP-4: @client_credentials@ authentication failed at @POST \/oauth\/token@. Raised for an
+    -- unknown @client_id@, a wrong secret, a revoked account, and an inactive backing user
+    -- alike — a revoked credential must be indistinguishable from a wrong one, and account
+    -- existence must not leak to an unauthenticated caller.
+    --
+    -- The OAuth handler renders this as RFC 6749 §5.2 @invalid_client@ (HTTP 401), NOT through
+    -- the problem-details envelope; see "Shomei.Servant.OAuth".
+    OAuthClientInvalid
+  | -- | EP-4: the @scope@ parameter was present but empty, or requested scopes outside the
+    -- account's @allowed_scopes@. Rendered as RFC 6749 @invalid_scope@ (HTTP 400).
+    OAuthScopeInvalid
   | -- | The named user does not exist. Raised by the role grant/revoke workflows, which
     -- resolve the subject before touching the grant table. Maps to 404.
     --

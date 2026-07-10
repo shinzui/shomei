@@ -92,6 +92,7 @@ library
     Shomei.Workflow.Account
     Shomei.Workflow.Admin
     Shomei.Workflow.Breach
+    Shomei.Workflow.ClientCredentials
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
     Shomei.Workflow.Passkey
@@ -134,6 +135,7 @@ test-suite shomei-core-test
     Shomei.ServiceAccountStoreSpec
     Shomei.WebAuthnCeremonySpec
     Shomei.Workflow.AdminSpec
+    Shomei.Workflow.ClientCredentialsSpec
     Shomei.Workflow.ConcurrencySpec
     Shomei.Workflow.EmailVerificationSpec
     Shomei.Workflow.ImpersonationSpec
