@@ -17,6 +17,9 @@ Haskell service, and integrating client applications.
   passwordless login, WebAuthn configuration, and the browser demo.
 - [Service Tokens](service-tokens.md) covers machine-to-machine scoped token issuance for
   connectors, agents, and downstream services.
+- [OpenID Connect](oidc.md) covers running Shōmei as an OIDC provider: discovery, the
+  authorization-code flow with PKCE, ID tokens, userinfo, introspection, and revocation, plus the
+  headless authorize contract and a worked oauth2-proxy configuration.
 - [Notifications](notifications.md) explains the `Notifier` effect and how to deliver email
   verification and password-reset links through your own provider.
 - [Security Model](security.md) summarizes password hashing, token handling, session revocation,

@@ -266,6 +266,16 @@ while the request-rate buckets are in-memory and reset on restart.
 A successful password reset or change revokes **all** of the user's sessions and refresh tokens,
 so a stolen session is immediately useless after the legitimate owner recovers the account.
 
+**Revocation visibility with stateless tokens.** Revoking a session (via
+[`POST /oauth/revoke`](oidc.md#introspection-and-revocation), an admin action, or a password reset)
+takes effect immediately for anything session-aware: `POST /oauth/introspect` reports the token
+inactive, refresh stops, and a deployment running `sessionCheckMode = VerifyTokenAndSession` rejects
+the access token on the next request. But under the default `sessionCheckMode = VerifyTokenOnly`, an
+already-issued **access token is a stateless JWT** and keeps being accepted until its `exp` — access
+tokens are short-lived (15 minutes by default) precisely to bound this window. This is the honest
+semantics of a stateless-JWT provider; it is documented rather than hidden. Deployments that need
+immediate access-token rejection set `VerifyTokenAndSession` and pay a session read per request.
+
 ## Passkeys & MFA (MasterPlan 3)
 
 - **Phishing-resistant second factor.** A passkey signs a server challenge bound to the page

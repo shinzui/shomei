@@ -105,7 +105,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Complete |
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Complete |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Complete |
-| 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | In Progress |
+| 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Complete |
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Not Started |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Not Started |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Not Started |
@@ -172,14 +172,23 @@ ID-token/userinfo claims and EP-6's exchanged-token claims must be built through
 hook, never by re-reading stores in the HTTP layer.
 
 Token endpoint and grant dispatch (`shomei-servant/src/Shomei/Servant/OAuth.hs`, wired in
-`Handlers.hs`): involved plans EP-4 (owner), EP-5, EP-6. **Landed 2026-07-10.**
+`Handlers.hs`): involved plans EP-4 (owner), EP-5, EP-6. **EP-5 arms landed 2026-07-10.**
 `POST /oauth/token` is a field of `ShomeiRoutes` (unversioned), takes a raw
 `Web.FormUrlEncoded.Form`, and dispatches on `grant_type` in `Handlers.oauthTokenH` — one `case`
 expression each later plan adds an arm to. `Shomei.Servant.OAuth` exports the reusable parts:
 `extractClientAuth` (RFC 6749 §2.3.1 `client_secret_basic` and `client_secret_post`), `oauthError`
 plus the `invalidClient`/`invalidRequest`/`unsupportedGrantType` constants, `lookupParam`,
-`parseScopeParam`, and `TokenResponse`. EP-5 registers `authorization_code` (+ PKCE) and
-`refresh_token`; EP-6 registers `urn:ietf:params:oauth:grant-type:token-exchange`.
+`parseScopeParam`, and `TokenResponse`. EP-5 registered `authorization_code` (+ PKCE) and
+`refresh_token`; **EP-6 registers `urn:ietf:params:oauth:grant-type:token-exchange`.** For EP-6:
+`TokenResponse` now carries optional `refreshToken`/`idToken` (omitted, not null, when absent — update
+its `Arbitrary` and `ToSchema` together if you add a field); the grant workflows and their RFC 6749
+error type live in `shomei-core/src/Shomei/Workflow/OAuthTokenGrant.hs` (`TokenGrantError`,
+`GrantInvalidClient`/`GrantInvalidGrant`/`GrantInvalidRequest`); public-client auth (a bare
+`client_id` with no secret) goes through `Handlers.oauthClientCredentials`; and introspection's
+client-auth-against-either-an-OAuth-client-or-a-service-account helper is
+`Handlers.authenticateOAuthCaller`. Exchanged tokens must build their claims through
+`Shomei.Workflow.Session.issueSessionWith`, which returns the signed `AuthClaims` for exactly this
+reason (ID-token construction from the same claims as the access token).
 
 The RFC 6749 §5.2 error shape is distinct from the EP-3 problem-details envelope, and the OpenAPI
 generator actively works against that boundary — see Surprises: any new `/oauth/*` route must join
@@ -274,9 +283,9 @@ the other.
 - [x] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
 - [x] EP-4: Service-account table, port, CLI; secrets hashed, rotatable, revocable at runtime
 - [x] EP-4: `POST /oauth/token` with `client_credentials` grant and RFC 6749 error shape
-- [ ] EP-5: `/.well-known/openid-configuration` discovery document
-- [ ] EP-5: Authorization-code grant with mandatory PKCE for public clients; consent delegated to host redirect contract
-- [ ] EP-5: Introspection, revocation, userinfo endpoints; ID tokens signed by the existing key machinery
+- [x] EP-5: `/.well-known/openid-configuration` discovery document
+- [x] EP-5: Authorization-code grant with mandatory PKCE for public clients; consent delegated to host redirect contract
+- [x] EP-5: Introspection, revocation, userinfo endpoints; ID tokens signed by the existing key machinery
 - [ ] EP-6: Token-exchange grant covering impersonation and service on-behalf-of; bespoke `/auth/impersonate` deprecated
 - [ ] EP-7: TOTP enrollment/verification with encrypted secrets; login MFA union extended
 - [ ] EP-7: Hashed one-time recovery codes with generation and consumption flows
@@ -289,6 +298,40 @@ the other.
 
 
 ## Surprises & Discoveries
+
+**2026-07-10 (EP-5) — the effect stack grew by two ports (`OAuthClientStore`, `OAuthCodeStore`) and
+`Session`/`NewSession` gained an `oauth_client_id` field, touching all five stack sites and every
+session codec.** The five interpreter-stack declarations the EP-4 note enumerated
+(`Servant.Seam.AppEffects`, `Server.App.AppEffects`+`runAppIO`, `InMemory` `InMemoryPorts`+
+`runInMemoryWith`, and the two private test copies in `shomei-postgres/test/Main.hs` and
+`shomei-servant/test/Main.hs`) each needed both new ports, in the same order. The `Session` field
+addition was enumerated by the compiler across four construction sites plus the Postgres and
+in-memory codecs; **EP-6 and EP-9 add ports/columns and will hit the same five-plus-two sites.**
+
+**2026-07-10 (EP-5) — the OpenApi OAuth-exemption list is now path-keyed, and every new `/oauth/*` or
+OIDC route MUST declare the statuses it can emit.** `Shomei.Servant.OpenApi.oauthErrorResponsesByPath`
+maps each protocol path to its `(status, [error-code])` list; `oauthPaths = map fst` derives the
+exemption set. `/oauth/token` (400/401/500), the discovery document (404), `/oauth/authorize`
+(400/401/404 — its *other* failures are 302 error-redirects, not statuses), `/oauth/introspect` and
+`/oauth/revoke` (401/500 only — a bad token never errors) are all listed. `/oauth/userinfo` is
+deliberately absent: it uses the ordinary `Authenticated` combinator and answers problem documents.
+**EP-6's token-exchange lands on `/oauth/token`, already listed** — but if it can emit a new error
+code there, extend that path's list and the two conformance assertions. The path count is now 39.
+
+**2026-07-10 (EP-5) — a `MultilineString` SQL literal drops its trailing newline, so
+`"""…RETURNING""" <> cols` becomes `RETURNINGcol`.** PostgreSQL raised `42601` at runtime, invisible
+to the compiler; caught only because the store has an integration test that runs the statement. Any
+plan concatenating a column list onto a multiline SQL literal needs an explicit `<> " "`. **EP-6 and
+EP-9 build statements the same way.**
+
+**2026-07-10 (EP-5) — `issueSession` kept its signature; the OAuth binding and extra scopes went on a
+new `issueSessionWith` that also returns the signed `AuthClaims`.** This is the claims integration
+point in practice: an exchanged token's ID token is built from the returned claims, never a second
+store read. **EP-6's exchanged tokens must go through `issueSessionWith` for the same reason.** The
+login/MFA/passwordless callers were untouched (they call `issueSession`, which delegates with
+`defaultSessionOptions`), and the round-trip budget guards did NOT trip because the OAuth exchange is
+a distinct path from the login/refresh flows those tests pin — but EP-6/EP-9 adding work to the
+*shared* mint still will.
 
 **2026-07-09 (EP-1) — Adding a migration requires editing `shomei-migrations/src/Shomei/Migrations.hs`,
 not touching its `.cabal`.** `embeddedFiles = $(embedDir "sql-migrations")` is a compile-time

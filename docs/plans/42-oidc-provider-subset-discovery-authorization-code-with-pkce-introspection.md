@@ -69,10 +69,10 @@ This section must always reflect the actual current state of the work.
 - [x] M4: `GET /oauth/userinfo` (bearer).
 - [x] M4: `POST /oauth/introspect` (client-authenticated, RFC 7662 response, session-aware).
 - [x] M4: `POST /oauth/revoke` (RFC 7009; refresh → family+session revocation; access → session revocation with documented caveat).
-- [ ] M5: OpenAPI (schemas, path count updated — recount at implementation time), spec regenerated.
-- [ ] M5: `docs/user/oidc.md` written; `docs/user/api.md` and `docs/user/security.md` updated.
-- [ ] M5: Postgres E2E: the full transcript from Purpose, automated.
-- [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
+- [x] M5: OpenAPI (schemas, path count now 39: EP-4's 34 + five EP-5 routes), spec regenerated.
+- [x] M5: `docs/user/oidc.md` written; `docs/user/api.md` and `docs/user/security.md` updated; `index.md` links it.
+- [x] M5: Postgres E2E: the full transcript from Purpose, automated in `E2ESpec` (authorize → exchange → verify ID token vs JWKS → userinfo → introspect → revoke → introspect).
+- [x] Final: `nix fmt`, `cabal build all`, `cabal test all` (TASTY_NUM_THREADS=1) green; Outcomes & Retrospective written.
 
 
 ## Surprises & Discoveries
@@ -433,7 +433,51 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome.** Shōmei is now a standards-consumable OIDC provider, exactly as the Purpose set out.
+A deployment with `oidcEnabled` set publishes `GET /.well-known/openid-configuration`, from which
+stock middleware auto-configures; it implements the authorization-code grant with mandatory-for-
+public-clients S256 PKCE, issues ID tokens signed by the existing key machinery, and serves
+`/oauth/userinfo`, `/oauth/introspect` (session-aware), and `/oauth/revoke`. The complete acceptance
+transcript — create a client, authorize with a session, exchange a code with a PKCE verifier, verify
+the ID token against the served JWKS, call userinfo, introspect (`active:true`), revoke, introspect
+again (`active:false`) — runs automatically against real PostgreSQL and real ES256 in
+`Shomei.Server.E2ESpec`, and was also driven by hand against a live server at each milestone.
+
+The five endpoints joined the OpenAPI document (34 → 39 paths), each on the correct side of the
+envelope boundary the conformance suite pins: the `/oauth/*` protocol routes and the discovery
+document answer RFC 6749/7662/7009 shapes, while `/oauth/userinfo` (guarded by the ordinary
+`Authenticated` combinator) answers problem documents. `cabal test all` is green under
+`TASTY_NUM_THREADS=1` across all twelve suites.
+
+**What went to plan.** The hard dependency on plan 41 held: the grant dispatcher, `extractClientAuth`,
+`oauthError`, and the RFC 6749 error boundary were reused unchanged; EP-5 only added `case` arms and
+one `oauthClientCredentials` helper for the public-client (bare `client_id`) path. The soft
+dependency on plan 38 (claims enrichment) was consumed transparently — the ID token and userinfo
+flow through whatever `buildEnrichedClaims`/`issueSessionWith` produce, so both work with empty
+role/scope sets today and pick up enrichment for free when it lands.
+
+**Deviations from the written plan** (all in the Decision Log): `issueSession` kept its signature and
+the OAuth knobs went on a new `issueSessionWith` returning the signed claims (the plan's added-
+parameter approach would have churned every caller and interpreter chain); the discovery document is
+a pure function of config rather than a precomputed `Env` field (the `jwksJson` analogy did not hold,
+because only key material is swapped at runtime); `authenticateOAuthCaller` lives with the handlers
+rather than in `Shomei.Servant.OAuth`, because it drives two stores through the port seam that
+module cannot reach; and `authorize`/grant failures got dedicated error types rather than new
+`AuthError` constructors, to keep them out of the problem catalog they can never render into.
+
+**Gaps and follow-ups.** `/oauth/token` and `/oauth/authorize` are **not rate-limited** — the former
+accepts a guessable client secret and the latter a valid token, so both are candidates for the
+throttle list a future plan should extend (noted in Surprises). The `refresh_token` grant does not
+re-issue an ID token (its `nonce`/`auth_time` belong to the authorize request, which Shōmei does not
+persist past the code); a client needing a fresh ID token re-runs authorize. Plan 43's token-exchange
+grant will add a third arm to the same dispatcher and should reuse `authenticateOAuthCaller` and the
+`GrantInvalidGrant`/`invalid_grant` discipline established here.
+
+**The most valuable test caught a real bug.** The Postgres consume statement shipped with
+`"""…RETURNING""" <> selectCols` compiling to `RETURNINGcode_hash` — invisible to the compiler,
+caught only because `OAuthCodeStore`'s integration test executes the statement. The lesson (recorded
+for M3/M4) is that any SQL built by concatenating onto a multiline literal needs an explicit
+separator, and that a store is not done until a test runs its statements against real PostgreSQL.
 
 
 ## Context and Orientation

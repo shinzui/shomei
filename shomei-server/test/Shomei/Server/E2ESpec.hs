@@ -7,7 +7,8 @@
 -- PostgreSQL and real ES256 signing.
 module Shomei.Server.E2ESpec (tests) where
 
-import Data.Aeson (Value (Array, Object, String), decode, encode, object, (.=))
+import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
@@ -38,6 +39,7 @@ import Network.HTTP.Client
     method,
     newManager,
     parseRequest,
+    redirectCount,
     requestBody,
     requestHeaders,
     responseBody,
@@ -47,27 +49,31 @@ import Network.HTTP.Client
   )
 import Network.HTTP.Types (Header, statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
-import Shomei.Config (defaultShomeiConfig)
+import Shomei.Config (OAuthConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Scope (..))
 import Shomei.Domain.LoginId (mkLoginId)
+import Shomei.Domain.OAuthClient (ClientType (..), NewOAuthClient (..))
 import Shomei.Domain.ServiceAccount (NewServiceAccount (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Domain.User (NewUser (..), User (..))
 import Shomei.Effect.Clock (now)
+import Shomei.Effect.OAuthClientStore (createOAuthClient)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
 import Shomei.Effect.UserStore (createUser)
 import Shomei.Error (AuthError)
-import Shomei.Id (genServiceAccountDbId, idText)
+import Shomei.Id (genOAuthClientId, genServiceAccountDbId, idText)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (runDatabasePool)
+import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -94,8 +100,161 @@ tests =
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
           clientId <- seedServiceAccount pool
-          testWithApplication (pure (application env)) (oauthScenario pool clientId)
+          testWithApplication (pure (application env)) (oauthScenario pool clientId),
+      testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 connStr
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          -- OIDC needs an http(s) issuer (it doubles as the endpoint base URL) and the provider on.
+          let baseCfg = defaultShomeiConfig (Issuer "http://localhost") (Audience "shomei-clients")
+              cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+          clientId <- seedOAuthClient pool
+          testWithApplication (pure (application env)) (oidcScenario clientId)
     ]
+
+-- | The secret the seeded OAuth client authenticates with; only its digest reaches the row.
+oidcClientSecret :: Text
+oidcClientSecret = "e2e-oauth-client-secret"
+
+oidcRedirectUri :: Text
+oidcRedirectUri = "http://localhost:9999/callback"
+
+-- | Insert a confidential OAuth client through the PostgreSQL interpreter, as
+-- @shomei-admin oauth-clients create@ does. Returns its @client_id@.
+seedOAuthClient :: Pool -> IO Text
+seedOAuthClient pool = do
+  outcome <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool pool
+      . runClockIO
+      . runOAuthClientStorePostgres
+      $ do
+        ocid <- genOAuthClientId
+        let cid = idText ocid
+        ts <- now
+        _ <-
+          createOAuthClient
+            NewOAuthClient
+              { oauthClientId = ocid,
+                clientId = cid,
+                secretHash = Just (sha256Hex oidcClientSecret),
+                clientType = ConfidentialClient,
+                displayName = "e2e rp",
+                redirectUris = [oidcRedirectUri],
+                allowedScopes = Set.fromList [Scope "openid", Scope "profile"],
+                createdAt = ts
+              }
+        pure cid
+  either (assertFailure . ("could not seed the oauth client: " <>) . show) pure outcome
+
+-- | The full OIDC transcript from this plan's Purpose, against real PostgreSQL and real ES256.
+oidcScenario :: Text -> Int -> IO ()
+oidcScenario clientId port = do
+  mgr <- newManager defaultManagerSettings
+
+  -- A user to authenticate the authorize request.
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= ("oidc-user" :: Text), "password" .= ("correct horse battery staple" :: Text), "displayName" .= ("" :: Text)])
+  sStatus @?= 201
+  sresp <- must "signup body" sBody
+  userToken <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
+
+  let verifier = "an-e2e-pkce-code-verifier-of-more-than-forty-three-chars" :: Text
+      challenge = pkceChallengeFor verifier
+      basic = Just (clientId, oidcClientSecret)
+
+  -- authorize with the user's bearer token → 302 carrying a single-use code.
+  authResp <-
+    getNoRedirect
+      mgr
+      port
+      ( "/oauth/authorize?response_type=code&client_id="
+          <> Text.unpack clientId
+          <> "&redirect_uri="
+          <> escape oidcRedirectUri
+          <> "&scope=openid%20profile&state=xyz&nonce=n-0S6&code_challenge="
+          <> Text.unpack challenge
+          <> "&code_challenge_method=S256"
+      )
+      (bearer userToken)
+  let (authStatus, authHdrs, _) = authResp
+  authStatus @?= 302
+  loc <- must "Location" (lookup "Location" authHdrs >>= (Just . Text.decodeUtf8))
+  code <- must "code in redirect" (paramFrom "code" loc)
+
+  -- exchange with the PKCE verifier → all three tokens.
+  (xStatus, _, xBody) <- postForm mgr port "/oauth/token" basic [("grant_type", "authorization_code"), ("code", Text.encodeUtf8 code), ("redirect_uri", Text.encodeUtf8 oidcRedirectUri), ("code_verifier", Text.encodeUtf8 verifier)]
+  xStatus @?= 200
+  xresp <- must "token body" xBody
+  access <- must "access_token" (dig ["access_token"] xresp >>= asText)
+  refresh <- must "refresh_token" (dig ["refresh_token"] xresp >>= asText)
+  idToken <- must "id_token" (dig ["id_token"] xresp >>= asText)
+
+  -- the id_token's signing key is published, its aud is the client, its nonce echoes.
+  (jStatus, jBody) <- getJSON mgr port "/.well-known/jwks.json" []
+  jStatus @?= 200
+  jwks <- must "jwks body" jBody
+  assertBool "the id_token's kid is in the served JWKS" (maybe False (`elem` jwksKids jwks) (jwtHeaderKid idToken))
+  idPayload <- must "id_token payload" (jwtPayload idToken)
+  (dig ["aud"] idPayload >>= asText) @?= Just clientId
+  (dig ["nonce"] idPayload >>= asText) @?= Just "n-0S6"
+
+  -- userinfo: same sub as the id_token.
+  (uStatus, uBody) <- getJSON mgr port "/oauth/userinfo" (bearer access)
+  uStatus @?= 200
+  uresp <- must "userinfo body" uBody
+  (dig ["sub"] uresp >>= asText) @?= (dig ["sub"] idPayload >>= asText)
+
+  -- introspect the access token → active.
+  (iStatus, _, iBody) <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 access)]
+  iStatus @?= 200
+  iresp <- must "introspect body" iBody
+  dig ["active"] iresp @?= Just (jsonBool True)
+
+  -- revoke the refresh token → 200.
+  (rStatus, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", Text.encodeUtf8 refresh), ("token_type_hint", "refresh_token")]
+  rStatus @?= 200
+
+  -- introspect again → inactive (the session is gone, and introspection is session-aware).
+  (i2Status, _, i2Body) <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 access)]
+  i2Status @?= 200
+  i2resp <- must "introspect body 2" i2Body
+  dig ["active"] i2resp @?= Just (jsonBool False)
+
+-- | The @Location@ query parameter named @k@, percent-decoded enough for our fixed values.
+paramFrom :: Text -> Text -> Maybe Text
+paramFrom k loc = do
+  let (_, query) = Text.breakOn "?" loc
+  listToMaybe [v | pair <- Text.splitOn "&" (Text.drop 1 query), let (n, rest) = Text.breakOn "=" pair, n == k, let v = Text.drop 1 rest]
+
+-- | GET without following redirects, so a 302 is the response under test.
+getNoRedirect :: Manager -> Int -> String -> [Header] -> IO (Int, [Header], Maybe Value)
+getNoRedirect mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "GET", requestHeaders = hdrs, redirectCount = 0}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
+-- | A JWT's payload segment as JSON (unverified; the kid/JWKS check above is the signature proof).
+jwtPayload :: Text -> Maybe Value
+jwtPayload token = do
+  seg <- case Text.splitOn "." token of (_ : p : _) -> Just p; _ -> Nothing
+  raw <- either (const Nothing) Just (B64U.decodeBase64UnpaddedUntyped (Text.encodeUtf8 seg))
+  decode (LBS.fromStrict raw)
+
+-- | Minimal percent-encoding for the fixed redirect URI in the authorize query string.
+escape :: Text -> String
+escape = concatMap enc . Text.unpack
+  where
+    enc ':' = "%3A"
+    enc '/' = "%2F"
+    enc c = [c]
+
+jsonBool :: Bool -> Value
+jsonBool = Aeson.Bool
 
 -- | The secret the seeded service account authenticates with. Only its digest reaches the row.
 oauthSecret :: Text

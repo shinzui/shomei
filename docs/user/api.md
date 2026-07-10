@@ -19,6 +19,11 @@ consume them look:
 | `GET /health`, `GET /ready` | deployment contracts a load balancer is configured against |
 | `GET /metrics` | scrape target (a WAI middleware; it never reaches the router) |
 | `POST /oauth/token` | OAuth2 clients expect the token endpoint at a conventional location |
+| `GET /.well-known/openid-configuration` | OIDC relying parties auto-configure from this exact path |
+| `GET /oauth/authorize` | the authorization-code flow's browser leg |
+| `GET /oauth/userinfo` | OIDC Core §5.3 |
+| `POST /oauth/introspect` | RFC 7662 |
+| `POST /oauth/revoke` | RFC 7009 |
 
 The unprefixed paths are **gone**, not redirected: `POST /auth/login` is a `404`. See the
 CHANGELOG for the migration.
@@ -157,16 +162,29 @@ Errors are RFC 6749 §5.2 objects, never problem documents:
 |---|---|---|
 | `invalid_client` | 401 | Unknown `client_id`, wrong secret, revoked account, inactive backing user, no credentials, or a malformed `Authorization` header. Carries `WWW-Authenticate: Basic realm="shomei"`. All of these are byte-identical: nothing discloses whether a `client_id` exists. |
 | `invalid_scope` | 400 | The requested scope is empty, or exceeds `allowed_scopes`. |
+| `invalid_grant` | 400 | (`authorization_code`/`refresh_token` grants) An invalid, expired, replayed, or wrong-client code or refresh token, or a PKCE mismatch. One indistinguishable answer for all of them. |
 | `invalid_request` | 400 | A required parameter is missing or malformed. |
 | `unsupported_grant_type` | 400 | A `grant_type` this deployment does not implement. |
 | `server_error` | 500 | An unexpected condition, still in the OAuth shape. |
 
-Every successful issuance writes a `service_token_issued` audit event whose `accountId` is the
-`client_id`. `/oauth/token` is **not** rate-limited; see
+`grant_type=client_credentials` is documented here; the `authorization_code` and `refresh_token`
+grants are part of the OIDC provider surface — see [oidc.md](oidc.md).
+
+Every successful `client_credentials` issuance writes a `service_token_issued` audit event whose
+`accountId` is the `client_id`. `/oauth/token` is **not** rate-limited; see
 [service-tokens.md](service-tokens.md#security-notes) for why.
 
 Manage accounts with `shomei-admin service-accounts create|rotate-secret|revoke|list`. See
 [service-tokens.md](service-tokens.md) for the full guide.
+
+### OIDC provider endpoints
+
+When `oidcEnabled` is set, Shōmei is a standards-consumable OpenID Connect provider:
+`GET /.well-known/openid-configuration`, `GET /oauth/authorize`, the `authorization_code` and
+`refresh_token` grants at `POST /oauth/token`, `GET /oauth/userinfo`, `POST /oauth/introspect`, and
+`POST /oauth/revoke`. Stock middleware (Spring Security, ASP.NET Core, Envoy, oauth2-proxy)
+auto-configures from the discovery URL alone. The full guide, including the headless authorize
+contract and a worked oauth2-proxy configuration, is [oidc.md](oidc.md).
 
 ### `POST /v1/auth/service-token` *(deprecated)*
 
