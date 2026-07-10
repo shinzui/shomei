@@ -221,9 +221,19 @@ instance ToSchema TokenResponse where
                              \`openid`. Its `aud` is the client_id, not the API audience: it is a \
                              \statement to the client, never a bearer credential."
                     )
+                ),
+                ( "issued_token_type",
+                  O.Inline
+                    ( stringSchema
+                        & O.description
+                          ?~ "RFC 8693 §2.2.1: the issued token's type URN. Present only on a \
+                             \token-exchange response, where it is always \
+                             \`urn:ietf:params:oauth:token-type:access_token`; omitted on every \
+                             \other grant."
+                    )
                 )
               ]
-          -- The two optional members are omitted rather than null when they do not apply, so they
+          -- The three optional members are omitted rather than null when they do not apply, so they
           -- are documented as not required.
           & O.required .~ ["access_token", "token_type", "expires_in", "scope"]
 
@@ -246,10 +256,25 @@ instance ToSchema Form where
                \`client_secret_post` rather than an `Authorization: Basic` header."
           & O.properties
             .~ IOHM.fromList
-              [ ("grant_type", O.Inline (stringSchema & O.enum_ ?~ [String "client_credentials"])),
+              [ ( "grant_type",
+                  O.Inline
+                    ( stringSchema
+                        & O.enum_
+                          ?~ [ String "client_credentials",
+                               String "authorization_code",
+                               String "refresh_token",
+                               String "urn:ietf:params:oauth:grant-type:token-exchange"
+                             ]
+                    )
+                ),
                 ("scope", O.Inline stringSchema),
                 ("client_id", O.Inline stringSchema),
-                ("client_secret", O.Inline stringSchema)
+                ("client_secret", O.Inline stringSchema),
+                ("subject_token", O.Inline stringSchema),
+                ("subject_token_type", O.Inline stringSchema),
+                ("actor_token", O.Inline stringSchema),
+                ("actor_token_type", O.Inline stringSchema),
+                ("requested_token_type", O.Inline stringSchema)
               ]
           & O.required .~ ["grant_type"]
           & O.additionalProperties ?~ O.AdditionalPropertiesAllowed True

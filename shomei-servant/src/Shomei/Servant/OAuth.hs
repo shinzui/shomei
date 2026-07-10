@@ -193,7 +193,11 @@ data TokenResponse = TokenResponse
     --     @client_credentials@ — a machine credential dies at its TTL and asks again.
     refreshToken :: !(Maybe Text),
     -- | present exactly when the granted scopes include @openid@ (EP-5)
-    idToken :: !(Maybe Text)
+    idToken :: !(Maybe Text),
+    -- | RFC 8693 §2.2.1: the issued token's type URN, required on a token-exchange response and
+    --     absent on every other grant (EP-6). Shōmei's exchange always issues an access token, so
+    --     it is @urn:ietf:params:oauth:token-type:access_token@ when present.
+    issuedTokenType :: !(Maybe Text)
   }
   deriving stock (Generic, Eq, Show)
 
@@ -210,6 +214,7 @@ instance Aeson.ToJSON TokenResponse where
         ]
           <> foldMap (\t -> ["refresh_token" Aeson..= t]) r.refreshToken
           <> foldMap (\t -> ["id_token" Aeson..= t]) r.idToken
+          <> foldMap (\t -> ["issued_token_type" Aeson..= t]) r.issuedTokenType
       )
 
 instance Aeson.FromJSON TokenResponse where
@@ -221,3 +226,4 @@ instance Aeson.FromJSON TokenResponse where
       <*> o Aeson..: "scope"
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "id_token"
+      <*> o Aeson..:? "issued_token_type"

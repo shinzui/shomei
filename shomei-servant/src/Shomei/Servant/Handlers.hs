@@ -82,8 +82,11 @@ import Shomei.Effect.UserStore
 import Shomei.Error
   ( AuthError
       ( ImpersonationActionBlocked,
+        ImpersonationForbidden,
         ImpersonationTargetInvalid,
         OAuthClientInvalid,
+        OAuthGrantInvalid,
+        OAuthRequestMalformed,
         OAuthScopeInvalid,
         SessionNotFound,
         UserHasNoEmail,
@@ -164,6 +167,7 @@ import Shomei.Workflow.OAuthTokenGrant qualified as OAuthTokenGrant
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.Roles qualified as Roles
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
+import Shomei.Workflow.TokenExchange qualified as TokenExchange
 import Web.FormUrlEncoded (Form)
 
 -- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
@@ -459,14 +463,16 @@ withQuery url params
 oauthTokenH ::
   Env ->
   Maybe Text ->
+  SockAddr ->
   Form ->
   Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
-oauthTokenH env mAuthHeader form =
+oauthTokenH env mAuthHeader peer form =
   case OAuth.lookupParam "grant_type" form of
     Nothing -> throwError (OAuth.invalidRequest "grant_type is required")
     Just "client_credentials" -> clientCredentialsGrant env mAuthHeader form
     Just "authorization_code" -> authorizationCodeGrant env mAuthHeader form
     Just "refresh_token" -> refreshTokenGrant env mAuthHeader form
+    Just "urn:ietf:params:oauth:grant-type:token-exchange" -> tokenExchangeGrant env mAuthHeader peer form
     Just other -> throwError (OAuth.unsupportedGrantType other)
 
 -- | RFC 6749 §4.4. Authenticate the client, read the optional @scope@, mint the token.
@@ -496,7 +502,8 @@ clientCredentialsGrant env mAuthHeader form = do
             scope = Text.unwords [s | Scope s <- Set.toList (granted ^. #grantedScopes)],
             -- Deliberately refresh-less: the credential dies at its TTL and the client asks again.
             refreshToken = Nothing,
-            idToken = Nothing
+            idToken = Nothing,
+            issuedTokenType = Nothing
           }
   pure (addHeader "no-store" (addHeader "no-cache" body))
 
@@ -530,7 +537,8 @@ authorizationCodeGrant env mAuthHeader form = do
             expiresIn = round env.config.accessTokenTTL,
             scope = Text.unwords [sc | Scope sc <- Set.toList (exchanged ^. #grantedScopes)],
             refreshToken = Just refresh,
-            idToken = (\(IdToken t) -> t) <$> exchanged ^. #idToken
+            idToken = (\(IdToken t) -> t) <$> exchanged ^. #idToken,
+            issuedTokenType = Nothing
           }
   pure (addHeader "no-store" (addHeader "no-cache" body))
 
@@ -568,9 +576,100 @@ refreshTokenGrant env mAuthHeader form = do
             -- No ID token on refresh: the nonce and auth_time an ID token must carry belong to the
             -- authorize request, and Shōmei does not persist them past the code. A client that
             -- needs a fresh ID token runs the authorize flow again.
-            idToken = Nothing
+            idToken = Nothing,
+            issuedTokenType = Nothing
           }
   pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | RFC 8693 token exchange (EP-6): the third grant on @POST \/oauth\/token@. Two modes selected by
+-- the parameters (see "Shomei.Workflow.TokenExchange"):
+--
+--   * __impersonation__ — no client authentication; the operator's credential is the @actor_token@.
+--   * __service on-behalf-of__ — the service authenticates as an EP-4 service account (client_secret_
+--     basic\/post) and presents a user's access token as the @subject_token@.
+--
+-- Client authentication is /optional/ here, which is why this arm cannot reuse
+-- 'oauthClientCredentials' (which demands it): absent credentials mean impersonation mode, present
+-- credentials must resolve to an active service account or fail @401 invalid_client@. The @resource@
+-- parameter is rejected; @audience@ is ignored (both documented in the plan).
+tokenExchangeGrant ::
+  Env ->
+  Maybe Text ->
+  SockAddr ->
+  Form ->
+  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+tokenExchangeGrant env mAuthHeader peer form = do
+  when (isJust (OAuth.lookupParam "resource" form)) $
+    throwError (OAuth.invalidRequest "resource parameter not supported")
+  mSvc <- resolveExchangeClient env mAuthHeader form
+  subjectToken <- requireParam "subject_token" form
+  subjectTokenType <- requireParam "subject_token_type" form
+  let req =
+        TokenExchange.ExchangeRequest
+          { subjectToken,
+            subjectTokenType,
+            actorToken = OAuth.lookupParam "actor_token" form,
+            actorTokenType = OAuth.lookupParam "actor_token_type" form,
+            requestedScopes = OAuth.parseScopeParam form,
+            requestedTokenType = OAuth.lookupParam "requested_token_type" form,
+            reason = OAuth.lookupParam "reason" form,
+            ticketId = OAuth.lookupParam "ticket_id" form,
+            clientIp = Just (clientIpText peer),
+            authenticatedService = mSvc
+          }
+  outcome <- runPort env (TokenExchange.exchangeToken env.config req)
+  exchanged <- either (throwError . exchangeErrorFor) pure outcome
+  let AccessToken access = exchanged ^. #accessToken
+      body =
+        OAuth.TokenResponse
+          { accessToken = access,
+            tokenType = "Bearer",
+            expiresIn = round (exchanged ^. #expiresIn :: NominalDiffTime),
+            scope = Text.unwords [s | Scope s <- Set.toList (exchanged ^. #grantedScopes)],
+            -- Refresh-less by design: a delegated token cannot be silently renewed (both modes).
+            refreshToken = Nothing,
+            idToken = Nothing,
+            -- RFC 8693 §2.2.1 requires this member; Shōmei's exchange only ever issues access tokens.
+            issuedTokenType = Just TokenExchange.accessTokenType
+          }
+  pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | Resolve the /optional/ client authentication of a token-exchange request. Absent credentials →
+-- 'Nothing' (impersonation mode). Present credentials must resolve to an active service account and
+-- match its secret, else @401 invalid_client@ — a bad or unknown credential must never be mistaken
+-- for "no credential" and silently downgraded to impersonation mode.
+resolveExchangeClient :: Env -> Maybe Text -> Form -> Handler (Maybe ServiceAccount.ServiceAccount)
+resolveExchangeClient env mAuthHeader form =
+  case OAuth.extractClientAuth mAuthHeader form of
+    Right auth -> do
+      mAccount <- runPort env (findServiceAccountByClientId (auth ^. #clientId))
+      case mAccount of
+        Just acc | serviceAccountAuthenticates (auth ^. #clientSecret) acc -> pure (Just acc)
+        _ -> throwError OAuth.invalidClient
+    -- 'extractClientAuth' fails both when credentials are absent and when they are malformed. Only a
+    -- fully absent credential (no Authorization header, no client_id/client_secret) is impersonation
+    -- mode; anything partial is a malformed client attempt.
+    Left _
+      | isJust mAuthHeader
+          || isJust (OAuth.lookupParam "client_id" form)
+          || isJust (OAuth.lookupParam "client_secret" form) ->
+          throwError OAuth.invalidClient
+      | otherwise -> pure Nothing
+
+-- | Render a token-exchange failure as its RFC 6749 §5.2 object. The impersonation guards
+-- ('ImpersonationForbidden'\/'ImpersonationTargetInvalid') collapse to a generic @invalid_grant@ so
+-- a stock caller learns nothing of Shōmei's impersonation policy internals.
+exchangeErrorFor :: AuthError -> ServerError
+exchangeErrorFor = \case
+  OAuthClientInvalid -> OAuth.invalidClient
+  OAuthScopeInvalid -> OAuth.oauthError status400 "invalid_scope" "the requested scope is empty, or exceeds what the account or subject may grant"
+  OAuthRequestMalformed -> OAuth.oauthError status400 "invalid_request" "the token-exchange request is malformed"
+  OAuthGrantInvalid -> OAuth.oauthError status400 "invalid_grant" "the subject or actor token is invalid"
+  ImpersonationForbidden -> OAuth.oauthError status400 "invalid_grant" "the subject or actor token is invalid"
+  ImpersonationTargetInvalid -> OAuth.oauthError status400 "invalid_grant" "the subject or actor token is invalid"
+  -- Any other AuthError is an infrastructure failure (e.g. InternalAuthError): a 500 in the OAuth
+  -- shape so the caller's error parser does not itself fail while handling the failure.
+  _ -> OAuth.oauthError status500 "server_error" "the authorization server encountered an unexpected condition"
 
 -- | Client credentials for the EP-5 grants, which admit __public__ clients (no secret at all)
 -- alongside the @client_secret_basic@\/@client_secret_post@ methods 'OAuth.extractClientAuth'

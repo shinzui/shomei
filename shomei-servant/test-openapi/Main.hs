@@ -441,7 +441,7 @@ instance Arbitrary ServiceTokenResponse where
   arbitrary = ServiceTokenResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary TokenResponse where
-  arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary SessionResponse where
   arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

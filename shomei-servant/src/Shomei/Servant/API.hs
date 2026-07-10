@@ -466,6 +466,9 @@ data ShomeiRoutes mode = ShomeiRoutes
         :- "oauth"
           :> "token"
           :> Header "Authorization" Text
+          -- 'RemoteHost' supplies the connection peer, which the RFC 8693 token-exchange grant
+          -- (EP-6) records as the impersonation client IP; the other grants ignore it.
+          :> RemoteHost
           :> ReqBody '[FormUrlEncoded] Form
           :> Post '[JSON] (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] TokenResponse),
     -- | @GET \/oauth\/userinfo@ (EP-5, OIDC Core §5.3): the bearer-protected claims endpoint.

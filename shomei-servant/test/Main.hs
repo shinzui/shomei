@@ -132,6 +132,7 @@ import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
 import Shomei.Workflow.ServiceToken (sha256Hex)
+import Shomei.Workflow.TokenExchange (tokenExchangeSubjectScope)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -391,10 +392,19 @@ main = do
       freshAdminEnv = do
         r <- newIORef (emptyWorld t0)
         pure (r, mkEnv r)
+      -- EP-6: a world holding two database-backed service accounts — one with the
+      -- token-exchange:subject gate scope, one without — for the RFC 8693 on-behalf-of scenario.
+      freshExchangeEnv = do
+        r <- newIORef (emptyWorld t0)
+        gateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcgate" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
+        noGateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcnogate" (Set.singleton ingestScope)
+        pure (gateId, noGateId, mkEnv r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv jwk cfg adminToken impToken)
+  -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
+  staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -441,6 +451,43 @@ seedOAuthAccount ref jwk jwkset cfg createdAt = do
 
 oauthClientSecret :: Text
 oauthClientSecret = "oauth-test-secret"
+
+-- | EP-6: sign up a uniquely-named backing user (so several service accounts can coexist in one
+-- world without colliding on the fixed 'seedServiceUser' identity).
+seedServiceUserNamed :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> Text -> IO User
+seedServiceUserNamed ref jwk jwkset cfg name = do
+  loginId <- either (assertFailure . ("bad service login id: " <>) . show) pure (mkLoginId name)
+  email <- either (assertFailure . ("bad service email: " <>) . show) pure (mkEmail (name <> "@example.com"))
+  result <-
+    runHybrid
+      ref
+      jwk
+      jwkset
+      cfg
+      (Wf.signup cfg SignupCommand {loginId, email = Just email, password = PlainPassword servicePassword, displayName = Just name})
+  case result of
+    Right (user, _) -> pure user
+    Left err -> assertFailure ("named service user signup failed: " <> show err)
+
+-- | EP-6: seed a database-backed service account with an explicit scope set, returning its
+-- @client_id@. The secret is 'oauthClientSecret'.
+seedExchangeAccount :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> UTCTime -> Text -> Set.Set Scope -> IO Text
+seedExchangeAccount ref jwk jwkset cfg createdAt name scopes = do
+  serviceUser <- seedServiceUserNamed ref jwk jwkset cfg name
+  runHybrid ref jwk jwkset cfg do
+    said <- genServiceAccountDbId
+    account <-
+      createServiceAccount
+        NewServiceAccount
+          { serviceAccountId = said,
+            clientId = idText said,
+            userId = serviceUser ^. #userId,
+            secretHash = sha256Hex oauthClientSecret,
+            displayName = name,
+            allowedScopes = scopes,
+            createdAt
+          }
+    pure (account ^. #clientId)
 
 -- | EP-4: @POST \/oauth\/token@ end to end, over the real Servant tree.
 --
@@ -1051,8 +1098,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv jwk cfg adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1096,6 +1143,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "POST /oauth/token: client_credentials over both auth methods; RFC 6749 errors, not problem docs" $ do
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
+      testCase "POST /oauth/token: RFC 8693 token-exchange, both modes, denyUnderImpersonation inheritance, and wire refusals" $ do
+        (gateId, noGateId, e) <- freshExchangeEnv
+        testWithApplication (pure (app e)) (scenarioTokenExchange jwk gateId noGateId impToken staleImpToken),
       testCase "GET /.well-known/openid-configuration: derived from the issuer when enabled, 404 in the OAuth shape when not" $ do
         e <- freshOidcEnv
         testWithApplication (pure (app e)) scenarioOidcDiscoveryEnabled
@@ -1288,6 +1338,182 @@ signupToken mgr port loginId = do
   status @?= 201
   resp <- must "signup body" body
   must "signup accessToken" (dig ["token", "accessToken"] resp >>= asText)
+
+-- | Like 'signupToken', but also returns the new user's id text — the impersonation-mode
+-- @subject_token@ (a bare user id) and the identity a downstream verifier reads from @sub@.
+signupTokenAndId :: Manager -> Int -> Text -> IO (Text, Text)
+signupTokenAndId mgr port loginId = do
+  (status, body) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/signup"
+      (object ["loginId" .= loginId, "password" .= ("correct horse battery staple" :: Text), "displayName" .= ("" :: Text)])
+  status @?= 201
+  resp <- must "signup body" body
+  tok <- must "signup accessToken" (dig ["token", "accessToken"] resp >>= asText)
+  uid <- must "signup userId" (dig ["user", "userId"] resp >>= asText)
+  pure (tok, uid)
+
+-- | EP-6: the RFC 8693 token-exchange grant end to end, over the real Servant tree — both modes and
+-- every wire refusal.
+--
+--   * impersonation: an operator token exchanges a bare user id for a delegated token whose @sub@ is
+--     the target and @act@ the operator; it resolves the customer on @\/auth\/me@ and inherits the
+--     'denyUnderImpersonation' 403 on a credential change.
+--   * on-behalf-of: an authenticated service account exchanges a user's access token for a narrowed
+--     token that satisfies the @RequireScope@ route and carries the user's @sub@ + the service's @act@.
+--
+-- Every failure is an RFC 6749 §5.2 object, never a problem document.
+scenarioTokenExchange :: JWK -> Text -> Text -> Text -> Text -> Int -> IO ()
+scenarioTokenExchange jwk gateClientId noGateClientId impToken staleImpToken port = do
+  mgr <- newManager defaultManagerSettings
+  let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+      userIdType = "urn:shomei:params:oauth:token-type:user-id"
+      accessType = "urn:ietf:params:oauth:token-type:access_token"
+      accessTypeText = "urn:ietf:params:oauth:token-type:access_token" :: Text
+      enc = Text.encodeUtf8
+
+  -- ===== Impersonation mode =====
+  (_, targetId) <- signupTokenAndId mgr port "exchange-target"
+  impR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ teGrant,
+        ("subject_token", enc targetId),
+        ("subject_token_type", userIdType),
+        ("actor_token", enc impToken),
+        ("actor_token_type", accessType),
+        ("reason", "support ticket 4711")
+      ]
+  let (impStatus, impHdrs, impBody) = impR
+  impStatus @?= 200
+  headerValue "Cache-Control" impHdrs @?= Just "no-store"
+  impDoc <- must "impersonation exchange body" impBody
+  (dig ["token_type"] impDoc >>= asText) @?= Just "Bearer"
+  (dig ["issued_token_type"] impDoc >>= asText) @?= Just accessTypeText
+  impAccess <- must "impersonation access_token" (dig ["access_token"] impDoc >>= asText)
+  impClaims <- verifyIdToken jwk impAccess
+  KM.lookup "sub" impClaims @?= Just (String targetId)
+  assertBool "impersonation token carries an act claim" (isJust (KM.lookup "act" impClaims))
+  -- The delegated token resolves the TARGET on /auth/me.
+  (meStatus, meBody) <- getJSON mgr port "/v1/auth/me" (bearer impAccess)
+  meStatus @?= 200
+  meResp <- must "me (delegated) body" meBody
+  (dig ["userId"] meResp >>= asText) @?= Just targetId
+  -- A credential change under the delegated token is refused 403 (the standard path inherits the gate).
+  (pwStatus, pwBody) <-
+    postJSONAuth
+      mgr
+      port
+      "/v1/auth/password/change"
+      (bearer impAccess)
+      (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
+  pwStatus @?= 403
+  (pwBody >>= dig ["code"] >>= asText) @?= Just "impersonation_action_blocked"
+
+  -- A stale operator token is one generic invalid_grant.
+  staleR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [teGrant, ("subject_token", enc targetId), ("subject_token_type", userIdType), ("actor_token", enc staleImpToken), ("actor_token_type", accessType)]
+  assertOAuthError "stale operator" 400 "invalid_grant" staleR
+
+  -- A requested_token_type other than access_token is invalid_request (we issue no refresh tokens).
+  reqTypeR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ teGrant,
+        ("subject_token", enc targetId),
+        ("subject_token_type", userIdType),
+        ("actor_token", enc impToken),
+        ("actor_token_type", accessType),
+        ("requested_token_type", "urn:ietf:params:oauth:token-type:refresh_token")
+      ]
+  assertOAuthError "refresh requested_token_type" 400 "invalid_request" reqTypeR
+
+  -- ===== Service on-behalf-of mode =====
+  (userTok, userId) <- signupTokenAndId mgr port "exchange-user"
+  obR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (gateClientId, oauthClientSecret))
+      [teGrant, ("subject_token", enc userTok), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+  let (obStatus, obHdrs, obBody) = obR
+  obStatus @?= 200
+  headerValue "Cache-Control" obHdrs @?= Just "no-store"
+  obDoc <- must "on-behalf body" obBody
+  (dig ["scope"] obDoc >>= asText) @?= Just "kawa:ingest"
+  (dig ["issued_token_type"] obDoc >>= asText) @?= Just accessTypeText
+  obAccess <- must "on-behalf access_token" (dig ["access_token"] obDoc >>= asText)
+  -- The narrowed token satisfies the RequireScope route.
+  (ingestStatus, _) <- getJSON mgr port "/ingest" (bearer obAccess)
+  ingestStatus @?= 200
+  obClaims <- verifyIdToken jwk obAccess
+  KM.lookup "sub" obClaims @?= Just (String userId)
+  assertBool "on-behalf token carries a service act claim" (isJust (KM.lookup "act" obClaims))
+  assertBool "the act is the service, not the user" (KM.lookup "act" obClaims /= Just (String userId))
+
+  -- No client authentication (and an access-token subject) names neither mode: invalid_request.
+  noAuthR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [teGrant, ("subject_token", enc userTok), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+  assertOAuthError "on-behalf without client auth" 400 "invalid_request" noAuthR
+
+  -- A service account WITHOUT the gate scope may not exchange at all: invalid_scope.
+  noGateR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (noGateClientId, oauthClientSecret))
+      [teGrant, ("subject_token", enc userTok), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+  assertOAuthError "service without gate scope" 400 "invalid_scope" noGateR
+
+  -- Requesting the gate scope itself is never granted: an empty grant is invalid_scope.
+  gateR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (gateClientId, oauthClientSecret))
+      [teGrant, ("subject_token", enc userTok), ("subject_token_type", accessType), ("scope", "token-exchange:subject")]
+  assertOAuthError "requesting the gate scope" 400 "invalid_scope" gateR
+
+  -- A scope outside the account's ceiling is invalid_scope.
+  outsideR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (gateClientId, oauthClientSecret))
+      [teGrant, ("subject_token", enc userTok), ("subject_token_type", accessType), ("scope", "channel:egress")]
+  assertOAuthError "scope outside ceiling" 400 "invalid_scope" outsideR
+
+  -- A garbage subject token is one generic invalid_grant.
+  garbageR <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (gateClientId, oauthClientSecret))
+      [teGrant, ("subject_token", "not-a-real-token"), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+  assertOAuthError "garbage subject token" 400 "invalid_grant" garbageR
 
 -- | EP-5 M2, regime one: an unknown or revoked @client_id@, or a @redirect_uri@ that is not
 -- registered, is a @400@ __with no Location header at all__.
