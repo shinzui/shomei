@@ -23,13 +23,15 @@ where
 import Data.Aeson (Value)
 import Servant.API
 import Shomei.Domain.User (User)
-import Shomei.Id (PasskeyId)
+import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Cookie (WithCookies)
 import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.DTO
-  ( AuditEventsPage,
+  ( AdminUserResponse,
+    AdminUsersPage,
+    AuditEventsPage,
     ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
@@ -257,7 +259,113 @@ data ShomeiAPI mode = ShomeiAPI
           :> QueryParam "until" Text
           :> QueryParam "limit" Int
           :> QueryParam "before" Text
-          :> Get '[JSON] AuditEventsPage
+          :> Get '[JSON] AuditEventsPage,
+    -- | The administrative surface (EP-2). Every route below carries plain 'Authenticated' and
+    --     calls @Shomei.Servant.Authz.requireAdmin@ in its handler, rather than the
+    --     'RequireRole' combinator the audit route uses: the gate is a /disjunction/ — the
+    --     @admin@ role __or__ the @shomei:admin@ scope — and one type-level symbol cannot say
+    --     that. A human administrator carries the role; a database-less service (a support
+    --     console, a back-office job) carries the scope on a service token.
+    --
+    --     Every mutation additionally refuses a delegated (impersonation) token, and audits the
+    --     refusal.
+    adminListUsers ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> QueryParam "status" Text
+          :> QueryParam "limit" Int
+          :> QueryParam "before" Text
+          :> Get '[JSON] AdminUsersPage,
+    adminGetUser ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> Get '[JSON] AdminUserResponse,
+    -- | Suspend an active user and revoke their sessions. @409@ if they are not active.
+    adminSuspendUser ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "suspend"
+          :> PostNoContent,
+    -- | Return a suspended user to service. @409@ if they are not suspended.
+    adminReinstateUser ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "reinstate"
+          :> PostNoContent,
+    -- | Soft-delete: the user's status becomes @deleted@ and their sessions are revoked. The row
+    --     survives, because sessions, role grants and audit events reference it.
+    adminDeleteUser ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> Verb 'DELETE 204 '[JSON] NoContent,
+    adminListSessions ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "sessions"
+          :> Get '[JSON] [SessionResponse],
+    adminRevokeSessions ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "sessions"
+          :> Verb 'DELETE 204 '[JSON] NoContent,
+    adminRevokeSession ::
+      mode
+        :- "admin"
+          :> "sessions"
+          :> Authenticated
+          :> Capture "sessionId" SessionId
+          :> Verb 'DELETE 204 '[JSON] NoContent,
+    -- | Trigger the ordinary password-reset flow for a user, by id. @409@ if they have no email.
+    --     Unlike the public endpoint this may answer honestly: the caller is an authorized admin
+    --     naming a user id, not a stranger probing an address.
+    adminPasswordReset ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "password-reset"
+          :> Verb 'POST 202 '[JSON] NoContent,
+    -- | Grant a role. Idempotent: re-granting an existing role is still @204@.
+    adminGrantRole ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "roles"
+          :> Capture "role" Text
+          :> Verb 'PUT 204 '[JSON] NoContent,
+    -- | Revoke a role. @404@ if the user did not hold it.
+    adminRevokeRole ::
+      mode
+        :- "admin"
+          :> "users"
+          :> Authenticated
+          :> Capture "userId" UserId
+          :> "roles"
+          :> Capture "role" Text
+          :> Verb 'DELETE 204 '[JSON] NoContent
   }
   deriving stock (Generic)
 

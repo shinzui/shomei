@@ -44,7 +44,7 @@ import Servant.OpenApi (HasOpenApi (..))
 -- The status of a 'ProblemSpec' is carried as the Servant base error it renders from; only
 -- 'errHTTPCode' is read here.
 import Servant.Server (ServerError (errHTTPCode))
-import Shomei.Id (PasskeyId)
+import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Authz (RequireRole, RequireScope)
 import Shomei.Servant.Error
@@ -58,6 +58,7 @@ import Shomei.Servant.Error
     pcEmailTaken,
     pcImpersonationActionBlocked,
     pcImpersonationForbidden,
+    pcInvalidUserStatus,
     pcImpersonationTargetInvalid,
     pcInvalidEmail,
     pcInvalidLogin,
@@ -70,6 +71,9 @@ import Shomei.Servant.Error
     pcPasswordResetTokenInvalid,
     pcRefreshTokenExpired,
     pcRefreshTokenInvalid,
+    pcRoleNotDefined,
+    pcRoleNotGranted,
+    pcSelfTargetForbidden,
     pcServiceAccountInvalid,
     pcServiceTokenActorInvalid,
     pcServiceTokenDisabled,
@@ -79,13 +83,16 @@ import Shomei.Servant.Error
     pcTokenInvalidAuth,
     pcTokenReuse,
     pcTooManyRequests,
+    pcUserHasNoEmail,
     pcUserNotFound,
     pcVerificationTokenInvalid,
     pcWeakPassword,
     pcWebAuthnFailed,
   )
 import Shomei.Servant.DTO
-  ( AuditEventResponse,
+  ( AdminUserResponse,
+    AdminUsersPage,
+    AuditEventResponse,
     AuditEventsPage,
     ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
@@ -174,6 +181,10 @@ instance ToSchema AuditEventResponse
 
 instance ToSchema AuditEventsPage
 
+instance ToSchema AdminUserResponse
+
+instance ToSchema AdminUsersPage
+
 -- | Free-form JSON. Several DTOs carry an aeson 'Value' (opaque WebAuthn/JWKS
 -- payloads), and @openapi-hs@ ships no 'ToSchema' for it. @additionalProperties:
 -- true@ makes the schema accept any JSON: non-object values are unconstrained,
@@ -221,8 +232,15 @@ instance ToSchema LoginResponse where
       O.NamedSchema (Just "LoginResponse") $
         mempty & O.oneOf ?~ [O.Inline completeBranch, O.Inline mfaBranch]
 
--- | 'PasskeyId' is a @KindID "passkey"@; its wire/capture form is a string.
+-- | Every Shōmei id is a @KindID@ (a UUIDv7 behind a type-level prefix); its wire/capture form
+-- is the TypeID string, e.g. @user_01h455vb4pex5vsknk084sn02q@.
 instance ToParamSchema PasskeyId where
+  toParamSchema _ = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
+
+instance ToParamSchema UserId where
+  toParamSchema _ = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
+
+instance ToParamSchema SessionId where
   toParamSchema _ = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
 
 -- ---------------------------------------------------------------------------
@@ -291,15 +309,25 @@ problemSchema =
 stringSchema :: O.Schema
 stringSchema = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
 
--- | The three HTTP methods Shōmei's routes use, as a selector for the matching 'O.PathItem'
--- field. A route→codes table entry names one operation, and @\/v1\/auth\/impersonate@ has two.
-data Method = MGet | MPost | MDelete
-  deriving stock (Eq, Show)
+-- | The HTTP methods Shōmei's routes use, as a selector for the matching 'O.PathItem' field. A
+-- route→codes table entry names one operation, and a path may carry several
+-- (@\/v1\/auth\/impersonate@ has POST and DELETE).
+--
+-- 'allMethods' must list every constructor: 'withErrorResponses' folds over it, so a method
+-- missing here silently documents no errors at all for every route that uses it. EP-2's
+-- @PUT …\/roles\/{role}@ was exactly that hole, caught by the conformance suite's
+-- "documents a 401 on every bearer operation" check.
+data Method = MGet | MPost | MPut | MDelete
+  deriving stock (Eq, Show, Enum, Bounded)
+
+allMethods :: [Method]
+allMethods = [minBound .. maxBound]
 
 methodLens :: Method -> Lens' O.PathItem (Maybe O.Operation)
 methodLens = \case
   MGet -> O.get
   MPost -> O.post
+  MPut -> O.put
   MDelete -> O.delete
 
 -- | Which problem kinds each operation can produce, beyond the baseline every operation gets
@@ -352,7 +380,21 @@ routeErrors =
     ("/v1/auth/login/passkey/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
     ("/v1/auth/impersonate", MPost, [pcImpersonationTargetInvalid, pcImpersonationForbidden, pcImpersonationActionBlocked]),
     ("/v1/auth/impersonate", MDelete, [pcImpersonationTargetInvalid]),
-    ("/v1/admin/audit/events", MGet, [pcBadRequest, pcMissingRole])
+    ("/v1/admin/audit/events", MGet, [pcBadRequest, pcMissingRole]),
+    -- EP-2's admin surface. Every one of these is gated by 'Shomei.Servant.Authz.requireAdmin',
+    -- whose refusal is the same @missing_role@ document 'RequireRole' raises, so 'pcMissingRole'
+    -- appears throughout. The 401s and the body-parse 400s come from 'baselineSpecs', not here.
+    ("/v1/admin/users", MGet, [pcBadRequest, pcMissingRole]),
+    ("/v1/admin/users/{userId}", MGet, [pcMissingRole, pcUserNotFound]),
+    ("/v1/admin/users/{userId}", MDelete, [pcMissingRole, pcSelfTargetForbidden, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
+    ("/v1/admin/users/{userId}/suspend", MPost, [pcMissingRole, pcSelfTargetForbidden, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
+    ("/v1/admin/users/{userId}/reinstate", MPost, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
+    ("/v1/admin/users/{userId}/sessions", MGet, [pcMissingRole, pcUserNotFound]),
+    ("/v1/admin/users/{userId}/sessions", MDelete, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound]),
+    ("/v1/admin/sessions/{sessionId}", MDelete, [pcMissingRole, pcImpersonationActionBlocked, pcSessionNotFound]),
+    ("/v1/admin/users/{userId}/password-reset", MPost, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcUserHasNoEmail]),
+    ("/v1/admin/users/{userId}/roles/{role}", MPut, [pcBadRequest, pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcRoleNotDefined]),
+    ("/v1/admin/users/{userId}/roles/{role}", MDelete, [pcBadRequest, pcMissingRole, pcImpersonationActionBlocked, pcRoleNotGranted])
   ]
 
 -- | What an operation can fail with by virtue of its /shape/, independent of the table.
@@ -374,7 +416,7 @@ withErrorResponses doc =
     & O.paths %~ imap decoratePath
   where
     decoratePath path item =
-      foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOp path m) item [MGet, MPost, MDelete]
+      foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOp path m) item allMethods
 
     decorateOp path m op =
       foldl' addStatus op (byStatus (baselineSpecs op <> tabled path m))

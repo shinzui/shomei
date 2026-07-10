@@ -32,6 +32,9 @@ module Shomei.Servant.Authz
     RequireScope,
     requireRole,
     requireScope,
+    requireAdmin,
+    adminRole,
+    adminScope,
   )
 where
 
@@ -93,6 +96,32 @@ requireScope scope u
 missingRole, missingScope :: ServerError
 missingRole = toProblemError pcMissingRole Nothing
 missingScope = toProblemError pcMissingScope Nothing
+
+-- | The @admin@ role, granted through the 'Shomei.Effect.RoleStore' (a human administrator).
+adminRole :: Role
+adminRole = Role "admin"
+
+-- | The @shomei:admin@ scope, mintable onto a service token (a support console, a back-office
+-- job). Namespaced like the existing @impersonate:user@ scope.
+adminScope :: Scope
+adminScope = Scope "shomei:admin"
+
+-- | The admin gate (EP-2): the principal must carry the @admin@ role __or__ the @shomei:admin@
+-- scope.
+--
+-- This is a guard function rather than a route-type combinator because the condition is a
+-- /disjunction/, and a single type-level symbol cannot express one. Both halves are needed: a
+-- human administrator carries a granted role, while a database-less service administers with a
+-- service token, and @\/v1\/auth\/service-token@ mints scopes, not roles.
+--
+-- The failure is the same @403 missing_role@ document 'requireRole' raises. It deliberately does
+-- not say "…or the @shomei:admin@ scope": telling an unauthorized caller exactly which of two
+-- credentials would have worked is a hint they have no business receiving.
+requireAdmin :: AuthUser -> Handler ()
+requireAdmin u
+  | adminRole `Set.member` u.authRoles = pure ()
+  | adminScope `Set.member` u.authScopes = pure ()
+  | otherwise = throwError missingRole
 
 -- | Authenticate the request with the context-registered 'AuthHandler' — the same one
 -- 'Shomei.Servant.Auth.Authenticated' uses — and hand the 'AuthUser' to @check@. A failure from

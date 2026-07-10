@@ -89,13 +89,14 @@ Milestone 1 — Core capabilities (queries, workflows, events): **done 2026-07-0
 - [x] `Shomei.Workflow.Admin` (`suspendUser`, `reinstateUser`, `deleteUser`, `revokeUserSessions`, `revokeOneSession`): strict transitions, session revocation, actor-carrying audit events. It authorizes nothing — that is HTTP-layer policy, stated in the module haddock.
 - [x] Tests: `shomei-postgres` pins newest-first order, the status filter, and a disjoint+complete keyset walk, plus `listSessionsForUser` scoping and status visibility. `Shomei.Workflow.AdminSpec` (7 cases) covers all five workflows including the actor on every event. `cabal test all` green.
 
-Milestone 2 — HTTP surface:
+Milestone 2 — HTTP surface: **done 2026-07-09**
 
-- [ ] `requireAdmin` guard (role `admin` OR scope `shomei:admin`) in `shomei-servant/src/Shomei/Servant/Authz.hs`.
-- [ ] DTOs (`AdminUserResponse`, `AdminUsersPage`) + cursor reuse in `shomei-servant/src/Shomei/Servant/DTO.hs`.
-- [ ] Eleven route fields on `ShomeiAPI` (`shomei-servant/src/Shomei/Servant/API.hs`) under `/admin`.
-- [ ] Handlers in `shomei-servant/src/Shomei/Servant/Handlers.hs`: guard → `denyUnderImpersonation` (mutations) → workflow → DTO; self-targeting suspend/delete refused.
-- [ ] Servant end-to-end tests: authz matrix (no token / non-admin / admin role / admin scope / delegated token), full lifecycle walk, pagination walk, audit rows carry the actor.
+- [x] `requireAdmin` guard (role `admin` OR scope `shomei:admin`), plus exported `adminRole`/`adminScope`. Its 403 is EP-3's `missing_role` document and deliberately does *not* mention the scope: telling an unauthorized caller which of two credentials would have worked is a hint they should not get.
+- [x] DTOs: `AdminUserResponse`, `AdminUsersPage`, `adminUserToResponse`, and `encodeUserCursor`/`decodeUserCursor` wrapping the audit endpoint's cursor format (one wire format, one parser). **`SessionResponse` gained `status` and `revokedAt`** — without them an admin listing a user's sessions could not tell a live one from a corpse. Additive on the wire; `GET /v1/auth/session` benefits too.
+- [x] Eleven route fields on `ShomeiAPI`, born at `/v1/admin/...` (EP-3 landed). `ToParamSchema` instances added for `UserId` and `SessionId` captures.
+- [x] Handlers: `requireAdmin` → `denyUnderImpersonation` (mutations only) → `denySelfTarget` (suspend/delete) → workflow → DTO. Two new problem specs: `self_target_forbidden` (403) and `role_not_granted` (404).
+- [x] Six servant end-to-end scenarios: the authz matrix (no token 401 / ordinary 403 / role 200 / scope 200, and the 403 leaks nothing), the lifecycle walk (suspend → login dies + sessions revoked → 409 on repeat → reinstate → soft delete → still listed as `deleted`), sessions (revoke one, revoke all) with the audit event naming the acting admin, roles (idempotent PUT, 404 on revoking an unheld role, 422 on an undefined role, 400 on a blank name, and a grant reaching the *next* token but not one already in flight), the two refusals (delegated token, self-target), and the keyset pagination walk including a malformed cursor and an unknown status filter.
+- [x] Conformance path count 25 → **33** (not the 24 → 32 the plan predicted; EP-3 added `/openapi.json`). `routeErrors` extended for all eleven operations. Spec regenerated.
 
 Milestone 3 — Spec and client:
 
@@ -133,6 +134,36 @@ a workflow, so the omission could not be observed. The admin listing exposes `up
 suspension that leaves it at the signup timestamp reads to an operator as "nothing has happened to
 this account". Fixed in the SQL (`SET status = $2, updated_at = now()`) and in the in-memory
 interpreter (which uses the `World` clock).
+
+**2026-07-09 (M2) — EP-3's drift guard caught two real holes this milestone opened, before any
+test of this plan's own could.**
+
+1. `Shomei.Servant.OpenApi.withErrorResponses` folded over `[MGet, MPost, MDelete]` — **there was
+   no `PUT`**. The role-grant route is the first `PUT` in the API, so it was documented with *no
+   error responses at all*. The conformance suite's "every bearer operation documents a 401"
+   check failed with exactly `["put /v1/admin/users/{userId}/roles/{role}"]`. `Method` now derives
+   `Enum`/`Bounded` and the fold uses `allMethods`, so the next verb cannot be forgotten silently.
+2. Two `problemCatalog` edits **silently no-op'd** (the list's last entry has no trailing comma,
+   and the patch expected one). The server would have emitted `self_target_forbidden`,
+   `role_not_granted`, `invalid_user_status` and `user_has_no_email` while the catalog denied they
+   existed. The suite reported all four by name.
+
+Both are the EP-3 M4 machinery paying for itself on its first contact with new routes. The lesson
+for EP-4/EP-5/EP-7: adding an `AuthError` or a handler-raised problem is not done until the spec
+appears in `problemCatalog`, and the conformance suite is what tells you.
+
+**2026-07-09 (M2) — `SessionResponse` had no `status`.** `GET /v1/admin/users/{id}/sessions` would
+have returned a list in which a revoked session is indistinguishable from a live one — precisely
+the question an admin opens that endpoint to answer. The plan's own Milestone-2.5 test
+("their session shows revoked") could not have been written against the DTO as it stood. Added
+`status` and `revokedAt`; additive, so the public `GET /v1/auth/session` gains them too.
+
+**2026-07-09 (M2) — the servant suite mints real JWTs, so a test cannot read claims by decoding
+the token as JSON.** `shomei-core`'s `RolesSpec` can (it runs `runTokenSignerFake`, which emits
+JSON); the servant suite runs the real `jose` signer. The role-grant test therefore asserts the
+staleness contract *behaviourally* — the token minted before the grant still gets `403`, the one
+minted after gets `200` — which is a better test anyway: what matters is that the gate opens, not
+that a claim is present.
 
 **2026-07-09 (M1) — `revokeUserSessions` revokes session-by-session, not via
 `revokeAllUserSessions`.** The bulk primitive emits no per-session audit events and cannot report a

@@ -25,7 +25,7 @@ import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Scope (..))
+import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
     LoginCommand (..),
@@ -50,17 +50,28 @@ import Shomei.Effect.AuthEventReader
     queryAuthEvents,
   )
 import Shomei.Effect.Clock (now)
-import Shomei.Effect.SessionStore (findSessionById)
+import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
-import Shomei.Effect.UserStore (findUserById)
-import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid, SessionNotFound))
-import Shomei.Id (PasskeyId, idText, parseId)
+import Shomei.Effect.UserStore
+  ( UserCursor (..),
+    UserListQuery (..),
+    clampUserLimit,
+    emptyUserListQuery,
+    findUserById,
+    listUsers,
+  )
+import Shomei.Domain.User (User (..), UserStatus (..))
+import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid, SessionNotFound, UserHasNoEmail, UserNotFound))
+import Shomei.Id (PasskeyId, SessionId, UserId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
+import Shomei.Servant.Authz (requireAdmin)
 import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
-  ( AuditEventsPage (..),
+  ( AdminUserResponse,
+    AdminUsersPage (..),
+    AuditEventsPage (..),
     ChangePasswordRequest (..),
     ConfirmEmailVerificationRequest (..),
     ConfirmPasswordResetRequest (..),
@@ -86,8 +97,11 @@ import Shomei.Servant.DTO
     TokenPairResponse,
     UserResponse,
     VerifyEmailRequest (..),
+    adminUserToResponse,
     decodeCursor,
+    decodeUserCursor,
     encodeCursor,
+    encodeUserCursor,
     impersonateToResponse,
     loginResultToResponse,
     passkeyToResponse,
@@ -100,6 +114,8 @@ import Shomei.Servant.DTO
 import Shomei.Servant.Error
   ( authErrorToServerError,
     pcBadRequest,
+    pcRoleNotGranted,
+    pcSelfTargetForbidden,
     pcSessionNotFound,
     pcUserNotFound,
     toProblemError,
@@ -109,9 +125,11 @@ import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
+import Shomei.Workflow.Admin qualified as Admin
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
+import Shomei.Workflow.Roles qualified as Roles
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
 
 -- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
@@ -151,7 +169,18 @@ shomeiServer env =
       passkeyLoginComplete = passkeyLoginCompleteH env,
       impersonate = impersonateH env,
       stopImpersonate = stopImpersonateH env,
-      auditEvents = auditEventsH env
+      auditEvents = auditEventsH env,
+      adminListUsers = adminListUsersH env,
+      adminGetUser = adminGetUserH env,
+      adminSuspendUser = adminSuspendUserH env,
+      adminReinstateUser = adminReinstateUserH env,
+      adminDeleteUser = adminDeleteUserH env,
+      adminListSessions = adminListSessionsH env,
+      adminRevokeSessions = adminRevokeSessionsH env,
+      adminRevokeSession = adminRevokeSessionH env,
+      adminPasswordReset = adminPasswordResetH env,
+      adminGrantRole = adminGrantRoleH env,
+      adminRevokeRole = adminRevokeRoleH env
     }
 
 signupH :: Env -> SignupRequest -> Handler (WithCookies SignupResponse)
@@ -450,7 +479,6 @@ auditEventsH env _user mUser mSession types mSince mUntil mLimit mBefore = do
     lastMay = \case
       [] -> Nothing
       xs -> Just (last xs)
-    badRequest msg = throwError (toProblemError pcBadRequest (Just (msg :: Text)))
 
 -- | Parse the textual query params into an 'AuditEventQuery'. Total: any parse failure is a
 -- 'Left' the handler maps to 400. The limit defaults to 50 and is clamped inside the query
@@ -493,6 +521,175 @@ buildQuery mUser mSession types mSince mUntil mLimit mBefore = do
     optCursor = \case
       Nothing -> Right Nothing
       Just t -> maybe (Left "invalid before cursor") (Right . Just) (decodeCursor t)
+
+-- ---------------------------------------------------------------------------
+-- The administrative surface (EP-2)
+--
+-- Every handler below opens with 'requireAdmin'; every /mutating/ one follows with
+-- 'denyUnderImpersonation', so an operator impersonating a customer cannot administer as that
+-- customer. Reads are allowed under impersonation: looking is not laundering.
+--
+-- The workflows in "Shomei.Workflow.Admin" implement no policy of their own. The two policies
+-- that live here, and only here, are the admin gate and the self-target refusal.
+-- ---------------------------------------------------------------------------
+
+-- | Refuse an administrator acting on their own account.
+--
+-- Suspending or deleting yourself is almost always a mistake, and the one case where it is not
+-- (removing a compromised admin) is better served by another admin or by the CLI on the box —
+-- which, unlike this API, cannot lock the last administrator out of their own deployment.
+-- Revoking your own /sessions/ is allowed: that is a sensible response to a stolen laptop.
+denySelfTarget :: AuthUser -> UserId -> Handler ()
+denySelfTarget user target =
+  when (target == user.authUserId) do
+    throwError (toProblemError pcSelfTargetForbidden Nothing)
+
+-- | @GET \/v1\/admin\/users@: a newest-first keyset page, optionally filtered by status.
+adminListUsersH :: Env -> AuthUser -> Maybe Text -> Maybe Int -> Maybe Text -> Handler AdminUsersPage
+adminListUsersH env user mStatus mLimit mBefore = do
+  requireAdmin user
+  q <- either badRequest pure (buildUserQuery mStatus mLimit mBefore)
+  rows <- runPort env (listUsers q)
+  let full = length rows == clampUserLimit q.queryLimit
+      next = if full then encodeUserCursor . cursorOf <$> lastMay rows else Nothing
+  pure AdminUsersPage {users = map userToResponse rows, nextCursor = next}
+  where
+    cursorOf u = UserCursor {cursorCreatedAt = u.createdAt, cursorUserId = u.userId}
+    lastMay = \case
+      [] -> Nothing
+      xs -> Just (last xs)
+
+-- | Parse the listing's query params. Total: every failure is a 'Left' the handler maps to 400.
+buildUserQuery :: Maybe Text -> Maybe Int -> Maybe Text -> Either Text UserListQuery
+buildUserQuery mStatus mLimit mBefore = do
+  status <- traverse parseStatus mStatus
+  before <- case mBefore of
+    Nothing -> Right Nothing
+    Just t -> maybe (Left "invalid before cursor") (Right . Just) (decodeUserCursor t)
+  pure emptyUserListQuery {queryStatus = status, queryLimit = fromMaybe 50 mLimit, queryBefore = before}
+  where
+    parseStatus = \case
+      "active" -> Right UserActive
+      "suspended" -> Right UserSuspended
+      "deleted" -> Right UserDeleted
+      other -> Left ("invalid status parameter: " <> other <> " (expected active, suspended, or deleted)")
+
+-- | @GET \/v1\/admin\/users\/{userId}@: the user plus their /persistent/ role grants — not
+-- whatever an outstanding token of theirs happens to carry.
+adminGetUserH :: Env -> AuthUser -> UserId -> Handler AdminUserResponse
+adminGetUserH env user target = do
+  requireAdmin user
+  found <- requireExistingUser env target
+  roles <- runAuth env (Roles.rolesOf target)
+  pure (adminUserToResponse found roles)
+
+adminSuspendUserH :: Env -> AuthUser -> UserId -> Handler NoContent
+adminSuspendUserH env user target = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_suspend" user
+  denySelfTarget user target
+  runAuth env (Admin.suspendUser user.authUserId target)
+  pure NoContent
+
+adminReinstateUserH :: Env -> AuthUser -> UserId -> Handler NoContent
+adminReinstateUserH env user target = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_reinstate" user
+  runAuth env (Admin.reinstateUser user.authUserId target)
+  pure NoContent
+
+adminDeleteUserH :: Env -> AuthUser -> UserId -> Handler NoContent
+adminDeleteUserH env user target = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_delete" user
+  denySelfTarget user target
+  runAuth env (Admin.deleteUser user.authUserId target)
+  pure NoContent
+
+-- | Every session of the target, newest first, in every status: an admin investigating an
+-- incident needs to see the revoked ones too.
+adminListSessionsH :: Env -> AuthUser -> UserId -> Handler [SessionResponse]
+adminListSessionsH env user target = do
+  requireAdmin user
+  _ <- requireExistingUser env target
+  map sessionToResponse <$> runPort env (listSessionsForUser target)
+
+-- | Revoke every active session of a user.
+--
+-- The existence check is not redundant: 'Admin.revokeUserSessions' answers @Right 0@ for a user
+-- who does not exist (they have no sessions to end), which over HTTP would turn a typo'd user id
+-- into a cheerful @204@. The sibling @GET@ already 404s; so does this.
+adminRevokeSessionsH :: Env -> AuthUser -> UserId -> Handler NoContent
+adminRevokeSessionsH env user target = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_revoke_sessions" user
+  _ <- requireExistingUser env target
+  _ <- runAuth env (Admin.revokeUserSessions user.authUserId target)
+  pure NoContent
+
+-- | 404 unless the user exists; returns the row for handlers that need it.
+requireExistingUser :: Env -> UserId -> Handler User
+requireExistingUser env target = do
+  mUser <- runPort env (findUserById target)
+  maybe (throwError (authErrorToServerError UserNotFound)) pure mUser
+
+adminRevokeSessionH :: Env -> AuthUser -> SessionId -> Handler NoContent
+adminRevokeSessionH env user sid = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_revoke_session" user
+  runAuth env (Admin.revokeOneSession user.authUserId sid)
+  pure NoContent
+
+-- | @POST \/v1\/admin\/users\/{userId}\/password-reset@: drive the ordinary reset flow — the same
+-- token table, the same 'Shomei.Effect.Notifier.Notifier' delivery, the same audit event — for a
+-- user named by id.
+--
+-- Answers @409 user_has_no_email@ honestly when the target has no address. The public endpoint's
+-- unconditional @202@ exists to stop strangers enumerating addresses; an authorized admin who
+-- already holds the user id learns nothing from a real error.
+adminPasswordResetH :: Env -> AuthUser -> UserId -> Handler NoContent
+adminPasswordResetH env user target = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_password_reset" user
+  found <- requireExistingUser env target
+  email <- maybe (throwError (authErrorToServerError UserHasNoEmail)) pure found.email
+  runAuth env (Account.requestPasswordReset env.config (Account.RequestPasswordReset email))
+  pure NoContent
+
+-- | @PUT \/v1\/admin\/users\/{userId}\/roles\/{role}@. Idempotent, as a PUT to a set-membership
+-- resource should be: re-granting a held role is @204@, and the workflow publishes no event for a
+-- grant that changed nothing.
+adminGrantRoleH :: Env -> AuthUser -> UserId -> Text -> Handler NoContent
+adminGrantRoleH env user target rawRole = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_grant_role" user
+  role <- parseRole rawRole
+  _ <- runAuth env (Roles.grantRoleTo (Just user.authUserId) target role)
+  pure NoContent
+
+-- | @DELETE \/v1\/admin\/users\/{userId}\/roles\/{role}@. @404@ when the user did not hold the
+-- role: unlike the idempotent grant, "revoke something that was never there" is a request the
+-- caller got wrong, and silently succeeding would hide a typo in the role name.
+adminRevokeRoleH :: Env -> AuthUser -> UserId -> Text -> Handler NoContent
+adminRevokeRoleH env user target rawRole = do
+  requireAdmin user
+  denyUnderImpersonation env "admin_revoke_role" user
+  role <- parseRole rawRole
+  changed <- runAuth env (Roles.revokeRoleFrom (Just user.authUserId) target role)
+  unless changed do
+    throwError (toProblemError pcRoleNotGranted Nothing)
+  pure NoContent
+
+-- | A captured role name, trimmed. Blank is a 400 rather than a lookup for the empty role.
+parseRole :: Text -> Handler Role
+parseRole raw
+  | Text.null trimmed = badRequest ("role must not be blank" :: Text)
+  | otherwise = pure (Role trimmed)
+  where
+    trimmed = Text.strip raw
+
+badRequest :: Text -> Handler a
+badRequest msg = throwError (toProblemError pcBadRequest (Just msg))
 
 -- | @GET /.well-known/jwks.json@. Five minutes of caching bounds how long a revoked key's
 -- public half lingers in a verifier's cache without ever risking a false rejection: a key

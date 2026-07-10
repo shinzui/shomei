@@ -62,7 +62,7 @@ import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
-import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.Email (emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.LoginId (mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
@@ -98,7 +98,7 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
-import Shomei.Id (UserId, genSessionId, genUserId, parseId)
+import Shomei.Id (UserId, genSessionId, genUserId, idText, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
@@ -252,6 +252,31 @@ mkAdminToken jwk cfg = do
 -- | Mint a fresh access token carrying the impersonation scope (the workflows issue no
 -- scopes, so a token holding @impersonate:user@ must be signed directly). Issued at the
 -- world clock @t0@, so the freshness check passes against the in-memory 'Clock'.
+-- | Mint an access token for a /named/ subject with the given roles, scopes, and (optional)
+-- impersonation actor. EP-2's admin tests need this: the self-target refusal compares the token's
+-- subject with the target, and the delegated-token refusal keys off the @act@ claim.
+mkTokenFor :: JWK -> ShomeiConfig -> UserId -> Set.Set Role -> Set.Set Scope -> Maybe UserId -> IO Text
+mkTokenFor jwk cfg uid roles scopes actor = do
+  sid <- genSessionId
+  t <- getCurrentTime
+  let claims =
+        AuthClaims
+          { subject = uid,
+            sessionId = sid,
+            issuer = cfg.issuer,
+            audience = cfg.audience,
+            issuedAt = t,
+            expiresAt = addUTCTime 900 t,
+            scopes = scopes,
+            roles = roles,
+            actor = actor,
+            extraClaims = mempty
+          }
+  r <- signAccessToken jwk claims
+  case r of
+    Right (AccessToken tok) -> pure tok
+    Left e -> assertFailure ("could not sign token: " <> show e)
+
 mkImpersonatorToken :: JWK -> ShomeiConfig -> UTCTime -> IO Text
 mkImpersonatorToken jwk cfg t = do
   uid <- genUserId
@@ -323,10 +348,15 @@ main = do
                       ]
                   }
         pure (mkEnvWith serviceCfg r)
+      -- EP-2's admin scenarios need the World ref (to grant the admin role in the store) and
+      -- the signing key (to mint scoped/delegated tokens by hand).
+      freshAdminEnv = do
+        r <- newIORef (emptyWorld t0)
+        pure (r, mkEnv r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv adminToken impToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshAdminEnv jwk cfg adminToken impToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -469,6 +499,301 @@ scenarioStatusCodes port = do
   (out2, _) <- postJSONAuth mgr port "/v1/auth/logout" (bearer access) Null
   out2 @?= 204
 
+-- ---------------------------------------------------------------------------
+-- EP-2: the admin HTTP API
+-- ---------------------------------------------------------------------------
+
+-- | Sign a user up over HTTP and return @(userId, accessToken)@.
+signupOver :: Manager -> Int -> Text -> IO (Text, Text)
+signupOver mgr port email = do
+  (status, body) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= adminPassword, "displayName" .= ("U" :: Text)])
+  status @?= 201
+  resp <- must "signup body" body
+  uid <- must "signup userId" (dig ["user", "userId"] resp >>= asText)
+  tok <- must "signup accessToken" (dig ["token", "accessToken"] resp >>= asText)
+  pure (uid, tok)
+
+loginOver :: Manager -> Int -> Text -> IO Text
+loginOver mgr port email = do
+  (status, body) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= adminPassword])
+  status @?= 200
+  resp <- must "login body" body
+  must "login accessToken" (dig ["token", "accessToken"] resp >>= asText)
+
+adminPassword :: Text
+adminPassword = "correct horse battery staple"
+
+-- | Promote a signed-up user to administrator through the real audited workflow, then log in so
+-- the fresh token carries the granted role. This is exactly the bootstrap an operator performs
+-- with @shomei-admin roles grant@.
+becomeAdmin :: IORef World -> Manager -> Int -> Text -> IO Text
+becomeAdmin ref mgr port email = do
+  (uid, _) <- signupOver mgr port email
+  grantAdminTo ref uid
+  loginOver mgr port email
+
+-- | The admin gate is a disjunction: the @admin@ role (a human) or the @shomei:admin@ scope (a
+-- service token). Both work; neither is optional; an ordinary token is a 403 and no token a 401.
+--
+-- The 403 says @missing_role@ without mentioning the scope. Telling an unauthorized caller which
+-- of two credentials would have let them in is a hint they have no business receiving.
+scenarioAdminAuthzMatrix :: IORef World -> JWK -> ShomeiConfig -> Int -> IO ()
+scenarioAdminAuthzMatrix ref jwk cfg port = do
+  mgr <- newManager defaultManagerSettings
+  (_, ordinaryToken) <- signupOver mgr port "ordinary@example.com"
+  adminToken' <- becomeAdmin ref mgr port "gatekeeper@example.com"
+  scopedUid <- genUserId
+  scopedToken <- mkTokenFor jwk cfg scopedUid Set.empty (Set.singleton (Scope "shomei:admin")) Nothing
+
+  noTok <- getRaw mgr port "/v1/admin/users" []
+  assertProblem "no token" 401 "missing_token" noTok
+
+  ordinary <- getRaw mgr port "/v1/admin/users" (bearer ordinaryToken)
+  assertProblem "ordinary token" 403 "missing_role" ordinary
+  assertBool
+    "the 403 does not disclose that a shomei:admin scope would also work"
+    (maybe True (not . T.isInfixOf "scope") (bodyOf ordinary >>= dig ["title"] >>= asText))
+
+  (roleStatus, _) <- getJSON mgr port "/v1/admin/users" (bearer adminToken')
+  roleStatus @?= 200
+  (scopeStatus, _) <- getJSON mgr port "/v1/admin/users" (bearer scopedToken)
+  scopeStatus @?= 200
+
+-- | The lifecycle an operator actually drives: suspend a compromised account, watch the login
+-- die and the sessions with it, reinstate, then soft-delete. The strict transitions mean a second
+-- administrator racing the first gets a 409 rather than a misleading success.
+scenarioAdminLifecycle :: IORef World -> Int -> IO ()
+scenarioAdminLifecycle ref port = do
+  mgr <- newManager defaultManagerSettings
+  adminToken' <- becomeAdmin ref mgr port "boss@example.com"
+  (targetId, _) <- signupOver mgr port "target@example.com"
+  let target = "/v1/admin/users/" <> T.unpack targetId
+
+  -- Suspend: the account stops working and its sessions are dead.
+  (susp, _) <- postAuthNoBody mgr port (target <> "/suspend") (bearer adminToken')
+  susp @?= 204
+  (loginStatus, _) <- postJSON mgr port "/v1/auth/login" (object ["email" .= ("target@example.com" :: Text), "password" .= adminPassword])
+  loginStatus @?= 401
+  (sessStatus, sessBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
+  sessStatus @?= 200
+  sessions <- must "sessions body" sessBody
+  case sessions of
+    Array xs -> assertBool "every session is revoked" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
+    _ -> assertFailure "expected a JSON array of sessions"
+
+  -- A second admin racing the first learns the state already changed.
+  again <- postRaw' mgr port (target <> "/suspend") (bearer adminToken') Null
+  assertProblem "double suspend" 409 "invalid_user_status" again
+
+  -- Reinstate: login works again.
+  (rein, _) <- postAuthNoBody mgr port (target <> "/reinstate") (bearer adminToken')
+  rein @?= 204
+  (loginAgain, _) <- postJSON mgr port "/v1/auth/login" (object ["email" .= ("target@example.com" :: Text), "password" .= adminPassword])
+  loginAgain @?= 200
+
+  -- Soft delete: the row survives and is still listed, but refuses further transitions.
+  (del, _) <- deleteAuth mgr port target (bearer adminToken')
+  del @?= 204
+  redelete <- deleteRaw mgr port target (bearer adminToken')
+  assertProblem "delete twice" 409 "invalid_user_status" redelete
+  (getStatus, getBody) <- getJSON mgr port target (bearer adminToken')
+  getStatus @?= 200
+  gotten <- must "get user body" getBody
+  (dig ["user", "status"] gotten >>= asText) @?= Just "deleted"
+
+  -- ...and appears in the ?status=deleted listing.
+  (listStatus, listBody) <- getJSON mgr port "/v1/admin/users?status=deleted" (bearer adminToken')
+  listStatus @?= 200
+  listed <- must "list body" listBody
+  case dig ["users"] listed of
+    Just (Array xs) -> map (\v -> dig ["userId"] v >>= asText) (toList xs) @?= [Just targetId]
+    _ -> assertFailure "expected a users array"
+
+-- | Session revocation, one at a time and wholesale, and the audit row that names the admin who
+-- did it. An administrative action nobody can be held responsible for is not an audit trail.
+scenarioAdminSessionsAndAudit :: IORef World -> Int -> IO ()
+scenarioAdminSessionsAndAudit ref port = do
+  mgr <- newManager defaultManagerSettings
+  adminToken' <- becomeAdmin ref mgr port "auditor@example.com"
+  adminId <- must "admin id" . Just =<< userIdOf ref "auditor@example.com"
+  (targetId, _) <- signupOver mgr port "victim@example.com"
+  _ <- loginOver mgr port "victim@example.com" -- a second live session
+  let target = "/v1/admin/users/" <> T.unpack targetId
+
+  (sessStatus, sessBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
+  sessStatus @?= 200
+  sessions <- must "sessions" sessBody
+  firstSession <- case sessions of
+    Array xs | (s0 : _) <- toList xs -> must "session id" (dig ["sessionId"] s0 >>= asText)
+    _ -> assertFailure "expected at least one session"
+
+  (one, _) <- deleteAuth mgr port ("/v1/admin/sessions/" <> T.unpack firstSession) (bearer adminToken')
+  one @?= 204
+  (bulk, _) <- deleteAuth mgr port (target <> "/sessions") (bearer adminToken')
+  bulk @?= 204
+
+  (afterStatus, afterBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
+  afterStatus @?= 200
+  after <- must "sessions after" afterBody
+  case after of
+    Array xs -> assertBool "no session survives" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
+    _ -> assertFailure "expected an array"
+
+  -- The suspension event carries the acting admin, readable through the audit endpoint.
+  (susp, _) <- postAuthNoBody mgr port (target <> "/suspend") (bearer adminToken')
+  susp @?= 204
+  (auditStatus, auditBody) <- getJSON mgr port "/v1/admin/audit/events?type=user_suspended" (bearer adminToken')
+  auditStatus @?= 200
+  audit <- must "audit body" auditBody
+  case dig ["events"] audit of
+    Just (Array xs) | (e0 : _) <- toList xs ->
+      (dig ["payload", "actor"] e0 >>= asText) @?= Just adminId
+    _ -> assertFailure "expected a user_suspended audit event"
+
+-- | Roles over HTTP: a PUT grant is idempotent (set membership), a DELETE of a role the user
+-- never held is a 404 rather than a silent success, and the granted role reaches the target's
+-- NEXT token — never a token already in flight.
+scenarioAdminRoles :: IORef World -> Int -> IO ()
+scenarioAdminRoles ref port = do
+  mgr <- newManager defaultManagerSettings
+  adminToken' <- becomeAdmin ref mgr port "roler@example.com"
+  (targetId, staleToken) <- signupOver mgr port "grantee@example.com"
+  let roleUrl r = "/v1/admin/users/" <> T.unpack targetId <> "/roles/" <> r
+
+  -- 'auditor' is not in the registry: the grant must fail loudly rather than mint a role no gate
+  -- will ever check.
+  undefinedRole <- putRaw mgr port (roleUrl "auditor") (bearer adminToken')
+  assertProblem "granting an undefined role" 422 "role_not_defined" undefinedRole
+
+  (grant, _) <- putAuth mgr port (roleUrl "admin") (bearer adminToken')
+  grant @?= 204
+  (regrant, _) <- putAuth mgr port (roleUrl "admin") (bearer adminToken')
+  regrant @?= 204 -- idempotent
+
+  -- The grant is in the store, but not in the token minted before it. Asserted behaviourally —
+  -- by using the tokens — rather than by decoding the JWT: what matters is that the gate opens.
+  stale <- getRaw mgr port "/v1/admin/users" (bearer staleToken)
+  assertProblem "a token minted before the grant does not carry the role" 403 "missing_role" stale
+  fresh <- loginOver mgr port "grantee@example.com"
+  (freshStatus, _) <- getJSON mgr port "/v1/admin/users" (bearer fresh)
+  freshStatus @?= 200
+
+  (revoke, _) <- deleteAuth mgr port (roleUrl "admin") (bearer adminToken')
+  revoke @?= 204
+  revokeAgain <- deleteRaw mgr port (roleUrl "admin") (bearer adminToken')
+  assertProblem "revoking a role the user does not hold" 404 "role_not_granted" revokeAgain
+
+  blank <- putRaw mgr port ("/v1/admin/users/" <> T.unpack targetId <> "/roles/%20") (bearer adminToken')
+  assertProblem "a blank role name" 400 "bad_request" blank
+
+-- | Two refusals that protect the deployment from its own administrators: an operator
+-- impersonating a customer cannot administer as that customer (privilege laundering), and an
+-- administrator cannot suspend or delete themselves (locking everyone out with one typo).
+--
+-- Reads are allowed under impersonation: looking is not laundering.
+scenarioAdminRefusals :: IORef World -> JWK -> ShomeiConfig -> Int -> IO ()
+scenarioAdminRefusals ref jwk cfg port = do
+  mgr <- newManager defaultManagerSettings
+  adminToken' <- becomeAdmin ref mgr port "chief@example.com"
+  adminIdText <- userIdOf ref "chief@example.com"
+  adminId <- parseUserId adminIdText
+  (targetId, _) <- signupOver mgr port "bystander@example.com"
+
+  -- A delegated token: same admin role, but acting on behalf of somebody.
+  operator <- genUserId
+  delegated <- mkTokenFor jwk cfg adminId (Set.singleton (Role "admin")) Set.empty (Just operator)
+
+  blocked <- postRaw' mgr port ("/v1/admin/users/" <> T.unpack targetId <> "/suspend") (bearer delegated) Null
+  assertProblem "a delegated token may not administer" 403 "impersonation_action_blocked" blocked
+  (readStatus, _) <- getJSON mgr port "/v1/admin/users" (bearer delegated)
+  readStatus @?= 200 -- reads are fine
+
+  -- An admin cannot suspend or delete their own account...
+  selfSuspend <- postRaw' mgr port ("/v1/admin/users/" <> T.unpack adminIdText <> "/suspend") (bearer adminToken') Null
+  assertProblem "self-suspend" 403 "self_target_forbidden" selfSuspend
+  selfDelete <- deleteRaw mgr port ("/v1/admin/users/" <> T.unpack adminIdText) (bearer adminToken')
+  assertProblem "self-delete" 403 "self_target_forbidden" selfDelete
+
+  -- ...but may revoke their own sessions, which is what you do when your laptop is stolen.
+  (selfSessions, _) <- deleteAuth mgr port ("/v1/admin/users/" <> T.unpack adminIdText <> "/sessions") (bearer adminToken')
+  selfSessions @?= 204
+
+  -- A typo'd user id must not report cheerful success. The revoke-sessions workflow answers
+  -- "0 sessions ended" for a user who does not exist; the handler turns that into a 404.
+  ghost <- genUserId
+  ghostRevoke <- deleteRaw mgr port ("/v1/admin/users/" <> T.unpack (idText ghost) <> "/sessions") (bearer adminToken')
+  assertProblem "revoking the sessions of a nonexistent user" 404 "user_not_found" ghostRevoke
+  ghostGet <- getRaw mgr port ("/v1/admin/users/" <> T.unpack (idText ghost)) (bearer adminToken')
+  assertProblem "fetching a nonexistent user" 404 "user_not_found" ghostGet
+
+-- | The keyset walk over users: pages are disjoint and complete, and the last page carries no
+-- cursor.
+scenarioAdminPagination :: IORef World -> Int -> IO ()
+scenarioAdminPagination ref port = do
+  mgr <- newManager defaultManagerSettings
+  adminToken' <- becomeAdmin ref mgr port "pager@example.com"
+  _ <- signupOver mgr port "u1@example.com"
+  _ <- signupOver mgr port "u2@example.com"
+  _ <- signupOver mgr port "u3@example.com" -- four users in total, with the admin
+
+  (s1, b1) <- getJSON mgr port "/v1/admin/users?limit=2" (bearer adminToken')
+  s1 @?= 200
+  page1 <- must "page 1" b1
+  ids1 <- userIdsOf page1
+  cursor <- must "page 1 nextCursor" (dig ["nextCursor"] page1 >>= asText)
+  length ids1 @?= 2
+
+  (s2, b2) <- getJSON mgr port ("/v1/admin/users?limit=2&before=" <> urlEncodeText cursor) (bearer adminToken')
+  s2 @?= 200
+  page2 <- must "page 2" b2
+  ids2 <- userIdsOf page2
+  length ids2 @?= 2
+
+  -- The last page is full, so it still offers a cursor; the page after it is empty and does not.
+  lastCursor <- must "page 2 nextCursor" (dig ["nextCursor"] page2 >>= asText)
+  (s3, b3) <- getJSON mgr port ("/v1/admin/users?limit=2&before=" <> urlEncodeText lastCursor) (bearer adminToken')
+  s3 @?= 200
+  page3 <- must "page 3" b3
+  ids3 <- userIdsOf page3
+  ids3 @?= []
+  (dig ["nextCursor"] page3) @?= Just Null
+
+  assertBool "the pages are disjoint" (null (filter (`elem` ids2) ids1))
+  length (ids1 <> ids2) @?= 4
+
+  bad <- getRaw mgr port "/v1/admin/users?before=not-a-cursor" (bearer adminToken')
+  assertProblem "a malformed cursor" 400 "bad_request" bad
+  badStatus <- getRaw mgr port "/v1/admin/users?status=zombie" (bearer adminToken')
+  assertProblem "an unknown status filter" 400 "bad_request" badStatus
+
+userIdsOf :: Value -> IO [Text]
+userIdsOf page = case dig ["users"] page of
+  Just (Array xs) -> traverse (\v -> must "user id" (dig ["userId"] v >>= asText)) (toList xs)
+  _ -> assertFailure "expected a users array"
+
+-- | The user id of a signed-up account, read straight from the in-memory World.
+userIdOf :: IORef World -> Text -> IO Text
+userIdOf ref email = do
+  w <- readIORef ref
+  case [u | u <- Map.elems w.users, (emailText <$> u.email) == Just email] of
+    (u : _) -> pure (idText u.userId)
+    [] -> assertFailure ("no user with email " <> T.unpack email)
+
+-- | DELETE / PUT exposing headers and body, for problem-document assertions.
+deleteRaw :: Manager -> Int -> String -> [Header] -> IO RawResponse
+deleteRaw mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "DELETE", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
+putRaw :: Manager -> Int -> String -> [Header] -> IO RawResponse
+putRaw mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "PUT", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
 type RawResponse = (Int, [Header], Maybe Value)
 
 headersOf :: RawResponse -> [Header]
@@ -521,8 +846,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshAdminEnv jwk cfg adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -534,6 +859,24 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "status codes: signup 201, lifecycle requests still 202, logout idempotent (204/204)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioStatusCodes,
+      testCase "admin API: the gate is role OR scope; no token 401, ordinary token 403" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminAuthzMatrix r jwk cfg),
+      testCase "admin API: suspend → login dies + sessions revoked → 409 on repeat → reinstate → soft delete" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminLifecycle r),
+      testCase "admin API: revoke one/all sessions; the audit event names the acting admin" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminSessionsAndAudit r),
+      testCase "admin API: PUT role is idempotent, DELETE of an unheld role is 404, grants reach the next token" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminRoles r),
+      testCase "admin API: delegated tokens cannot administer; an admin cannot suspend themselves" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminRefusals r jwk cfg),
+      testCase "admin API: the user listing pages by keyset, disjoint and complete" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioAdminPagination r),
       testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
         testWithApplication (pure (app env)) (scenario ref adminToken impToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
@@ -1265,6 +1608,22 @@ deleteAuth :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
 deleteAuth mgr port path hdrs = do
   req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
   let req = req0 {method = "DELETE", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), decode (responseBody resp))
+
+-- | PUT with a bearer token and no body (the role-grant shape).
+putAuth :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
+putAuth mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "PUT", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), decode (responseBody resp))
+
+-- | POST with a bearer token and no body (suspend/reinstate/password-reset).
+postAuthNoBody :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
+postAuthNoBody mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "POST", requestHeaders = hdrs}
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), decode (responseBody resp))
 

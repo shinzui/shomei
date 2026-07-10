@@ -72,8 +72,8 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    it "covers exactly 25 paths" $
-      pathCount `shouldBe` 25
+    it "covers exactly 33 paths" $
+      pathCount `shouldBe` 33
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
     it "declares the Problem schema with exactly the four required members" $
@@ -253,6 +253,10 @@ deriving stock instance Show UserResponse
 
 deriving stock instance Show SessionResponse
 
+deriving stock instance Show AdminUserResponse
+
+deriving stock instance Show AdminUsersPage
+
 deriving stock instance Show HealthResponse
 
 deriving stock instance Show ReadyResponse
@@ -356,7 +360,13 @@ instance Arbitrary ServiceTokenResponse where
   arbitrary = ServiceTokenResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary SessionResponse where
-  arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary AdminUserResponse where
+  arbitrary = AdminUserResponse <$> arbitrary <*> arbitrary
+
+instance Arbitrary AdminUsersPage where
+  arbitrary = AdminUsersPage <$> arbitrary <*> arbitrary
 
 instance Arbitrary HealthResponse where
   arbitrary = HealthResponse <$> arbitrary

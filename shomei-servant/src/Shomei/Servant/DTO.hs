@@ -33,6 +33,9 @@ module Shomei.Servant.DTO
     ServiceTokenResponse (..),
     AuditEventResponse (..),
     AuditEventsPage (..),
+    AdminUserResponse (..),
+    AdminUsersPage (..),
+    adminUserToResponse,
     userToResponse,
     tokenPairToResponse,
     sessionToResponse,
@@ -43,6 +46,8 @@ module Shomei.Servant.DTO
     storedToResponse,
     encodeCursor,
     decodeCursor,
+    encodeUserCursor,
+    decodeUserCursor,
   )
 where
 
@@ -58,11 +63,16 @@ import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginId (loginIdText)
 import Shomei.Domain.Passkey (PasskeyCredential (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
-import Shomei.Domain.Session (Session (..))
+import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
+import Data.List (sort)
+import Data.Set (Set)
+import Data.Set qualified as Set
+import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
-import Shomei.Id (idText)
+import Shomei.Effect.UserStore (UserCursor (..))
+import Shomei.Id (idText, userIdFromUUID, userIdToUUID)
 import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 import Shomei.Workflow.ServiceToken (IssuedServiceToken (..))
@@ -240,7 +250,12 @@ data SessionResponse = SessionResponse
   { sessionId :: !Text,
     userId :: !Text,
     createdAt :: !Text,
-    expiresAt :: !Text
+    expiresAt :: !Text,
+    -- | @active@ | @revoked@ | @expired@. Added by EP-2: an administrator listing a user's
+    --     sessions must be able to tell a live one from a corpse, and the caller of
+    --     @GET \/v1\/auth\/session@ benefits equally. Additive on the wire.
+    status :: !Text,
+    revokedAt :: !(Maybe Text)
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
@@ -455,6 +470,42 @@ decodeCursor t = case Text.breakOn ";" t of
         pure (AuditCursor ts eid)
   _ -> Nothing
 
+-- | The user-listing cursor rides the same @"\<iso8601Z\>;\<uuid\>"@ wire format, over
+-- @(created_at, user_id)@. One format, one parser: a client cannot tell the two cursors apart, and
+-- neither can be fed to the wrong endpoint without failing to decode into something meaningful.
+encodeUserCursor :: UserCursor -> Text
+encodeUserCursor c = encodeCursor (AuditCursor c.cursorCreatedAt (userIdToUUID c.cursorUserId))
+
+decodeUserCursor :: Text -> Maybe UserCursor
+decodeUserCursor t = do
+  AuditCursor ts uuid <- decodeCursor t
+  pure (UserCursor ts (userIdFromUUID uuid))
+
+-- | @GET \/v1\/admin\/users\/{userId}@: the user plus the roles actually granted to them in the
+-- store. The roles are the persistent grants, not whatever an outstanding token happens to carry.
+data AdminUserResponse = AdminUserResponse
+  { user :: !UserResponse,
+    roles :: ![Text]
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | @GET \/v1\/admin\/users@: one keyset page. @nextCursor@ is present only when this page came
+-- back full, i.e. when there may be more; pass it back as @?before=@.
+data AdminUsersPage = AdminUsersPage
+  { users :: ![UserResponse],
+    nextCursor :: !(Maybe Text)
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+adminUserToResponse :: User -> Set Role -> AdminUserResponse
+adminUserToResponse u roles =
+  AdminUserResponse
+    { user = userToResponse u,
+      roles = sort [r | Role r <- Set.toList roles]
+    }
+
 -- | Render a domain 'Session' to the wire DTO (timestamps as ISO-8601).
 sessionToResponse :: Session -> SessionResponse
 sessionToResponse s =
@@ -462,5 +513,11 @@ sessionToResponse s =
     { sessionId = idText s.sessionId,
       userId = idText s.userId,
       createdAt = Text.pack (iso8601Show s.createdAt),
-      expiresAt = Text.pack (iso8601Show s.expiresAt)
+      expiresAt = Text.pack (iso8601Show s.expiresAt),
+      status = renderSessionStatus s.status,
+      revokedAt = Text.pack . iso8601Show <$> s.revokedAt
     }
+  where
+    renderSessionStatus SessionActive = "active"
+    renderSessionStatus SessionRevoked = "revoked"
+    renderSessionStatus SessionExpired = "expired"

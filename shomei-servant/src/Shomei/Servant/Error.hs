@@ -92,6 +92,8 @@ module Shomei.Servant.Error
     pcBodyParseError,
     pcNotFound,
     pcMethodNotAllowed,
+    pcSelfTargetForbidden,
+    pcRoleNotGranted,
 
     -- * Statuses Servant does not ship
     err422,
@@ -316,6 +318,17 @@ pcNotFound, pcMethodNotAllowed :: ProblemSpec
 pcNotFound = ProblemSpec "not_found" err404 "Resource not found"
 pcMethodNotAllowed = ProblemSpec "method_not_allowed" err405 "Method not allowed"
 
+-- | EP-2: an administrator tried to suspend or delete their own account. Refused so a single
+-- mistyped request cannot lock the last administrator out of a deployment; the @shomei-admin@ CLI
+-- on the box remains the escape hatch for genuinely removing one.
+pcSelfTargetForbidden :: ProblemSpec
+pcSelfTargetForbidden = ProblemSpec "self_target_forbidden" err403 "An administrator cannot perform this action on their own account"
+
+-- | EP-2: a role revocation named a role the user did not hold. A @404@ rather than a silent
+-- success, so a typo in the role name is visible.
+pcRoleNotGranted :: ProblemSpec
+pcRoleNotGranted = ProblemSpec "role_not_granted" err404 "User does not hold that role"
+
 -- | Every problem kind Shōmei can emit. The OpenAPI documentation is generated from this list,
 -- and a conformance test asserts every documented code appears here.
 --
@@ -355,6 +368,8 @@ problemCatalog =
     pcServiceTokenActorInvalid,
     pcUserNotFound,
     pcRoleNotDefined,
+    pcInvalidUserStatus,
+    pcUserHasNoEmail,
     pcInternal,
     pcMissingToken,
     pcTokenInvalidAuth,
@@ -364,7 +379,9 @@ problemCatalog =
     pcBadRequest,
     pcBodyParseError,
     pcNotFound,
-    pcMethodNotAllowed
+    pcMethodNotAllowed,
+    pcSelfTargetForbidden,
+    pcRoleNotGranted
   ]
 
 -- | The one mapping from a domain 'AuthError' to its wire representation.
