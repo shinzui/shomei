@@ -26,10 +26,25 @@ process unless the operator writes Haskell (the bring-your-own-interpreter path 
 `docs/user/notifications.md` documents).
 
 After this plan, the stock server can actually deliver. Two new interpreters become
-selectable purely through configuration: an SMTP interpreter that sends plain-text email
-(TLS, STARTTLS, or plaintext; PLAIN/LOGIN auth) and a webhook interpreter that POSTs the
-notification as JSON to a configured URL, signed with an HMAC-SHA256 header so the
-receiver can authenticate it. The webhook doubles as Shōmei's lightweight eventing hook —
+selectable purely through configuration: an SMTP interpreter and a webhook interpreter
+that POSTs the notification as JSON to a configured URL, signed with an HMAC-SHA256 header
+so the receiver can authenticate it.
+
+The SMTP interpreter is deliberately a **provider-relay client**, not a raw/self-hosted mail
+sender. Its intended and documented use is to point at a provider's authenticated submission
+endpoint — `email-smtp.<region>.amazonaws.com` (SES), `smtp.sendgrid.net`, `smtp.resend.com`,
+Postmark, etc. — over implicit-TLS (465) or STARTTLS (587) with PLAIN/LOGIN auth. It speaks
+SMTP because relay-to-provider over SMTP is still one of the most common config-only email
+integrations in the ecosystem (Rails ActionMailer, Django's SMTP backend, and nodemailer all
+default to it), which is exactly what makes "paste provider credentials, stock email leaves the
+process" a zero-Haskell, near-zero-infrastructure path. It is **not** a way to run your own
+mail server, and it does not do direct-to-MX delivery; the plaintext-port-25 mode exists solely
+as a lab/test sink and must be documented as such, never as a production configuration. (Per
+the MasterPlan Decision Log, 2026-07-10: "no one uses SMTP *directly* anymore" is true of
+self-hosted MTAs and dead for transactional deliverability — but SMTP relay to a provider is
+alive and is precisely what this interpreter targets.)
+
+The webhook doubles as Shōmei's lightweight eventing hook —
 the sanctioned place for hosts to attach side effects (their own templated email, chat
 alerts, analytics) without writing a Haskell interpreter. Deliberately *not* built, per
 the MasterPlan (`docs/masterplans/7-interop-wave-standards-based-auth-surface.md`): any
@@ -73,6 +88,23 @@ implementation. Provide concise evidence.
 ## Decision Log
 
 Record every decision made while working on the plan.
+
+- Decision: The SMTP interpreter is framed and documented as a **provider-relay client**, not
+  a raw/self-hosted SMTP sender. Docs lead with the relay use case and give per-provider
+  host/port/auth examples (SES, SendGrid, Resend, Postmark); implicit-TLS (465) and STARTTLS
+  (587) with PLAIN/LOGIN are the production modes; the `SmtpPlain`/port-25 mode is presented
+  strictly as a lab/test sink, never as a production option. The interpreter's code surface is
+  unchanged by this decision — it is a positioning/documentation constraint that binds M2's
+  copy comments and the M4 docs rewrite.
+  Rationale: MasterPlan Decision Log, 2026-07-10. The user directed that a "pure SMTP notifier"
+  has no place because "no one uses SMTP directly anymore." That is correct for self-hosted
+  MTAs / direct-to-MX transactional mail (dead for deliverability), but not for SMTP relay to a
+  provider, which is a mainstream config-only integration. Keeping the interpreter but reframing
+  it preserves the zero-Haskell, near-zero-infrastructure delivery path (EP-8's whole purpose)
+  while removing the misleading "run your own mail server" reading. Webhook-only was rejected
+  (re-opens the zero-infrastructure gap); a provider-specific HTTP interpreter was rejected
+  (couples Shōmei to one provider's API — the webhook already covers HTTP-API delegation).
+  Date: 2026-07-10
 
 - Decision: SMTP dependency: `smtp-mail` (>= 0.5) for the wire protocol plus `mime-mail`
   for message construction — not `HaskellNet`/`HaskellNet-SSL`.
@@ -550,10 +582,16 @@ underlying handler; this composes without running the effect twice. In
 event publisher) is load-bearing and stays.
 
 Docs. Rewrite `docs/user/notifications.md`: a transports table (`log` — dev default;
-`smtp` — built-in delivery, fixed English copy reproduced verbatim from M2;
+`smtp` — built-in delivery via a **provider relay**, fixed English copy reproduced verbatim
+from M2 — lead with the relay framing, give a short per-provider host/port/auth table
+(SES `email-smtp.<region>.amazonaws.com:587` STARTTLS, `smtp.sendgrid.net:587`,
+`smtp.resend.com:465` implicit-TLS, Postmark), state plainly that the plaintext/port-25 mode
+is a lab-only sink and not for production, and note that Shōmei does *not* run a mail server or
+deliver direct-to-MX;
 `webhook` — signed JSON POST, positioned explicitly as *both* the notification transport
-*and* the lightweight eventing hook for hosts that want to own copy/branding or attach
-side effects); full config reference (Dhall keys + env vars, secrets env-only); the
+*and* the lightweight eventing hook for hosts that want to own copy/branding, attach
+side effects, or call their provider's HTTP API from their own receiver); full config
+reference (Dhall keys + env vars, secrets env-only); the
 webhook payload JSON (captured from the test), the signature scheme, the verification
 pseudo-code, the retry/at-most-once-ish semantics and idempotency guidance; the
 fire-and-forget + `notification_delivery_failed` observability contract; the security

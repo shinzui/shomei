@@ -39,7 +39,11 @@ oauth2-proxy) auto-configure: authorization code with PKCE, token, introspection
 and userinfo endpoints; impersonation and service on-behalf-of flows are reachable through a
 standard RFC 8693 token-exchange grant; TOTP joins passkeys as a second factor with hashed
 one-time recovery codes as the lockout escape hatch; and account-lifecycle email actually
-delivers in production through SMTP and webhook `Notifier` interpreters.
+delivers in production through a provider-relay SMTP interpreter and a webhook `Notifier`
+interpreter. The SMTP interpreter is deliberately a *relay client* aimed at a provider's
+submission endpoint (SES, SendGrid, Resend, Postmark) — not a self-hosted mail server and not
+raw direct-to-MX delivery — and the webhook doubles as the eventing hook for hosts that would
+rather call their provider's HTTP API from their own receiver.
 
 Authorization follows a deliberate two-tier story. Shōmei's built-in RBAC — flat roles with a
 registry, default signup roles, role→permission definitions, and time-bound grants — is
@@ -658,6 +662,29 @@ confirm.
   checks silently deny. The JWT `sub` form is what every downstream verifier actually holds.
   Date: 2026-07-07
 
+- Decision: EP-8's SMTP interpreter is kept, but positioned and documented as a **provider
+  relay client**, never as "raw SMTP." It exists to point at a provider's authenticated
+  submission endpoint (`email-smtp.*.amazonaws.com`, `smtp.sendgrid.net`, `smtp.resend.com`,
+  Postmark, etc.) over implicit-TLS/STARTTLS with PLAIN/LOGIN auth; port-25 plaintext
+  direct-to-MX is demoted to a lab-only sink mode, called out as such and never a recommended
+  production configuration. The docs lead with the relay framing and give per-provider host/
+  port/auth examples. The webhook interpreter remains the parallel path for hosts that prefer
+  to call a provider's HTTP API from their own receiver.
+  Rationale: The user's objection — "no one uses SMTP directly anymore" — is correct about
+  self-hosted MTAs and raw direct-to-MX transactional mail, which are dead for deliverability
+  reasons. It is *not* correct about SMTP relay-to-provider, which remains one of the most
+  common config-only email integrations in the ecosystem (Rails ActionMailer, Django's SMTP
+  backend, and nodemailer all default to exactly this). Keeping the interpreter but reframing
+  it preserves EP-8's zero-Haskell, near-zero-infrastructure "paste provider credentials and
+  stock email leaves the process" path — the thing that makes verification/reset mail actually
+  work out of the box — while removing the misleading "run your own mail server" reading.
+  Alternatives considered and rejected: webhook-only (re-opens the zero-infrastructure gap —
+  the operator must stand up and deploy a receiver before any mail is sent); a provider-
+  specific HTTP interpreter (couples Shōmei to a chosen provider's API and its drift, which
+  the webhook already avoids by delegation). This is a framing/documentation change; the
+  interpreter's code surface is essentially unchanged.
+  Date: 2026-07-10
+
 
 ## Outcomes & Retrospective
 
@@ -674,3 +701,13 @@ deployments that do not adopt en, with en as the documented recommendation for r
 authorization — captured in the Decision Log together with the pinned subject-mapping
 convention. Registry, Dependency Graph, Integration Points, Progress, and phases updated
 accordingly (Phase 1 gains EP-9; EP-10 floats).
+
+Revision note (2026-07-10): Reframed EP-8's SMTP interpreter as a **provider-relay client**
+rather than a "pure/raw SMTP" sender, at the user's direction ("no one uses SMTP directly
+anymore"). The interpreter is kept — it preserves the zero-Haskell, near-zero-infrastructure
+delivery path — but is documented as a relay client aimed at a provider's submission endpoint
+(SES/SendGrid/Resend/Postmark), with port-25 plaintext demoted to a lab-only sink mode. Updated
+Vision & Scope, added a Decision Log entry, and cascaded the reframing into the child plan
+`docs/plans/45-smtp-and-webhook-notifier-interpreters.md` (Purpose, Decision Log, and the M4
+docs milestone). No code-surface, dependency, or milestone-structure changes; EP-8 remains Not
+Started.
