@@ -433,6 +433,34 @@ data ShomeiRoutes mode = ShomeiRoutes
     --
     --     __Errors here are RFC 6749 §5.2 objects, not problem documents__ — see
     --     "Shomei.Servant.OAuth". This is the one endpoint exempt from the application envelope.
+    -- | @GET \/oauth\/authorize@ (EP-5): the authorization-code flow's browser leg, RFC 6749 §4.1.
+    --
+    --     The @Authorization@ and @Cookie@ headers are plain optional headers, deliberately
+    --     __not__ the 'Authenticated' combinator: an unauthenticated request here must be
+    --     /redirected/ to the host's login page, not answered with @401@. The handler runs the
+    --     same verification core through 'Shomei.Servant.Auth.resolveAuthUser', so every credential
+    --     transport reaches this route exactly as it reaches an 'Authenticated' one.
+    --
+    --     __Two validation regimes.__ An unknown or revoked @client_id@, or a @redirect_uri@ that
+    --     is not registered, answers @400@ and __never redirects__ — redirecting an unvalidated
+    --     URI would make this an open redirector, which is how authorization codes get harvested.
+    --     Every other violation redirects to the (now validated) @redirect_uri@ with @error@,
+    --     @error_description@, and the echoed @state@.
+    oauthAuthorize ::
+      mode
+        :- "oauth"
+          :> "authorize"
+          :> Header "Authorization" Text
+          :> Header "Cookie" Text
+          :> QueryParam "response_type" Text
+          :> QueryParam "client_id" Text
+          :> QueryParam "redirect_uri" Text
+          :> QueryParam "scope" Text
+          :> QueryParam "state" Text
+          :> QueryParam "nonce" Text
+          :> QueryParam "code_challenge" Text
+          :> QueryParam "code_challenge_method" Text
+          :> Verb 'GET 302 '[JSON] (Headers '[Header "Location" Text, Header "Cache-Control" Text] NoContent),
     oauthToken ::
       mode
         :- "oauth"

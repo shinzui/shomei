@@ -43,6 +43,7 @@ module Shomei.Domain.Event
     ServiceAccountRevokedData (..),
     OAuthClientCreatedData (..),
     OAuthClientRevokedData (..),
+    OAuthCodeIssuedData (..),
   )
 where
 
@@ -386,6 +387,21 @@ data OAuthClientRevokedData = OAuthClientRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | An authorization code was issued to a client for a user (EP-5). The code itself is never in
+-- the payload — not even its hash: a code lives 60 seconds and naming it here would put a
+-- short-lived credential's identifier in a long-lived table.
+--
+-- The row's @user_id@ is the subject the code was issued for, so @?user=@ finds the whole
+-- authorization: the code, the session the exchange started, and the tokens it minted.
+data OAuthCodeIssuedData = OAuthCodeIssuedData
+  { clientId :: !Text,
+    userId :: !UserId,
+    scopes :: !(Set Scope),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -420,5 +436,6 @@ data AuthEvent
   | ServiceAccountRevoked ServiceAccountRevokedData
   | OAuthClientCreated OAuthClientCreatedData
   | OAuthClientRevoked OAuthClientRevokedData
+  | OAuthCodeIssued OAuthCodeIssuedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

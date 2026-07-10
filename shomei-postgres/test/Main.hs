@@ -5,12 +5,12 @@
 -- PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Monad (forM_, replicateM, void)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -37,6 +37,7 @@ import Shomei.Crypto
     verifyPasswordArgon2id,
     withHashingPermit,
   )
+import Shomei.Domain.AuthorizationCode (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -103,6 +104,12 @@ import Shomei.Effect.OAuthClientStore
     findOAuthClientByClientId,
     listOAuthClients,
     revokeOAuthClient,
+  )
+import Shomei.Effect.OAuthCodeStore
+  ( OAuthCodeStore,
+    consumeAuthorizationCode,
+    deleteExpiredAuthorizationCodes,
+    putAuthorizationCode,
   )
 import Shomei.Effect.PasskeyStore
   ( PasskeyStore,
@@ -183,6 +190,7 @@ import Shomei.Postgres.Maintenance
     sweepOnce,
   )
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
+import Shomei.Postgres.OAuthCodeStore (runOAuthCodeStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
@@ -227,6 +235,7 @@ type AppEffects =
      PendingCeremonyStore,
      ServiceAccountStore,
      OAuthClientStore,
+     OAuthCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -268,6 +277,7 @@ runAppWithNotifications ref pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runOAuthCodeStorePostgres
       . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
@@ -305,6 +315,7 @@ runAppAtTime t pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runOAuthCodeStorePostgres
       . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
@@ -445,6 +456,8 @@ tests =
     testPasskeyUpdateCountDelete,
     testServiceAccountRoundTrip,
     testOAuthClientRoundTrip,
+    testAuthorizationCodeRoundTrip,
+    testAuthorizationCodeConsumeIsAtomicUnderRace,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
     testArgon2NewHashesArePhcFormatted,
@@ -1332,6 +1345,101 @@ testOAuthClientRoundTrip =
     nullSecrets <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_clients WHERE secret_hash IS NULL"
     nullSecrets @?= 1
 
+-- | EP-5: the authorization-code lifecycle against real PostgreSQL — store, consume once, replay,
+-- expiry, and the batched sweep — mirroring the in-memory 'Shomei.OAuthCodeStoreSpec'.
+testAuthorizationCodeRoundTrip :: TestTree
+testAuthorizationCodeRoundTrip =
+  testCase "authorization codes: consume once, replay misses, expiry misses" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      let scopes = Set.fromList [Scope "openid", Scope "profile"]
+          mk h expiresAt =
+            NewAuthorizationCode
+              { codeHash = h,
+                clientId = "oauthclient_x",
+                redirectUri = "https://app.example.com/callback",
+                userId = u.userId,
+                scopes,
+                nonce = Just "n-0S6",
+                codeChallenge = Just (Text.replicate 43 "a"),
+                authTime = t,
+                createdAt = t,
+                expiresAt
+              }
+      putAuthorizationCode (mk "hash-live" (addUTCTime 60 t))
+      putAuthorizationCode (mk "hash-expired" (addUTCTime 60 t))
+      first' <- consumeAuthorizationCode "hash-live" t
+      replay <- consumeAuthorizationCode "hash-live" t
+      unknown <- consumeAuthorizationCode "hash-nope" t
+      -- One second past its expiry: the row is there, but it must not consume.
+      expired <- consumeAuthorizationCode "hash-expired" (addUTCTime 61 t)
+      deleteExpiredAuthorizationCodes (addUTCTime 61 t)
+      pure (first', replay, unknown, expired, scopes)
+    (first', replay, unknown, expired, scopes) <- expectApp result
+    -- The consume returns every binding the exchange will re-check, and stamps consumed_at.
+    case first' of
+      Nothing -> assertFailure "the first consume must return the code"
+      Just c -> do
+        c.clientId @?= "oauthclient_x"
+        c.redirectUri @?= "https://app.example.com/callback"
+        c.scopes @?= scopes
+        c.nonce @?= Just "n-0S6"
+        c.codeChallenge @?= Just (Text.replicate 43 "a")
+        assertBool "consumed_at is stamped" (isJust c.consumedAt)
+    assertBool "a replay must miss" (isNothing replay)
+    assertBool "an unknown hash must miss" (isNothing unknown)
+    assertBool "an expired code must miss" (isNothing expired)
+    -- The consumed row survives the consume (only the sweeper deletes), and the sweep above
+    -- removed both rows because both were past their expiry by then.
+    remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes"
+    remaining @?= 0
+
+-- | The property the single-statement `UPDATE … WHERE consumed_at IS NULL … RETURNING` exists for:
+-- two exchanges of the same code, racing on separate connections, and __exactly one wins__.
+--
+-- A read-then-write implementation passes every sequential test above and fails this one, handing
+-- two clients a token from one code.
+testAuthorizationCodeConsumeIsAtomicUnderRace :: TestTree
+testAuthorizationCodeConsumeIsAtomicUnderRace =
+  testCase "authorization codes: two racing consumes, exactly one winner" $ withDb \pool -> do
+    seeded <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      putAuthorizationCode
+        NewAuthorizationCode
+          { codeHash = "hash-raced",
+            clientId = "oauthclient_x",
+            redirectUri = "https://app.example.com/callback",
+            userId = u.userId,
+            scopes = Set.singleton (Scope "openid"),
+            nonce = Nothing,
+            codeChallenge = Nothing,
+            authTime = t,
+            createdAt = t,
+            expiresAt = addUTCTime 60 t
+          }
+      pure t
+    t <- expectApp seeded
+
+    -- A start gate, so the contenders reach the UPDATE together rather than one after another.
+    -- Without it the two threads would very likely serialize and the case would pass even against
+    -- a read-then-write implementation. Even so this race is opportunistic: what actually
+    -- guarantees the property is that the consume is ONE statement.
+    gate <- newEmptyMVar
+    dones <- replicateM 8 do
+      done <- newEmptyMVar
+      _ <- forkIO do
+        readMVar gate
+        putMVar done =<< runApp pool (consumeAuthorizationCode "hash-raced" t)
+      pure done
+    putMVar gate ()
+    results <- traverse (\d -> expectApp =<< takeMVar d) dones
+    length (filter isJust results) @?= 1
+
+    consumedRows <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes WHERE consumed_at IS NOT NULL"
+    consumedRows @?= 1
+
 testPasskeyCreateAndFind :: TestTree
 testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do
   result <- runApp pool do
@@ -1645,6 +1753,16 @@ seedSweepFixture pool =
       ('lockout-recent',  5, now() - interval '1 day',   now() - interval '1 day'),
       ('lockout-counting', 2, NULL, now());
 
+    -- EP-5 authorization codes: expired 2 hours ago (past the 60-minute ceremony grace, which
+    -- these share); expired 30 minutes ago (inside it); live. The consumed-but-expired one goes
+    -- too -- a consumed code is already unusable, so keeping it past expiry buys nothing.
+    INSERT INTO shomei.shomei_oauth_authorization_codes
+      (code_hash, client_id, user_id, redirect_uri, scopes, nonce, code_challenge, auth_time, created_at, expires_at, consumed_at) VALUES
+      ('codehash-old',      'oauthclient_x', '11111111-1111-1111-1111-111111111111', 'https://app.test/cb', '["openid"]'::jsonb, NULL, NULL, now() - interval '3 hours',  now() - interval '3 hours',  now() - interval '2 hours',  NULL),
+      ('codehash-consumed', 'oauthclient_x', '11111111-1111-1111-1111-111111111111', 'https://app.test/cb', '["openid"]'::jsonb, NULL, NULL, now() - interval '3 hours',  now() - interval '3 hours',  now() - interval '2 hours',  now() - interval '2 hours'),
+      ('codehash-recent',   'oauthclient_x', '11111111-1111-1111-1111-111111111111', 'https://app.test/cb', '["openid"]'::jsonb, NULL, NULL, now() - interval '90 minutes', now() - interval '90 minutes', now() - interval '30 minutes', NULL),
+      ('codehash-live',     'oauthclient_x', '11111111-1111-1111-1111-111111111111', 'https://app.test/cb', '["openid"]'::jsonb, NULL, NULL, now(), now(), now() + interval '1 minute', NULL);
+
     -- Past the 90-day retention window; inside it.
     INSERT INTO shomei.shomei_login_attempts (attempt_id, account_key, client_ip, outcome, occurred_at) VALUES
       ('99999999-0000-0000-0000-000000000001', 'acct', '10.0.0.1', 'failure', now() - interval '100 days'),
@@ -1672,6 +1790,9 @@ testSweepDeletesExpiredRows =
           verificationTokensDeleted = 1,
           resetTokensDeleted = 1,
           ceremoniesDeleted = 1,
+          -- the two that expired past the grace window (one of them already consumed); the
+          -- recently-expired one and the live one stay
+          authorizationCodesDeleted = 2,
           lockoutsDeleted = 1,
           loginAttemptsDeleted = 1,
           -- retention disabled by default

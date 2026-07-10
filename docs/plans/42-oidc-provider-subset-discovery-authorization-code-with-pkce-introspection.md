@@ -59,9 +59,10 @@ This section must always reflect the actual current state of the work.
 - [x] M1: `shomei-admin oauth-clients create|list|revoke` subcommands.
 - [x] M1: `OAuthConfig` sub-record in `ShomeiConfig` + server Dhall/env wiring.
 - [x] M1: `GET /.well-known/openid-configuration` route + handler + tests.
-- [ ] M2: `shomei_oauth_authorization_codes` migration; `OAuthCodeStore` port; both interpreters.
-- [ ] M2: `GET /oauth/authorize` handler: parameter validation, PKCE checks, authenticated path issues code redirect, unauthenticated path follows the login-redirect contract.
-- [ ] M2: In-process tests: happy redirect, invalid client/redirect (no redirect leak), error redirects with `state`, login-redirect round trip.
+- [x] M2: `shomei_oauth_authorization_codes` migration; `OAuthCodeStore` port; both interpreters (Postgres consume is one atomic `UPDATE … RETURNING`, proven under a gated 8-way race).
+- [x] M2: `GET /oauth/authorize` handler: parameter validation, PKCE checks, authenticated path issues code redirect, unauthenticated path follows the login-redirect contract.
+- [x] M2: In-process tests: happy redirect, invalid client/redirect (no redirect leak), error redirects with `state`, login-redirect round trip.
+- [x] M2 (beyond plan): `DeleteExpiredAuthorizationCodes` wired into the plan-34 sweeper (`authorization_codes` in `SweepReport`), reusing the ceremony grace window.
 - [ ] M3: `grant_type=authorization_code` in the token dispatcher: code consumption (single-use), PKCE S256 verification, session + refresh issuance, `oauth_client_id` session binding.
 - [ ] M3: ID-token issuance (`SignIdToken` on the `TokenSigner` effect + jwt interpreter + in-memory fake); `nonce`/`auth_time` plumbed from authorize to token.
 - [ ] M3: `grant_type=refresh_token` mapped onto the existing rotation/reuse-detection workflow with client binding.
@@ -114,6 +115,30 @@ restored by hand after formatting. `nix fmt` also reformats `shomei-server/test/
 untouched by this plan; it was reverted with `git checkout --`. **M2–M5 must do the same**: run
 `nix fmt`, then `git checkout --` every file the milestone did not semantically change, and re-read
 the `OpenApi.hs` header.
+
+**2026-07-10 (M2) — the `MultilineString` literal drops its trailing newline, and
+`"""…RETURNING""" <> selectCols` compiled into `RETURNINGcode_hash`.** PostgreSQL answered
+`42601 syntax error at or near "RETURNINGcode_hash"` at runtime — nothing at compile time. The fix
+is an explicit `<> " "`. **Any later plan concatenating a column list onto a multiline SQL literal
+is exposed**; M3/M4 build statements the same way. Caught only because the store has an integration
+test that actually executes the statement.
+
+**2026-07-10 (M2) — the racing-consume test needs a start gate, and even then it only
+opportunistically proves atomicity.** Two `forkIO`d consumes of one code almost always serialize,
+so the case passed against a hypothetical read-then-write implementation until the contenders were
+made to block on a shared `MVar` and grown to eight. What actually guarantees the property is that
+the consume is ONE statement (`UPDATE … WHERE consumed_at IS NULL … RETURNING`); the test is a
+regression guard against someone splitting it, not a proof. The assertion that exactly one row ends
+up with `consumed_at IS NOT NULL` is the part that would catch a two-statement rewrite deterministically.
+
+**2026-07-10 (M2) — the session cookie is `Path=/`, so `/oauth/authorize` already inherits the
+cookie transport.** EP-3's "a route's path is written down in four places" check was run for this
+route: the refresh cookie is scoped to `/v1/auth/refresh` but the *session* cookie
+(`Shomei.Servant.Cookie.tokenCookies`) is `Path=/`, which is what `resolveAuthUser` reads at
+authorize. The rate limiter (`RateLimit.throttledPath`) and the metrics table were deliberately not
+extended: authorize guesses no credential (it needs a valid token or it bounces to the login page).
+**`/oauth/token` remains unthrottled too** — it *does* accept a guessable client secret, and
+throttling it is a real gap this MasterPlan should pick up somewhere.
 
 **2026-07-10 (M1) — `cabal test all` failed once on `shomei-core`'s "100 concurrent refreshes:
 exactly one winner", and it is load flakiness, not a regression.** It reproduces neither in
@@ -290,6 +315,28 @@ Record every decision made while working on the plan.
   checked; its `secret_hash` is a SQL NULL.
   Rationale: A credential that exists but is never verified is worse than none, because an
   operator will store and protect it under the belief that it does something.
+  Date: 2026-07-10
+
+- Decision: `authorize`'s failures are a dedicated `AuthorizeError` in the workflow, not new
+  `AuthError` constructors.
+  Rationale: Every one of them becomes an `error=` parameter on a redirect back to the client, so
+  none can ever render as a problem document. Adding them to `AuthError` would force entries in
+  `problemCatalog` (which the conformance suite requires) describing errors the envelope can never
+  carry.
+  Date: 2026-07-10
+
+- Decision: A `code_challenge` supplied without an explicit `code_challenge_method` is refused,
+  rather than defaulting to `plain` as RFC 7636 §4.3 specifies.
+  Rationale: This provider accepts only S256. Honoring the spec's default would silently downgrade
+  a client that meant S256 and forgot the parameter, and `plain` offers no protection against a
+  code intercepted together with the authorize request.
+  Date: 2026-07-10
+
+- Decision: An absent `scope` at authorize grants the client's entire registered allow-list; a
+  present but empty one (`scope=`) is `invalid_scope`.
+  Rationale: RFC 6749 §3.3 lets the server pick a default for an absent scope, and "what this
+  client is registered for" is the least surprising one. It matches what EP-4's `client_credentials`
+  grant already does. An empty `scope` parameter is a malformed request, not a request for nothing.
   Date: 2026-07-10
 
 - Decision: All new endpoints are unversioned root paths (`/oauth/*`, `/.well-known/*`),

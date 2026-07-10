@@ -73,10 +73,10 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    -- 35 = 33 + EP-4's unversioned POST /oauth/token
-    --         + EP-5's unversioned GET /.well-known/openid-configuration.
-    it "covers exactly 35 paths" $
-      pathCount `shouldBe` 35
+    -- 36 = 33 + EP-4's unversioned POST /oauth/token
+    --         + EP-5's unversioned GET /.well-known/openid-configuration and GET /oauth/authorize.
+    it "covers exactly 36 paths" $
+      pathCount `shouldBe` 36
 
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
     it "declares the OAuthError schema" $
@@ -114,6 +114,23 @@ spec = do
 
     it "documents the 404 it answers when the provider is disabled" $
       sort (nub (concat (oauthErrorCodesAt "/.well-known/openid-configuration"))) `shouldBe` ["not_found"]
+
+  describe "EP-5: /oauth/authorize speaks RFC 6749, and only its no-redirect failures are statuses" $ do
+    it "documents no problem+json response on /oauth/authorize" $
+      [ Key.toText status
+      | (path, Object item) <- KM.toList paths,
+        path == "/oauth/authorize",
+        (_, Object op) <- KM.toList item,
+        (status, resp) <- responsesOf op,
+        isProblemResponse resp
+      ]
+        `shouldBe` []
+
+    -- Every OTHER authorize failure -- bad response_type, PKCE policy, disallowed scope -- is a
+    -- 302 back to the validated redirect_uri, so it is not a status this operation declares.
+    it "documents only the failures that are statuses rather than error redirects" $
+      sort (nub (concat (oauthErrorCodesAt "/oauth/authorize")))
+        `shouldBe` ["invalid_request", "login_required", "not_found"]
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
     it "declares the Problem schema with exactly the four required members" $

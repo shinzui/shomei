@@ -480,7 +480,17 @@ oauthErrorResponsesByPath =
     ),
     -- A deployment with @oidcEnabled = false@ must not advertise; the refusal reaches OIDC
     -- tooling, so it speaks the OAuth error shape rather than the application envelope.
-    ("/.well-known/openid-configuration", [(404, ["not_found"])])
+    ("/.well-known/openid-configuration", [(404, ["not_found"])]),
+    -- @400@ is the no-redirect regime (unknown client, unregistered redirect_uri): every OTHER
+    -- authorize failure is a @302@ carrying @error=@, and so is a success — which is why no 4xx
+    -- here mentions @invalid_scope@ or @unsupported_response_type@. @401@ is the unauthenticated
+    -- request when no @loginUrl@ is configured.
+    ( "/oauth/authorize",
+      [ (400, ["invalid_request"]),
+        (401, ["login_required"]),
+        (404, ["not_found"])
+      ]
+    )
   ]
 
 oauthPaths :: [FilePath]

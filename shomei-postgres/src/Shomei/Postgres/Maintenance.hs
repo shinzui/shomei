@@ -105,6 +105,7 @@ data SweepReport = SweepReport
     verificationTokensDeleted :: !Int,
     resetTokensDeleted :: !Int,
     ceremoniesDeleted :: !Int,
+    authorizationCodesDeleted :: !Int,
     lockoutsDeleted :: !Int,
     loginAttemptsDeleted :: !Int,
     authEventsDeleted :: !Int
@@ -120,6 +121,7 @@ emptySweepReport =
       verificationTokensDeleted = 0,
       resetTokensDeleted = 0,
       ceremoniesDeleted = 0,
+      authorizationCodesDeleted = 0,
       lockoutsDeleted = 0,
       loginAttemptsDeleted = 0,
       authEventsDeleted = 0
@@ -135,6 +137,7 @@ sweepReportCounts r =
     ("verification_tokens", r.verificationTokensDeleted),
     ("reset_tokens", r.resetTokensDeleted),
     ("ceremonies", r.ceremoniesDeleted),
+    ("authorization_codes", r.authorizationCodesDeleted),
     ("lockouts", r.lockoutsDeleted),
     ("login_attempts", r.loginAttemptsDeleted),
     ("auth_events", r.authEventsDeleted)
@@ -159,6 +162,11 @@ sweepOnce pool cfg now = runExceptT do
   verificationTokensDeleted <- drain expiredVerificationTokensStmt oneTimeTokenCutoff
   resetTokensDeleted <- drain expiredResetTokensStmt oneTimeTokenCutoff
   ceremoniesDeleted <- drain expiredCeremoniesStmt ceremonyCutoff
+  -- EP-5's authorization codes live 60 seconds and are consumed once. They need no grace period
+  -- of their own: a code past `expires_at` can never be exchanged, consumed or not, so the
+  -- ceremony grace window (which exists for exactly the same "short-lived, already useless"
+  -- shape) is the right one to reuse.
+  authorizationCodesDeleted <- drain expiredAuthorizationCodesStmt ceremonyCutoff
   lockoutsDeleted <- drain elapsedLockoutsStmt oneTimeTokenCutoff
   loginAttemptsDeleted <- drain oldLoginAttemptsStmt loginAttemptCutoff
   -- Retaining the audit trail forever is the default; deleting it is opt-in.
@@ -291,6 +299,20 @@ expiredCeremoniesStmt =
     DELETE FROM shomei.shomei_webauthn_pending_ceremonies
     WHERE ctid IN (
       SELECT ctid FROM shomei.shomei_webauthn_pending_ceremonies
+      WHERE expires_at <= $1
+      LIMIT $2)
+    """
+
+-- | Authorization codes past their expiry (EP-5). Consumed rows are swept the same way: a
+-- consumed code is refused by `expires_at > now` in the consume statement anyway, so keeping it
+-- past expiry buys nothing.
+expiredAuthorizationCodesStmt :: Statement (UTCTime, Int64) Int64
+expiredAuthorizationCodesStmt =
+  batchedDelete
+    """
+    DELETE FROM shomei.shomei_oauth_authorization_codes
+    WHERE ctid IN (
+      SELECT ctid FROM shomei.shomei_oauth_authorization_codes
       WHERE expires_at <= $1
       LIMIT $2)
     """

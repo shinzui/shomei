@@ -65,6 +65,7 @@ reconstructAuthEvent etype payload = case etype of
   "service_account_revoked" -> ServiceAccountRevoked <$> parse payload
   "oauth_client_created" -> OAuthClientCreated <$> parse payload
   "oauth_client_revoked" -> OAuthClientRevoked <$> parse payload
+  "oauth_code_issued" -> OAuthCodeIssued <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -159,3 +160,7 @@ projectAuthEvent = \case
     (Nothing, Nothing, "oauth_client_created", toJSON d, d.occurredAt)
   OAuthClientRevoked d ->
     (Nothing, Nothing, "oauth_client_revoked", toJSON d, d.occurredAt)
+  -- The subject is the user who authorized; the client rides in the payload. There is no session
+  -- yet -- the exchange creates it.
+  OAuthCodeIssued d ->
+    (Just (userIdToUUID d.userId), Nothing, "oauth_code_issued", toJSON d, d.occurredAt)

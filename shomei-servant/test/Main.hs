@@ -26,7 +26,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as Text
-import Data.Time (UTCTime, addUTCTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Effectful (Eff, runEff)
 import Network.HTTP.Client
   ( Manager,
@@ -37,6 +37,7 @@ import Network.HTTP.Client
     method,
     newManager,
     parseRequest,
+    redirectCount,
     requestBody,
     requestHeaders,
     responseBody,
@@ -45,7 +46,7 @@ import Network.HTTP.Client
     urlEncodedBody,
   )
 import Network.HTTP.Types (Header, statusCode)
-import Network.HTTP.Types.URI (urlEncode)
+import Network.HTTP.Types.URI (parseSimpleQuery, urlEncode)
 import Network.Wai (Application, Request)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant
@@ -63,12 +64,14 @@ import Servant
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), defaultShomeiConfig)
+import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Domain.LoginId (mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
+import Shomei.Domain.OAuthClient (ClientType (..), NewOAuthClient (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
 import Shomei.Domain.Password (PlainPassword (..))
@@ -89,6 +92,7 @@ import Shomei.Effect.InMemory
     runLoginAttemptStore,
     runNotifier,
     runOAuthClientStore,
+    runOAuthCodeStore,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordHasher,
@@ -104,8 +108,9 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
+import Shomei.Effect.OAuthClientStore (createOAuthClient)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
-import Shomei.Id (UserId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
+import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
@@ -192,6 +197,7 @@ runHybrid ref jwk jwkset cfg =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherNull
     . runNotifier ref
+    . runOAuthCodeStore ref
     . runOAuthClientStore ref
     . runServiceAccountStore ref
     . runPendingCeremonyStore ref
@@ -368,6 +374,13 @@ main = do
       -- every endpoint in the discovery document is derived from 'cfg's issuer.
       oidcCfg = cfg {oauthConfig = cfg.oauthConfig {oidcEnabled = True}}
       freshOidcEnv = mkEnvWith oidcCfg <$> newIORef (emptyWorld t0)
+      -- EP-5 M2: an OIDC-enabled world holding one confidential and one public client. Returns
+      -- the World ref (so a scenario can read the stored code row) and both client ids.
+      freshAuthorizeEnv loginUrl = do
+        r <- newIORef (emptyWorld t0)
+        let c = oidcCfg {oauthConfig = oidcCfg.oauthConfig {loginUrl}}
+        (confId, pubId) <- seedOAuthClients r jwk jwkset c t0
+        pure (r, confId, pubId, mkEnvWith c r)
       -- EP-2's admin scenarios need the World ref (to grant the admin role in the store) and
       -- the signing key (to mint scoped/delegated tokens by hand).
       freshAdminEnv = do
@@ -376,7 +389,7 @@ main = do
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAdminEnv jwk cfg adminToken impToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv jwk cfg adminToken impToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1035,8 +1048,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAdminEnv jwk cfg adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv jwk cfg adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1085,6 +1098,17 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
         testWithApplication (pure (app e)) scenarioOidcDiscoveryEnabled
         d <- freshEnv
         testWithApplication (pure (app d)) scenarioOidcDiscoveryDisabled,
+      testCase "GET /oauth/authorize: unknown client and unregistered redirect_uri are 400 and NEVER redirect" $ do
+        (_, confId, _, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioAuthorizeNoRedirectRegime confId),
+      testCase "GET /oauth/authorize: an authenticated request yields a code; parameter errors redirect with the state" $ do
+        (r, confId, pubId, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioAuthorizeIssuesCode r confId pubId),
+      testCase "GET /oauth/authorize: unauthenticated bounces to the host login page, or 401s when none is configured" $ do
+        (_, confId, _, withLogin) <- freshAuthorizeEnv (Just "https://host.test/login")
+        testWithApplication (pure (app withLogin)) (scenarioAuthorizeLoginRedirect confId)
+        (_, confId', _, noLogin) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app noLogin)) (scenarioAuthorizeNoLoginUrl confId'),
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
@@ -1156,9 +1180,269 @@ scenarioOidcDiscoveryDisabled port = do
   assertBool
     "a disabled provider must not answer with a problem document"
     (headerValue "Content-Type" hdrs /= Just "application/problem+json")
+  -- The whole OIDC surface is inert, not just the advertisement: deploying the code before
+  -- flipping the flag is safe, and flipping it back makes the endpoints unreachable again.
+  authorize <-
+    getNoRedirect mgr port (authorizeUrl [("client_id", "oauthclient_x"), ("response_type", "code"), ("redirect_uri", authorizeRedirectUri)]) []
+  assertOAuthError "authorize with the provider disabled" 404 "not_found" authorize
+  headerValue "Location" (headersOf authorize) @?= Nothing
   -- Nothing else moved: the JWKS document is unconditional (verifiers need it regardless).
   (jwksStatus, _) <- getJSON mgr port "/.well-known/jwks.json" []
   jwksStatus @?= 200
+
+-- | Seed one confidential and one public OAuth client into an in-memory world, returning their
+-- client ids. Both register exactly one redirect URI; the exact-match rule is what the
+-- no-redirect regime is built on.
+seedOAuthClients :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> UTCTime -> IO (Text, Text)
+seedOAuthClients ref jwk jwkset cfg createdAt =
+  runHybrid ref jwk jwkset cfg do
+    confId <- genOAuthClientId
+    pubId <- genOAuthClientId
+    _ <-
+      createOAuthClient
+        NewOAuthClient
+          { oauthClientId = confId,
+            clientId = idText confId,
+            secretHash = Just (sha256Hex confidentialClientSecret),
+            clientType = ConfidentialClient,
+            displayName = "confidential",
+            redirectUris = [authorizeRedirectUri],
+            allowedScopes = Set.fromList [Scope "openid", Scope "profile"],
+            createdAt
+          }
+    _ <-
+      createOAuthClient
+        NewOAuthClient
+          { oauthClientId = pubId,
+            clientId = idText pubId,
+            secretHash = Nothing,
+            clientType = PublicClient,
+            displayName = "public",
+            redirectUris = [authorizeRedirectUri],
+            allowedScopes = Set.singleton (Scope "openid"),
+            createdAt
+          }
+    pure (idText confId, idText pubId)
+
+-- | The one URI both seeded clients register.
+authorizeRedirectUri :: Text
+authorizeRedirectUri = "https://app.example.com/callback"
+
+-- | The seeded confidential OAuth client's secret. (Distinct from 'oauthClientSecret', which is
+-- EP-4's /service account/ secret: an OAuth client and a service account are different things.)
+confidentialClientSecret :: Text
+confidentialClientSecret = "confidential-client-secret"
+
+-- | A well-formed PKCE S256 challenge (43 unpadded base64url characters).
+testCodeChallenge :: Text
+testCodeChallenge = T.replicate 43 "a"
+
+-- | Build an @\/oauth\/authorize@ query string from @(key, value)@ pairs, percent-encoding both.
+authorizeUrl :: [(Text, Text)] -> String
+authorizeUrl params =
+  "/oauth/authorize?" <> T.unpack (T.intercalate "&" [enc k <> "=" <> enc v | (k, v) <- params])
+  where
+    enc = Text.decodeUtf8 . urlEncode True . Text.encodeUtf8
+
+-- | GET without following redirects, so a @302@ is the response under test rather than a fetch of
+-- wherever it points.
+getNoRedirect :: Manager -> Int -> String -> [Header] -> IO RawResponse
+getNoRedirect mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "GET", requestHeaders = hdrs, redirectCount = 0}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
+-- | The @Location@ header, split into its base and its decoded query parameters.
+locationOf :: String -> RawResponse -> IO (Text, [(Text, Text)])
+locationOf what r = do
+  loc <- maybe (assertFailure (what <> ": no Location header")) pure (headerValue "Location" (headersOf r))
+  let (base, query) = T.breakOn "?" loc
+      pairs =
+        [ (Text.decodeUtf8 k, Text.decodeUtf8 v)
+        | (k, v) <- parseSimpleQuery (Text.encodeUtf8 (T.drop 1 query))
+        ]
+  pure (base, pairs)
+
+-- | Sign up a user over HTTP and return their access token, for the authorize scenarios.
+signupToken :: Manager -> Int -> Text -> IO Text
+signupToken mgr port loginId = do
+  (status, body) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/signup"
+      (object ["loginId" .= loginId, "password" .= ("correct horse battery staple" :: Text), "displayName" .= ("" :: Text)])
+  status @?= 201
+  resp <- must "signup body" body
+  must "signup accessToken" (dig ["token", "accessToken"] resp >>= asText)
+
+-- | EP-5 M2, regime one: an unknown or revoked @client_id@, or a @redirect_uri@ that is not
+-- registered, is a @400@ __with no Location header at all__.
+--
+-- This is the single most important behavior of the endpoint. A server that redirects an error to
+-- an unvalidated @redirect_uri@ is an open redirector, and an attacker uses it to have this
+-- endpoint hand authorization codes to a host of their choosing. Note these must fail /before/
+-- authentication is even considered: none of the requests below carries a token.
+scenarioAuthorizeNoRedirectRegime :: Text -> Int -> IO ()
+scenarioAuthorizeNoRedirectRegime confId port = do
+  mgr <- newManager defaultManagerSettings
+  let base =
+        [ ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("code_challenge", testCodeChallenge),
+          ("code_challenge_method", "S256")
+        ]
+      assertNoRedirect what r = do
+        assertOAuthError what 400 "invalid_request" r
+        headerValue "Location" (headersOf r) @?= Nothing
+
+  unknown <- getNoRedirect mgr port (authorizeUrl (("client_id", "oauthclient_nope") : base)) []
+  assertNoRedirect "unknown client_id" unknown
+
+  missingClient <- getNoRedirect mgr port (authorizeUrl base) []
+  assertNoRedirect "absent client_id" missingClient
+
+  -- A near-miss on the registered URI: a path suffix. Exact string equality is the whole rule.
+  mismatched <-
+    getNoRedirect
+      mgr
+      port
+      (authorizeUrl [("client_id", confId), ("response_type", "code"), ("redirect_uri", authorizeRedirectUri <> "/../evil")])
+      []
+  assertNoRedirect "unregistered redirect_uri" mismatched
+
+  missingUri <- getNoRedirect mgr port (authorizeUrl [("client_id", confId), ("response_type", "code")]) []
+  assertNoRedirect "absent redirect_uri" missingUri
+
+-- | EP-5 M2: the happy path and regime two (an error redirect to the /validated/ URI).
+scenarioAuthorizeIssuesCode :: IORef World -> Text -> Text -> Int -> IO ()
+scenarioAuthorizeIssuesCode ref confId pubId port = do
+  mgr <- newManager defaultManagerSettings
+  token <- signupToken mgr port "authorize-user"
+  let bearer' = [("Authorization", "Bearer " <> Text.encodeUtf8 token)]
+      base =
+        [ ("client_id", confId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid profile"),
+          ("state", "xyz&spliced=1"),
+          ("nonce", "n-0S6"),
+          ("code_challenge", testCodeChallenge),
+          ("code_challenge_method", "S256")
+        ]
+
+  ok <- getNoRedirect mgr port (authorizeUrl base) bearer'
+  let (status, hdrs, _) = ok
+  status @?= 302
+  headerValue "Cache-Control" hdrs @?= Just "no-store"
+  (locBase, params) <- locationOf "authorize success" ok
+  locBase @?= authorizeRedirectUri
+  code <- maybe (assertFailure "no code in the redirect") pure (lookup "code" params)
+  assertBool "the code is not empty" (not (T.null code))
+  -- `state` round-trips verbatim, including the `&` that would splice a parameter if unencoded.
+  lookup "state" params @?= Just "xyz&spliced=1"
+  lookup "error" params @?= Nothing
+  -- RFC 9207: the issuer identifies which provider answered, so a multi-provider client can
+  -- detect a mix-up attack.
+  lookup "iss" params @?= Just "https://shomei.test"
+
+  -- The stored row is the code's digest, unconsumed, expiring 60 seconds out.
+  world <- readIORef ref
+  case Map.elems (oauthCodes world) of
+    [stored] -> do
+      stored.codeHash @?= sha256Hex code
+      stored.consumedAt @?= Nothing
+      stored.nonce @?= Just "n-0S6"
+      stored.redirectUri @?= authorizeRedirectUri
+      stored.clientId @?= confId
+      stored.scopes @?= Set.fromList [Scope "openid", Scope "profile"]
+      diffUTCTime stored.expiresAt stored.createdAt @?= 60
+    other -> assertFailure ("expected exactly one stored code, got " <> show (length other))
+
+  -- Regime two: the client_id and redirect_uri were valid, so the error goes back to the client
+  -- at the URI we validated, with the state echoed so it can correlate the failure.
+  let errorRedirect what expectedCode params' = do
+        r <- getNoRedirect mgr port (authorizeUrl params') bearer'
+        let (st, _, _) = r
+        assertEqual (what <> ": status") 302 st
+        (b, ps) <- locationOf what r
+        assertEqual (what <> ": redirect target") authorizeRedirectUri b
+        assertEqual (what <> ": error code") (Just expectedCode) (lookup "error" ps)
+        assertEqual (what <> ": state echoed") (Just "xyz&spliced=1") (lookup "state" ps)
+        assertBool (what <> ": no code is issued") (isNothing (lookup "code" ps))
+
+  errorRedirect "response_type=token" "unsupported_response_type" (replaceParam "response_type" "token" base)
+  errorRedirect "scope outside the allow-list" "invalid_scope" (replaceParam "scope" "openid admin:everything" base)
+  errorRedirect "code_challenge_method=plain" "invalid_request" (replaceParam "code_challenge_method" "plain" base)
+
+  -- A public client cannot skip PKCE: with no secret, the challenge is its only binding between
+  -- this request and the exchange.
+  errorRedirect
+    "public client without a code_challenge"
+    "invalid_request"
+    [ ("client_id", pubId),
+      ("response_type", "code"),
+      ("redirect_uri", authorizeRedirectUri),
+      ("scope", "openid"),
+      ("state", "xyz&spliced=1")
+    ]
+
+  -- Exactly one code was ever minted, by the one successful request.
+  world' <- readIORef ref
+  Map.size (oauthCodes world') @?= 1
+
+replaceParam :: Text -> Text -> [(Text, Text)] -> [(Text, Text)]
+replaceParam k v = map (\(k', v') -> if k' == k then (k, v) else (k', v'))
+
+-- | EP-5 M2: an unauthenticated authorize request bounces to the host's login page carrying the
+-- reconstructed authorize URL in @return_to@. Shōmei ships no login UI and persists no pending
+-- request; the whole state round-trips in that URL.
+scenarioAuthorizeLoginRedirect :: Text -> Int -> IO ()
+scenarioAuthorizeLoginRedirect confId port = do
+  mgr <- newManager defaultManagerSettings
+  let params =
+        [ ("client_id", confId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid"),
+          ("state", "xyz"),
+          ("code_challenge", testCodeChallenge),
+          ("code_challenge_method", "S256")
+        ]
+  r <- getNoRedirect mgr port (authorizeUrl params) []
+  let (status, _, _) = r
+  status @?= 302
+  (base, qs) <- locationOf "login redirect" r
+  base @?= "https://host.test/login"
+  returnTo <- maybe (assertFailure "no return_to") pure (lookup "return_to" qs)
+  -- The URL is rebuilt from the parameters the handler validated, on the issuer's base -- never
+  -- copied from anything the caller supplied.
+  assertBool
+    ("return_to points back at this provider's authorize endpoint: " <> T.unpack returnTo)
+    ("https://shomei.test/oauth/authorize?" `T.isPrefixOf` returnTo)
+  let (_, returnQuery) = T.breakOn "?" returnTo
+      returnParams =
+        [ (Text.decodeUtf8 k, Text.decodeUtf8 v)
+        | (k, v) <- parseSimpleQuery (Text.encodeUtf8 (T.drop 1 returnQuery))
+        ]
+  -- Every parameter the user originally sent survives the round trip, so the host can send them
+  -- back here after logging them in and the flow resumes unchanged.
+  mapM_ (\(k, v) -> assertEqual ("return_to carries " <> T.unpack k) (Just v) (lookup k returnParams)) params
+
+-- | With no @loginUrl@ configured there is nowhere to send the user, so the request is refused --
+-- in the OAuth error shape, because the caller is OAuth tooling.
+scenarioAuthorizeNoLoginUrl :: Text -> Int -> IO ()
+scenarioAuthorizeNoLoginUrl confId port = do
+  mgr <- newManager defaultManagerSettings
+  r <-
+    getNoRedirect
+      mgr
+      port
+      (authorizeUrl [("client_id", confId), ("response_type", "code"), ("redirect_uri", authorizeRedirectUri)])
+      []
+  assertOAuthError "unauthenticated with no loginUrl" 401 "login_required" r
+  headerValue "Location" (headersOf r) @?= Nothing
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
 -- returned user has that login id and a @null@ email, and the same identifier logs in.

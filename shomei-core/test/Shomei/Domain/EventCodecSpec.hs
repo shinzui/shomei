@@ -134,7 +134,9 @@ roundTrips =
     let d = OAuthClientCreatedData "oauthclient_01" "oauthclient_01" "confidential" "grafana" ["https://grafana.example.com/callback"] (Set.singleton (Scope "openid")) t0
      in check "oauth_client_created" d (OAuthClientCreated d),
     let d = OAuthClientRevokedData "oauthclient_01" "oauthclient_01" t0
-     in check "oauth_client_revoked" d (OAuthClientRevoked d)
+     in check "oauth_client_revoked" d (OAuthClientRevoked d),
+    let d = OAuthCodeIssuedData "oauthclient_01" uid (Set.singleton (Scope "openid")) t0
+     in check "oauth_code_issued" d (OAuthCodeIssued d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -145,10 +147,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 33).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 34).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 33 AuthEvent constructors" (length roundTrips @?= 33)
+  testCase "covers all 34 AuthEvent constructors" (length roundTrips @?= 34)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

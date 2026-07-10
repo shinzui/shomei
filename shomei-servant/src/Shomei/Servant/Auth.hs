@@ -30,6 +30,8 @@ module Shomei.Servant.Auth
     TokenSource (..),
     authHandler,
     extractToken,
+    extractTokenFromHeaders,
+    resolveAuthUser,
     originAllowed,
     originHeaderAllowed,
     isSafeMethod,
@@ -136,20 +138,48 @@ authHandler policy verify = mkAuthHandler handle
 -- @shomei_session@ cookie.
 extractToken :: TokenTransport -> Request -> Maybe (TokenSource, Text)
 extractToken transport req =
+  extractTokenFromHeaders transport (header "Authorization") (header "Cookie")
+  where
+    header name = Text.decodeUtf8 <$> lookup name (requestHeaders req)
+
+-- | 'extractToken' over the header values directly, for routes that receive them as Servant
+-- 'Servant.Header' inputs rather than as a WAI 'Request'.
+--
+-- @\/oauth\/authorize@ is such a route: it must /redirect/ an unauthenticated browser to the
+-- host's login page rather than answer @401@, so it cannot use the 'Authenticated' combinator and
+-- never sees a 'Request'. Sharing this function is what makes a future transport (the cookie mode
+-- today, anything later) reach that endpoint without a second implementation. Compare
+-- 'originHeaderAllowed', which exists for the same reason.
+extractTokenFromHeaders :: TokenTransport -> Maybe Text -> Maybe Text -> Maybe (TokenSource, Text)
+extractTokenFromHeaders transport mAuthorization mCookie =
   ((FromBearer,) <$> bearer) <|> guard (transportUsesCookies transport) *> ((FromCookie,) <$> cookieToken)
   where
-    headers = requestHeaders req
-
     bearer :: Maybe Text
-    bearer = do
-      raw <- lookup "Authorization" headers
-      Text.stripPrefix "Bearer " (Text.decodeUtf8 raw)
+    bearer = mAuthorization >>= Text.stripPrefix "Bearer "
 
     cookieToken :: Maybe Text
     cookieToken = do
-      raw <- lookup "Cookie" headers
-      val <- lookup ("shomei_session" :: BS.ByteString) (parseCookies raw)
+      raw <- mCookie
+      val <- lookup ("shomei_session" :: BS.ByteString) (parseCookies (Text.encodeUtf8 raw))
       pure (Text.decodeUtf8 val)
+
+-- | Verify whatever credential the headers carry, yielding 'Nothing' when there is none or it does
+-- not verify. The authenticating core the 'AuthHandler' and @\/oauth\/authorize@ share.
+--
+-- No CSRF gate: the only caller that is not the 'AuthHandler' is a @GET@, and 'isSafeMethod' would
+-- exempt it anyway. A caller that /can/ mutate must go through 'authHandler'.
+resolveAuthUser ::
+  CookiePolicy ->
+  (Text -> IO (Either TokenError AuthClaims)) ->
+  -- | the @Authorization@ header
+  Maybe Text ->
+  -- | the @Cookie@ header
+  Maybe Text ->
+  IO (Maybe AuthUser)
+resolveAuthUser policy verify mAuthorization mCookie =
+  case extractTokenFromHeaders policy.transport mAuthorization mCookie of
+    Nothing -> pure Nothing
+    Just (_source, tok) -> either (const Nothing) (Just . authUserFromClaims) <$> verify tok
 
 -- | Methods that cannot change state, and so need no CSRF protection.
 isSafeMethod :: Request -> Bool

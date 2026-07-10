@@ -6,6 +6,7 @@ import Shomei.Domain.EventCodecSpec qualified
 import Shomei.Domain.PasswordSpec qualified
 import Shomei.LockoutSpec qualified
 import Shomei.OAuthClientStoreSpec qualified
+import Shomei.OAuthCodeStoreSpec qualified
 import Shomei.PasskeyStoreSpec qualified
 import Shomei.ServiceAccountStoreSpec qualified
 import Shomei.WebAuthnCeremonySpec qualified
@@ -35,6 +36,7 @@ main =
           Shomei.LockoutSpec.tests,
           Shomei.PasskeyStoreSpec.tests,
           Shomei.OAuthClientStoreSpec.tests,
+          Shomei.OAuthCodeStoreSpec.tests,
           Shomei.ServiceAccountStoreSpec.tests,
           Shomei.WebAuthnCeremonySpec.tests,
           Shomei.Workflow.MfaSpec.tests,

@@ -39,6 +39,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Shomei.Config
+    Shomei.Domain.AuthorizationCode
     Shomei.Domain.Claims
     Shomei.Domain.Command
     Shomei.Domain.CommonPasswords
@@ -71,6 +72,7 @@ library
     Shomei.Effect.LoginAttemptStore
     Shomei.Effect.Notifier
     Shomei.Effect.OAuthClientStore
+    Shomei.Effect.OAuthCodeStore
     Shomei.Effect.PasskeyStore
     Shomei.Effect.PasswordBreachChecker
     Shomei.Effect.PasswordHasher
@@ -97,6 +99,7 @@ library
     Shomei.Workflow.ClientCredentials
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
+    Shomei.Workflow.OAuthAuthorize
     Shomei.Workflow.Passkey
     Shomei.Workflow.Roles
     Shomei.Workflow.ServiceToken
@@ -134,6 +137,7 @@ test-suite shomei-core-test
     Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
     Shomei.OAuthClientStoreSpec
+    Shomei.OAuthCodeStoreSpec
     Shomei.PasskeyStoreSpec
     Shomei.ServiceAccountStoreSpec
     Shomei.WebAuthnCeremonySpec

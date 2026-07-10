@@ -16,17 +16,20 @@ module Shomei.Servant.Handlers
 where
 
 import Data.Aeson (Value, encode)
+import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
-import Network.HTTP.Types.Status (status400, status404, status500)
+import Network.HTTP.Types.Status (status400, status401, status404, status500)
+import Network.HTTP.Types.URI (renderSimpleQuery)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
     LoginCommand (..),
@@ -38,6 +41,7 @@ import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (ClientIp (..))
 import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
+import Shomei.Domain.OAuthClient (OAuthClientStatus (..), isRegisteredRedirectUri)
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
@@ -53,6 +57,7 @@ import Shomei.Effect.AuthEventReader
     queryAuthEvents,
   )
 import Shomei.Effect.Clock (now)
+import Shomei.Effect.OAuthClientStore (findOAuthClientByClientId)
 import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
 import Shomei.Effect.UserStore
@@ -77,7 +82,7 @@ import Shomei.Error
 import Shomei.Id (PasskeyId, SessionId, UserId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
-import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
+import Shomei.Servant.Auth (AuthUser (..), cookiePolicyFromConfig, csrfRejected, originHeaderAllowed, resolveAuthUser)
 import Shomei.Servant.Authz (requireAdmin)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
@@ -143,6 +148,7 @@ import Shomei.Workflow.Admin qualified as Admin
 import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
+import Shomei.Workflow.OAuthAuthorize qualified as OAuthAuthorize
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.Roles qualified as Roles
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
@@ -157,6 +163,7 @@ shomeiRoutes env =
       jwks = jwksH env,
       openapi = pure openApiValue,
       oidcDiscovery = oidcDiscoveryH env,
+      oauthAuthorize = oauthAuthorizeH env,
       oauthToken = oauthTokenH env,
       health = healthH,
       ready = readyH env
@@ -290,6 +297,136 @@ oidcDiscoveryH env
             "not_found"
             "the OIDC provider is not enabled on this deployment"
         )
+
+-- | @GET \/oauth\/authorize@ (EP-5): the authorization-code flow's browser leg (RFC 6749 §4.1).
+--
+-- __The order of the four steps below is the security property__, not a style choice.
+--
+--   1. Resolve @client_id@ to an /active/ client and require @redirect_uri@ to be one of its
+--      registered URIs, compared byte for byte. Either failing is @400@ with __no redirect__: a
+--      server that redirects to an unvalidated URI is an open redirector, and an attacker uses it
+--      to have this endpoint deliver authorization codes to a host of their choosing. This is why
+--      a test that wants an error for an unknown client must expect @400@ and never @302@.
+--
+--   2. Any other parameter violation redirects to the /now validated/ @redirect_uri@ carrying
+--      @error@, @error_description@, and the echoed @state@ (RFC 6749 §4.1.2.1). The client, not
+--      the user, is the one who can fix these.
+--
+--   3. No authenticated user: redirect to the operator's @loginUrl@ with the /reconstructed/
+--      authorize URL in @return_to@. It is rebuilt from the parameters this handler validated,
+--      never from anything the caller supplied, so the host cannot be talked into sending the
+--      user back to somewhere else. With no @loginUrl@ configured, @401@ with an OAuth error body.
+--      Shōmei persists no pending-authorize state: it all round-trips in that URL.
+--
+--   4. Authenticated: run the workflow and redirect with @code@, @state@, and @iss@.
+oauthAuthorizeH ::
+  Env ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Maybe Text ->
+  Handler (Headers '[Header "Location" Text, Header "Cache-Control" Text] NoContent)
+oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mScope mState mNonce mChallenge mChallengeMethod = do
+  unless env.config.oauthConfig.oidcEnabled (throwError providerDisabled)
+
+  -- (1) The no-redirect regime.
+  clientId <- maybe (throwError (oauthBadRequest "client_id is required")) pure mClientId
+  redirectUri <- maybe (throwError (oauthBadRequest "redirect_uri is required")) pure mRedirectUri
+  client <-
+    runPort env (findOAuthClientByClientId clientId)
+      >>= maybe (throwError (oauthBadRequest "unknown client_id")) pure
+  -- A revoked client is refused exactly as an unknown one is, and neither may redirect.
+  unless (client ^. #status == OAuthClientActive) (throwError (oauthBadRequest "unknown client_id"))
+  unless (isRegisteredRedirectUri client redirectUri) (throwError (oauthBadRequest "redirect_uri is not registered for this client"))
+
+  let params =
+        OAuthAuthorize.AuthorizeParams
+          { responseType = mResponseType,
+            redirectUri,
+            scope = mScope,
+            state = mState,
+            nonce = mNonce,
+            codeChallenge = mChallenge,
+            codeChallengeMethod = mChallengeMethod
+          }
+
+  -- (3) Authenticate before running the workflow, so a request that is going to bounce to the
+  -- login page never mints a code. The parameter errors in (2) are still reported first when they
+  -- apply to an authenticated caller, because the workflow raises them.
+  mUser <- liftIO (resolveAuthUser (cookiePolicyFromConfig env.config) env.verifier mAuthHeader mCookie)
+  case mUser of
+    Nothing -> case env.config.oauthConfig.loginUrl of
+      Just loginUrl -> redirectTo (loginUrl `withQuery` [("return_to", TE.encodeUtf8 (reconstructedAuthorizeUrl params clientId))])
+      Nothing -> throwError (OAuth.oauthError status401 "login_required" "no authenticated user and no login URL is configured")
+    Just user -> do
+      outcome <- runPort env (OAuthAuthorize.authorize env.config client user.authClaims params)
+      case outcome of
+        -- (2) The redirect regime: the client learns what it did wrong, at a URI we validated.
+        Left e ->
+          redirectTo
+            ( redirectUri
+                `withQuery` ( [ ("error", TE.encodeUtf8 (OAuthAuthorize.authorizeErrorCode e)),
+                                ("error_description", TE.encodeUtf8 (OAuthAuthorize.authorizeErrorDescription e))
+                              ]
+                                <> stateParam mState
+                            )
+            )
+        -- (4) RFC 9207: `iss` lets a client that talks to several providers detect a mix-up attack.
+        Right issued ->
+          redirectTo
+            ( redirectUri
+                `withQuery` ( [("code", TE.encodeUtf8 (issued ^. #code))]
+                                <> stateParam (issued ^. #state)
+                                <> [("iss", TE.encodeUtf8 (issuerText env.config.issuer))]
+                            )
+            )
+  where
+    providerDisabled =
+      OAuth.oauthError status404 "not_found" "the OIDC provider is not enabled on this deployment"
+
+    oauthBadRequest = OAuth.oauthError status400 "invalid_request"
+
+    stateParam = foldMap (\s -> [("state", TE.encodeUtf8 s)])
+
+    issuerText (Issuer t) = t
+
+    -- `no-store` on every answer: a cached 302 would replay a one-time code out of the browser's
+    -- history, and a cached error redirect would confuse a retry.
+    redirectTo loc = pure (addHeader loc (addHeader "no-store" NoContent))
+
+    -- Rebuilt from what this handler validated, never from a caller-supplied copy. The base is the
+    -- issuer, which for an OIDC-enabled deployment IS the public base URL (boot enforces it).
+    reconstructedAuthorizeUrl params clientId =
+      (Oidc.oidcEndpointBase env.config <> "/oauth/authorize")
+        `withQuery` ( [ ("client_id", TE.encodeUtf8 clientId),
+                        ("redirect_uri", TE.encodeUtf8 params.redirectUri)
+                      ]
+                        <> optional "response_type" params.responseType
+                        <> optional "scope" params.scope
+                        <> optional "state" params.state
+                        <> optional "nonce" params.nonce
+                        <> optional "code_challenge" params.codeChallenge
+                        <> optional "code_challenge_method" params.codeChallengeMethod
+                    )
+
+    optional k = foldMap (\v -> [(k, TE.encodeUtf8 v)])
+
+-- | Append query parameters to a URL that may already carry some.
+--
+-- 'renderSimpleQuery' percent-encodes every key and value, which is what keeps a @state@ or
+-- @return_to@ containing @&@ or @#@ from splicing extra parameters into the URL.
+withQuery :: Text -> [(ByteString, ByteString)] -> Text
+withQuery url params
+  | null params = url
+  | otherwise = url <> separator <> TE.decodeUtf8 (renderSimpleQuery False params)
+  where
+    separator = if Text.any (== '?') url then "&" else "?"
 
 -- | @POST \/oauth\/token@ (EP-4): the OAuth2 token endpoint and its @grant_type@ dispatcher.
 --

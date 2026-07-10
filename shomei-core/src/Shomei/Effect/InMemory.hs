@@ -37,6 +37,7 @@ module Shomei.Effect.InMemory
     runPendingCeremonyStore,
     runServiceAccountStore,
     runOAuthClientStore,
+    runOAuthCodeStore,
     runNotifier,
     runClaimsEnricherNull,
     runPasswordHasher,
@@ -62,7 +63,7 @@ import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import Data.List (sortBy, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Ord (Down (..), comparing)
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -72,6 +73,10 @@ import Data.Text.Lazy.Encoding qualified as TLE
 import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
+import Shomei.Domain.AuthorizationCode
+  ( AuthorizationCode (..),
+    NewAuthorizationCode (..),
+  )
 import Shomei.Domain.Claims (AuthClaims, Role (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Event qualified as Event
@@ -134,6 +139,7 @@ import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Effect.OAuthClientStore (OAuthClientStore (..))
+import Shomei.Effect.OAuthCodeStore (OAuthCodeStore (..))
 import Shomei.Effect.PasskeyStore (PasskeyStore (..))
 import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
@@ -213,6 +219,9 @@ data World = World
     -- | EP-5 OAuth2/OIDC clients, keyed by id. As with 'serviceAccounts', @clientId@ is derived
     --     from the id, so the database's unique index has no in-memory analogue to enforce.
     oauthClients :: !(Map OAuthClientId OAuthClient),
+    -- | EP-5 single-use authorization codes, keyed by the code's SHA-256 hex digest exactly as
+    --     the PostgreSQL primary key is. Consumed rows stay, so a replay finds a consumed row.
+    oauthCodes :: !(Map Text AuthorizationCode),
     -- | newest-first
     publishedEvents :: ![Event.AuthEvent],
     -- | newest-first
@@ -251,6 +260,7 @@ emptyWorld t =
       pendingCeremonies = Map.empty,
       serviceAccounts = Map.empty,
       oauthClients = Map.empty,
+      oauthCodes = Map.empty,
       publishedEvents = [],
       sentNotifications = [],
       clock = t,
@@ -867,6 +877,57 @@ runOAuthClientStore ref = interpret_ \case
           (#oauthClients %~ Map.adjust (\oc -> oc & #status .~ OAuthClientRevoked & #revokedAt .~ Just t) cid)
       )
 
+-- | Field accessors for the EP-5 authorization-code records ('AuthorizationCode' shares
+-- @clientId@ / @createdAt@ / @expiresAt@ / @userId@ / @scopes@ with several other domain records).
+acCodeHash :: AuthorizationCode -> Text
+acCodeHash AuthorizationCode {codeHash} = codeHash
+
+acExpiresAt :: AuthorizationCode -> UTCTime
+acExpiresAt AuthorizationCode {expiresAt} = expiresAt
+
+acConsumedAt :: AuthorizationCode -> Maybe UTCTime
+acConsumedAt AuthorizationCode {consumedAt} = consumedAt
+
+-- | In-memory interpreter for the EP-5 authorization-code store.
+--
+-- 'ConsumeAuthorizationCode' is a single 'modifyWorld', which 'atomicModifyIORef'' makes atomic —
+-- the in-memory analogue of PostgreSQL's @UPDATE … WHERE consumed_at IS NULL … RETURNING@. Of two
+-- racing consumes of one code, exactly one sees an unconsumed row.
+runOAuthCodeStore :: (IOE :> es) => IORef World -> Eff (OAuthCodeStore : es) a -> Eff es a
+runOAuthCodeStore ref = interpret_ \case
+  PutAuthorizationCode NewAuthorizationCode {codeHash, clientId, redirectUri, userId, scopes, nonce, codeChallenge, authTime, createdAt, expiresAt} -> do
+    let code =
+          AuthorizationCode
+            { codeHash,
+              clientId,
+              redirectUri,
+              userId,
+              scopes,
+              nonce,
+              codeChallenge,
+              authTime,
+              createdAt,
+              expiresAt,
+              consumedAt = Nothing
+            }
+    liftIO (modifyWorld ref (#oauthCodes %~ Map.insert codeHash code))
+  ConsumeAuthorizationCode h t ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          case Map.lookup h w.oauthCodes of
+            Just code
+              | isNothing (acConsumedAt code),
+                acExpiresAt code > t ->
+                  -- Set through a generic-lens label: @consumedAt@ is shared with the one-time
+                  -- token records, so a plain record update on it is ambiguous.
+                  let consumed = code & #consumedAt .~ Just t
+                   in (w {oauthCodes = Map.insert h consumed w.oauthCodes}, Just consumed)
+            -- Unknown, already consumed, or expired: one indistinguishable miss.
+            _ -> (w, Nothing)
+      )
+  DeleteExpiredAuthorizationCodes t ->
+    liftIO (modifyWorld ref (#oauthCodes %~ Map.filter (\c -> acExpiresAt c > t)))
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -1082,6 +1143,7 @@ type InMemoryPorts =
     PendingCeremonyStore,
     ServiceAccountStore,
     OAuthClientStore,
+    OAuthCodeStore,
     Notifier,
     ClaimsEnricher,
     WebAuthnCeremony,
@@ -1112,6 +1174,7 @@ runInMemoryWith enrich ref =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherPure enrich
     . runNotifier ref
+    . runOAuthCodeStore ref
     . runOAuthClientStore ref
     . runServiceAccountStore ref
     . runPendingCeremonyStore ref

@@ -33,6 +33,7 @@ import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
 import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.OAuthClientStore (OAuthClientStore)
+import Shomei.Effect.OAuthCodeStore (OAuthCodeStore)
 import Shomei.Effect.PasskeyStore (PasskeyStore)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
@@ -70,6 +71,7 @@ type AppEffects =
      PendingCeremonyStore,
      ServiceAccountStore,
      OAuthClientStore,
+     OAuthCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
