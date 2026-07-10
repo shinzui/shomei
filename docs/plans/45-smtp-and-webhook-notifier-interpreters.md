@@ -69,8 +69,8 @@ This section must always reflect the actual current state of the work.
 - [x] M2 (2026-07-10): deps added to `shomei-server` (`smtp-mail`, `mime-mail`, `crypton`, `memory`; test stanza `network`); the pinned set resolved them with __no__ `flake.module.nix` override — but `smtp-mail` is __0.3.0.0__, not the ≥0.5 the plan assumed (see Surprises). `cabal build shomei-server` green.
 - [x] M2 (2026-07-10): SMTP interpreter `runNotifierSmtp` with the enumerated copy (on `/v1` paths), TLS-mode dispatch over smtp-mail 0.3's `sendMail'`/`sendMailSTARTTLS'`/`sendMailTLS'` (+ `WithLogin` variants), `System.Timeout` guard, `try @SomeException` catch-all, one redacted stderr line, and a `NotificationDeliveryFailed` audit event. Shared `publishDeliveryFailed`/`truncateError` helpers (reused by M3).
 - [x] M2 (2026-07-10): `NotificationDeliveryFailed` event + `EventCodec` (both directions) + round-trip spec (count 39→40); socket-based SMTP sink test (`NotifySpec`) asserts RCPT/subject/link; refused-port failure test asserts the audit event, no throw, and no token in the error. Both green.
-- [ ] M3: Webhook interpreter (`runNotifierWebhook`): HMAC-SHA256 signature, timeout, bounded retries with backoff; reuses `Env.envHttpManager`.
-- [ ] M3: Warp stub-server test asserting body, headers, and signature; retry/failure tests.
+- [x] M3 (2026-07-10): `runNotifierWebhook` — derived-`ToJSON` body, `X-Shomei-Signature: sha256=<hex HMAC-SHA256>` over the exact bytes (exported `webhookSignature`), `X-Shomei-Notification-Type`/`Content-Type`/`User-Agent` headers, per-attempt `responseTimeout`, `max maxAttempts` attempts with `4^(k-1)`-second backoff, non-2xx counts as failure, all exceptions caught → shared `publishDeliveryFailed`. Reuses the passed `Manager` (M4 wires `Env.envHttpManager`).
+- [x] M3 (2026-07-10): Warp stub-server tests — one asserting body round-trips to the `Notification`, the type header, and the signature verifies over the captured bytes; a retry-then-succeed test (no failure event); an exhaust-then-audit test (exactly `maxAttempts` attempts, redacted failure event, no token). All green.
 - [ ] M4: `runNotifierFromConfig` selection + log-tee wiring in `Shomei.Server.App.runAppIO`; constraint widening.
 - [ ] M4: `docs/user/notifications.md` rewritten (transports, copy table, webhook verification pseudo-code, eventing-hook positioning, BYO path retained).
 - [ ] M4: E2E: webhook transport driven through the real server.
@@ -136,6 +136,21 @@ Record every decision made while working on the plan.
   while removing the misleading "run your own mail server" reading. Webhook-only was rejected
   (re-opens the zero-infrastructure gap); a provider-specific HTTP interpreter was rejected
   (couples Shōmei to one provider's API — the webhook already covers HTTP-API delegation).
+  Date: 2026-07-10
+
+- Decision (2026-07-10, M3): the webhook HMAC-SHA256 is computed with **cryptonite**, not
+  crypton, in `Shomei.Notify` — the one place shomei-server touches cryptonite. `smtp-mail`
+  0.3.0.0 depends on `cryptonite`, so both crypton (the repo standard) and cryptonite land in
+  this package's plan exposing identical `Crypto.*` module names. Empirically only cryptonite's
+  `ByteArrayAccess (Digest a)` instance reaches the type checker here; `convertToBase Base16` on a
+  crypton digest fails to resolve even with a `PackageImports` crypton pin (the collision shadows
+  crypton's instance module). The HMAC imports are therefore `PackageImports`-pinned to
+  `"cryptonite"`, and `shomei-server`'s `build-depends` lists `cryptonite` instead of `crypton`.
+  Rationale: the standards-conforming alternative (patch `smtp-mail` onto crypton via a
+  `flake.module.nix` override) is disproportionate for one HMAC that a transitively-present,
+  well-tested library computes correctly; the signature is the GitHub-style `sha256=<hex>` either
+  way. Recorded rather than hidden because a future reader will wonder why this module alone uses
+  cryptonite.
   Date: 2026-07-10
 
 - Decision: SMTP dependency: `smtp-mail` (>= 0.5) for the wire protocol plus `mime-mail`

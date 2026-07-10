@@ -3,20 +3,29 @@
 -- @token=@ URL parameter, and the @logRawTokens@ escape hatch restores the full dev link.
 module Shomei.Server.NotifySpec (tests) where
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (bracket, finally)
+import Control.Exception (SomeException, bracket, catch, finally)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (liftIO)
+import Data.Aeson (decode)
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Char (toUpper)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
+import Network.HTTP.Client (Manager, defaultManagerSettings, newManager)
+import Network.HTTP.Types (RequestHeaders)
+import Network.HTTP.Types.Status (mkStatus)
 import Network.Socket
-import Shomei.Config (NotifierConfig (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), defaultShomeiConfig)
+import Network.Wai (Application, requestHeaders, responseLBS, strictRequestBody)
+import Network.Wai.Handler.Warp (testWithApplication)
+import Shomei.Config (NotifierConfig (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebhookConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -25,7 +34,7 @@ import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
 import Shomei.Effect.Notifier (sendNotification)
-import Shomei.Notify (renderNotification, runNotifierSmtp)
+import Shomei.Notify (renderNotification, runNotifierSmtp, runNotifierWebhook, webhookSignature)
 import Shomei.Postgres.Clock (runClockIO)
 import System.IO (BufferMode (LineBuffering), Handle, IOMode (ReadWriteMode), hClose, hFlush, hGetLine, hIsEOF, hPutStr, hSetBuffering)
 import Test.Tasty (TestTree, testGroup)
@@ -60,7 +69,10 @@ tests =
           (("/v1/auth/verify-email/confirm?token=" <> Text.unpack rawToken) `isInfixOf` out)
         assertBool "no hash prefix in raw mode" (not ("token_sha256=" `isInfixOf` out)),
       smtpDeliversTest,
-      smtpFailureTest
+      smtpFailureTest,
+      webhookDeliversTest,
+      webhookRetriesThenSucceeds,
+      webhookExhaustsThenAudits
     ]
   where
     expires = fixtureExpiry
@@ -113,8 +125,7 @@ deliverViaSmtp sc n = do
 smtpDeliversTest :: TestTree
 smtpDeliversTest = testCase "SMTP: delivers the message to a sink with the confirm link" do
   email <- testEmail
-  bracket openSink (close . sinkSocket) \sink -> do
-    _ <- forkIO (acceptLoop sink)
+  bracket openSink (close . sinkSocket) \sink -> bracket (forkIO (acceptLoop sink)) killThread \_ -> do
     events <- deliverViaSmtp (plainSmtpConfig (sinkPort sink)) (EmailVerificationRequested email (OneTimeToken rawToken) fixtureExpiry)
     transcript <- readMVar (sinkTranscript sink)
     assertBool
@@ -173,12 +184,16 @@ closedPort :: IO Int
 closedPort = bracket openSink (close . sinkSocket) (pure . sinkPort)
 
 -- | Accept connections and serve each in its own thread, speaking just enough plaintext SMTP.
+-- All exceptions are swallowed: when the test kills this thread or closes the listening socket,
+-- the resulting @accept@/@threadWait@ error must not print or fail the suite.
 acceptLoop :: Sink -> IO ()
-acceptLoop sink = forever do
-  (conn, _) <- accept (sinkSocket sink)
-  h <- socketToHandle conn ReadWriteMode
-  _ <- forkIO (serveSmtp (sinkTranscript sink) h `finally` hClose h)
-  pure ()
+acceptLoop sink = loop `catch` \(_ :: SomeException) -> pure ()
+  where
+    loop = forever do
+      (conn, _) <- accept (sinkSocket sink)
+      h <- socketToHandle conn ReadWriteMode
+      _ <- forkIO ((serveSmtp (sinkTranscript sink) h `finally` hClose h) `catch` \(_ :: SomeException) -> pure ())
+      pure ()
 
 -- | The sink SMTP dialogue: greet, answer EHLO/MAIL/RCPT with 250, DATA with 354 then 250 after
 -- the terminating dot, and QUIT with 221. Every command line and DATA body line is recorded.
@@ -211,3 +226,96 @@ serveSmtp transcript h = do
       if line == "." then pure () else readData
     verb = map toUpper . take 4
     stripCR s = if not (null s) && last s == '\r' then init s else s
+
+-- Webhook interpreter (EP-8 M3) -----------------------------------------------
+
+webhookSecretText :: Text.Text
+webhookSecretText = "test-webhook-secret"
+
+webhookConfigFor :: Int -> Int -> WebhookConfig
+webhookConfigFor p maxA =
+  WebhookConfig
+    { url = Text.pack ("http://127.0.0.1:" <> show p <> "/hook"),
+      secret = webhookSecretText,
+      timeoutSeconds = 5,
+      maxAttempts = maxA
+    }
+
+deliverViaWebhook :: Manager -> WebhookConfig -> Notification -> IO [AuthEvent]
+deliverViaWebhook mgr wc n = do
+  events <- newIORef []
+  runEff . runClockIO . runAuthEventCapture events . runNotifierWebhook mgr wc $ sendNotification n
+  readIORef events
+
+-- | A stub receiver that records every @(headers, raw body)@ it gets and answers the k-th
+-- request (1-indexed) with @statusFor k@. The body is fully drained before responding so an
+-- attempt count is never miscounted.
+webhookStub ::
+  IORef Int ->
+  (Int -> Int) ->
+  MVar [(RequestHeaders, BS.ByteString)] ->
+  Application
+webhookStub counter statusFor captured req respond = do
+  body <- LBS.toStrict <$> strictRequestBody req
+  modifyMVar_ captured (pure . (<> [(requestHeaders req, body)]))
+  k <- atomicModifyIORef' counter (\c -> (c + 1, c + 1))
+  respond (responseLBS (mkStatus (statusFor k) "") [] "")
+
+-- | A single successful POST carries the JSON body, the type header, and a signature that
+-- verifies against the shared secret recomputed over the exact bytes received.
+webhookDeliversTest :: TestTree
+webhookDeliversTest = testCase "webhook: signed JSON POST the receiver can verify" do
+  email <- testEmail
+  mgr <- newManager defaultManagerSettings
+  captured <- newMVar []
+  counter <- newIORef 0
+  let n = EmailVerificationRequested email (OneTimeToken rawToken) fixtureExpiry
+  testWithApplication (pure (webhookStub counter (const 200) captured)) \port -> do
+    events <- deliverViaWebhook mgr (webhookConfigFor port 1) n
+    reqs <- readMVar captured
+    case reqs of
+      [(hdrs, body)] -> do
+        lookup "Content-Type" hdrs @?= Just "application/json"
+        lookup "X-Shomei-Notification-Type" hdrs @?= Just "email_verification_requested"
+        decode (LBS.fromStrict body) @?= Just n
+        lookup "X-Shomei-Signature" hdrs @?= Just (webhookSignature (TE.encodeUtf8 webhookSecretText) body)
+      _ -> assertFailure ("expected exactly one delivery, got " <> show (length reqs))
+    assertBool ("no failure event on success, got: " <> show events) (null events)
+
+-- | A 5xx is retried; a later success ends the delivery with no failure event.
+webhookRetriesThenSucceeds :: TestTree
+webhookRetriesThenSucceeds = testCase "webhook: retries a 5xx then succeeds, no failure event" do
+  email <- testEmail
+  mgr <- newManager defaultManagerSettings
+  captured <- newMVar []
+  counter <- newIORef 0
+  let n = PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry
+      statusFor k = if k <= 1 then 500 else 200
+  testWithApplication (pure (webhookStub counter statusFor captured)) \port -> do
+    events <- deliverViaWebhook mgr (webhookConfigFor port 2) n
+    reqs <- readMVar captured
+    length reqs @?= 2
+    assertBool ("no failure event on eventual success, got: " <> show events) (null events)
+
+-- | A receiver that always 5xxes is attempted exactly @maxAttempts@ times, then a redacted
+-- failure event is published — carrying no token.
+webhookExhaustsThenAudits :: TestTree
+webhookExhaustsThenAudits = testCase "webhook: exhausts attempts then audits a redacted failure" do
+  email <- testEmail
+  mgr <- newManager defaultManagerSettings
+  captured <- newMVar []
+  counter <- newIORef 0
+  let n = EmailVerificationRequested email (OneTimeToken rawToken) fixtureExpiry
+  testWithApplication (pure (webhookStub counter (const 500) captured)) \port -> do
+    events <- deliverViaWebhook mgr (webhookConfigFor port 2) n
+    reqs <- readMVar captured
+    length reqs @?= 2
+    case events of
+      [NotificationDeliveryFailed d] -> do
+        d.channel @?= "webhook"
+        d.notificationType @?= "email_verification_requested"
+        d.recipient @?= "a@example.com"
+        assertBool
+          ("the token must not appear in the audit error: " <> Text.unpack d.errorText)
+          (not (Text.unpack rawToken `isInfixOf` Text.unpack d.errorText))
+      _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)

@@ -1,3 +1,5 @@
+{-# LANGUAGE PackageImports #-}
+
 -- | Notification interpreters for the standalone server.
 --
 -- The core defines the 'Notifier' effect and emits a 'Notification' (recipient, one-time
@@ -21,17 +23,45 @@ module Shomei.Notify
   ( runNotifierFromConfig,
     runNotifierLog,
     runNotifierSmtp,
+    runNotifierWebhook,
     renderNotification,
     notificationTypeText,
+    webhookSignature,
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, try)
+-- Pin to cryptonite: smtp-mail (0.3) drags cryptonite into this package's plan alongside the
+-- repo's usual crypton, and both expose the same @Crypto.*@ modules. Only cryptonite's
+-- @ByteArrayAccess (Digest a)@ instance ends up in scope here (crypton's is shadowed by the
+-- module-name collision), so the HMAC digest must come from cryptonite to hex-encode it. This is
+-- the one place shomei-server touches cryptonite directly; everywhere else uses crypton.
+import "cryptonite" Crypto.Hash.Algorithms (SHA256)
+import "cryptonite" Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
+import Data.Aeson (encode)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as BSL
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Text.Lazy qualified as TL
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
+import Network.HTTP.Client
+  ( Manager,
+    RequestBody (RequestBodyBS),
+    httpLbs,
+    method,
+    parseRequest,
+    requestBody,
+    requestHeaders,
+    responseStatus,
+    responseTimeout,
+    responseTimeoutMicro,
+  )
+import Network.HTTP.Types.Status (statusCode, statusIsSuccessful)
 import Network.Mail.Mime (Address (..), Mail, simpleMail')
 import Network.Mail.SMTP
   ( sendMail',
@@ -41,7 +71,7 @@ import Network.Mail.SMTP
     sendMailWithLoginSTARTTLS',
     sendMailWithLoginTLS',
   )
-import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..))
+import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebhookConfig (..))
 import Shomei.Crypto (sha256Hex)
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.Event (AuthEvent (NotificationDeliveryFailed), NotificationDeliveryFailedData (..))
@@ -135,7 +165,7 @@ runNotifierSmtp nc sc = interpret_ \case
     outcome <- liftIO (try @SomeException (sendViaSmtp sc mail))
     case outcome of
       Right () -> pure ()
-      Left err -> publishDeliveryFailed "smtp" n err
+      Left err -> publishDeliveryFailed "smtp" n (truncateError err)
 
 -- | Run the SMTP dialogue for one message under a timeout, choosing the connection mode from
 -- 'SmtpTlsMode' and using the authenticated variant when credentials are present. Boot
@@ -220,18 +250,18 @@ renderEmail nc = \case
 -- | Log one redacted line and publish a 'NotificationDeliveryFailed' audit event for a delivery
 -- that failed after exhausting its attempts. Shared by the SMTP and webhook interpreters. The
 -- token appears __nowhere__: only channel, notification type, recipient, and a truncated,
--- single-line error.
+-- single-line error (the caller passes the already-truncated text).
 publishDeliveryFailed ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   -- | channel: @"smtp"@ | @"webhook"@
   Text ->
   Notification ->
-  SomeException ->
+  -- | truncated, single-line error text (never a token)
+  Text ->
   Eff es ()
-publishDeliveryFailed channel n err = do
+publishDeliveryFailed channel n errText = do
   let recipient = notificationRecipient n
       kind = notificationTypeText n
-      errText = truncateError err
   liftIO
     ( hPutStrLn
         stderr
@@ -262,4 +292,76 @@ publishDeliveryFailed channel n err = do
 -- | A single-line, length-capped rendering of an exception for a log line and audit payload:
 -- whitespace (including newlines) is collapsed, then the result is truncated to 500 characters.
 truncateError :: SomeException -> Text
-truncateError = Text.take 500 . Text.unwords . Text.words . Text.pack . displayException
+truncateError = truncateText . Text.pack . displayException
+
+-- | Collapse whitespace (including newlines) to single spaces and cap at 500 characters, so an
+-- error string is one safe line for a log and an audit payload.
+truncateText :: Text -> Text
+truncateText = Text.take 500 . Text.unwords . Text.words
+
+-- Webhook interpreter (EP-8) --------------------------------------------------
+
+-- | Deliver notifications as a signed JSON POST to a configured URL, reusing the server's shared
+-- TLS 'Manager'. Same fire-and-forget hardening as 'runNotifierSmtp': all exceptions caught, a
+-- non-2xx response counts as a failure, bounded retries with backoff, then one redacted log line
+-- plus a 'NotificationDeliveryFailed' audit event. The JSON body is the notification's derived
+-- 'ToJSON' (so it carries the raw token — the receiver builds the link), signed over the exact
+-- bytes sent with @X-Shomei-Signature: sha256=<hex HMAC-SHA256>@.
+runNotifierWebhook ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  Manager ->
+  WebhookConfig ->
+  Eff (Notifier : es) a ->
+  Eff es a
+runNotifierWebhook mgr wc = interpret_ \case
+  SendNotification n -> do
+    result <- liftIO (deliverWebhook mgr wc n)
+    case result of
+      Nothing -> pure ()
+      Just errText -> publishDeliveryFailed "webhook" n errText
+
+-- | POST the notification, retrying up to 'WebhookConfig.maxAttempts' with @4^(k-1)@-second
+-- backoff (1 s, 4 s, …) between attempts, each under the configured per-attempt timeout. Returns
+-- 'Nothing' on the first 2xx, or @Just errText@ after the last attempt fails. All exceptions are
+-- caught here; nothing escapes to the interpreter.
+deliverWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe Text)
+deliverWebhook mgr wc n = do
+  let WebhookConfig {url = u, secret = s, timeoutSeconds = to, maxAttempts = maxA} = wc
+      body = BSL.toStrict (encode n)
+      sig = webhookSignature (TE.encodeUtf8 s) body
+      kind = notificationTypeText n
+      attempts = max 1 maxA
+  reqE <- try @SomeException (parseRequest (Text.unpack u))
+  case reqE of
+    Left err -> pure (Just (truncateError err))
+    Right req0 -> do
+      let req =
+            req0
+              { method = "POST",
+                requestBody = RequestBodyBS body,
+                requestHeaders =
+                  [ ("Content-Type", "application/json"),
+                    ("X-Shomei-Signature", sig),
+                    ("X-Shomei-Notification-Type", TE.encodeUtf8 kind),
+                    ("User-Agent", "shomei")
+                  ],
+                responseTimeout = responseTimeoutMicro (max 1 to * 1_000_000)
+              }
+          go k = do
+            outcome <- try @SomeException (httpLbs req mgr)
+            let failed errText
+                  | k >= attempts = pure (Just errText)
+                  | otherwise = threadDelay (4 ^ (k - 1) * 1_000_000) >> go (k + 1)
+            case outcome of
+              Right resp
+                | statusIsSuccessful (responseStatus resp) -> pure Nothing
+                | otherwise -> failed ("webhook returned HTTP " <> Text.pack (show (statusCode (responseStatus resp))))
+              Left err -> failed (truncateError err)
+      go 1
+
+-- | The @X-Shomei-Signature@ header value for a raw body: @sha256=@ followed by the lowercase-hex
+-- HMAC-SHA256 of the exact bytes under the shared secret. Signing the strict body that is sent
+-- (never a re-encoding) is what lets a receiver verify byte-for-byte.
+webhookSignature :: ByteString -> ByteString -> ByteString
+webhookSignature secret body =
+  "sha256=" <> convertToBase Base16 (hmacGetDigest (hmac secret body :: HMAC SHA256))

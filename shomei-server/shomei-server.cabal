@@ -51,7 +51,7 @@ library
     , base                  >=4.18 && <5
     , bytestring
     , containers
-    , crypton
+    , cryptonite
     , effectful
     , effectful-core
     , hasql-pool
@@ -202,7 +202,6 @@ test-suite shomei-server-test
     , base64
     , bytestring
     , containers
-    , crypton
     , directory
     , effectful
     , effectful-core
@@ -210,7 +209,6 @@ test-suite shomei-server-test
     , hasql-pool
     , http-client
     , http-types
-    , memory
     , network
     , shomei-core
     , shomei-jwt
