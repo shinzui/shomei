@@ -319,6 +319,38 @@
                 ],
                 "type": "object"
             },
+            "Problem": {
+                "description": "An RFC 7807 problem document. Every Shōmei error response has this shape, served as application/problem+json. Switch on `code`; `title` is stable human text and `detail`, when present, explains this particular occurrence.",
+                "properties": {
+                    "code": {
+                        "description": "The machine-readable error key. This is what a client switches on.",
+                        "type": "string"
+                    },
+                    "detail": {
+                        "description": "Human-readable explanation specific to this occurrence.",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "Mirrors the HTTP status code.",
+                        "type": "integer"
+                    },
+                    "title": {
+                        "description": "Stable human-readable summary of the error kind.",
+                        "type": "string"
+                    },
+                    "type": {
+                        "description": "Always \"about:blank\": Shōmei hosts no error-documentation URLs.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                ],
+                "type": "object"
+            },
             "ReadyResponse": {
                 "properties": {
                     "database": {
@@ -532,7 +564,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Success.",
                         "headers": {
                             "Cache-Control": {
                                 "schema": {
@@ -556,7 +588,24 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
+                    }
+                }
+            }
+        },
+        "/openapi.json": {
+            "get": {
+                "operationId": "getOpenapiJson",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AnyValue"
+                                }
+                            }
+                        },
+                        "description": "Success."
                     }
                 }
             }
@@ -573,7 +622,7 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     }
                 }
             }
@@ -652,10 +701,74 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `before` or `limit` or `until` or `since` or `type` or `session` or `user`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_role"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_role."
                     }
                 },
                 "security": [
@@ -670,7 +783,52 @@
                 "operationId": "deleteAuthImpersonate",
                 "responses": {
                     "204": {
-                        "description": ""
+                        "description": "Success; no response body."
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "impersonation_target_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: impersonation_target_invalid."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
                     }
                 },
                 "security": [
@@ -688,7 +846,8 @@
                                 "$ref": "#/components/schemas/ImpersonateRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -699,10 +858,76 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "impersonation_target_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, impersonation_target_invalid."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "impersonation_forbidden",
+                                                "impersonation_action_blocked"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: impersonation_forbidden, impersonation_action_blocked."
                     }
                 },
                 "security": [
@@ -722,7 +947,8 @@
                                 "$ref": "#/components/schemas/LoginRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -733,7 +959,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Success.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -743,7 +969,93 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "invalid_login"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: invalid_login."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "email_not_verified"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: email_not_verified."
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "too_many_requests"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
             }
@@ -760,7 +1072,7 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     }
                 }
             }
@@ -775,7 +1087,8 @@
                                 "$ref": "#/components/schemas/PasskeyLoginCompleteRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -786,7 +1099,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Success.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -796,7 +1109,93 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "mfa_failed"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: mfa_failed."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "email_not_verified"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: email_not_verified."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "ceremony_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: ceremony_not_found."
                     }
                 }
             }
@@ -806,10 +1205,7 @@
                 "operationId": "createAuthLogout",
                 "responses": {
                     "204": {
-                        "content": {
-                            "application/json;charset=utf-8": {}
-                        },
-                        "description": "",
+                        "description": "Success; no response body.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -817,6 +1213,29 @@
                                 }
                             }
                         }
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
                     }
                 },
                 "security": [
@@ -838,7 +1257,52 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "user_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: user_not_found."
                     }
                 },
                 "security": [
@@ -858,7 +1322,8 @@
                                 "$ref": "#/components/schemas/MfaCompleteRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -869,7 +1334,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Success.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -879,7 +1344,93 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "mfa_failed"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: mfa_failed."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "email_not_verified"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: email_not_verified."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "ceremony_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: ceremony_not_found."
                     }
                 }
             }
@@ -899,7 +1450,30 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
                     }
                 },
                 "security": [
@@ -921,7 +1495,30 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
                     }
                 },
                 "security": [
@@ -941,7 +1538,8 @@
                                 "$ref": "#/components/schemas/PasskeyRegisterCompleteRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -952,10 +1550,76 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request",
+                                                "webauthn_verification_failed"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request, webauthn_verification_failed."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "ceremony_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: ceremony_not_found."
                     }
                 },
                 "security": [
@@ -980,13 +1644,74 @@
                 ],
                 "responses": {
                     "204": {
+                        "description": "Success; no response body."
+                    },
+                    "400": {
                         "content": {
-                            "application/json;charset=utf-8": {}
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
                         },
-                        "description": ""
+                        "description": "An RFC 7807 problem document. The `code` member is one of: bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
                     },
                     "404": {
-                        "description": "`passkeyId` not found"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "passkey_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: passkey_not_found."
                     }
                 },
                 "security": [
@@ -1006,17 +1731,35 @@
                                 "$ref": "#/components/schemas/ConfirmPasswordResetRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {}
-                        },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "password_reset_token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, password_reset_token_invalid."
                     }
                 }
             }
@@ -1031,17 +1774,56 @@
                                 "$ref": "#/components/schemas/PasswordResetRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "202": {
-                        "content": {
-                            "application/json;charset=utf-8": {}
-                        },
-                        "description": ""
+                        "description": "Accepted: the request was validated; delivery happens out of band."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error."
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "too_many_requests"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
             }
@@ -1056,14 +1838,58 @@
                                 "$ref": "#/components/schemas/ChangePasswordRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "204": {
-                        "description": ""
+                        "description": "Success; no response body."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid",
+                                                "invalid_login"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, invalid_login."
                     }
                 },
                 "security": [
@@ -1109,7 +1935,8 @@
                                 "$ref": "#/components/schemas/RefreshRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -1120,7 +1947,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Success.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -1130,7 +1957,97 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid `body` or `Referer` or `Origin` or `Cookie`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "token_invalid",
+                                                "token_expired",
+                                                "token_reuse",
+                                                "session_expired"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: token_invalid, token_expired, token_reuse, session_expired."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "csrf_rejected",
+                                                "email_not_verified"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: csrf_rejected, email_not_verified."
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "too_many_requests"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
             }
@@ -1145,7 +2062,8 @@
                                 "$ref": "#/components/schemas/ServiceTokenRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
@@ -1156,10 +2074,55 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "bad_request",
+                                                "service_token_actor_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request, service_token_actor_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "service_token_disabled",
+                                                "service_account_invalid",
+                                                "service_token_scope_denied"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: service_token_disabled, service_account_invalid, service_token_scope_denied."
                     }
                 }
             }
@@ -1176,7 +2139,52 @@
                                 }
                             }
                         },
-                        "description": ""
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "session_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: session_not_found."
                     }
                 },
                 "security": [
@@ -1196,7 +2204,8 @@
                                 "$ref": "#/components/schemas/SignupRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "201": {
@@ -1207,7 +2216,7 @@
                                 }
                             }
                         },
-                        "description": "",
+                        "description": "Created.",
                         "headers": {
                             "Set-Cookie": {
                                 "schema": {
@@ -1217,7 +2226,75 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "invalid_email",
+                                                "invalid_login_id",
+                                                "weak_password",
+                                                "bad_request"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, invalid_email, invalid_login_id, weak_password, bad_request."
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "email_taken",
+                                                "login_id_taken"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: email_taken, login_id_taken."
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "too_many_requests"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
             }
@@ -1232,17 +2309,57 @@
                                 "$ref": "#/components/schemas/ConfirmEmailVerificationRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {}
-                        },
-                        "description": ""
+                        "description": "Success."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error",
+                                                "verification_token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, verification_token_invalid."
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "email_already_verified"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: email_already_verified."
                     }
                 }
             }
@@ -1257,17 +2374,56 @@
                                 "$ref": "#/components/schemas/VerifyEmailRequest"
                             }
                         }
-                    }
+                    },
+                    "required": true
                 },
                 "responses": {
                     "202": {
-                        "content": {
-                            "application/json;charset=utf-8": {}
-                        },
-                        "description": ""
+                        "description": "Accepted: the request was validated; delivery happens out of band."
                     },
                     "400": {
-                        "description": "Invalid `body`"
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error."
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "too_many_requests"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
             }

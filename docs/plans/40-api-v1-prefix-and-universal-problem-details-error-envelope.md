@@ -127,12 +127,14 @@ Milestone 3 — Status-code corrections: **done 2026-07-09**
   - `POST /v1/auth/logout` on an already-revoked session `404 session_not_found → 204`. A client that treated the 404 as "already logged out, fine" can drop that branch; one that treated it as an error stops seeing the error. Logout is now idempotent.
   - Note for `sessionCheckMode = VerifyTokenAndSession` deployments: the second logout is a `401` from the auth handler (the token no longer verifies against the revoked session), not a `204`. Idempotence there means "does not fail with 404", and the credential is genuinely dead.
 
-Milestone 4 — OpenAPI truth:
+Milestone 4 — OpenAPI truth: **done 2026-07-09**
 
-- [ ] `Problem` component schema + per-route error responses generated from the `ProblemSpec` catalog (route→codes table in `OpenApi.hs`); drift-guard test.
-- [ ] Spec-nit post-processing: no `content` on 204/empty responses, non-empty response descriptions, `requestBody.required: true`; documented openapi-hs limits.
-- [ ] `GET /openapi.json` served from the root record; JWKS route returns `Cache-Control` header.
-- [ ] Spec regenerated/committed; conformance suite updated (path count 25, new invariants).
+- [x] `Problem` component schema + per-route error responses generated from the `ProblemSpec` catalog. `Error.hs` now exports every `pc*` constant; `OpenApi.hs` holds `routeErrors :: [(FilePath, Method, [ProblemSpec])]` plus `baselineSpecs`, which reads 401s off any operation carrying `security` and a 400 `body_parse_error` off any operation with a request body — so a new authenticated route documents its 401s the day it is added. 51 problem responses across 25 paths.
+- [x] The per-response code list rides in `properties.code.enum` (standard JSON Schema, generator-friendly) rather than an `x-error-codes` extension — openapi-hs's `Response` has no extensions field. See Surprises.
+- [x] Drift guard (`test-openapi/Main.hs`): every documented code exists in `problemCatalog`; every documented (status, code) pair exists in the catalog; every problem response lists at least one code; every bearer operation documents a 401. Plus hygiene: no 204 carries content, no description is empty, every request body is required. **Verified it can fail**: documenting each response one status off produced 2 failures.
+- [x] Spec hygiene passes: `withSpecHygiene` drops `content` from 204s and from the `NoContent` artifacts at 200/202, fills every empty response `description`, and sets `requestBody.required: true`.
+- [x] `GET /openapi.json` served from the root record (`openApiValue`, a `Value` CAF). Path count 25. Verified live: the served document is byte-equivalent to the committed `docs/api/openapi.json`.
+- [x] Spec regenerated and committed; `cabal run shomei-openapi` reproduces it exactly.
 
 Milestone 5 — Docs and closure:
 
@@ -208,6 +210,30 @@ found only by grepping for the string rather than trusting the list:
 Servant route type is not the only place a path is written down; the WAI layer (which runs
 before routing), the cookie scope, and the metrics vocabulary all hard-code strings that no
 type checks. `grep -rn '"/auth' --include='*.hs'` before declaring a path move done.
+
+**2026-07-09 (M4) — `x-error-codes` is impossible: openapi-hs's `Response` has no extensions
+field.** The plan preferred a vendor extension over parsing descriptions. `Data.OpenApi.Internal`'s
+`Response` is `{description, content, headers, links}` — no `_responseExtensions`, so there is
+nowhere to hang `x-`anything. The replacement is better than the original idea: each problem
+response inlines `{"allOf": [{"$ref": "…/Problem"}], "properties": {"code": {"enum": [...]}}}`.
+That is standard JSON Schema, so it needs no special support in the drift test *and* a client
+generator can turn the enum into a sum type — which a vendor extension would never have given us.
+
+**2026-07-09 (M4) — the checked-out `openapi-hs` is not the one that compiles.** `cabal.project`
+pins openapi-hs to git tag `89e9ed07`; `mori` points at `/Users/shinzui/Keikaku/bokuno/openapi-hs-project`,
+which is *ahead* of it. The working tree has `data HttpStatusCode = StatusCode Int | StatusRange …`;
+the pinned tag has `type HttpStatusCode = Int`. Reading the working tree produced code that failed
+to compile against the pin. The pinned source is unpacked at
+`dist-newstyle/src/openapi-hs-<hash>/` — read *that* when a `source-repository-package` is
+involved. **Applies to any later plan touching the spec** (EP-2, EP-4, EP-5, EP-7).
+
+**2026-07-09 (M4) — a malformed `Capture` is a 400, not the 404 servant-openapi documents.**
+Servant's `Capture` runs `urlParseErrorFormatter` on a parse failure, which this codebase points at
+`pcBadRequest`. The generated document claimed a 404 for `DELETE /v1/auth/passkeys/{passkeyId}`.
+Verified against the running server: `DELETE …/passkeys/not-a-typeid` → `400 bad_request` with
+`detail: "Invalid UUID part!"`, while a well-formed but absent id → `404 passkey_not_found`. Both
+are now documented. The lesson is the milestone's whole point: the spec was asserting something
+nobody had ever asked the server.
 
 **2026-07-09 (M3) — logout's idempotence depends on `sessionCheckMode`, and the default is what
 makes the test meaningful.** With `VerifyTokenOnly` (the default) a revoked session's access
@@ -354,6 +380,33 @@ Record every decision made while working on the plan.
   condition — "your credential is not usable, re-authenticate". The titles differ because the
   causes do, and a human reading a log wants to know which. The drift-guard test (M4) must
   therefore assert code *membership*, not uniqueness.
+  Date: 2026-07-09
+
+- Decision: The per-response error-code list is expressed as `properties.code.enum` inside an
+  `allOf: [$ref Problem]` schema, not as an `x-error-codes` vendor extension.
+  Rationale: openapi-hs's `Response` has no extensions field, so the extension was not available
+  (Surprises). The enum is strictly better: it is standard JSON Schema, a generated client can
+  narrow `code` to a sum type, and the drift-guard test reads it without parsing prose.
+  Date: 2026-07-09
+
+- Decision: `baselineSpecs` derives an operation's 401s from its `security` and its
+  `body_parse_error` from its request body, reading the *generated document* rather than
+  restating them per route in `routeErrors`.
+  Rationale: those two failures follow from an operation's shape, not from its handler. Deriving
+  them means a route added by EP-2/EP-4/EP-5/EP-7 documents its 401s on the day it is written,
+  with no table entry, and the conformance test's "every bearer operation documents a 401" can
+  never be satisfied by forgetting.
+  Date: 2026-07-09
+
+- Decision: The two flaky `SupervisorSpec` timing tests are fixed here rather than left as a
+  known flake, in a separate commit outside EP-3's milestones.
+  Rationale: EP-3's acceptance criterion is a green `cabal test all`, and those tests failed it
+  intermittently — confirmed pre-existing by reproducing the failure on the EP-3 M3 commit. Both
+  asserted "N cycles within a fixed 50 ms window", which twelve parallel suites starve. The
+  rewrite waits on a condition, and the backoff test now *measures* the reset (≈50 ms vs ≈400 ms)
+  instead of inferring it from a call count — strictly stronger, and confirmed to fail when the
+  reset is deleted from `Supervisor.hs`. Kept out of the milestone commits because it is not
+  EP-3's subject matter.
   Date: 2026-07-09
 
 - Decision: `withOperationIds` drops the leading `v1` path segment, so every `operationId` is

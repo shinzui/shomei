@@ -104,6 +104,8 @@ import Shomei.Servant.Error
     pcUserNotFound,
     toProblemError,
   )
+-- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
+import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
@@ -119,6 +121,7 @@ shomeiRoutes env =
   ShomeiRoutes
     { v1 = shomeiServer env,
       jwks = jwksH env,
+      openapi = pure openApiValue,
       health = healthH,
       ready = readyH env
     }

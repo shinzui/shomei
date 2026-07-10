@@ -110,6 +110,7 @@ test-suite shomei-servant-openapi-test
     , quickcheck-instances
     , servant
     , servant-openapi
+    , servant-server
     , shomei-servant
     , text
 

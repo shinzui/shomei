@@ -1,6 +1,6 @@
 -- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.API.ShomeiRoutes'.
 --
--- Two layers:
+-- Three layers:
 --
 --   1. 'validateEveryToJSON' — for every JSON body type in the API, generate
 --      arbitrary values and check their 'ToJSON' encoding validates against the
@@ -10,6 +10,12 @@
 --   2. Smoke assertions on the assembled 'shomeiOpenApi': the @openapi@ version
 --      is @3.1.0@ and the document covers the expected number of paths.
 --
+--   3. EP-3: the error surface. Every documented error code exists in the runtime
+--      'problemCatalog' at the documented status, so the spec cannot promise a code or a
+--      status the server never sends. Plus the hygiene invariants a generated client depends
+--      on: no @204@ carries content, no response description is empty, every request body is
+--      required, and every authenticated operation documents its @401@.
+--
 -- The 'Arbitrary' and 'Show' instances for the DTOs live here (orphans, test
 -- only) so the production library carries no test dependency.
 {-# OPTIONS_GHC -Wno-orphans #-}
@@ -17,13 +23,19 @@
 module Main (main) where
 
 import Data.Aeson (ToJSON (..), Value (..), decode, encode)
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Foldable (toList)
+import Data.List (nub, sort)
 import Data.Proxy (Proxy (..))
+import Data.Text (Text)
 import Servant.API (NamedRoutes, NoContent (..))
 import Data.OpenApi (NamedSchema (..), ToSchema (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
+import Servant.Server (ServerError (errHTTPCode))
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.DTO
+import Shomei.Servant.Error (ProblemSpec (..), problemCatalog)
 import Shomei.Servant.OpenApi (shomeiOpenApi)
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), oneof)
@@ -56,8 +68,34 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    it "covers exactly 24 paths" $
-      pathCount `shouldBe` 24
+    it "covers exactly 25 paths" $
+      pathCount `shouldBe` 25
+
+  describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
+    it "declares the Problem schema with exactly the four required members" $
+      problemRequired `shouldBe` ["code", "status", "title", "type"]
+
+    it "documents only error codes that exist in problemCatalog" $
+      filter (`notElem` catalogCodes) (map snd documentedCodes) `shouldBe` []
+
+    it "documents each error code at a status the runtime actually sends it with" $
+      filter (`notElem` catalogPairs) documentedCodes `shouldBe` []
+
+    it "documents at least one error code for every 4xx it declares" $
+      [key | (key, codes) <- errorResponses, null codes] `shouldBe` []
+
+    it "documents a 401 on every operation that requires a bearer token" $
+      [key | (key, op) <- operations, requiresBearer op, not (declares "401" op)] `shouldBe` []
+
+  describe "EP-3: spec hygiene a generated client depends on" $ do
+    it "puts no content on a 204" $
+      [key | (key, op) <- operations, responseHasContent "204" op] `shouldBe` []
+
+    it "gives every response a non-empty description" $
+      [key <> " " <> status | (key, op) <- operations, status <- emptyDescriptions op] `shouldBe` []
+
+    it "marks every request body required" $
+      [key | (key, op) <- operations, Just body <- [KM.lookup "requestBody" op], not (isRequired body)] `shouldBe` []
   where
     decoded :: KM.KeyMap Value
     decoded = case decode (encode shomeiOpenApi) of
@@ -66,9 +104,96 @@ spec = do
 
     lookupTop k = KM.lookup k decoded
 
-    pathCount = case lookupTop "paths" of
-      Just (Object ps) -> KM.size ps
+    paths = case lookupTop "paths" of
+      Just (Object ps) -> ps
       _ -> error "shomeiOpenApi has no paths object"
+
+    pathCount = KM.size paths
+
+    problemRequired = case lookupTop "components" >>= field "schemas" >>= field "Problem" >>= field "required" of
+      Just (Array xs) -> sort [t | String t <- toList xs]
+      _ -> error "shomeiOpenApi has no components.schemas.Problem.required"
+
+    -- Every (method, path) operation object in the document, labelled for failure messages.
+    operations :: [(Text, KM.KeyMap Value)]
+    operations =
+      [ (Key.toText method <> " " <> Key.toText path, op)
+        | (path, Object item) <- KM.toList paths,
+          (method, Object op) <- KM.toList item
+      ]
+
+    -- Every problem-document response: its operation label + status, and the `code` enum it
+    -- narrows the Problem schema to.
+    errorResponses :: [(Text, [Text])]
+    errorResponses =
+      [ (key <> " " <> Key.toText status, codeEnum resp)
+        | (key, op) <- operations,
+          (status, resp) <- responsesOf op,
+          isProblemResponse resp
+      ]
+
+    -- (status, code) as the document promises them. Status keys are always numeric here:
+    -- nothing in this document uses `default` or a `4XX` range key.
+    documentedCodes :: [(Int, Text)]
+    documentedCodes =
+      nub
+        [ (statusInt status, code)
+          | (_, op) <- operations,
+            (status, resp) <- responsesOf op,
+            isProblemResponse resp,
+            code <- codeEnum resp
+        ]
+
+    statusInt status = case reads (Key.toString status) of
+      [(n, "")] -> n
+      _ -> error ("non-numeric response key: " <> Key.toString status)
+
+    catalogCodes :: [Text]
+    catalogCodes = nub (map problemCode problemCatalog)
+
+    catalogPairs :: [(Int, Text)]
+    catalogPairs = nub [(errHTTPCode (problemStatus p), problemCode p) | p <- problemCatalog]
+
+    responsesOf op = case KM.lookup "responses" op of
+      Just (Object rs) -> [(status, r) | (status, Object r) <- KM.toList rs]
+      _ -> []
+
+    isProblemResponse resp = KM.member "application/problem+json" (contentOf resp)
+
+    contentOf resp = case KM.lookup "content" resp of
+      Just (Object c) -> c
+      _ -> KM.empty
+
+    codeEnum resp =
+      case KM.lookup "application/problem+json" (contentOf resp)
+        >>= field "schema"
+        >>= field "properties"
+        >>= field "code"
+        >>= field "enum" of
+        Just (Array xs) -> [t | String t <- toList xs]
+        _ -> []
+
+    requiresBearer op = case KM.lookup "security" op of
+      Just (Array xs) -> not (null xs)
+      _ -> False
+
+    declares status op = any ((== Key.fromText status) . fst) (responsesOf op)
+
+    responseHasContent status op =
+      or [KM.member "content" r | (s, r) <- responsesOf op, s == Key.fromText status]
+
+    emptyDescriptions op =
+      [ Key.toText status
+        | (status, r) <- responsesOf op,
+          KM.lookup "description" r `elem` [Nothing, Just (String "")]
+      ]
+
+    isRequired body = field "required" body == Just (Bool True)
+
+    field :: Text -> Value -> Maybe Value
+    field k = \case
+      Object o -> KM.lookup (Key.fromText k) o
+      _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Show instances (needed by validateEveryToJSON for counterexamples)

@@ -42,10 +42,43 @@ module Shomei.Servant.Error
     -- * Servant's built-in failures
     shomeiErrorFormatters,
 
-    -- * Specs raised directly by handlers and middleware
-    pcUserNotFound,
-    pcSessionNotFound,
+    -- * Specs with an 'AuthError' counterpart
+    --
+    -- Exported in full so "Shomei.Servant.OpenApi" can name them in its route→codes
+    -- table: the spec's documented status and title are then literally the ones the
+    -- server sends.
+    pcInvalidEmail,
+    pcInvalidLoginId,
+    pcWeakPassword,
+    pcEmailTaken,
+    pcLoginIdTaken,
+    pcInvalidLogin,
     pcTooManyRequests,
+    pcSessionNotFound,
+    pcSessionExpired,
+    pcSessionRevoked,
+    pcRefreshTokenInvalid,
+    pcRefreshTokenExpired,
+    pcTokenReuse,
+    pcVerificationTokenInvalid,
+    pcPasswordResetTokenInvalid,
+    pcEmailAlreadyVerified,
+    pcEmailNotVerified,
+    pcTokenInvalid,
+    pcPasskeyNotFound,
+    pcCeremonyNotFound,
+    pcWebAuthnFailed,
+    pcMfaFailed,
+    pcImpersonationForbidden,
+    pcImpersonationTargetInvalid,
+    pcImpersonationActionBlocked,
+    pcServiceTokenDisabled,
+    pcServiceAccountInvalid,
+    pcServiceTokenScopeDenied,
+    pcServiceTokenActorInvalid,
+    pcUserNotFound,
+    pcRoleNotDefined,
+    pcInternal,
 
     -- * HTTP-layer specs (no 'AuthError' counterpart)
     pcMissingToken,

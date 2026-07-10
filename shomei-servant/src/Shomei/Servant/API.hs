@@ -288,6 +288,11 @@ data ShomeiRoutes mode = ShomeiRoutes
         :- ".well-known"
           :> "jwks.json"
           :> Get '[JSON] (Headers '[Header "Cache-Control" Text] Value),
+    -- | The OpenAPI 3.1 document for whatever binary is answering, so a client generates
+    --     against the deployment rather than against a spec file someone remembered to commit.
+    --     Unversioned, like the rest of this record: it describes the @\/v1@ surface and the
+    --     root endpoints alike, including itself.
+    openapi :: mode :- "openapi.json" :> Get '[JSON] Value,
     health :: mode :- "health" :> Get '[JSON] HealthResponse,
     ready :: mode :- "ready" :> Get '[JSON] ReadyResponse
   }
