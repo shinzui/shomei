@@ -330,7 +330,10 @@ clientCredentialsGrant env mAuthHeader form = do
 oauthErrorFor :: AuthError -> ServerError
 oauthErrorFor = \case
   OAuthClientInvalid -> OAuth.invalidClient
-  OAuthScopeInvalid -> OAuth.oauthError status400 "invalid_scope" "requested scope exceeds the client's allowed scopes"
+  -- One description for both refusals the workflow can raise: an explicitly empty `scope=`, and a
+  -- scope outside the account's allow-list. Saying only "exceeds the allowed scopes" would be a
+  -- lie for the empty case, which a live transcript caught.
+  OAuthScopeInvalid -> OAuth.oauthError status400 "invalid_scope" "the requested scope is empty, or exceeds the client's allowed scopes"
   -- No other AuthError is reachable from 'grantClientCredentials'. An infrastructure failure
   -- (a database outage surfacing as InternalAuthError) is a 500, still in the OAuth shape so a
   -- client's error parser does not itself fail while handling the failure.

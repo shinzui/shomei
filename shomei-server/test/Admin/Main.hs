@@ -5,6 +5,7 @@
 module Main (main) where
 
 import Control.Exception (IOException, try)
+import Control.Monad (void)
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
 import Data.ByteArray.Encoding (Base (Base64), convertToBase)
 import Data.ByteString.Char8 qualified as BS8
@@ -12,12 +13,14 @@ import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf)
 import Data.Maybe (mapMaybe)
+import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (addUTCTime, getCurrentTime)
 import Effectful (Eff, IOE, runEff)
+import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
@@ -38,14 +41,16 @@ import Shomei.Admin.Keys
     listPublishableSigningKeys,
   )
 import Shomei.Admin.Roles (RolesCommand (..), runRoles)
+import Shomei.Admin.ServiceAccounts (createAction, listAction, revokeAction, rotateSecretAction)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Crypto (Argon2Params (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
+import Shomei.Crypto (Argon2Params (..), sha256Hex)
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.ServiceAccount (ServiceAccount (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
@@ -56,7 +61,8 @@ import Shomei.Effect.AuthEventReader
     emptyAuditQuery,
     queryAuthEvents,
   )
-import Shomei.Error (AuthError)
+import Shomei.Effect.TokenSigner (TokenSigner (..))
+import Shomei.Error (AuthError (OAuthClientInvalid))
 import Shomei.Id (genSessionId, genUserId)
 import Shomei.Jwt.Key (fromStoredSigningKey, keyKid)
 import Shomei.Jwt.KeyProtection
@@ -71,16 +77,21 @@ import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
+import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.Maintenance (SweepReport (..))
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
+import Shomei.Postgres.SessionStore (runSessionStorePostgres)
+import Shomei.Postgres.UserStore (runUserStorePostgres)
 -- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
 
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Shomei.Server.Keys qualified as Keys
+import Shomei.Workflow.ClientCredentials (ClientCredentialsGrant (..), GrantedToken (..), grantClientCredentials)
 import System.Exit (ExitCode (..))
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 cfg :: ShomeiConfig
 cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
@@ -143,7 +154,10 @@ main =
           testRolesGrantOfUndefinedRoleFails,
           testRolesGrantToUnknownUserFails,
           testUserCreateAppliesDefaultRoles,
-          testUserCreateRefusesUndefinedDefaultRoles
+          testUserCreateRefusesUndefinedDefaultRoles,
+          testServiceAccountsLifecycle,
+          testServiceAccountsRotateAndRevoke,
+          testServiceAccountsUnknownClientIdFails
         ]
     )
 
@@ -666,3 +680,128 @@ eitherToMaybe = either (const Nothing) Just
 
 isRight :: Either a b -> Bool
 isRight = either (const False) (const True)
+
+-- Service accounts (MasterPlan 7 EP-4) --------------------------------------
+
+-- | These drive the CLI's *action* functions rather than 'runServiceAccounts', because the
+-- generated secret is printed exactly once and never re-readable. Capturing the process's stdout
+-- to recover it is not an option: tasty runs these cases in parallel, and @hDuplicateTo@ on the
+-- global 'stdout' is process-wide, so two capturing cases interleave and read each other's
+-- output. (Observed: the same suite reporting "All 22 tests passed" on one run and
+-- "2 out of 22 tests failed" on the next.) The actions return what they did; the printing
+-- wrapper is a one-liner over them.
+adminEnv :: Pool -> Text -> AdminEnv
+adminEnv pool connStr = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+
+saClientId' :: ServiceAccount -> Text
+saClientId' ServiceAccount {clientId} = clientId
+
+-- | Run the real @client_credentials@ workflow against PostgreSQL, exactly as @\/oauth\/token@
+-- does, with a fake signer (this suite is not testing JWT signing).
+runGrant ::
+  Pool ->
+  ClientCredentialsGrant ->
+  IO (Either AuthError (Either AuthError GrantedToken))
+runGrant pool grant =
+  runEff
+    . runErrorNoCallStack
+    . runDatabasePool pool
+    . runClockIO
+    . runAuthEventPublisherPostgres
+    . runTokenSignerFakeAdmin
+    . runSessionStorePostgres
+    . runServiceAccountStorePostgres
+    . runUserStorePostgres
+    $ grantClientCredentials cfg grant
+
+runTokenSignerFakeAdmin :: Eff (TokenSigner : es) a -> Eff es a
+runTokenSignerFakeAdmin = interpret_ \case
+  SignAccessToken _ -> pure (AccessToken "admin-test-token")
+
+grantWith :: Pool -> Text -> Text -> Maybe (Set Scope) -> IO (Either AuthError GrantedToken)
+grantWith pool cid secret scopes = do
+  outcome <- runGrant pool ClientCredentialsGrant {clientId = cid, clientSecret = secret, requestedScopes = scopes}
+  either (\e -> assertFailure ("infrastructure error: " <> show e)) pure outcome
+
+-- | create → the account exists, is active, owns a backing user row, and the secret it returned
+-- authenticates through the real grant workflow. Only the digest is stored.
+testServiceAccountsLifecycle :: TestTree
+testServiceAccountsLifecycle =
+  testCase "service-accounts create: yields a working secret, stores only its digest" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    (account, secret) <- createAction env "rei connector" ["kawa:ingest", "signal:raise"]
+    let cid = saClientId' account
+
+    n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_service_accounts WHERE status = 'active'"
+    n @?= 1
+    backing <-
+      scalarInt
+        pool
+        ("SELECT count(*) FROM shomei.shomei_users u JOIN shomei.shomei_service_accounts s ON s.user_id = u.user_id WHERE u.login_id = '" <> cid <> "'")
+    assertEqual "the account owns a backing user row keyed by its client id" 1 backing
+
+    -- The plaintext secret is nowhere in the database; only its SHA-256 hex digest is.
+    plaintext <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_service_accounts WHERE secret_hash = '" <> secret <> "'")
+    assertEqual "the plaintext secret is never stored" 0 plaintext
+    digest <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_service_accounts WHERE secret_hash = '" <> sha256Hex secret <> "'")
+    assertEqual "the stored hash is sha256Hex of the returned secret" 1 digest
+
+    -- And it authenticates: an omitted scope grants the whole allow-list.
+    granted <- grantWith pool cid secret Nothing
+    case granted of
+      Left e -> assertFailure ("expected the generated secret to authenticate, got " <> show e)
+      Right g -> g.grantedScopes @?= Set.fromList [Scope "kawa:ingest", Scope "signal:raise"]
+
+    -- A wrong secret does not.
+    wrong <- grantWith pool cid "not-the-secret" Nothing
+    fmap (const ()) wrong @?= Left OAuthClientInvalid
+
+    created <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'service_account_created'"
+    created @?= 1
+    withUser <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'service_account_created' AND user_id IS NOT NULL"
+    assertEqual "the lifecycle event files under the backing user" 1 withUser
+
+-- | rotate-secret invalidates the old secret immediately (single-secret model, no overlap);
+-- revoke refuses every subsequent token while keeping the row.
+testServiceAccountsRotateAndRevoke :: TestTree
+testServiceAccountsRotateAndRevoke =
+  testCase "service-accounts rotate-secret then revoke: old secret dies at once, revoked account refuses all" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    (account, oldSecret) <- createAction env "rei connector" ["kawa:ingest"]
+    let cid = saClientId' account
+
+    (_, newSecret) <- rotateSecretAction env cid
+    assertBool "rotation produces a different secret" (newSecret /= oldSecret)
+
+    old <- grantWith pool cid oldSecret Nothing
+    fmap (const ()) old @?= Left OAuthClientInvalid
+    new <- grantWith pool cid newSecret Nothing
+    case new of
+      Left e -> assertFailure ("expected the rotated secret to authenticate, got " <> show e)
+      Right g -> g.grantedScopes @?= Set.singleton (Scope "kawa:ingest")
+
+    -- rotated_at is stamped, status is untouched.
+    stillActive <- scalarInt pool "SELECT count(*) FROM shomei.shomei_service_accounts WHERE status = 'active' AND rotated_at IS NOT NULL"
+    stillActive @?= 1
+
+    _ <- revokeAction env cid
+    revoked <- grantWith pool cid newSecret Nothing
+    fmap (const ()) revoked @?= Left OAuthClientInvalid
+
+    -- The row survives revocation, so the audit trail and the refusal both still resolve it.
+    rows <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_service_accounts WHERE client_id = '" <> cid <> "' AND status = 'revoked' AND revoked_at IS NOT NULL")
+    rows @?= 1
+    events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type IN ('service_account_secret_rotated', 'service_account_revoked')"
+    events @?= 2
+
+    -- list reports it, still exactly one row.
+    accounts <- listAction env
+    map saClientId' accounts @?= [cid]
+
+-- | A typo in the client id aborts rather than silently updating zero rows.
+testServiceAccountsUnknownClientIdFails :: TestTree
+testServiceAccountsUnknownClientIdFails =
+  testCase "service-accounts rotate-secret/revoke on an unknown client id abort" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    expectExitFailure "rotate-secret of an unknown client" (void (rotateSecretAction env "svcacct_nope"))
+    expectExitFailure "revoke of an unknown client" (void (revokeAction env "svcacct_nope"))

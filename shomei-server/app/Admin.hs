@@ -11,6 +11,7 @@ import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysEncryptAtRest, keysGenerate, keysList, keysRetire, keysRevoke, keysRewrap)
 import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
+import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
@@ -27,6 +28,7 @@ data Command
   | Keys KeysCommand
   | Users UsersCommand
   | Roles RolesCommand
+  | ServiceAccounts ServiceAccountsCommand
   | Audit AuditCommand
   | Sweep SweepOptions
 
@@ -52,6 +54,7 @@ commandParser =
         <> command "keys" (info (Keys <$> keysParser) (progDesc "Manage signing keys"))
         <> command "users" (info (Users <$> usersParser) (progDesc "Manage user accounts"))
         <> command "roles" (info (Roles <$> rolesParser) (progDesc "Declare roles and grant them to users"))
+        <> command "service-accounts" (info (ServiceAccounts <$> serviceAccountsParser) (progDesc "Manage OAuth2 client_credentials machine accounts"))
         <> command "audit" (info (Audit <$> auditParser) (progDesc "Query the audit log / security events"))
         <> command "sweep" (info (Sweep <$> sweepParser) (progDesc "Delete expired and dead rows once, then exit"))
     )
@@ -128,6 +131,9 @@ run = \case
   Roles rc -> do
     env <- loadAdminEnv
     runRoles env rc
+  ServiceAccounts sc -> do
+    env <- loadAdminEnv
+    runServiceAccounts env sc
   Audit ac -> do
     env <- loadAdminEnv
     runAudit env ac
