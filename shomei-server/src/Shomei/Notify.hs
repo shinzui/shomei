@@ -32,13 +32,6 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, try)
--- Pin to cryptonite: smtp-mail (0.3) drags cryptonite into this package's plan alongside the
--- repo's usual crypton, and both expose the same @Crypto.*@ modules. Only cryptonite's
--- @ByteArrayAccess (Digest a)@ instance ends up in scope here (crypton's is shadowed by the
--- module-name collision), so the HMAC digest must come from cryptonite to hex-encode it. This is
--- the one place shomei-server touches cryptonite directly; everywhere else uses crypton.
-import "cryptonite" Crypto.Hash.Algorithms (SHA256)
-import "cryptonite" Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (encode)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
@@ -83,21 +76,57 @@ import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Prelude
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
+-- Pin to cryptonite: smtp-mail (0.3) drags cryptonite into this package's plan alongside the
+-- repo's usual crypton, and both expose the same @Crypto.*@ modules. Only cryptonite's
+-- @ByteArrayAccess (Digest a)@ instance ends up in scope here (crypton's is shadowed by the
+-- module-name collision), so the HMAC digest must come from cryptonite to hex-encode it. This is
+-- the one place shomei-server touches cryptonite directly; everywhere else uses crypton.
+import "cryptonite" Crypto.Hash.Algorithms (SHA256)
+import "cryptonite" Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 
-runNotifierFromConfig :: (IOE :> es) => ShomeiConfig -> Eff (Notifier : es) a -> Eff es a
-runNotifierFromConfig cfg =
-  case cfg.notifierConfig.notifierTransport of
-    LogNotifier -> runNotifierLog cfg.notifierConfig
-    -- Temporary until M2/M3 land the real interpreters and M4 rewires selection; the config
-    -- surface (M1) is complete but the delivery code is not, so both selectable transports fall
-    -- back to the log sender for now. The default transport stays 'LogNotifier', so no deployment
-    -- behaves differently.
-    SmtpNotifier -> runNotifierLog cfg.notifierConfig
-    WebhookNotifier -> runNotifierLog cfg.notifierConfig
+-- | Select the notifier interpreter from configuration and run it, reusing the server's shared
+-- TLS 'Manager' for the webhook transport. A single dispatching handler both implements the
+-- @alsoLogNotifications@ tee (log first, then deliver — no double delivery) and guards against a
+-- selected transport whose sub-config is somehow absent by falling back to the log sender with a
+-- one-line warning (boot validation makes that unreachable in the standalone server).
+--
+-- This is written as one 'interpret_' rather than the plan's @interpose@-based tee: forwarding to
+-- an underlying handler by re-'send'ing inside an 'interpose' handler would re-enter the tee
+-- handler and loop. Dispatching per notification is unambiguous and runs each delivery once.
+runNotifierFromConfig ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  Manager ->
+  ShomeiConfig ->
+  Eff (Notifier : es) a ->
+  Eff es a
+runNotifierFromConfig mgr cfg = interpret_ \case
+  SendNotification n -> do
+    when tee (logNotification nc n)
+    deliver n
+  where
+    nc = cfg.notifierConfig
+    tee = nc.alsoLogNotifications && nc.notifierTransport /= LogNotifier
+    deliver = case nc.notifierTransport of
+      LogNotifier -> logNotification nc
+      SmtpNotifier -> maybe (logFallback "smtp" nc) (deliverSmtp nc) nc.smtpConfig
+      WebhookNotifier -> maybe (logFallback "webhook" nc) (deliverWebhook mgr) nc.webhookConfig
+
+-- | Fallback used only if a transport is selected with no sub-config (boot validation prevents
+-- this): warn once and log the notification rather than silently dropping it.
+logFallback :: (IOE :> es) => Text -> NotifierConfig -> Notification -> Eff es ()
+logFallback which nc n = do
+  liftIO (hPutStrLn stderr ("[shomei:" <> Text.unpack which <> "] no configuration; falling back to the log sender"))
+  logNotification nc n
 
 runNotifierLog :: (IOE :> es) => NotifierConfig -> Eff (Notifier : es) a -> Eff es a
 runNotifierLog cfg = interpret_ \case
-  SendNotification n -> liftIO (hPutStrLn stderr (renderNotification cfg n))
+  SendNotification n -> logNotification cfg n
+
+-- | Write one notification to stderr through 'renderNotification' (token redacted unless
+-- 'NotifierConfig.logRawTokens'). The per-notification primitive shared by the log sender and the
+-- @alsoLogNotifications@ tee.
+logNotification :: (IOE :> es) => NotifierConfig -> Notification -> Eff es ()
+logNotification cfg n = liftIO (hPutStrLn stderr (renderNotification cfg n))
 
 -- | Render a notification as one log line.
 --
@@ -158,14 +187,25 @@ runNotifierSmtp ::
   Eff (Notifier : es) a ->
   Eff es a
 runNotifierSmtp nc sc = interpret_ \case
-  SendNotification n -> do
-    let (subject, body) = renderEmail nc n
-        recipient = notificationRecipient n
-        mail = simpleMail' (Address Nothing recipient) (Address Nothing sc.fromAddress) subject body
-    outcome <- liftIO (try @SomeException (sendViaSmtp sc mail))
-    case outcome of
-      Right () -> pure ()
-      Left err -> publishDeliveryFailed "smtp" n (truncateError err)
+  SendNotification n -> deliverSmtp nc sc n
+
+-- | Deliver one notification over SMTP: build the message, send it under a timeout, and on any
+-- failure publish the redacted 'NotificationDeliveryFailed' event. The per-notification primitive
+-- shared by 'runNotifierSmtp' and the config dispatcher.
+deliverSmtp ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  NotifierConfig ->
+  SmtpConfig ->
+  Notification ->
+  Eff es ()
+deliverSmtp nc sc n = do
+  let (subject, body) = renderEmail nc n
+      recipient = notificationRecipient n
+      mail = simpleMail' (Address Nothing recipient) (Address Nothing sc.fromAddress) subject body
+  outcome <- liftIO (try @SomeException (sendViaSmtp sc mail))
+  case outcome of
+    Right () -> pure ()
+    Left err -> publishDeliveryFailed "smtp" n (truncateError err)
 
 -- | Run the SMTP dialogue for one message under a timeout, choosing the connection mode from
 -- 'SmtpTlsMode' and using the authenticated variant when credentials are present. Boot
@@ -314,18 +354,29 @@ runNotifierWebhook ::
   Eff (Notifier : es) a ->
   Eff es a
 runNotifierWebhook mgr wc = interpret_ \case
-  SendNotification n -> do
-    result <- liftIO (deliverWebhook mgr wc n)
-    case result of
-      Nothing -> pure ()
-      Just errText -> publishDeliveryFailed "webhook" n errText
+  SendNotification n -> deliverWebhook mgr wc n
+
+-- | Deliver one notification over the webhook and, on ultimate failure, publish the redacted
+-- 'NotificationDeliveryFailed' event. The per-notification primitive shared by
+-- 'runNotifierWebhook' and the config dispatcher.
+deliverWebhook ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  Manager ->
+  WebhookConfig ->
+  Notification ->
+  Eff es ()
+deliverWebhook mgr wc n = do
+  result <- liftIO (attemptWebhook mgr wc n)
+  case result of
+    Nothing -> pure ()
+    Just errText -> publishDeliveryFailed "webhook" n errText
 
 -- | POST the notification, retrying up to 'WebhookConfig.maxAttempts' with @4^(k-1)@-second
 -- backoff (1 s, 4 s, …) between attempts, each under the configured per-attempt timeout. Returns
 -- 'Nothing' on the first 2xx, or @Just errText@ after the last attempt fails. All exceptions are
 -- caught here; nothing escapes to the interpreter.
-deliverWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe Text)
-deliverWebhook mgr wc n = do
+attemptWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe Text)
+attemptWebhook mgr wc n = do
   let WebhookConfig {url = u, secret = s, timeoutSeconds = to, maxAttempts = maxA} = wc
       body = BSL.toStrict (encode n)
       sig = webhookSignature (TE.encodeUtf8 s) body

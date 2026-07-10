@@ -70,9 +70,9 @@ import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.OAuthCodeStore (runOAuthCodeStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
-import Shomei.Postgres.RecoveryCodeStore (runRecoveryCodeStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
+import Shomei.Postgres.RecoveryCodeStore (runRecoveryCodeStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
@@ -182,7 +182,7 @@ runAppIO env action = do
     -- The standalone server adds no claims of its own. An embedding host swaps this for its
     -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
     . runClaimsEnricherNull
-    . runNotifierFromConfig env.envConfig
+    . runNotifierFromConfig env.envHttpManager env.envConfig
     . runRecoveryCodeStorePostgres
     . runTotpCredentialStorePostgres env.envTotpKey
     . runOAuthCodeStorePostgres

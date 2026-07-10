@@ -71,10 +71,10 @@ This section must always reflect the actual current state of the work.
 - [x] M2 (2026-07-10): `NotificationDeliveryFailed` event + `EventCodec` (both directions) + round-trip spec (count 39→40); socket-based SMTP sink test (`NotifySpec`) asserts RCPT/subject/link; refused-port failure test asserts the audit event, no throw, and no token in the error. Both green.
 - [x] M3 (2026-07-10): `runNotifierWebhook` — derived-`ToJSON` body, `X-Shomei-Signature: sha256=<hex HMAC-SHA256>` over the exact bytes (exported `webhookSignature`), `X-Shomei-Notification-Type`/`Content-Type`/`User-Agent` headers, per-attempt `responseTimeout`, `max maxAttempts` attempts with `4^(k-1)`-second backoff, non-2xx counts as failure, all exceptions caught → shared `publishDeliveryFailed`. Reuses the passed `Manager` (M4 wires `Env.envHttpManager`).
 - [x] M3 (2026-07-10): Warp stub-server tests — one asserting body round-trips to the `Notification`, the type header, and the signature verifies over the captured bytes; a retry-then-succeed test (no failure event); an exhaust-then-audit test (exactly `maxAttempts` attempts, redacted failure event, no token). All green.
-- [ ] M4: `runNotifierFromConfig` selection + log-tee wiring in `Shomei.Server.App.runAppIO`; constraint widening.
-- [ ] M4: `docs/user/notifications.md` rewritten (transports, copy table, webhook verification pseudo-code, eventing-hook positioning, BYO path retained).
-- [ ] M4: E2E: webhook transport driven through the real server.
-- [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
+- [x] M4 (2026-07-10): `runNotifierFromConfig` widened to `(IOE, AuthEventPublisher, Clock) => Manager -> ShomeiConfig -> …`, now a single dispatching `interpret_` that selects log/smtp/webhook per notification and implements the `alsoLogNotifications` tee inline (log-then-deliver, once) — **not** the plan's `interpose` tee, which would loop on re-`send` (see Decision Log). `runNotifierSmtp`/`runNotifierWebhook` refactored to delegate to shared `deliverSmtp`/`deliverWebhook`. `App.runAppIO` call site updated to pass `env.envHttpManager`. Also added a `SHOMEI_PUBLIC_BASE_URL` env override (the smtp transport needs `publicBaseUrl`, and env is the twelve-factor path) + a ConfigSpec assertion.
+- [x] M4 (2026-07-10): `docs/user/notifications.md` fully rewritten — transports table, provider-relay framing with a per-provider host/port/TLS table and the verbatim copy, plaintext-25 called out as lab-only, webhook headers + payload JSON + `sha256=` signature scheme + verification pseudo-code + at-most-once-ish retry/idempotency guidance, full Dhall/env config reference (secrets env-only), `alsoLogNotifications` rollout, fire-and-forget + `notification_delivery_failed` observability, and the retained BYO interpreter as the third option ("stock binaries hardcode the log sender" deleted).
+- [x] M4 (2026-07-10): E2E (`E2ESpec`) — a nested Warp stub receives the signed `email_verification_requested` POST driven through the real server over HTTP; the test verifies the signature over the captured bytes and replays the delivered token at `/v1/auth/verify-email/confirm` (→ 200), proving the token is live. Delivery is synchronous within the request handler, so no race.
+- [x] Final (2026-07-10): `nix fmt` (my files only; reverted 9 unrelated pre-existing drift files per the EP-4 caveat), `cabal build all` clean, `TASTY_NUM_THREADS=1 cabal test all` green (all suites, exit 0); Outcomes & Retrospective written.
 
 
 ## Surprises & Discoveries
@@ -136,6 +136,18 @@ Record every decision made while working on the plan.
   while removing the misleading "run your own mail server" reading. Webhook-only was rejected
   (re-opens the zero-infrastructure gap); a provider-specific HTTP interpreter was rejected
   (couples Shōmei to one provider's API — the webhook already covers HTTP-API delegation).
+  Date: 2026-07-10
+
+- Decision (2026-07-10, M4): the `alsoLogNotifications` tee is a single dispatching `interpret_`,
+  not the plan's `interpose` wrapper. `interpose` re-handles an effect in place; forwarding to the
+  underlying delivery by re-`send`ing `SendNotification` inside the interpose handler re-enters the
+  same handler and loops. Instead `runNotifierFromConfig` is one handler that, per notification,
+  optionally logs and then calls the selected per-notification delivery function
+  (`logNotification`/`deliverSmtp`/`deliverWebhook`) exactly once. Same observable behavior (log +
+  one real delivery), no loop hazard, and the delivery primitives are shared with the standalone
+  `runNotifierSmtp`/`runNotifierWebhook` used by the tests.
+  Rationale: correctness over matching the plan's suggested mechanism; the plan explicitly allows
+  resolving such ambiguities autonomously.
   Date: 2026-07-10
 
 - Decision (2026-07-10, M3): the webhook HMAC-SHA256 is computed with **cryptonite**, not
@@ -254,7 +266,40 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Outcome (2026-07-10): delivered in full.** The stock `shomei-server` binary can now deliver
+verification/reset email through configuration alone. `notifierTransport = smtp` relays a
+fixed plain-text message through a provider's submission endpoint (implicit-TLS / STARTTLS /
+lab-plaintext); `notifierTransport = webhook` POSTs an HMAC-signed JSON body a receiver can verify
+and use as an eventing hook; both are fire-and-forget and hardened (all exceptions caught, one
+redacted log line + a `notification_delivery_failed` audit event on failure, the triggering HTTP
+request always succeeds). The default stays `log`, so an unconfigured deployment is byte-identical
+in behavior. The observable acceptance in Purpose — request over HTTP → signed payload whose token,
+replayed at `/v1/auth/verify-email/confirm`, verifies the email — is proven by the M4 E2E test.
+
+**Deviations from the plan as written, all recorded in the Decision Log / Surprises:**
+
+1. The tree had moved on: plan 30 (token redaction) and EP-3 (the `/v1` move) both landed before
+   this plan ran. `NotifierConfig` already carried `logRawTokens`; the SMTP copy uses the live
+   `/v1/...` confirm paths, not the un-versioned paths the plan text quoted.
+2. `smtp-mail` resolved as **0.3.0.0**, not the ≥0.5 the Decision Log named — and with **zero**
+   Nix overrides. 0.3 exports every function needed, so the interpreter is unchanged in intent.
+3. The webhook HMAC uses **cryptonite**, not crypton: `smtp-mail` 0.3 pulls cryptonite into the
+   plan and its `ByteArrayAccess (Digest)` instance is the one that resolves. Pinned via
+   `PackageImports`; the single spot shomei-server touches cryptonite.
+4. The `alsoLogNotifications` tee is a single dispatching `interpret_`, not the plan's `interpose`
+   wrapper (which would loop on re-`send`). Same behavior, no loop hazard.
+5. Added a `SHOMEI_PUBLIC_BASE_URL` env override (the smtp transport requires `publicBaseUrl`, and
+   env is the twelve-factor path). Small, in-spirit addition with a ConfigSpec assertion.
+
+**Gaps / non-goals honored:** no templating/i18n/HTML (fixed English copy); no persistent queue
+(bounded in-process retries, duplicates-by-timeout documented as idempotent-by-token); TLS-handshake
+SMTP sinks are not exercised in tests (mode-selection is unit-tested; the plaintext sink covers the
+wire framing) — noted in the plan and docs as intended.
+
+**Lessons for later plans (see Surprises):** the `AuthEvent` vs `Notification` constructor-name
+collision and the `expiresAt` field-vs-fixture clash bite any module importing both; the
+crypton/cryptonite coexistence is a real hazard whenever a new dep drags cryptonite in; and
+`nix fmt` still sweeps unrelated files — revert them, format only your own.
 
 
 ## Context and Orientation

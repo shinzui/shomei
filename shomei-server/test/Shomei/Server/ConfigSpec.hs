@@ -397,9 +397,12 @@ notifierSmtpDhallAndEnv = do
   setEnv "SHOMEI_CONFIG" smtpConfigPath
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   setEnv "SHOMEI_SMTP_PASSWORD" "smtp-secret-from-env"
+  -- publicBaseUrl is set in the Dhall file; the env var overrides it (twelve-factor).
+  setEnv "SHOMEI_PUBLIC_BASE_URL" "https://auth.env.example.com"
   (cfg, _) <- loadConfig
   let nc = cfg.notifierConfig
   nc.notifierTransport @?= SmtpNotifier
+  nc.publicBaseUrl @?= "https://auth.env.example.com"
   case nc.smtpConfig of
     Just (SmtpConfig {host = h, port = p, tlsMode = tls, username = u, password = pw, fromAddress = fromA, timeoutSeconds = to}) -> do
       h @?= "email-smtp.us-east-1.amazonaws.com"
@@ -411,6 +414,7 @@ notifierSmtpDhallAndEnv = do
       to @?= 20
     Nothing -> assertFailure "expected smtpConfig to be populated for transport=smtp"
   unsetEnv "SHOMEI_SMTP_PASSWORD"
+  unsetEnv "SHOMEI_PUBLIC_BASE_URL"
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "PG_CONNECTION_STRING"
 

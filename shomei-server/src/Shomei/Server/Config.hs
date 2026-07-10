@@ -760,6 +760,7 @@ overlayNotifierFromEnv :: NotifierConfig -> Maybe Bool -> IO NotifierConfig
 overlayNotifierFromEnv base logSecrets = do
   transport <- notifierTransportEnv
   alsoLog <- boolEnv "SHOMEI_NOTIFIER_ALSO_LOG"
+  publicBaseUrl' <- textEnvMaybe "SHOMEI_PUBLIC_BASE_URL"
   smtp <- overlaySmtpFromEnv base.smtpConfig
   webhook <- overlayWebhookFromEnv base.webhookConfig
   pure
@@ -767,6 +768,7 @@ overlayNotifierFromEnv base logSecrets = do
       { logRawTokens = fromMaybe base.logRawTokens logSecrets,
         notifierTransport = fromMaybe base.notifierTransport transport,
         alsoLogNotifications = fromMaybe base.alsoLogNotifications alsoLog,
+        publicBaseUrl = fromMaybe base.publicBaseUrl publicBaseUrl',
         smtpConfig = smtp,
         webhookConfig = webhook
       }

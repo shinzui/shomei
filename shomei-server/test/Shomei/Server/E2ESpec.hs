@@ -7,6 +7,7 @@
 -- PostgreSQL and real ES256 signing.
 module Shomei.Server.E2ESpec (tests) where
 
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
@@ -48,9 +49,10 @@ import Network.HTTP.Client
     responseStatus,
     urlEncodedBody,
   )
-import Network.HTTP.Types (Header, statusCode)
+import Network.HTTP.Types (Header, status200, statusCode)
+import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
-import Shomei.Config (OAuthConfig (..), ShomeiConfig (..), TotpConfig (..), defaultShomeiConfig)
+import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), ShomeiConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Domain.LoginId (mkLoginId)
@@ -67,6 +69,7 @@ import Shomei.Error (AuthError)
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, idText)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify (webhookSignature)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
@@ -159,8 +162,60 @@ tests =
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
-          testWithApplication (pure (application env)) (totpScenario pool)
+          testWithApplication (pure (application env)) (totpScenario pool),
+      testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 connStr
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          captured <- newMVar []
+          let whSecret = "e2e-webhook-secret" :: Text
+              stubApp rq respond = do
+                b <- LBS.toStrict <$> Wai.strictRequestBody rq
+                modifyMVar_ captured (pure . (<> [(Wai.requestHeaders rq, b)]))
+                respond (Wai.responseLBS status200 [] "")
+          -- The stub receiver must be up before the app so the synchronous delivery lands.
+          testWithApplication (pure stubApp) \stubPort -> do
+            let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+                nc0 = baseCfg.notifierConfig
+                webhookCfg =
+                  WebhookConfig
+                    { url = Text.pack ("http://127.0.0.1:" <> show stubPort <> "/hook"),
+                      secret = whSecret,
+                      timeoutSeconds = 5,
+                      maxAttempts = 1
+                    }
+                cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
+                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+            testWithApplication (pure (application env)) (webhookScenario captured whSecret)
     ]
+
+-- | EP-8 against the real server: a signup + verify-email request delivered over the webhook
+-- transport produces one signed @email_verification_requested@ POST whose token, replayed at
+-- @\/v1\/auth\/verify-email\/confirm@, verifies the email — proving the delivered token is live.
+webhookScenario :: MVar [([Header], BS.ByteString)] -> Text -> Int -> IO ()
+webhookScenario captured whSecret port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "webhook-user@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+  (sStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("" :: Text)])
+  sStatus @?= 201
+  -- The delivery is synchronous inside the request handler, so the stub has captured it by 202.
+  (reqStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= email])
+  reqStatus @?= 202
+  reqs <- readMVar captured
+  case reqs of
+    [(hdrs, body)] -> do
+      lookup "X-Shomei-Notification-Type" hdrs @?= Just "email_verification_requested"
+      lookup "Content-Type" hdrs @?= Just "application/json"
+      -- the signature is the HMAC over the exact bytes delivered
+      lookup "X-Shomei-Signature" hdrs @?= Just (webhookSignature (Text.encodeUtf8 whSecret) body)
+      token <- must "token in webhook payload" (decode (LBS.fromStrict body) >>= dig ["token"] >>= asText)
+      -- the delivered token is the live one: it confirms the email.
+      (cStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= token])
+      cStatus @?= 200
+    _ -> assertFailure ("expected exactly one webhook delivery, got " <> show (length reqs))
 
 -- | A fixed 32-byte AES-256-GCM key for the E2E TOTP secrets. Its value is irrelevant to the
 -- test; it only has to round-trip encrypt→decrypt through 'Shomei.Postgres.TotpCredentialStore'.

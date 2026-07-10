@@ -80,7 +80,8 @@ tests =
     render raw n = renderNotification (notifierCfg raw) n
     notifierCfg raw =
       (defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")).notifierConfig
-        {logRawTokens = raw}
+        { logRawTokens = raw
+        }
 
 testEmail :: IO Email
 testEmail = either (\e -> assertFailure ("bad email: " <> show e)) pure (mkEmail "a@example.com")
@@ -145,7 +146,7 @@ smtpFailureTest :: TestTree
 smtpFailureTest = testCase "SMTP: a refused connection audits a failure and never throws" do
   email <- testEmail
   port <- closedPort
-  events <- deliverViaSmtp (plainSmtpConfig port) {- unreachable -} (PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry)
+  events <- deliverViaSmtp (plainSmtpConfig port {- unreachable -}) (PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry)
   case events of
     [NotificationDeliveryFailed d] -> do
       d.channel @?= "smtp"
