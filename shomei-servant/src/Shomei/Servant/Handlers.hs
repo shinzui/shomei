@@ -21,6 +21,7 @@ import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
+import Network.HTTP.Types.Status (status400, status500)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
@@ -40,6 +41,8 @@ import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
+import Shomei.Domain.Token (AccessToken (..))
+import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Effect.AuthEventPublisher (publishAuthEvent)
 import Shomei.Effect.AuthEventReader
   ( AuditCursor (..),
@@ -60,13 +63,22 @@ import Shomei.Effect.UserStore
     findUserById,
     listUsers,
   )
-import Shomei.Domain.User (User (..), UserStatus (..))
-import Shomei.Error (AuthError (ImpersonationActionBlocked, ImpersonationTargetInvalid, SessionNotFound, UserHasNoEmail, UserNotFound))
+import Shomei.Error
+  ( AuthError
+      ( ImpersonationActionBlocked,
+        ImpersonationTargetInvalid,
+        OAuthClientInvalid,
+        OAuthScopeInvalid,
+        SessionNotFound,
+        UserHasNoEmail,
+        UserNotFound
+      ),
+  )
 import Shomei.Id (PasskeyId, SessionId, UserId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
-import Shomei.Servant.Authz (requireAdmin)
 import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed)
+import Shomei.Servant.Authz (requireAdmin)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
   ( AdminUserResponse,
@@ -120,17 +132,20 @@ import Shomei.Servant.Error
     pcUserNotFound,
     toProblemError,
   )
+import Shomei.Servant.OAuth qualified as OAuth
 -- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
 import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
 import Shomei.Workflow.Admin qualified as Admin
+import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.Roles qualified as Roles
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
+import Web.FormUrlEncoded (Form)
 
 -- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
 -- unversioned JWKS document and the liveness\/readiness probes.
@@ -140,6 +155,7 @@ shomeiRoutes env =
     { v1 = shomeiServer env,
       jwks = jwksH env,
       openapi = pure openApiValue,
+      oauthToken = oauthTokenH env,
       health = healthH,
       ready = readyH env
     }
@@ -256,6 +272,69 @@ refreshH env mCookieHeader mOrigin mReferer req = do
     Nothing -> throwError (toProblemError pcBadRequest (Just "refreshToken required"))
   pair <- runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken presented}))
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
+
+-- | @POST \/oauth\/token@ (EP-4): the OAuth2 token endpoint and its @grant_type@ dispatcher.
+--
+-- __Every failure here is rendered by 'OAuth.oauthError' in the RFC 6749 §5.2 shape__, never by
+-- 'authErrorToServerError'. A stock OAuth2 client parses @error@\/@error_description@ by field
+-- name; handing it a problem document would break it. This is the one endpoint exempt from the
+-- application-wide envelope (see "Shomei.Servant.OAuth" and "Shomei.Servant.Error").
+--
+-- __This @case@ is the extension point for the sibling plans in this MasterPlan.__ Plan 42
+-- (@docs\/plans\/42-oidc-provider-subset-…@) registers @authorization_code@ (with PKCE
+-- verification) and @refresh_token@ here; plan 43
+-- (@docs\/plans\/43-rfc-8693-token-exchange-endpoint.md@) registers
+-- @urn:ietf:params:oauth:grant-type:token-exchange@. Both reuse 'OAuth.extractClientAuth' and
+-- 'OAuth.oauthError' unchanged; only this dispatcher grows an arm.
+oauthTokenH ::
+  Env ->
+  Maybe Text ->
+  Form ->
+  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+oauthTokenH env mAuthHeader form =
+  case OAuth.lookupParam "grant_type" form of
+    Nothing -> throwError (OAuth.invalidRequest "grant_type is required")
+    Just "client_credentials" -> clientCredentialsGrant env mAuthHeader form
+    Just other -> throwError (OAuth.unsupportedGrantType other)
+
+-- | RFC 6749 §4.4. Authenticate the client, read the optional @scope@, mint the token.
+clientCredentialsGrant ::
+  Env ->
+  Maybe Text ->
+  Form ->
+  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+clientCredentialsGrant env mAuthHeader form = do
+  auth <- either throwError pure (OAuth.extractClientAuth mAuthHeader form)
+  let grant =
+        ClientCredentials.ClientCredentialsGrant
+          { clientId = auth ^. #clientId,
+            clientSecret = auth ^. #clientSecret,
+            requestedScopes = OAuth.parseScopeParam form
+          }
+  outcome <- runPort env (ClientCredentials.grantClientCredentials env.config grant)
+  granted <- either (throwError . oauthErrorFor) pure outcome
+  -- Read through lens labels: 'GrantedToken' shares @accessToken@/@expiresIn@/@sessionId@ with
+  -- 'Shomei.Workflow.ServiceToken.IssuedServiceToken', so @granted.accessToken@ is ambiguous.
+  let AccessToken token = granted ^. #accessToken
+      body =
+        OAuth.TokenResponse
+          { accessToken = token,
+            tokenType = "Bearer",
+            expiresIn = round (granted ^. #expiresIn),
+            scope = Text.unwords [s | Scope s <- Set.toList (granted ^. #grantedScopes)]
+          }
+  pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | The OAuth-local error mapping. Deliberately not 'authErrorToServerError': that renders the
+-- problem-details envelope, which this endpoint must not emit.
+oauthErrorFor :: AuthError -> ServerError
+oauthErrorFor = \case
+  OAuthClientInvalid -> OAuth.invalidClient
+  OAuthScopeInvalid -> OAuth.oauthError status400 "invalid_scope" "requested scope exceeds the client's allowed scopes"
+  -- No other AuthError is reachable from 'grantClientCredentials'. An infrastructure failure
+  -- (a database outage surfacing as InternalAuthError) is a 500, still in the OAuth shape so a
+  -- client's error parser does not itself fail while handling the failure.
+  _ -> OAuth.oauthError status500 "server_error" "the authorization server encountered an unexpected condition"
 
 serviceTokenH :: Env -> ServiceTokenRequest -> Handler ServiceTokenResponse
 serviceTokenH env req = do

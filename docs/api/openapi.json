@@ -252,6 +252,23 @@
                 ],
                 "type": "object"
             },
+            "OAuthError": {
+                "description": "An RFC 6749 §5.2 error response. Endpoints under /oauth/* speak the OAuth2 wire protocol, so they answer with this shape rather than the RFC 7807 problem document every other Shōmei endpoint returns. Switch on `error`.",
+                "properties": {
+                    "error": {
+                        "description": "The machine-readable OAuth2 error code.",
+                        "type": "string"
+                    },
+                    "error_description": {
+                        "description": "Human-readable explanation.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "error"
+                ],
+                "type": "object"
+            },
             "PasskeyLoginBeginResponse": {
                 "properties": {
                     "ceremonyId": {
@@ -540,6 +557,59 @@
                 ],
                 "type": "object"
             },
+            "TokenRequestForm": {
+                "additionalProperties": true,
+                "description": "An RFC 6749 token request. `grant_type` selects the flow; the remaining parameters depend on it. For `client_credentials`: an optional space-delimited `scope`, plus `client_id`/`client_secret` when the client authenticates with `client_secret_post` rather than an `Authorization: Basic` header.",
+                "properties": {
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "type": "string"
+                    },
+                    "grant_type": {
+                        "enum": [
+                            "client_credentials"
+                        ],
+                        "type": "string"
+                    },
+                    "scope": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "grant_type"
+                ],
+                "type": "object"
+            },
+            "TokenResponse": {
+                "description": "An OAuth2 access-token response (RFC 6749 §5.1).",
+                "properties": {
+                    "access_token": {
+                        "description": "The signed JWT access token.",
+                        "type": "string"
+                    },
+                    "expires_in": {
+                        "description": "Token lifetime in seconds.",
+                        "type": "integer"
+                    },
+                    "scope": {
+                        "description": "The space-delimited scopes actually granted.",
+                        "type": "string"
+                    },
+                    "token_type": {
+                        "description": "Always \"Bearer\".",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "access_token",
+                    "token_type",
+                    "expires_in",
+                    "scope"
+                ],
+                "type": "object"
+            },
             "UserResponse": {
                 "properties": {
                     "displayName": {
@@ -631,6 +701,123 @@
                             }
                         },
                         "description": "Success."
+                    }
+                }
+            }
+        },
+        "/oauth/token": {
+            "post": {
+                "operationId": "createOauthToken",
+                "parameters": [
+                    {
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenRequestForm"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TokenResponse"
+                                }
+                            }
+                        },
+                        "description": "Success.",
+                        "headers": {
+                            "Cache-Control": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            "Pragma": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "invalid_request",
+                                                "unsupported_grant_type",
+                                                "invalid_scope"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_request, unsupported_grant_type, invalid_scope."
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "invalid_client"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_client."
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "server_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: server_error."
                     }
                 }
             }

@@ -26,8 +26,8 @@ import Shomei.Domain.User (User)
 import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
-import Shomei.Servant.Cookie (WithCookies)
 import Shomei.Servant.Authz (RequireRole)
+import Shomei.Servant.Cookie (WithCookies)
 import Shomei.Servant.DTO
   ( AdminUserResponse,
     AdminUsersPage,
@@ -58,6 +58,8 @@ import Shomei.Servant.DTO
     UserResponse,
     VerifyEmailRequest,
   )
+import Shomei.Servant.OAuth (TokenResponse)
+import Web.FormUrlEncoded (Form)
 
 -- | The application API. @signup@/@login@/@refresh@/@logout@/@me@/@session@ live under
 -- @\/auth@; the audit trail under @\/admin@. Every route here is versioned: 'ShomeiRoutes'
@@ -401,6 +403,32 @@ data ShomeiRoutes mode = ShomeiRoutes
     --     Unversioned, like the rest of this record: it describes the @\/v1@ surface and the
     --     root endpoints alike, including itself.
     openapi :: mode :- "openapi.json" :> Get '[JSON] Value,
+    -- | @POST \/oauth\/token@ (EP-4): the standard OAuth2 token endpoint, RFC 6749. Unversioned
+    --     and form-encoded, because that is where and how every stock OAuth2 client looks for it.
+    --
+    --     The @Authorization@ header is a plain optional header, deliberately __not__ the
+    --     'Authenticated' combinator: the caller is not a bearer of a Shōmei token, it is an OAuth
+    --     client authenticating with its own credentials (@client_secret_basic@). The body may
+    --     instead carry @client_id@\/@client_secret@ (@client_secret_post@).
+    --
+    --     The request body is a raw 'Form' rather than a typed record because this endpoint is a
+    --     /dispatcher/: each @grant_type@ reads its own parameters, and later grants
+    --     (@authorization_code@ with its @code_verifier@, token exchange with its
+    --     @subject_token@) would otherwise force a parameter union that changes shape every time
+    --     a grant is added.
+    --
+    --     RFC 6749 §5.1 requires @Cache-Control: no-store@ on a successful token response; the
+    --     'Headers' wrapper carries it and the conventional @Pragma: no-cache@.
+    --
+    --     __Errors here are RFC 6749 §5.2 objects, not problem documents__ — see
+    --     "Shomei.Servant.OAuth". This is the one endpoint exempt from the application envelope.
+    oauthToken ::
+      mode
+        :- "oauth"
+          :> "token"
+          :> Header "Authorization" Text
+          :> ReqBody '[FormUrlEncoded] Form
+          :> Post '[JSON] (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] TokenResponse),
     health :: mode :- "health" :> Get '[JSON] HealthResponse,
     ready :: mode :- "ready" :> Get '[JSON] ReadyResponse
   }

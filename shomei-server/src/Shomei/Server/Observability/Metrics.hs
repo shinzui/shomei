@@ -119,6 +119,10 @@ recordRequest m req status = do
     ("POST", "/v1/auth/login", 401) -> bumpInt m.loginsFail 1
     ("POST", "/v1/auth/signup", 201) -> bumpInt m.tokensIssued 1
     ("POST", "/v1/auth/refresh", 200) -> bumpInt m.tokensIssued 1
+    -- EP-4: the OAuth2 token endpoint mints machine tokens, and it is unversioned. Without this
+    -- arm, a deployment that has migrated its services to /oauth/token watches
+    -- shomei_tokens_issued_total fall toward zero while it is issuing more tokens than ever.
+    ("POST", "/oauth/token", 200) -> bumpInt m.tokensIssued 1
     _ -> pure ()
 
 -- | Serve @GET /metrics@ directly (bypassing Servant); pass everything else through.

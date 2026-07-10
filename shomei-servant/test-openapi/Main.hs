@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 -- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.API.ShomeiRoutes'.
 --
 -- Three layers:
@@ -21,8 +23,6 @@
 --
 -- The 'Arbitrary' and 'Show' instances for the DTOs live here (orphans, test
 -- only) so the production library carries no test dependency.
-{-# OPTIONS_GHC -Wno-orphans #-}
-
 module Main (main) where
 
 import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, encode, fromJSON)
@@ -31,15 +31,16 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
 import Data.List (nub, sort)
 import Data.Maybe (isJust)
+import Data.OpenApi (NamedSchema (..), Schema, ToSchema (..), validateJSON)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Servant.API (NamedRoutes, NoContent (..))
-import Data.OpenApi (NamedSchema (..), Schema, ToSchema (..), validateJSON)
 import Servant.OpenApi.Test (validateEveryToJSON)
 import Servant.Server (ServerError (errHTTPCode))
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.DTO
 import Shomei.Servant.Error (ProblemSpec (..), problemBody, problemCatalog)
+import Shomei.Servant.OAuth (TokenResponse (..))
 import Shomei.Servant.OpenApi (shomeiOpenApi)
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), oneof)
@@ -72,8 +73,30 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    it "covers exactly 33 paths" $
-      pathCount `shouldBe` 33
+    -- 34 = 33 + EP-4's unversioned POST /oauth/token.
+    it "covers exactly 34 paths" $
+      pathCount `shouldBe` 34
+
+  describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
+    it "declares the OAuthError schema" $
+      (lookupTop "components" >>= field "schemas" >>= field "OAuthError") `shouldSatisfy` isJust
+
+    -- The whole point of the exemption: a stock OAuth2 client parses `error`/`error_description`
+    -- by field name. If any /oauth/token response ever carried application/problem+json, that
+    -- client would break — and `baselineSpecs` would happily add one, because the operation has a
+    -- request body. This pins the exclusion in `Shomei.Servant.OpenApi.oauthPaths`.
+    it "documents no problem+json response on /oauth/token" $
+      [ Key.toText status
+      | (path, Object item) <- KM.toList paths,
+        path == "/oauth/token",
+        (_, Object op) <- KM.toList item,
+        (status, resp) <- responsesOf op,
+        isProblemResponse resp
+      ]
+        `shouldBe` []
+
+    it "documents the RFC 6749 error codes it can actually emit" $
+      sort (nub (concat oauthErrorCodes)) `shouldBe` sort ["invalid_client", "invalid_request", "invalid_scope", "server_error", "unsupported_grant_type"]
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
     it "declares the Problem schema with exactly the four required members" $
@@ -85,10 +108,10 @@ spec = do
     -- appears in the serialized document — the artifact a client generator actually reads.
     it "validates the real runtime document of every catalog entry against the published Problem schema" $
       [ (problemCode p, isJust detail, errs)
-        | p <- problemCatalog,
-          detail <- [Nothing, Just "a request-specific explanation"],
-          let errs = validateJSON mempty publishedProblemSchema (problemBody p detail),
-          not (null errs)
+      | p <- problemCatalog,
+        detail <- [Nothing, Just "a request-specific explanation"],
+        let errs = validateJSON mempty publishedProblemSchema (problemBody p detail),
+        not (null errs)
       ]
         `shouldBe` []
 
@@ -146,8 +169,8 @@ spec = do
     operations :: [(Text, KM.KeyMap Value)]
     operations =
       [ (Key.toText method <> " " <> Key.toText path, op)
-        | (path, Object item) <- KM.toList paths,
-          (method, Object op) <- KM.toList item
+      | (path, Object item) <- KM.toList paths,
+        (method, Object op) <- KM.toList item
       ]
 
     -- Every problem-document response: its operation label + status, and the `code` enum it
@@ -155,9 +178,9 @@ spec = do
     errorResponses :: [(Text, [Text])]
     errorResponses =
       [ (key <> " " <> Key.toText status, codeEnum resp)
-        | (key, op) <- operations,
-          (status, resp) <- responsesOf op,
-          isProblemResponse resp
+      | (key, op) <- operations,
+        (status, resp) <- responsesOf op,
+        isProblemResponse resp
       ]
 
     -- (status, code) as the document promises them. Status keys are always numeric here:
@@ -166,10 +189,10 @@ spec = do
     documentedCodes =
       nub
         [ (statusInt status, code)
-          | (_, op) <- operations,
-            (status, resp) <- responsesOf op,
-            isProblemResponse resp,
-            code <- codeEnum resp
+        | (_, op) <- operations,
+          (status, resp) <- responsesOf op,
+          isProblemResponse resp,
+          code <- codeEnum resp
         ]
 
     statusInt status = case reads (Key.toString status) of
@@ -187,6 +210,25 @@ spec = do
       _ -> []
 
     isProblemResponse resp = KM.member "application/problem+json" (contentOf resp)
+
+    -- The `error` enum of every /oauth/token error response.
+    oauthErrorCodes :: [[Text]]
+    oauthErrorCodes =
+      [ codes
+      | (path, Object item) <- KM.toList paths,
+        path == "/oauth/token",
+        (_, Object op) <- KM.toList item,
+        (_, resp) <- responsesOf op,
+        Just (Array xs) <-
+          [ KM.lookup "application/json" (contentOf resp)
+              >>= field "schema"
+              >>= field "properties"
+              >>= field "error"
+              >>= field "enum"
+          ],
+        let codes = [t | String t <- toList xs],
+        not (null codes)
+      ]
 
     contentOf resp = case KM.lookup "content" resp of
       Just (Object c) -> c
@@ -212,8 +254,8 @@ spec = do
 
     emptyDescriptions op =
       [ Key.toText status
-        | (status, r) <- responsesOf op,
-          KM.lookup "description" r `elem` [Nothing, Just (String "")]
+      | (status, r) <- responsesOf op,
+        KM.lookup "description" r `elem` [Nothing, Just (String "")]
       ]
 
     isRequired body = field "required" body == Just (Bool True)
@@ -358,6 +400,9 @@ instance Arbitrary ServiceTokenRequest where
 
 instance Arbitrary ServiceTokenResponse where
   arbitrary = ServiceTokenResponse <$> arbitrary <*> arbitrary
+
+instance Arbitrary TokenResponse where
+  arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary SessionResponse where
   arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

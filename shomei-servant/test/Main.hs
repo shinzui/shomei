@@ -12,10 +12,11 @@ module Main (main) where
 
 import Crypto.JOSE.JWK (JWK, JWKSet)
 import Data.Aeson (Value (..), decode, encode, object, (.=))
-import Data.ByteString.Lazy qualified as LBS
-import Data.CaseInsensitive qualified as CI
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as LBS
+import Data.CaseInsensitive qualified as CI
 import Data.Foldable (toList)
 import Data.Generics.Labels ()
 import Data.IORef (IORef, newIORef, readIORef)
@@ -30,6 +31,7 @@ import Effectful (Eff, runEff)
 import Network.HTTP.Client
   ( Manager,
     RequestBody (RequestBodyLBS),
+    applyBasicAuth,
     defaultManagerSettings,
     httpLbs,
     method,
@@ -40,6 +42,7 @@ import Network.HTTP.Client
     responseBody,
     responseHeaders,
     responseStatus,
+    urlEncodedBody,
   )
 import Network.HTTP.Types (Header, statusCode)
 import Network.HTTP.Types.URI (urlEncode)
@@ -69,6 +72,7 @@ import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
 import Shomei.Domain.Password (PlainPassword (..))
+import Shomei.Domain.ServiceAccount (NewServiceAccount (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
@@ -78,27 +82,29 @@ import Shomei.Effect.InMemory
     runAuthEventPublisher,
     runAuthEventReader,
     runAuthUnitOfWork,
+    runClaimsEnricherNull,
     runClock,
     runCredentialStore,
+    runInMemory,
     runLoginAttemptStore,
     runNotifier,
-    runClaimsEnricherNull,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordHasher,
     runPasswordResetTokenStore,
     runPendingCeremonyStore,
-    runInMemory,
     runRefreshTokenStore,
+    runRoleStore,
+    runServiceAccountStore,
     runSessionStore,
     runSigningKeyStore,
     runTokenGen,
-    runRoleStore,
     runUserStore,
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
-import Shomei.Id (UserId, genSessionId, genUserId, idText, parseId)
+import Shomei.Effect.ServiceAccountStore (createServiceAccount)
+import Shomei.Id (UserId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
@@ -116,7 +122,7 @@ import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 serviceAccount :: ServiceAccountId
 serviceAccount = ServiceAccountId "connector:rei"
@@ -185,6 +191,7 @@ runHybrid ref jwk jwkset cfg =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherNull
     . runNotifier ref
+    . runServiceAccountStore ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
     . runLoginAttemptStore ref
@@ -348,6 +355,13 @@ main = do
                       ]
                   }
         pure (mkEnvWith serviceCfg r)
+      -- EP-4: a database-backed service account (not a config-defined one) in its own World.
+      -- Returns its client_id, which the scenario authenticates with. Note this uses the plain
+      -- 'cfg': the DB path deliberately does not consult serviceTokenConfig.enabled.
+      freshOAuthEnv = do
+        r <- newIORef (emptyWorld t0)
+        clientId <- seedOAuthAccount r jwk jwkset cfg t0
+        pure (clientId, mkEnv r)
       -- EP-2's admin scenarios need the World ref (to grant the admin role in the store) and
       -- the signing key (to mint scoped/delegated tokens by hand).
       freshAdminEnv = do
@@ -356,7 +370,7 @@ main = do
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshAdminEnv jwk cfg adminToken impToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshAdminEnv jwk cfg adminToken impToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -380,6 +394,148 @@ seedServiceUser ref jwk jwkset cfg = do
   case result of
     Right (user, _) -> pure user
     Left err -> assertFailure ("service user signup failed: " <> show err)
+
+-- | EP-4: seed a database-backed service account (and its backing user) into the in-memory
+-- world, returning its @client_id@. The secret is 'oauthClientSecret'.
+seedOAuthAccount :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> UTCTime -> IO Text
+seedOAuthAccount ref jwk jwkset cfg createdAt = do
+  serviceUser <- seedServiceUser ref jwk jwkset cfg
+  runHybrid ref jwk jwkset cfg do
+    said <- genServiceAccountDbId
+    account <-
+      createServiceAccount
+        NewServiceAccount
+          { serviceAccountId = said,
+            clientId = idText said,
+            userId = serviceUser ^. #userId,
+            secretHash = sha256Hex oauthClientSecret,
+            displayName = "rei connector",
+            allowedScopes = Set.singleton ingestScope,
+            createdAt
+          }
+    pure (account ^. #clientId)
+
+oauthClientSecret :: Text
+oauthClientSecret = "oauth-test-secret"
+
+-- | EP-4: @POST \/oauth\/token@ end to end, over the real Servant tree.
+--
+-- Proves the three things a stock OAuth2 client depends on: both client-authentication methods
+-- work; a minted token is a real Shōmei token that satisfies the 'RequireScope' combinator on a
+-- downstream route; and every failure is an RFC 6749 §5.2 object rather than a problem document.
+scenarioOAuthToken :: Text -> Int -> IO ()
+scenarioOAuthToken clientId port = do
+  mgr <- newManager defaultManagerSettings
+
+  -- (1) client_secret_basic, with an explicit in-allow-list scope.
+  basic <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (clientId, oauthClientSecret))
+      [("grant_type", "client_credentials"), ("scope", "kawa:ingest")]
+  let (basicStatus, basicHdrs, basicBody) = basic
+  basicStatus @?= 200
+  -- RFC 6749 §5.1 requires the token response to be uncacheable.
+  headerValue "Cache-Control" basicHdrs @?= Just "no-store"
+  headerValue "Pragma" basicHdrs @?= Just "no-cache"
+  doc <- must "basic: body" basicBody
+  (dig ["token_type"] doc >>= asText) @?= Just "Bearer"
+  (dig ["scope"] doc >>= asText) @?= Just "kawa:ingest"
+  case dig ["expires_in"] doc of
+    Just (Number n) -> (round n :: Int) @?= 300
+    other -> assertFailure ("basic: expires_in not a number: " <> show other)
+  token <- must "basic: access_token" (dig ["access_token"] doc >>= asText)
+
+  -- (2) The minted token is a real Shōmei token: it satisfies the RequireScope combinator on a
+  -- host route that contains no authorization code of its own.
+  (ingestStatus, _) <- getJSON mgr port "/ingest" [("Authorization", "Bearer " <> Text.encodeUtf8 token)]
+  ingestStatus @?= 200
+
+  -- (3) client_secret_post: credentials in the body instead of the header. No scope parameter,
+  -- so the account's whole allow-list is granted and echoed back.
+  post <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ ("grant_type", "client_credentials"),
+        ("client_id", Text.encodeUtf8 clientId),
+        ("client_secret", Text.encodeUtf8 oauthClientSecret)
+      ]
+  let (postStatus, _, postBody) = post
+  postStatus @?= 200
+  postDoc <- must "post: body" postBody
+  (dig ["scope"] postDoc >>= asText) @?= Just "kawa:ingest"
+
+  -- (4) A wrong secret is invalid_client, with the Basic challenge.
+  badSecret <-
+    postForm mgr port "/oauth/token" (Just (clientId, "wrong")) [("grant_type", "client_credentials")]
+  assertOAuthError "wrong secret" 401 "invalid_client" badSecret
+  headerValue "WWW-Authenticate" (headersOf badSecret) @?= Just "Basic realm=\"shomei\""
+
+  -- (5) An unknown client is the SAME response, byte for byte in its body: nothing discloses
+  -- whether the client id exists.
+  unknown <-
+    postForm mgr port "/oauth/token" (Just ("svcacct_nope", "wrong")) [("grant_type", "client_credentials")]
+  assertOAuthError "unknown client" 401 "invalid_client" unknown
+  bodyOf unknown @?= bodyOf badSecret
+
+  -- (6) No credentials at all is also invalid_client.
+  noCreds <- postForm mgr port "/oauth/token" Nothing [("grant_type", "client_credentials")]
+  assertOAuthError "no credentials" 401 "invalid_client" noCreds
+
+  -- (7) A scope outside allowed_scopes is invalid_scope, not a silent downgrade.
+  badScope <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (clientId, oauthClientSecret))
+      [("grant_type", "client_credentials"), ("scope", "channel:egress")]
+  assertOAuthError "scope outside allow-list" 400 "invalid_scope" badScope
+
+  -- (8) An explicitly empty scope is invalid_scope, not "grant nothing".
+  emptyScope <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (clientId, oauthClientSecret))
+      [("grant_type", "client_credentials"), ("scope", "")]
+  assertOAuthError "empty scope" 400 "invalid_scope" emptyScope
+
+  -- (9) A missing grant_type is invalid_request...
+  noGrant <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) []
+  assertOAuthError "missing grant_type" 400 "invalid_request" noGrant
+
+  -- (10) ...and an unimplemented one is unsupported_grant_type. Plans 42/43 turn these two
+  -- into supported arms of the same dispatcher.
+  password <-
+    postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "password")]
+  assertOAuthError "grant_type=password" 400 "unsupported_grant_type" password
+  authCode <-
+    postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "authorization_code")]
+  assertOAuthError "grant_type=authorization_code" 400 "unsupported_grant_type" authCode
+
+-- | A human's login token carries no scopes, so it must NOT satisfy the scope-guarded route that
+-- an OAuth client-credentials token does. Guards against the grant leaking scopes onto sessions.
+scenarioOAuthScopeIsolation :: Int -> IO ()
+scenarioOAuthScopeIsolation port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "scopeisolation@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  sStatus @?= 201
+  doc <- must "signup body" sBody
+  token <- must "signup access token" (dig ["token", "accessToken"] doc >>= asText)
+  (ingestStatus, _, ingestBody) <- getRaw mgr port "/ingest" [("Authorization", "Bearer " <> Text.encodeUtf8 token)]
+  ingestStatus @?= 403
+  -- and it is a problem document, because /ingest is an ordinary route, not an /oauth/* one
+  problem <- must "ingest 403 body" ingestBody
+  (dig ["code"] problem >>= asText) @?= Just "missing_scope"
 
 -- | Every failure, from every layer, is an RFC 7807 problem document.
 --
@@ -646,8 +802,9 @@ scenarioAdminSessionsAndAudit ref port = do
   auditStatus @?= 200
   audit <- must "audit body" auditBody
   case dig ["events"] audit of
-    Just (Array xs) | (e0 : _) <- toList xs ->
-      (dig ["payload", "actor"] e0 >>= asText) @?= Just adminId
+    Just (Array xs)
+      | (e0 : _) <- toList xs ->
+          (dig ["payload", "actor"] e0 >>= asText) @?= Just adminId
     _ -> assertFailure "expected a user_suspended audit event"
 
 -- | Roles over HTTP: a PUT grant is idempotent (set membership), a DELETE of a role the user
@@ -735,7 +892,6 @@ scenarioAdminPagination ref port = do
   _ <- signupOver mgr port "u1@example.com"
   _ <- signupOver mgr port "u2@example.com"
   _ <- signupOver mgr port "u3@example.com" -- four users in total, with the admin
-
   (s1, b1) <- getJSON mgr port "/v1/admin/users?limit=2" (bearer adminToken')
   s1 @?= 200
   page1 <- must "page 1" b1
@@ -833,6 +989,33 @@ getRaw mgr port path hdrs = do
 postRaw' :: Manager -> Int -> String -> [Header] -> Value -> IO RawResponse
 postRaw' mgr port path hdrs body = postRaw mgr port path hdrs body
 
+-- | POST an @application\/x-www-form-urlencoded@ body, for the OAuth2 token endpoint.
+--
+-- @mBasic@, when given, applies RFC 6749's @client_secret_basic@:
+-- @Authorization: Basic base64(client_id:client_secret)@, built by @http-client@'s
+-- 'applyBasicAuth' so the test encodes it exactly as a real client would.
+postForm :: Manager -> Int -> String -> Maybe (Text, Text) -> [(ByteString, ByteString)] -> IO RawResponse
+postForm mgr port path mBasic params = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let withBody = urlEncodedBody params req0
+      req = maybe withBody (\(c, s) -> applyBasicAuth (Text.encodeUtf8 c) (Text.encodeUtf8 s) withBody) mBasic
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
+
+-- | Assert an RFC 6749 §5.2 error response: the right status, @application\/json@ (never
+-- @application\/problem+json@ — that would break a stock OAuth2 client), and an @error@ member
+-- that matches. This is the assertion that pins the envelope boundary at runtime, as the
+-- OpenAPI conformance suite pins it in the document.
+assertOAuthError :: String -> Int -> Text -> RawResponse -> IO ()
+assertOAuthError what expectedStatus expectedCode (status, hdrs, body) = do
+  assertEqual (what <> ": status") expectedStatus status
+  assertEqual (what <> ": content type") (Just "application/json") (headerValue "Content-Type" hdrs)
+  -- Never cached, error or not.
+  assertEqual (what <> ": no-store") (Just "no-store") (headerValue "Cache-Control" hdrs)
+  doc <- must (what <> ": body") body
+  assertEqual (what <> ": error code") (Just expectedCode) (dig ["error"] doc >>= asText)
+  assertBool (what <> ": has an error_description") (isJust (dig ["error_description"] doc))
+
 -- | POST an arbitrary (here: malformed) body, to exercise Servant's body parser.
 postRawBytes :: Manager -> Int -> String -> LBS.ByteString -> IO RawResponse
 postRawBytes mgr port path raw = do
@@ -846,8 +1029,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshAdminEnv jwk cfg adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshAdminEnv jwk cfg adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -888,6 +1071,12 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "service token with allowed scope passes RequireScope while normal login token fails" $ do
         e <- freshServiceEnv
         testWithApplication (pure (app e)) scenarioServiceToken,
+      testCase "POST /oauth/token: client_credentials over both auth methods; RFC 6749 errors, not problem docs" $ do
+        (clientId, e) <- freshOAuthEnv
+        testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
+      testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
       testCase "emailVerificationRequired blocks login with 403 until the email is verified" $ do
         (r, e) <- freshGatedEnv
         testWithApplication (pure (app e)) (scenarioEmailVerificationRequired r),

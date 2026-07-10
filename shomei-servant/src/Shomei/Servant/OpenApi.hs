@@ -47,48 +47,6 @@ import Servant.Server (ServerError (errHTTPCode))
 import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Authz (RequireRole, RequireScope)
-import Shomei.Servant.Error
-  ( ProblemSpec (..),
-    pcBadRequest,
-    pcBodyParseError,
-    pcCeremonyNotFound,
-    pcCsrfRejected,
-    pcEmailAlreadyVerified,
-    pcEmailNotVerified,
-    pcEmailTaken,
-    pcImpersonationActionBlocked,
-    pcImpersonationForbidden,
-    pcInvalidUserStatus,
-    pcImpersonationTargetInvalid,
-    pcInvalidEmail,
-    pcInvalidLogin,
-    pcInvalidLoginId,
-    pcLoginIdTaken,
-    pcMfaFailed,
-    pcMissingRole,
-    pcMissingToken,
-    pcPasskeyNotFound,
-    pcPasswordResetTokenInvalid,
-    pcRefreshTokenExpired,
-    pcRefreshTokenInvalid,
-    pcRoleNotDefined,
-    pcRoleNotGranted,
-    pcSelfTargetForbidden,
-    pcServiceAccountInvalid,
-    pcServiceTokenActorInvalid,
-    pcServiceTokenDisabled,
-    pcServiceTokenScopeDenied,
-    pcSessionExpired,
-    pcSessionNotFound,
-    pcTokenInvalidAuth,
-    pcTokenReuse,
-    pcTooManyRequests,
-    pcUserHasNoEmail,
-    pcUserNotFound,
-    pcVerificationTokenInvalid,
-    pcWeakPassword,
-    pcWebAuthnFailed,
-  )
 import Shomei.Servant.DTO
   ( AdminUserResponse,
     AdminUsersPage,
@@ -120,6 +78,50 @@ import Shomei.Servant.DTO
     UserResponse,
     VerifyEmailRequest,
   )
+import Shomei.Servant.Error
+  ( ProblemSpec (..),
+    pcBadRequest,
+    pcBodyParseError,
+    pcCeremonyNotFound,
+    pcCsrfRejected,
+    pcEmailAlreadyVerified,
+    pcEmailNotVerified,
+    pcEmailTaken,
+    pcImpersonationActionBlocked,
+    pcImpersonationForbidden,
+    pcImpersonationTargetInvalid,
+    pcInvalidEmail,
+    pcInvalidLogin,
+    pcInvalidLoginId,
+    pcInvalidUserStatus,
+    pcLoginIdTaken,
+    pcMfaFailed,
+    pcMissingRole,
+    pcMissingToken,
+    pcPasskeyNotFound,
+    pcPasswordResetTokenInvalid,
+    pcRefreshTokenExpired,
+    pcRefreshTokenInvalid,
+    pcRoleNotDefined,
+    pcRoleNotGranted,
+    pcSelfTargetForbidden,
+    pcServiceAccountInvalid,
+    pcServiceTokenActorInvalid,
+    pcServiceTokenDisabled,
+    pcServiceTokenScopeDenied,
+    pcSessionExpired,
+    pcSessionNotFound,
+    pcTokenInvalidAuth,
+    pcTokenReuse,
+    pcTooManyRequests,
+    pcUserHasNoEmail,
+    pcUserNotFound,
+    pcVerificationTokenInvalid,
+    pcWeakPassword,
+    pcWebAuthnFailed,
+  )
+import Shomei.Servant.OAuth (TokenResponse)
+import Web.FormUrlEncoded (Form)
 
 -- ---------------------------------------------------------------------------
 -- ToSchema for every DTO
@@ -184,6 +186,53 @@ instance ToSchema AuditEventsPage
 instance ToSchema AdminUserResponse
 
 instance ToSchema AdminUsersPage
+
+-- | EP-4's @POST \/oauth\/token@ (RFC 6749 §5.1). The wire keys are the RFC's snake_case names,
+-- which the hand-written 'Aeson.ToJSON' in "Shomei.Servant.OAuth" emits, so this schema is
+-- hand-written to match rather than derived. The conformance suite's 'validateEveryToJSON'
+-- checks the two agree.
+instance ToSchema TokenResponse where
+  declareNamedSchema _ =
+    pure $
+      O.NamedSchema (Just "TokenResponse") $
+        mempty
+          & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+          & O.description ?~ "An OAuth2 access-token response (RFC 6749 §5.1)."
+          & O.properties
+            .~ IOHM.fromList
+              [ ("access_token", O.Inline (stringSchema & O.description ?~ "The signed JWT access token.")),
+                ("token_type", O.Inline (stringSchema & O.description ?~ "Always \"Bearer\".")),
+                ("expires_in", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger & O.description ?~ "Token lifetime in seconds.")),
+                ("scope", O.Inline (stringSchema & O.description ?~ "The space-delimited scopes actually granted."))
+              ]
+          & O.required .~ ["access_token", "token_type", "expires_in", "scope"]
+
+-- | The @application\/x-www-form-urlencoded@ request body of @POST \/oauth\/token@.
+--
+-- The endpoint takes a raw 'Form' rather than a typed record, because it is a @grant_type@
+-- dispatcher whose parameter set differs per grant (see "Shomei.Servant.API"). The schema is
+-- therefore an open object of string values, with the parameters this deployment reads described
+-- for a human reading the spec.
+instance ToSchema Form where
+  declareNamedSchema _ =
+    pure $
+      O.NamedSchema (Just "TokenRequestForm") $
+        mempty
+          & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+          & O.description
+            ?~ "An RFC 6749 token request. `grant_type` selects the flow; the remaining \
+               \parameters depend on it. For `client_credentials`: an optional space-delimited \
+               \`scope`, plus `client_id`/`client_secret` when the client authenticates with \
+               \`client_secret_post` rather than an `Authorization: Basic` header."
+          & O.properties
+            .~ IOHM.fromList
+              [ ("grant_type", O.Inline (stringSchema & O.enum_ ?~ [String "client_credentials"])),
+                ("scope", O.Inline stringSchema),
+                ("client_id", O.Inline stringSchema),
+                ("client_secret", O.Inline stringSchema)
+              ]
+          & O.required .~ ["grant_type"]
+          & O.additionalProperties ?~ O.AdditionalPropertiesAllowed True
 
 -- | Free-form JSON. Several DTOs carry an aeson 'Value' (opaque WebAuthn/JWKS
 -- payloads), and @openapi-hs@ ships no 'ToSchema' for it. @additionalProperties:
@@ -408,15 +457,78 @@ baselineSpecs op =
   [spec | not (null (op ^. O.security)), spec <- [pcMissingToken, pcTokenInvalidAuth]]
     <> [pcBodyParseError | has (O.requestBody . _Just) op]
 
--- | Attach a problem-document response per distinct status an operation can fail with.
+-- | The single path exempt from the problem-details envelope: EP-4's OAuth2 token endpoint
+-- answers RFC 6749 §5.2 error objects, because that is what stock OAuth2 clients parse. Plans 42
+-- and 43 add grants to this same path; the OIDC endpoints they add
+-- (@\/.well-known\/openid-configuration@, introspection, revocation) belong on this list too.
+oauthPaths :: [FilePath]
+oauthPaths = ["/oauth/token"]
+
+-- | The RFC 6749 §5.2 error object, as a @components.schemas@ entry.
+--
+-- Deliberately NOT the @Problem@ schema. Must agree with 'Shomei.Servant.OAuth.oauthError',
+-- which builds the runtime value.
+oauthErrorSchema :: O.Schema
+oauthErrorSchema =
+  mempty
+    & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+    & O.description
+      ?~ "An RFC 6749 §5.2 error response. Endpoints under /oauth/* speak the OAuth2 wire \
+         \protocol, so they answer with this shape rather than the RFC 7807 problem document \
+         \every other Shōmei endpoint returns. Switch on `error`."
+    & O.properties
+      .~ IOHM.fromList
+        [ ("error", O.Inline (stringSchema & O.description ?~ "The machine-readable OAuth2 error code.")),
+          ("error_description", O.Inline (stringSchema & O.description ?~ "Human-readable explanation."))
+        ]
+    & O.required .~ ["error"]
+
+-- | The error responses of @POST \/oauth\/token@, keyed by status.
+--
+-- @401@ is @invalid_client@ alone (and carries @WWW-Authenticate: Basic@); @400@ covers the
+-- request-shape and scope failures. @500@ is documented because a database outage must still
+-- answer in the OAuth shape rather than break the client's error parser.
+oauthErrorResponses :: [(Int, [T.Text])]
+oauthErrorResponses =
+  [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope"]),
+    (401, ["invalid_client"]),
+    (500, ["server_error"])
+  ]
+
+-- | The response object for one OAuth status, narrowing @error@ to the codes it can carry.
+oauthErrorResponse :: [T.Text] -> O.Response
+oauthErrorResponse codes =
+  mempty
+    & O.description
+      .~ ("An RFC 6749 error response. The `error` member is one of: " <> T.intercalate ", " codes <> ".")
+    & O.content .~ IOHM.singleton "application/json" (mempty & O.schema ?~ O.Inline narrowed)
+  where
+    narrowed =
+      mempty
+        & O.allOf ?~ [O.Ref (O.Reference "OAuthError")]
+        & O.properties
+          .~ IOHM.singleton "error" (O.Inline (stringSchema & O.enum_ ?~ map String codes))
+
+-- | Attach a problem-document response per distinct status an operation can fail with — except
+-- on 'oauthPaths', which get RFC 6749 error objects instead.
 withErrorResponses :: O.OpenApi -> O.OpenApi
 withErrorResponses doc =
   doc
     & O.components . O.schemas . at "Problem" ?~ problemSchema
+    & O.components . O.schemas . at "OAuthError" ?~ oauthErrorSchema
     & O.paths %~ imap decoratePath
   where
+    decoratePath path item
+      | path `elem` oauthPaths =
+          -- Never fall through to the problem-details decoration: this operation has a request
+          -- body, so 'baselineSpecs' would otherwise document a problem+json 400 on an endpoint
+          -- that cannot emit one.
+          foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOAuthOp) item allMethods
     decoratePath path item =
       foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOp path m) item allMethods
+
+    decorateOAuthOp op =
+      foldl' (\acc (status, codes) -> acc & at status ?~ O.Inline (oauthErrorResponse codes)) op oauthErrorResponses
 
     decorateOp path m op =
       foldl' addStatus op (byStatus (baselineSpecs op <> tabled path m))
