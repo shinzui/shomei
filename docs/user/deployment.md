@@ -44,7 +44,7 @@ twelve-factor — env always wins):
 | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` \| `direct` | `none` |
 | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` / `SHOMEI_WEBAUTHN_PENDING_TTL` | ceremony timeout / pending-ceremony TTL (seconds) | `300` |
 | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | require MFA for accounts that have a passkey | `true` |
-| `SHOMEI_SERVICE_TOKEN_ENABLED` | enable `POST /auth/service-token` | `false` |
+| `SHOMEI_SERVICE_TOKEN_ENABLED` | enable `POST /v1/auth/service-token` | `false` |
 | `SHOMEI_SERVICE_TOKEN_TTL` | service-token access-token lifetime, seconds | `300` |
 | `SHOMEI_SERVICE_ACCOUNTS_JSON` | JSON array of service account objects: `accountId`, `userId`, `secretSha256`, `allowedScopes` | unset |
 | `SHOMEI_SWEEP_ENABLED` | run the background expired-data sweeper in-process. Set `false` if you schedule `shomei-admin sweep` externally | `true` |
@@ -296,7 +296,7 @@ The server reaches the database over `PG_CONNECTION_STRING` (the Unix socket), s
 host/port to configure and nothing to clash with. Then, from another shell:
 
 ```bash
-curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
   -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
 ```
 

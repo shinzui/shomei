@@ -40,7 +40,7 @@ logs. The minimum-length / policy check runs before hashing.
 - **Sessions have an absolute lifetime.** A session dies at `sessionTTL` (default 30 days) after
   it was created, no matter how often it is refreshed: refreshing extends nothing past
   `session.expiresAt`, and every rotated refresh token's expiry is capped at that deadline. Past
-  it, `POST /auth/refresh` returns `401 session_expired` and — when `sessionCheckMode` is
+  it, `POST /v1/auth/refresh` returns `401 session_expired` and — when `sessionCheckMode` is
   `VerifyTokenAndSession` — so does access-token verification. There is no sliding session.
 - **Service tokens** are short-lived access tokens minted through a separate machine-credential
   endpoint. Service account secrets are configured as SHA-256 hex digests, request secrets are
@@ -96,7 +96,7 @@ JavaScript cannot read at all, and stops the JSON bodies from carrying them — 
 cannot exfiltrate what was never serialized.
 
 - `shomei_session` — the access token. `Path=/`, `Max-Age` = `accessTokenTTL`.
-- `shomei_refresh` — the refresh token. `Path=/auth/refresh`, `Max-Age` = `refreshTokenTTL`, so
+- `shomei_refresh` — the refresh token. `Path=/v1/auth/refresh`, `Max-Age` = `refreshTokenTTL`, so
   the browser presents this long-lived credential to exactly one endpoint.
 
 Both carry `HttpOnly`, `Secure` (`SHOMEI_COOKIE_SECURE`, default on — browsers exempt localhost
@@ -114,7 +114,7 @@ password change, a deleted passkey) is the attack. Shōmei defends in two layers
    origin is accepted; the prefix must end at a `/` or the string's end, so
    `http://localhost:8080.evil.com` does not satisfy an allow-list containing
    `http://localhost:8080`. With neither header the request is **refused** —
-   `403 {"error":"csrf_rejected"}` — because a cookie-only mutating request with no origin
+   `403` with `code: "csrf_rejected"` — because a cookie-only mutating request with no origin
    information is either a non-browser client that should be sending a bearer token, or an attack.
 
 Set the allow-list with `SHOMEI_CSRF_ALLOWED_ORIGINS`. It defaults to `http://localhost:8080` for
@@ -219,7 +219,7 @@ Argon2id hash instead, so all of them pay the same cost.
 
 ### Signup deliberately discloses existence
 
-`POST /auth/signup` answers `409 email_taken` / `409 login_id_taken` when the identifier is
+`POST /v1/auth/signup` answers `409 email_taken` / `409 login_id_taken` when the identifier is
 already registered, which does tell the caller that an account exists. This is accepted product
 behavior — signup forms need to say "that address is already registered" — and it is the reason
 the reset and verification flows are deliberately blind: they always answer `202`, so an attacker
@@ -232,7 +232,7 @@ gates **token issuance** on a verified email address. With it on:
 
 - password login, refresh, MFA completion, and passwordless passkey login all refuse an account
   whose email is present but unverified, with `403 email_not_verified`;
-- `POST /auth/signup` still returns its initial token pair. The gate closes at the first refresh,
+- `POST /v1/auth/signup` still returns its initial token pair. The gate closes at the first refresh,
   so an unverified account keeps working for at most one access-token lifetime (default 15
   minutes) and cannot renew silently;
 - an account with **no** email address is exempt — it could never complete verification, so
@@ -507,7 +507,7 @@ pull in opposite directions, and only you can resolve that. See
   object per line (NDJSON) including the raw payload. Results are keyset-ordered on
   `(created_at, event_id)`; `--limit` defaults to 50 and is clamped to 1000.
 
-- **HTTP — `GET /admin/audit/events`.** The same filters as query parameters
+- **HTTP — `GET /v1/admin/audit/events`.** The same filters as query parameters
   (`?user=&session=&type=&type=&since=&until=&limit=&before=`), returning
   `{ "events": [ … ], "nextCursor": … }`; pass `nextCursor` back as `?before=` to page. The
   route type carries `RequireRole "admin"`, so a request with no token gets `401` and one whose

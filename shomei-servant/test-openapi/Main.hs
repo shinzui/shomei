@@ -12,9 +12,12 @@
 --
 --   3. EP-3: the error surface. Every documented error code exists in the runtime
 --      'problemCatalog' at the documented status, so the spec cannot promise a code or a
---      status the server never sends. Plus the hygiene invariants a generated client depends
---      on: no @204@ carries content, no response description is empty, every request body is
---      required, and every authenticated operation documents its @401@.
+--      status the server never sends; and the document 'Shomei.Servant.Error.problemBody'
+--      actually writes for every catalog entry validates against the published @Problem@
+--      schema, so the two halves of the envelope cannot drift apart. Plus the hygiene
+--      invariants a generated client depends on: no @204@ carries content, no response
+--      description is empty, every request body is required, and every authenticated
+--      operation documents its @401@.
 --
 -- The 'Arbitrary' and 'Show' instances for the DTOs live here (orphans, test
 -- only) so the production library carries no test dependency.
@@ -22,20 +25,21 @@
 
 module Main (main) where
 
-import Data.Aeson (ToJSON (..), Value (..), decode, encode)
+import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, encode, fromJSON)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
 import Data.Foldable (toList)
 import Data.List (nub, sort)
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Servant.API (NamedRoutes, NoContent (..))
-import Data.OpenApi (NamedSchema (..), ToSchema (..))
+import Data.OpenApi (NamedSchema (..), Schema, ToSchema (..), validateJSON)
 import Servant.OpenApi.Test (validateEveryToJSON)
 import Servant.Server (ServerError (errHTTPCode))
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.DTO
-import Shomei.Servant.Error (ProblemSpec (..), problemCatalog)
+import Shomei.Servant.Error (ProblemSpec (..), problemBody, problemCatalog)
 import Shomei.Servant.OpenApi (shomeiOpenApi)
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), oneof)
@@ -75,6 +79,19 @@ spec = do
     it "declares the Problem schema with exactly the four required members" $
       problemRequired `shouldBe` ["code", "status", "title", "type"]
 
+    -- The published schema and the bytes the server writes come from different code
+    -- (`problemSchema` in OpenApi.hs, `problemBody` in Error.hs). Validate the real runtime
+    -- document of every catalog entry, with and without a `detail`, against the schema as it
+    -- appears in the serialized document — the artifact a client generator actually reads.
+    it "validates the real runtime document of every catalog entry against the published Problem schema" $
+      [ (problemCode p, isJust detail, errs)
+        | p <- problemCatalog,
+          detail <- [Nothing, Just "a request-specific explanation"],
+          let errs = validateJSON mempty publishedProblemSchema (problemBody p detail),
+          not (null errs)
+      ]
+        `shouldBe` []
+
     it "documents only error codes that exist in problemCatalog" $
       filter (`notElem` catalogCodes) (map snd documentedCodes) `shouldBe` []
 
@@ -110,7 +127,18 @@ spec = do
 
     pathCount = KM.size paths
 
-    problemRequired = case lookupTop "components" >>= field "schemas" >>= field "Problem" >>= field "required" of
+    problemSchemaJson = case lookupTop "components" >>= field "schemas" >>= field "Problem" of
+      Just v -> v
+      Nothing -> error "shomeiOpenApi has no components.schemas.Problem"
+
+    -- Round-tripped through the serialized document on purpose: this is the schema a client
+    -- generator reads, not the Haskell value that produced it.
+    publishedProblemSchema :: Schema
+    publishedProblemSchema = case fromJSON problemSchemaJson of
+      Success s -> s
+      Error e -> error ("components.schemas.Problem does not decode as a Schema: " <> e)
+
+    problemRequired = case field "required" problemSchemaJson of
       Just (Array xs) -> sort [t | String t <- toList xs]
       _ -> error "shomeiOpenApi has no components.schemas.Problem.required"
 

@@ -20,30 +20,30 @@ HTTP surface is in [api.md](api.md); the security properties are summarized in
 
 ## 1. Enrolling a passkey (authenticated)
 
-1. The browser POSTs to `/auth/passkeys/register/begin` with the user's bearer token and an
+1. The browser POSTs to `/v1/auth/passkeys/register/begin` with the user's bearer token and an
    empty body. The server replies with `{ "ceremonyId": "...", "options": { ... } }`. `options`
    is the WebAuthn *creation options* — a random challenge, the relying-party id, the user's
    handle, and the list of already-enrolled credentials to exclude.
 2. The browser calls `navigator.credentials.create({ publicKey: options.publicKey })` (via the
    `@github/webauthn-json` helper, which handles the base64url ↔ binary conversion). The device
    prompts the user (a fingerprint, a PIN, a tap) and mints a fresh key pair.
-3. The browser POSTs to `/auth/passkeys/register/complete` with the bearer token and
+3. The browser POSTs to `/v1/auth/passkeys/register/complete` with the bearer token and
    `{ "ceremonyId": "<from step 1>", "credential": <the create() output>, "label": "Ada's
    YubiKey" }`. The server verifies the credential and stores the public key, returning the
    stored passkey `{ "passkeyId", "label", "transports", "createdAt", "lastUsedAt" }`.
 
-List with `GET /auth/passkeys`; remove one with `DELETE /auth/passkeys/{passkeyId}` (`204`).
+List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{passkeyId}` (`204`).
 
 ## 2. Logging in with password + passkey (MFA step-up)
 
-1. POST `/auth/login` with `{ "email", "password" }` as usual. If the account has a passkey
+1. POST `/v1/auth/login` with `{ "email", "password" }` as usual. If the account has a passkey
    (and `mfaRequired` is on), the response is **not** tokens — it is
    `{ "status": "mfa_required", "ceremonyId": "...", "options": { ... } }`, where `options` is
    the WebAuthn *authentication options* (a fresh challenge plus the allowed credentials).
    An account *without* a passkey still gets `{ "status": "complete", "user", "token" }`.
 2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`. The device
    signs the challenge with the passkey's private key.
-3. POST `/auth/mfa/complete` with `{ "ceremonyId": "<from step 1>", "assertion": <the get()
+3. POST `/v1/auth/mfa/complete` with `{ "ceremonyId": "<from step 1>", "assertion": <the get()
    output> }`. The server verifies the signature and returns the access/refresh token pair
    `{ "accessToken", "refreshToken", "expiresIn" }`.
 
@@ -57,11 +57,11 @@ missing/expired/already-consumed ceremony returns `404 ceremony_not_found`.
 
 ## 3. Passwordless passkey login
 
-1. POST `/auth/login/passkey/begin` (no password). The response is
+1. POST `/v1/auth/login/passkey/begin` (no password). The response is
    `{ "ceremonyId": "...", "options": { ... } }` — WebAuthn authentication options for
    discoverable credentials.
 2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`.
-3. POST `/auth/login/passkey/complete` with `{ "ceremonyId": "...", "assertion": <get()
+3. POST `/v1/auth/login/passkey/complete` with `{ "ceremonyId": "...", "assertion": <get()
    output> }`. On success the response is the token pair `{ "accessToken", "refreshToken",
    "expiresIn" }` directly (the passkey is the strong factor, so there is no second challenge).
    As above, cookie transport moves the tokens into cookies and omits them from the body.
@@ -138,9 +138,9 @@ See [security.md](security.md) for how these fit the wider threat model.
 ## Recovery: losing a passkey
 
 The **password remains the first factor**. A user who loses their only passkey is not locked out
-of recovery: the existing password-reset flow (`POST /auth/password-reset/request` →
+of recovery: the existing password-reset flow (`POST /v1/auth/password-reset/request` →
 `…/confirm`) still works, because reset is gated on the password/email, not the passkey. After a
-reset, the user can remove the lost passkey (`DELETE /auth/passkeys/{passkeyId}`) and enroll a new
+reset, the user can remove the lost passkey (`DELETE /v1/auth/passkeys/{passkeyId}`) and enroll a new
 one. Backup/recovery codes are not part of this release (deferred); having **two** passkeys
 enrolled is the recommended hedge.
 
@@ -179,7 +179,7 @@ served from the same warp process as `/auth`, so its origin matches the default
 3. Create an account first (the demo has no signup form; use `curl`):
 
    ```bash
-   curl -s -X POST http://localhost:8080/auth/signup -H 'content-type: application/json' \
+   curl -s -X POST http://localhost:8080/v1/auth/signup -H 'content-type: application/json' \
      -d '{"email":"ada@example.com","password":"correct horse battery staple","displayName":"Ada"}'
    ```
 

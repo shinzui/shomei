@@ -41,8 +41,8 @@ Accessors and config you'll use:
 The confirm links the user must reach (the same ones the dev log sender prints):
 
 ```text
-<publicBaseUrl>/auth/verify-email/confirm?token=<token>
-<publicBaseUrl>/auth/password-reset/confirm?token=<token>
+<publicBaseUrl>/v1/auth/verify-email/confirm?token=<token>
+<publicBaseUrl>/v1/auth/password-reset/confirm?token=<token>
 ```
 
 ## Writing a sender interpreter
@@ -67,10 +67,10 @@ runNotifierMyProvider client baseUrl = interpret_ \case
     SendNotification n -> liftIO $ case n of
         EmailVerificationRequested email token _expiresAt ->
             sendEmail client (emailText email) "Verify your email"
-                (baseUrl <> "/auth/verify-email/confirm?token=" <> oneTimeTokenText token)
+                (baseUrl <> "/v1/auth/verify-email/confirm?token=" <> oneTimeTokenText token)
         PasswordResetRequested email token _expiresAt ->
             sendEmail client (emailText email) "Reset your password"
-                (baseUrl <> "/auth/password-reset/confirm?token=" <> oneTimeTokenText token)
+                (baseUrl <> "/v1/auth/password-reset/confirm?token=" <> oneTimeTokenText token)
 ```
 
 `sendEmail`/`MyClient` are yours — your provider's SDK call or an HTTP request.
@@ -123,7 +123,7 @@ For local development, where the logged link is how you actually complete a sign
 set `SHOMEI_NOTIFIER_LOG_SECRETS=true` and the full link comes back:
 
 ```text
-[shomei:log] password_reset email=a@example.com link=http://localhost:8080/auth/password-reset/confirm?token=7Hu0OCr… expires_at=2026-07-09 03:44:40 UTC
+[shomei:log] password_reset email=a@example.com link=http://localhost:8080/v1/auth/password-reset/confirm?token=7Hu0OCr… expires_at=2026-07-09 03:44:40 UTC
 ```
 
 Never set it in a shared or production environment: anyone who can read the log can then complete

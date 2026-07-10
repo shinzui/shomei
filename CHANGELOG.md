@@ -7,6 +7,73 @@ tagged release.
 
 ## Unreleased
 
+### Breaking (pre-1.0 window) — MasterPlan 7 (Interop Wave), EP-3: `/v1` and problem-details errors
+
+Shōmei has never cut a tagged release. These changes land together, deliberately, so that a
+consumer migrates once rather than three times. Every later MasterPlan-7 endpoint (the admin API,
+OAuth2, OIDC, token exchange, TOTP) is born under the contract established here.
+
+**1. Application routes moved under `/v1`.** `POST /auth/login` is now `POST /v1/auth/login`, and
+so on for every `/auth/*` and `/admin/*` route. The old paths are **gone** — they answer `404`,
+with no redirect. Prefix your base URL, or upgrade the typed `shomei-client` (its function
+signatures are unchanged; the segment lives in the route type).
+
+Unversioned, and staying that way: `GET /.well-known/jwks.json`, `GET /health`, `GET /ready`,
+`GET /metrics`, `GET /openapi.json`, and the future `/oauth/*`. Protocol and infrastructure
+endpoints are consumed by tools that look for them at conventional locations.
+
+Two path literals move with the routes and are worth checking in your own deployment: the
+`shomei_refresh` cookie is now scoped to `Path=/v1/auth/refresh`, and the account-lifecycle email
+links now point at `<publicBaseUrl>/v1/auth/{verify-email,password-reset}/confirm`.
+
+**2. Every error is now an RFC 7807 problem document.** The `{"error":"…","message":"…"}` shape is
+gone, not dual-emitted:
+
+```jsonc
+// before
+{"error": "token_invalid", "message": "Token is invalid"}
+
+// after — Content-Type: application/problem+json
+{"type": "about:blank", "title": "Token is invalid", "status": 401, "code": "token_invalid"}
+```
+
+**Every existing error string survives verbatim in the `code` member**, so client switch-logic
+ports by reading `code` instead of `error`. A `401` now carries `WWW-Authenticate: Bearer`; a
+`429` carries `Retry-After`. Failures that previously escaped the envelope entirely — an expired
+bearer token (plain-text `"invalid token"`), a missing role, a malformed JSON body, an unknown
+route, a wrong method, a throttled request — now return the same document as everything else.
+
+Exempt: `GET /ready`'s `503` remains a `{"status","database","signingKey"}` probe document, and the
+future `POST /oauth/token` will use RFC 6749 §5.2's `{"error":"invalid_grant",…}` shape, which
+OAuth2 clients require.
+
+**3. Three status codes corrected.**
+
+| Endpoint | Was | Now | What to change |
+|---|---|---|---|
+| `POST /v1/auth/signup` | `200` | `201 Created` | it creates a user; compare `< 300`, not `== 200`. Body unchanged |
+| `POST /v1/auth/verify-email/confirm` | `202` | `200` | the work completes inside the request; `202` promised pending work that never existed |
+| `POST /v1/auth/password-reset/confirm` | `202` | `200` | as above |
+| `POST /v1/auth/logout` on an already-revoked session | `404 session_not_found` | `204` | logout is now idempotent; drop any "already logged out" special case |
+
+The two lifecycle *request* endpoints (`verify-email/request`, `password-reset/request`) stay
+`202`: delivery genuinely happens later, and their unconditional response is the anti-enumeration
+contract.
+
+### Added — MasterPlan 7 (Interop Wave), EP-3
+
+- **`GET /openapi.json`.** The server serves the OpenAPI 3.1 document for the binary that is
+  running, so a generated client matches the deployment rather than a committed file.
+- **The spec documents the error surface.** A `Problem` component schema, and per-operation error
+  responses whose `properties.code.enum` names exactly the codes that operation can return. Both
+  are generated from the same constants the server renders at runtime, so status and title cannot
+  drift; a conformance test enforces it.
+- **Spec fixes.** `204` responses no longer carry a `content` map (which was invalid), every
+  response has a real description, and every request body is marked `required`.
+- **`Cache-Control: public, max-age=300` on the JWKS document.** Key rotation is staged, so a
+  retiring key stays trusted far longer than five minutes: a stale cache can never reject a valid
+  token, while five minutes bounds how long a revoked key's public half lingers.
+
 ### Added — MasterPlan 7 (Interop Wave), EP-1: persistent roles and claims enrichment
 
 - **Roles have a source of truth.** A `shomei_roles` registry (seeded with `admin`) and a

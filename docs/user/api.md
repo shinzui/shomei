@@ -1,15 +1,61 @@
 # Shōmei HTTP API
 
-All routes are defined by the `ShomeiAPI` `NamedRoutes` record in
+All routes are defined by the `ShomeiRoutes` `NamedRoutes` record in
 `shomei-servant/src/Shomei/Servant/API.hs` and served by `shomei-server` (default port
 `8080`). Request and response bodies are JSON. Authenticated routes require an
 `Authorization: Bearer <access-token>` header — or, in cookie transport, the `shomei_session`
 cookie (see below).
 
-Errors are returned as `{"error":"<code>","message":"<text>"}`. Authentication errors are
-deliberately **generic** — a wrong password, an unknown account, and a locked account all return
-the same `401 {"error":"invalid_login","message":"Invalid email or password"}` so the API never
-discloses which emails are registered (see [security.md](security.md)).
+## Versioning
+
+Application routes live under **`/v1`**: `/v1/auth/login`, `/v1/admin/audit/events`. Protocol
+and infrastructure endpoints keep unversioned root paths, because that is where the tools that
+consume them look:
+
+| Unversioned | Why |
+|---|---|
+| `GET /.well-known/jwks.json` | OAuth2/OIDC verifiers auto-configure from the conventional location |
+| `GET /openapi.json` | describes the whole server, including the non-`/v1` surface |
+| `GET /health`, `GET /ready` | deployment contracts a load balancer is configured against |
+| `GET /metrics` | scrape target (a WAI middleware; it never reaches the router) |
+
+The unprefixed paths are **gone**, not redirected: `POST /auth/login` is a `404`. See the
+CHANGELOG for the migration.
+
+## Errors
+
+Every error — from a handler, a workflow, the token verifier, an authorization combinator,
+Servant's own request parser, or the rate limiter — is an [RFC 7807][rfc7807] problem document
+served as `Content-Type: application/problem+json`:
+
+```json
+{"type":"about:blank","title":"Token is invalid","status":401,"code":"token_invalid"}
+```
+
+| Member | Meaning |
+|---|---|
+| `code` | the machine key. **Switch on this.** These are the same strings the old `{"error":…}` shape carried |
+| `title` | stable human text for the error kind |
+| `status` | mirrors the HTTP status |
+| `type` | always `about:blank` — Shōmei hosts no error-documentation URLs |
+| `detail` | *optional*; explains this occurrence (a parse message, the offending role name) |
+
+A `401` carries `WWW-Authenticate: Bearer`; a `429` carries `Retry-After`.
+
+Which codes a given endpoint can return is machine-readable in the OpenAPI document
+(`GET /openapi.json`, or the committed `docs/api/openapi.json`): each error response narrows the
+`Problem` schema with `properties.code.enum`.
+
+Authentication errors are deliberately **generic** — a wrong password, an unknown account, and a
+locked account all return the same `401` with `code: "invalid_login"`, so the API never discloses
+which emails are registered (see [security.md](security.md)).
+
+Two responses are exempt from the envelope. `GET /ready` answers `503` with a
+`{"status","database","signingKey"}` probe document — a status report, not an error. The future
+`POST /oauth/token` will use RFC 6749 §5.2's `{"error":"invalid_grant",…}` shape, which OAuth2
+clients require.
+
+[rfc7807]: https://www.rfc-editor.org/rfc/rfc7807
 
 ## Token transport
 
@@ -29,11 +75,11 @@ The two cookies, set together by every response that issues a token pair (`signu
 
 ```text
 Set-Cookie: shomei_session=<jwt>;   Path=/;              Max-Age=900;     HttpOnly; Secure; SameSite=Lax
-Set-Cookie: shomei_refresh=<token>; Path=/auth/refresh;  Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
+Set-Cookie: shomei_refresh=<token>; Path=/v1/auth/refresh;  Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
 ```
 
 `HttpOnly` keeps them out of page JavaScript, so an XSS payload cannot read the session.
-`shomei_refresh` is scoped to the one endpoint that consumes it. `POST /auth/logout` re-sets both
+`shomei_refresh` is scoped to the one endpoint that consumes it. `POST /v1/auth/logout` re-sets both
 with an empty value and `Max-Age=0`. `Secure` and `SameSite` are configurable
 (`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`).
 
@@ -42,25 +88,25 @@ request** (anything but `GET`/`HEAD`/`OPTIONS`) must carry an allow-listed `Orig
 if `Origin` is absent, a `Referer` under an allowed origin. Otherwise:
 
 ```text
-403 {"error":"csrf_rejected","message":"Origin not allowed for cookie-authenticated request"}
+403 {"type":"about:blank","title":"Origin not allowed for cookie-authenticated request","status":403,"code":"csrf_rejected"}
 ```
 
 Configure the allow-list with `SHOMEI_CSRF_ALLOWED_ORIGINS` (comma-separated). Requests with
 *neither* header fail closed. **Bearer-authenticated requests are never CSRF-gated**, in any
-mode. The same gate applies to `POST /auth/refresh` when the refresh token comes from its cookie.
+mode. The same gate applies to `POST /v1/auth/refresh` when the refresh token comes from its cookie.
 
 ## Account & session
 
-### `POST /auth/signup`
-Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `200` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures. In cookie transport this response also sets the `shomei_session`/`shomei_refresh` cookies and omits the body token values (see [Token transport](#token-transport)).
+### `POST /v1/auth/signup`
+Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `201 Created` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures. In cookie transport this response also sets the `shomei_session`/`shomei_refresh` cookies and omits the body token values (see [Token transport](#token-transport)).
 
-### `POST /auth/login`
-Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
+### `POST /v1/auth/login`
+Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /v1/auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
 
-### `POST /auth/refresh`
+### `POST /v1/auth/refresh`
 Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
-### `POST /auth/service-token`
+### `POST /v1/auth/service-token`
 Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:
 the configured service account id and shared secret in the JSON body are the credential. The
 server hashes `secret` with SHA-256, encodes the digest as lowercase hex, and compares it with the
@@ -72,21 +118,25 @@ configured service-account user id, `scopes` contains exactly the requested allo
 Service-token issuance is disabled unless `serviceToken.enabled` or
 `SHOMEI_SERVICE_TOKEN_ENABLED=true` enables it and the account is configured. Unknown account ids,
 bad secrets, disabled issuance, and scopes outside the account allow-list return `403`; an empty
-`scopes` array or malformed `actorId` returns `400`. Normal `POST /auth/login` tokens still carry
+`scopes` array or malformed `actorId` returns `400`. Normal `POST /v1/auth/login` tokens still carry
 empty scopes, so a host route guarded by `requireScope (Scope "kawa:ingest")` accepts a service
 token with that scope and rejects a normal login token with `403`.
 
 See [service-tokens.md](service-tokens.md) for configuration and operating guidance.
 
-### `POST /auth/logout` *(authenticated)*
+### `POST /v1/auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens. In cookie transport the response
 clears both cookies (`Max-Age=0`), and — being a mutating request — a cookie-authenticated logout
 requires an allow-listed `Origin`.
 
-### `GET /auth/me` *(authenticated)*
+**Idempotent:** logging out a session that is already gone is also `204`, not `404`. Retrying
+after a network blip succeeds. (Under `sessionCheckMode = VerifyTokenAndSession` the second call
+is a `401` instead, because the access token no longer verifies against the revoked session.)
+
+### `GET /v1/auth/me` *(authenticated)*
 → `200` the caller's user record. `404` if the user row is missing.
 
-### `GET /auth/session` *(authenticated)*
+### `GET /v1/auth/session` *(authenticated)*
 → `200` the caller's session record.
 
 ## Account lifecycle (EP-1)
@@ -97,49 +147,49 @@ The two *request* endpoints always return `202 Accepted` regardless of whether t
 does not send email itself — see [notifications.md](notifications.md) for delivering these links
 through your own provider.
 
-### `POST /auth/verify-email/request`
+### `POST /v1/auth/verify-email/request`
 Body `{"email"}`. → `202`. Logs a verification link for a real, unverified account.
 
-### `POST /auth/verify-email/confirm`
-Body `{"token"}`. → `202`. Marks the account verified (`email_verified_at`). `400 verification_token_invalid` for an unknown/consumed/expired token.
+### `POST /v1/auth/verify-email/confirm`
+Body `{"token"}`. → `200`. Marks the account verified (`email_verified_at`); the work completes inside the request. `400 verification_token_invalid` for an unknown/consumed/expired token.
 
-### `POST /auth/password-reset/request`
+### `POST /v1/auth/password-reset/request`
 Body `{"email"}`. → `202` (byte-identical for known and unknown emails). Logs a reset link for a real account.
 
-### `POST /auth/password-reset/confirm`
-Body `{"token","newPassword"}`. → `202`. Changes the password **and revokes all of the user's sessions and refresh tokens**. `400 password_reset_token_invalid` on a bad token.
+### `POST /v1/auth/password-reset/confirm`
+Body `{"token","newPassword"}`. → `200`. Changes the password **and revokes all of the user's sessions and refresh tokens**. `400 password_reset_token_invalid` on a bad token.
 
-### `POST /auth/password/change` *(authenticated)*
+### `POST /v1/auth/password/change` *(authenticated)*
 Body `{"currentPassword","newPassword"}`. → `204`. Verifies the current password, changes it, and revokes the user's other sessions. `401 invalid_login` if the current password is wrong.
 
 ## Passkeys & MFA (MasterPlan 3)
 
 A *passkey* is a public-key credential held by the user's device (Touch ID/Face ID, Windows
 Hello, a YubiKey, or a synced provider). After enrolling one, an account is protected by both a
-password and the device — `POST /auth/login` no longer returns tokens for that account until the
+password and the device — `POST /v1/auth/login` no longer returns tokens for that account until the
 WebAuthn assertion is completed. All `options`/`credential`/`assertion` values are the standard
 `@github/webauthn-json` browser payloads, passed through verbatim as JSON. See
 [passkeys.md](passkeys.md) for the full guide.
 
-### `POST /auth/passkeys/register/begin` *(authenticated)*
+### `POST /v1/auth/passkeys/register/begin` *(authenticated)*
 Empty body. → `200` `{"ceremonyId":"webauthn_ceremony_…","options":{…creation options…}}`. The browser feeds `options` to `navigator.credentials.create()`.
 
-### `POST /auth/passkeys/register/complete` *(authenticated)*
+### `POST /v1/auth/passkeys/register/complete` *(authenticated)*
 Body `{"ceremonyId","credential","label"?}`. → `200` `{"passkeyId","label","transports","createdAt","lastUsedAt"}` (never the public-key bytes). `404 ceremony_not_found` (missing/expired/consumed); `400 webauthn_verification_failed` (verification failed).
 
-### `GET /auth/passkeys` *(authenticated)*
+### `GET /v1/auth/passkeys` *(authenticated)*
 → `200` an array of the `PasskeyResponse` object above.
 
-### `DELETE /auth/passkeys/{passkeyId}` *(authenticated)*
+### `DELETE /v1/auth/passkeys/{passkeyId}` *(authenticated)*
 → `204`. `404 passkey_not_found` if the passkey is not owned by the caller.
 
-### `POST /auth/mfa/complete`
-Completes a step-up after `POST /auth/login` returned `mfa_required`. Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` if the assertion does not verify; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response.)
+### `POST /v1/auth/mfa/complete`
+Completes a step-up after `POST /v1/auth/login` returned `mfa_required`. Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` if the assertion does not verify; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/v1/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response.)
 
-### `POST /auth/login/passkey/begin`
+### `POST /v1/auth/login/passkey/begin`
 Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`.
 
-### `POST /auth/login/passkey/complete`
+### `POST /v1/auth/login/passkey/complete`
 Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport.
 
 ## Impersonation / delegated tokens
@@ -153,7 +203,7 @@ against delegated tokens; who-may-impersonate-whom policy and business-action ga
 embedding service, which reads `act`/`sub` from the verified token. See
 [security.md](security.md#impersonation--delegated-tokens).
 
-### `POST /auth/impersonate` *(authenticated)*
+### `POST /v1/auth/impersonate` *(authenticated)*
 Body `{"userId","reason","ticketId"?}`. The caller must hold the `impersonate:user` scope and
 their own access token must have been issued within the freshness window (default 5 minutes). →
 `200` `{"accessToken","subjectUserId","actorUserId","expiresAt"}` — `accessToken` is the delegated
@@ -161,18 +211,18 @@ token (`sub`=customer, `act`=operator). `403 impersonation_forbidden` if the cal
 scope or is not fresh enough; `400 impersonation_target_invalid` if the target is missing, not
 active, or is the caller themselves.
 
-### `DELETE /auth/impersonate` *(authenticated)*
+### `DELETE /v1/auth/impersonate` *(authenticated)*
 Presented with a delegated token. → `204`. Revokes the delegated session named by the token.
 `400 impersonation_target_invalid` if the presented token is not a delegated token (no `act`).
 
-Credential-changing endpoints (`POST /auth/password/change`, `POST /auth/passkeys/register/begin`,
-`POST /auth/passkeys/register/complete`, `DELETE /auth/passkeys/{passkeyId}`) **refuse** any request
+Credential-changing endpoints (`POST /v1/auth/password/change`, `POST /v1/auth/passkeys/register/begin`,
+`POST /v1/auth/passkeys/register/complete`, `DELETE /v1/auth/passkeys/{passkeyId}`) **refuse** any request
 bearing a delegated token with `403 impersonation_action_blocked` and write an audit record. An
 operator can look but cannot change the customer's credentials.
 
 ## Audit log (EP-7)
 
-### `GET /admin/audit/events` *(admin role required)*
+### `GET /v1/admin/audit/events` *(admin role required)*
 Read the append-only security audit trail (`shomei_auth_events`), newest first. Query params,
 all optional: `user` (UUID), `session` (UUID), `type` (repeatable — `?type=login_failed&type=account_locked`),
 `since` (ISO-8601, inclusive), `until` (ISO-8601, exclusive), `limit` (default 50, clamped to
@@ -192,6 +242,18 @@ refresh, not on one already issued.
 
 ### `GET /.well-known/jwks.json`
 → `200` the public JWKS document (the `active` plus still-trusted `retired` signing keys). Downstream services fetch this to verify Shōmei's tokens locally. Keys are EC (`"kty":"EC"`, for ES256) or RSA (`"kty":"RSA"`, for RS256) depending on the configured signing algorithm; verifiers select by `kid` and read the `alg`/`kty` from the key, so a mixed set during an algorithm rotation verifies correctly. A host service embedding Shōmei may also attach its own top-level claims to issued tokens (`AuthClaims.extraClaims`); these appear in the JWT payload beside the standard `sub`/`sid`/`scopes`/`roles` claims and are preserved on verification.
+
+The response carries `Cache-Control: public, max-age=300`. Key rotation is staged
+(`pending → active → retired → revoked`, see [security.md](security.md)), so a retiring key stays
+*trusted* for verification far longer than five minutes: a stale copy of this document can never
+reject a valid token, and five minutes bounds how long a revoked key's public half lingers in
+verifier caches.
+
+### `GET /openapi.json`
+→ `200` the OpenAPI 3.1 document for **the binary that is answering**, so a generated client
+matches the deployment rather than a spec file someone remembered to commit. Identical in content
+to `docs/api/openapi.json` for the same build. See
+[openapi-client-generation.md](openapi-client-generation.md).
 
 ### `GET /health`  (liveness)
 → `200 {"status":"ok"}` as long as the process is alive. Dependency-free.

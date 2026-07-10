@@ -2,7 +2,7 @@
 
 Service tokens are short-lived, refresh-less access tokens for machine callers such as connectors,
 agent runtimes, and downstream services. They are separate from human login: normal signup/login
-tokens still carry empty scopes, while `POST /auth/service-token` can mint a token with configured
+tokens still carry empty scopes, while `POST /v1/auth/service-token` can mint a token with configured
 coarse scopes such as `kawa:ingest`, `signal:raise`, or `channel:egress`.
 
 The HTTP reference is in [api.md](api.md#post-authservice-token). This guide focuses on operating
@@ -68,7 +68,7 @@ send it only in the token request.
 ## Request a Token
 
 ```bash
-curl -s -X POST http://localhost:8080/auth/service-token \
+curl -s -X POST http://localhost:8080/v1/auth/service-token \
   -H 'content-type: application/json' \
   -d '{
     "accountId": "connector:kawa",

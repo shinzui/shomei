@@ -103,7 +103,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | Complete |
 | 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Not Started |
-| 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | In Progress |
+| 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Complete |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Not Started |
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Not Started |
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Not Started |
@@ -181,15 +181,27 @@ the EP-3 problem-details envelope; both plans document this boundary). EP-5 regi
 is defined by EP-4 and reused by both.
 
 Versioning boundary (`shomei-servant/src/Shomei/Servant/API.hs`): involved plans EP-3 (owner)
-and every plan adding routes (EP-2, EP-4, EP-5, EP-7). EP-3 establishes: application routes
-live under `/v1`; `/.well-known/*`, `/oauth/*`, `/health`, `/ready`, and `/metrics` remain
-unversioned root paths (protocol and infrastructure conventions). Later plans follow that rule
-and extend the OpenAPI generation (`shomei-servant/src/Shomei/Servant/OpenApi.hs`) for their
-routes, including per-route error documentation in the EP-3 envelope schema.
+and every plan adding routes (EP-2, EP-4, EP-5, EP-7). **Landed 2026-07-09.** The served tree is
+`ShomeiRoutes`: `v1 :: "v1" :> NamedRoutes ShomeiAPI` plus unversioned `jwks`, `openapi`,
+`health`, `ready` (`/metrics` stays a WAI middleware; `/oauth/*` joins the unversioned root).
+A new application route goes in `ShomeiAPI` and inherits `/v1` for free; a new protocol endpoint
+goes in `ShomeiRoutes`. Later plans extend the OpenAPI generation
+(`shomei-servant/src/Shomei/Servant/OpenApi.hs`) for their routes: add an entry to `routeErrors`
+for the codes only the handler knows, and the `baselineSpecs` pass documents the 401s and the
+body-parse 400 automatically.
 
-Error envelope (`shomei-servant/src/Shomei/Servant/Error.hs`): EP-3 owns the universal
-envelope helper and the OpenAPI `Error` component; EP-2, EP-5, and EP-7 route every new
-failure through it (except the RFC 6749 token-endpoint errors owned by EP-4, above).
+**A route's path is also written down in four non-Servant places** — see Surprises. A plan adding
+a throttled endpoint extends `RateLimit.throttledPath` *and* `testThrottledPathsAreVersioned`; one
+changing a success status extends `Metrics.recordRequest`.
+
+Error envelope (`shomei-servant/src/Shomei/Servant/Error.hs`): EP-3 owns it. **Landed
+2026-07-09.** `ProblemSpec` constants (41 of them, all exported) are the single source: the
+runtime renders them through `toProblemError`, and `OpenApi.hs` renders the same constants into
+`components.schemas.Problem` plus per-operation error responses. EP-2, EP-5, and EP-7 route every
+new failure through `toProblemError` (except the RFC 6749 token-endpoint errors owned by EP-4,
+above), add their new specs to `problemCatalog`, and list them in `routeErrors`. The conformance
+suite fails if a documented code or status is not in the catalog, or if the runtime document stops
+validating against the published schema.
 
 MFA method union (`shomei-servant/src/Shomei/Servant/DTO.hs` `LoginResponse` /
 `MfaRequiredResponse`; `shomei-core/src/Shomei/Workflow/Mfa.hs`): involved plans EP-7 (owner
@@ -241,7 +253,7 @@ the other.
 - [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
 - [x] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
 - [x] EP-3: Universal problem-details envelope on every error path (including auth combinator 401s)
-- [ ] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
+- [x] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
 - [ ] EP-4: Service-account table, port, CLI; secrets hashed, rotatable, revocable at runtime
 - [ ] EP-4: `POST /oauth/token` with `client_credentials` grant and RFC 6749 error shape
 - [ ] EP-5: `/.well-known/openid-configuration` discovery document

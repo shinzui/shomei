@@ -131,15 +131,19 @@ Milestone 4 — OpenAPI truth: **done 2026-07-09**
 
 - [x] `Problem` component schema + per-route error responses generated from the `ProblemSpec` catalog. `Error.hs` now exports every `pc*` constant; `OpenApi.hs` holds `routeErrors :: [(FilePath, Method, [ProblemSpec])]` plus `baselineSpecs`, which reads 401s off any operation carrying `security` and a 400 `body_parse_error` off any operation with a request body — so a new authenticated route documents its 401s the day it is added. 51 problem responses across 25 paths.
 - [x] The per-response code list rides in `properties.code.enum` (standard JSON Schema, generator-friendly) rather than an `x-error-codes` extension — openapi-hs's `Response` has no extensions field. See Surprises.
-- [x] Drift guard (`test-openapi/Main.hs`): every documented code exists in `problemCatalog`; every documented (status, code) pair exists in the catalog; every problem response lists at least one code; every bearer operation documents a 401. Plus hygiene: no 204 carries content, no description is empty, every request body is required. **Verified it can fail**: documenting each response one status off produced 2 failures.
+- [x] Drift guard (`test-openapi/Main.hs`): every documented code exists in `problemCatalog`; every documented (status, code) pair exists in the catalog; every problem response lists at least one code; every bearer operation documents a 401; and (added in M5) the real runtime document of every catalog entry validates against the *published* `Problem` schema. Plus hygiene: no 204 carries content, no description is empty, every request body is required. **Verified both guards can fail**: documenting each response one status off produced 2 failures; adding an undeclared member to `problemBody` failed the schema check on all 82 cases.
 - [x] Spec hygiene passes: `withSpecHygiene` drops `content` from 204s and from the `NoContent` artifacts at 200/202, fills every empty response `description`, and sets `requestBody.required: true`.
 - [x] `GET /openapi.json` served from the root record (`openApiValue`, a `Value` CAF). Path count 25. Verified live: the served document is byte-equivalent to the committed `docs/api/openapi.json`.
 - [x] Spec regenerated and committed; `cabal run shomei-openapi` reproduces it exactly.
 
-Milestone 5 — Docs and closure:
+Milestone 5 — Docs and closure: **done 2026-07-09**
 
-- [ ] `docs/user/api.md` rewritten (paths, envelope, status codes); `deployment.md`, `client-and-examples.md`, `openapi-client-generation.md`, `service-tokens.md`, `passkeys.md`, `security.md` path/envelope sweeps (`grep -rn '/auth/' docs/user`).
-- [ ] CHANGELOG "Breaking" entry; MasterPlan 7 registry/progress updated; live curl transcript recorded here.
+- [x] `docs/user/api.md` rewritten: new "Versioning" and "Errors" sections (the problem document, the member table, the two exemptions), all paths versioned, the three status-code changes in their endpoint sections, logout's idempotence, `GET /openapi.json` and the JWKS `Cache-Control` documented.
+- [x] Swept `security.md`, `passkeys.md`, `notifications.md`, `service-tokens.md`, `deployment.md` (paths + the two `{"error":…}` samples). `openapi-client-generation.md` rewritten: two ways to fetch the spec, the `v1`-stripped `operationId` rule, and an "Errors in the generated client" section. It also **claimed a quirk that M4 fixed** — "`POST /auth/logout` shows an empty `application/json` media type on its `204`" — verified against the regenerated spec and removed; the one-`Set-Cookie` limitation is real and stays.
+- [x] `docs/user/initial-spec.md` deliberately left alone: `docs/user/index.md` frames it as the original specification under "Historical Reference". Rewriting its paths would falsify the record.
+- [x] CHANGELOG "Breaking (pre-1.0 window)" block: the `/v1` move with its unversioned exceptions and the two path literals that moved with it (refresh cookie `Path`, notifier links), the envelope change with a before/after pair, a status-code table with per-row migration advice, plus an "Added" block for `/openapi.json`, the error documentation, the spec fixes, and JWKS caching.
+- [x] Live transcript recorded below; every line of the plan's Validation section reproduces exactly.
+- [x] MasterPlan 7 registry and Progress updated.
 
 
 ## Surprises & Discoveries
@@ -448,7 +452,91 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete, 2026-07-09.** All five milestones landed; `cabal test all` is green (12 suites);
+`cabal run shomei-openapi` reproduces the committed spec byte-for-byte.
+
+Against the original purpose — the two surfaces every polyglot client touches first:
+
+- **URLs.** Application routes live under `/v1`; `/.well-known/jwks.json`, `/openapi.json`,
+  `/health`, `/ready` (and `/metrics`, a middleware) stay at the root. Old paths are 404s.
+- **Errors.** All 41 catalog entries, from all seven layers, are `application/problem+json` with a
+  stable `code`. The specific failure the Purpose section named — "a client that switches on the
+  error code breaks on the single most common failure in any deployment: an expired bearer
+  token" — is fixed: that request now returns `{"code":"token_invalid",…}` with
+  `WWW-Authenticate: Bearer`, not a plain-text `"invalid token"`.
+- **The spec.** 25 paths, a `Problem` schema, 51 error responses whose `code` enums are generated
+  from the runtime catalog, and a conformance test that fails when they drift (verified by
+  injecting drift).
+
+The live transcript:
+
+```text
+$ curl -si localhost:8080/v1/auth/me | sed -n '1p;/^www-auth/Ip;/^content-type/Ip;$p'
+HTTP/1.1 401 Unauthorized
+Content-Type: application/problem+json
+WWW-Authenticate: Bearer
+{"code":"missing_token","status":401,"title":"Authentication required","type":"about:blank"}
+
+$ curl -si -XPOST localhost:8080/v1/auth/signup -H 'Content-Type: application/json' -d '{'
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json
+{"code":"body_parse_error","detail":"Unexpected end-of-input, expecting record key literal or }",
+ "status":400,"title":"Request body could not be parsed","type":"about:blank"}
+
+$ curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8080/auth/login -d '{}'   # old path
+404
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/health                       # unversioned
+200
+$ curl -si localhost:8080/.well-known/jwks.json | grep -i cache-control
+Cache-Control: public, max-age=300
+
+$ curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8080/v1/auth/signup …      # created
+201
+$ curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8080/v1/auth/logout -H "Authorization: Bearer $TOK"
+204
+$ curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8080/v1/auth/logout -H "Authorization: Bearer $TOK"
+204                                                                                    # idempotent
+
+$ curl -s localhost:8080/openapi.json | jq '.openapi, (.paths|keys|length), .components.schemas.Problem.required'
+"3.1.0"
+25
+["type","title","status","code"]
+```
+
+Two things this plan got wrong on paper, and one thing it got right:
+
+**Wrong: the bypass-site list, twice.** M1 found two sites the Context section did not name
+(`csrfRejected`, `refreshH`'s 400). M2 found three more of a different kind — the rate limiter's
+path list, the refresh cookie's `Path`, the metrics counter table — none of which the plan
+imagined, because none of them is a Servant route type. **A route's path is written down in four
+places, and three of them fail silently.** M3 then found a fourth instance of the same shape when
+signup's status moved and the metrics counters flatlined. The generalization, now in the MasterPlan
+for EP-2/EP-4/EP-5/EP-7: the WAI layer runs *before* routing and cannot be derived from the route
+type; grep for the string.
+
+**Wrong: `x-error-codes`.** openapi-hs's `Response` has no extensions field. The forced
+alternative — an `allOf: [$ref Problem]` schema with `properties.code.enum` — turned out better
+than the plan's preference: standard JSON Schema, so a client generator can narrow `code` to a sum
+type, and the drift test reads it without parsing prose.
+
+**Right: doing the breaking window first.** M2 and M3 both changed wire behavior, and both were
+one commit each covering routes + handlers + client + examples + tests + regenerated spec. The
+conformance suite's path count and the byte-for-byte spec check made a half-done milestone
+impossible to commit by accident. Every route EP-2/EP-4/EP-5/EP-7 adds is now born under `/v1`
+with the envelope, and `baselineSpecs` documents its 401s without anyone remembering to.
+
+**Gap: `role_not_defined` (422) and `internal` (500) are in the catalog but on no route's
+documented error list.** `role_not_defined` is raised only by the `shomei-admin` CLI path, and
+500s are documented nowhere per-route by design. The drift guard checks "every documented code
+exists in the catalog", not the converse — deliberately, since the catalog is the superset.
+
+**Closed during M5: the `Problem` schema is validated against `problemBody`'s real output.**
+Writing this retrospective surfaced the hole — the published schema and the bytes the server
+writes are built by different code — so the conformance suite now decodes
+`components.schemas.Problem` back out of the serialized document (the artifact a generator reads)
+and runs `validateJSON` over the actual document of all 41 catalog entries, with and without a
+`detail`. Confirmed it bites: adding an undeclared member to `problemBody` fails 82 cases with
+"property \"undeclared\" is found in JSON value, but it is not mentioned in Swagger schema".
 
 
 ## Context and Orientation
