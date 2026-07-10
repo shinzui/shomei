@@ -1,5 +1,3 @@
-{-# LANGUAGE PackageImports #-}
-
 -- | Notification interpreters for the standalone server.
 --
 -- The core defines the 'Notifier' effect and emits a 'Notification' (recipient, one-time
@@ -32,6 +30,8 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, try)
+import Crypto.Hash.Algorithms (SHA256)
+import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (encode)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
@@ -76,13 +76,6 @@ import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Prelude
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
--- Pin to cryptonite: smtp-mail (0.3) drags cryptonite into this package's plan alongside the
--- repo's usual crypton, and both expose the same @Crypto.*@ modules. Only cryptonite's
--- @ByteArrayAccess (Digest a)@ instance ends up in scope here (crypton's is shadowed by the
--- module-name collision), so the HMAC digest must come from cryptonite to hex-encode it. This is
--- the one place shomei-server touches cryptonite directly; everywhere else uses crypton.
-import "cryptonite" Crypto.Hash.Algorithms (SHA256)
-import "cryptonite" Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 
 -- | Select the notifier interpreter from configuration and run it, reusing the server's shared
 -- TLS 'Manager' for the webhook transport. A single dispatching handler both implements the

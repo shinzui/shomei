@@ -112,7 +112,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Complete |
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Complete |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Complete |
-| 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | In Progress |
+| 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Complete |
 | 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Not Started |
 | 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | Not Started |
 
@@ -305,8 +305,8 @@ the other.
 - [x] EP-6: Token-exchange grant covering impersonation and service on-behalf-of; bespoke `/auth/impersonate` deprecated
 - [x] EP-7: TOTP enrollment/verification with encrypted secrets; login MFA union extended
 - [x] EP-7: Hashed one-time recovery codes with generation and consumption flows
-- [ ] EP-8: SMTP `Notifier` interpreter with TLS and auth, configured via Dhall/env
-- [ ] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
+- [x] EP-8: SMTP `Notifier` interpreter (provider relay) with implicit-TLS/STARTTLS/plaintext-lab and PLAIN/LOGIN auth, configured via Dhall/env
+- [x] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
 - [ ] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
 - [ ] EP-9: Time-bound grants (`expires_at`), expiry-filtered at mint, CLI flags, sweeper integration
 - [ ] EP-10: `examples/embedded-with-en` — shomei auth + embedded en authorization, end-to-end transcript
@@ -314,6 +314,20 @@ the other.
 
 
 ## Surprises & Discoveries
+
+**2026-07-10 (EP-8) — `smtp-mail` needs a `>=0.5` bound to get the maintained crypton build, and
+the HMAC hex must convert through `ram`, not `memory`.** Unbounded, cabal defaults `smtp-mail` to
+the stale `0.3.0.0`, which depends on `cryptonite` + `connection` and collides with the repo's
+crypton (its `ByteArrayAccess (Digest)` instance shadows crypton's). Bounding to `>=0.5` gets
+`smtp-mail-0.5.0.1` (published by `haskell-github-trust`, where development moved) which uses
+`crypton` + `crypton-connection` + `ram` — no fork pin, no Nix override. The webhook HMAC then uses
+plain crypton, but `convertToBase Base16` on a crypton `Digest` only resolves when imported from
+**`ram`** (crypton's instance is against ram, the repo's `memory` fork). **EP-9 also computes
+crypton digests (permission-hash SQL, grants); if it hex-encodes one, depend on `ram` and not
+`memory`, and if it ever pulls a cryptonite-based package, bound it to a crypton release the same
+way.** EP-8 completed 2026-07-10: the stock server delivers verification/reset email via
+config-selected `log`/`smtp`/`webhook` transports (default `log`, byte-identical to before), with a
+new `notification_delivery_failed` audit event and fire-and-forget hardening.
 
 **2026-07-10 (EP-7) — the login mint path grew a read, and the round-trip budget guard tripped
 (8 → 9).** The generalized MFA gate reads `findTotpByUser` alongside `countPasskeysByUser` on

@@ -92,8 +92,10 @@ un-versioned paths the plan text quotes, so the emailed link matches the live ro
 env overlay folds the pre-existing `logRawTokens` read into the new `overlayNotifierFromEnv`
 rather than a standalone record update.
 
-**2026-07-10 (M2) — the pinned nixpkgs set has `smtp-mail` 0.3.0.0, not the ≥0.5 the plan's
-Decision Log named, and it resolved with zero Nix overrides.** `cabal build` pulled `smtp-mail-0.3.0.0`
+**2026-07-10 (M2; corrected post-M4) — `smtp-mail` unbounded defaults to 0.3.0.0, but a `>=0.5`
+bound gets the maintained crypton-based 0.5.0.1 with no override.** The note below described the
+0.3.0.0 path (cryptonite); it was superseded when the dependency was bounded to `>=0.5` (see the
+top Decision Log entry). The 0.3.0.0-specific detail is retained for the record:** `cabal build` pulled `smtp-mail-0.3.0.0`
 and `mime-mail-0.5.2` straight from the index into the dev shell's GHC 9.12.4 set; `crypton`/`memory`
 were already present. No `flake.module.nix` override was needed. 0.3.0.0 still exports every function
 this plan uses — `sendMail'`, `sendMailSTARTTLS'`, `sendMailTLS'` and their `sendMailWithLogin*'`
@@ -136,6 +138,25 @@ Record every decision made while working on the plan.
   while removing the misleading "run your own mail server" reading. Webhook-only was rejected
   (re-opens the zero-infrastructure gap); a provider-specific HTTP interpreter was rejected
   (couples Shōmei to one provider's API — the webhook already covers HTTP-API delegation).
+  Date: 2026-07-10
+
+- Decision (2026-07-10, post-M4): **upgrade `smtp-mail` to 0.5 and use crypton; the cryptonite
+  workaround is removed.** At the user's direction ("don't use the obsolete Hackage package; upgrade
+  if it's easy"), `shomei-server` now depends on `smtp-mail >=0.5`. Version 0.5.0.1 is on Hackage
+  (published by `haskell-github-trust`, where development moved per jhickner/smtp-mail PR #42) and
+  depends on `crypton` + `crypton-connection` + `ram` — **no cryptonite**. cabal had silently
+  defaulted to the stale `0.3.0.0` only because the dependency was unbounded; a `>=0.5` bound is the
+  entire fix (the solver picks `smtp-mail-0.5.0.1` + `crypton-connection-0.4.6` with no conflict,
+  confirmed by `cabal build --dry-run`). No `source-repository-package` pin or `flake.module.nix`
+  override is needed. With cryptonite gone from the plan, the webhook HMAC uses plain `crypton`
+  imports like the rest of the repo, and the `PackageImports`-pinned cryptonite hack (and the
+  `cryptonite` build-dep) are deleted. This **supersedes the M3 cryptonite decision below**, which
+  existed only to work around the 0.3.0.0 collision. One follow-on: the `convertToBase Base16` for
+  the HMAC hex must come from **`ram`**, not `memory` — crypton's `ByteArrayAccess (Digest)` instance
+  is defined against `ram` (the repo's maintained `memory` fork, already used by shomei-core/
+  shomei-postgres), so `shomei-server` depends on `ram` here, not `memory`.
+  Rationale: an in-index, maintained, crypton-based release is not "obsolete" and carries no ongoing
+  fork-maintenance burden — the exact condition the user set for keeping SMTP.
   Date: 2026-07-10
 
 - Decision (2026-07-10, M4): the `alsoLogNotifications` tee is a single dispatching `interpret_`,
@@ -281,11 +302,13 @@ replayed at `/v1/auth/verify-email/confirm`, verifies the email — is proven by
 1. The tree had moved on: plan 30 (token redaction) and EP-3 (the `/v1` move) both landed before
    this plan ran. `NotifierConfig` already carried `logRawTokens`; the SMTP copy uses the live
    `/v1/...` confirm paths, not the un-versioned paths the plan text quoted.
-2. `smtp-mail` resolved as **0.3.0.0**, not the ≥0.5 the Decision Log named — and with **zero**
-   Nix overrides. 0.3 exports every function needed, so the interpreter is unchanged in intent.
-3. The webhook HMAC uses **cryptonite**, not crypton: `smtp-mail` 0.3 pulls cryptonite into the
-   plan and its `ByteArrayAccess (Digest)` instance is the one that resolves. Pinned via
-   `PackageImports`; the single spot shomei-server touches cryptonite.
+2. `smtp-mail` was first taken unbounded, which cabal defaulted to the stale **0.3.0.0**
+   (cryptonite-based); on the user's direction this was corrected to a `>=0.5` bound, resolving to
+   the maintained **0.5.0.1** on Hackage (crypton + crypton-connection + ram), with no Nix override
+   and no fork pin. 0.5 exports the same send functions, so the interpreter is unchanged.
+3. Consequently the webhook HMAC uses plain **crypton** like the rest of the repo. The temporary
+   `PackageImports`-pinned cryptonite hack (only needed while 0.3.0.0 forced cryptonite into the
+   plan) is gone. See the top Decision Log entry.
 4. The `alsoLogNotifications` tee is a single dispatching `interpret_`, not the plan's `interpose`
    wrapper (which would loop on re-`send`). Same behavior, no loop hazard.
 5. Added a `SHOMEI_PUBLIC_BASE_URL` env override (the smtp transport requires `publicBaseUrl`, and
