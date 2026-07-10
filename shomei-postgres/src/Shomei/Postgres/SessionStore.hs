@@ -62,6 +62,10 @@ runSessionStorePostgres = interpret_ \case
   RevokeAllUserSessions uid t -> do
     res <- runSession (Session.statement (userIdToUUID uid, t) revokeAllUserSessionsStmt)
     either dbFail (const (pure ())) res
+  ListSessionsForUser uid -> do
+    res <- runSession (Session.statement (userIdToUUID uid) listSessionsForUserStmt)
+    rows <- either dbFail pure res
+    traverse rebuild rows
   where
     dbFail e = throwError (InternalAuthError ("database error: " <> tshow e))
     rebuild r = either (throwError . InternalAuthError) pure (rebuildSession r)
@@ -121,6 +125,20 @@ insertSessionStmt =
         (E.param (E.nullable E.uuid))
     )
     D.noResult
+
+-- | Every session of one user, newest first, in every status. Unpaginated by design (see the
+-- port's haddock); @shomei_sessions@ already indexes @user_id@, so this is one index scan.
+listSessionsForUserStmt :: Statement UUID [SessionRow]
+listSessionsForUserStmt =
+  preparable
+    """
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id
+    FROM shomei.shomei_sessions
+    WHERE user_id = $1
+    ORDER BY created_at DESC, session_id DESC
+    """
+    (E.param (E.nonNullable E.uuid))
+    (D.rowList sessionRowDecoder)
 
 findSessionByIdStmt :: Statement UUID (Maybe SessionRow)
 findSessionByIdStmt =

@@ -78,6 +78,8 @@ module Shomei.Servant.Error
     pcServiceTokenActorInvalid,
     pcUserNotFound,
     pcRoleNotDefined,
+    pcInvalidUserStatus,
+    pcUserHasNoEmail,
     pcInternal,
 
     -- * HTTP-layer specs (no 'AuthError' counterpart)
@@ -280,6 +282,12 @@ pcUserNotFound = ProblemSpec "user_not_found" err404 "User not found"
 pcRoleNotDefined = ProblemSpec "role_not_defined" err422 "Role not defined"
 pcInternal = ProblemSpec "internal" err500 "Internal authentication error"
 
+-- | EP-2's admin lifecycle. Both are 409s: the request was well-formed and authorized, but the
+-- target's state refuses it.
+pcInvalidUserStatus, pcUserHasNoEmail :: ProblemSpec
+pcInvalidUserStatus = ProblemSpec "invalid_user_status" err409 "User is not in a state that allows this action"
+pcUserHasNoEmail = ProblemSpec "user_has_no_email" err409 "User has no email address"
+
 -- Specs raised by the HTTP layer, with no 'AuthError' counterpart.
 
 -- | No credential was presented at all — distinct from one that failed verification.
@@ -398,6 +406,8 @@ authErrorToServerError = \case
   -- The offending name is request-specific, so it belongs in 'detail', keeping 'title' stable
   -- for the OpenAPI catalog.
   RoleNotDefined (Role r) -> toProblemError pcRoleNotDefined (Just r)
+  InvalidUserStatus -> plain pcInvalidUserStatus
+  UserHasNoEmail -> plain pcUserHasNoEmail
   InternalAuthError _ -> plain pcInternal
   where
     plain spec = toProblemError spec Nothing

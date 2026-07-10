@@ -63,7 +63,7 @@ import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
-import Shomei.Domain.User (NewUser (..), User (..))
+import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.AuthEventReader
@@ -119,11 +119,23 @@ import Shomei.Effect.RoleStore
     listRolesForUser,
     revokeRole,
   )
-import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, revokeSession)
+import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, listSessionsForUser, revokeSession)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
-import Shomei.Effect.UserStore (UserStore, createUser, findUserByEmail, findUserById, findUserByLoginId, markUserEmailVerified)
+import Shomei.Effect.UserStore
+  ( UserCursor (..),
+    UserListQuery (..),
+    UserStore,
+    createUser,
+    emptyUserListQuery,
+    findUserByEmail,
+    findUserById,
+    findUserByLoginId,
+    listUsers,
+    markUserEmailVerified,
+    updateUserStatus,
+  )
 import Shomei.Effect.VerificationTokenStore
   ( VerificationTokenStore,
     createVerificationToken,
@@ -172,7 +184,7 @@ import Shomei.Workflow.Account
     requestPasswordReset,
   )
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | The full interpreter stack used by every test. The store interpreters are peeled
 -- first (Database/IOE/Error remain available to them); @TokenSigner@ is a trivial fake
@@ -377,6 +389,8 @@ tests :: [TestTree]
 tests =
   [ testUserRoundTrip,
     testUserNoEmailAndUniqueLoginId,
+    testListUsersOrderFilterAndPaging,
+    testListSessionsForUser,
     testCredentialRoundTrip,
     testSessionRevoke,
     testSessionActorRoundTrip,
@@ -573,6 +587,73 @@ testUserNoEmailAndUniqueLoginId =
     _ <- expectApp second
     nullEmails <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email IS NULL"
     nullEmails @?= 2
+
+-- | The admin listing's three promises, against the real statement: newest-first order, the
+-- status filter, and a keyset walk that is both disjoint and complete.
+--
+-- The walk matters more than it looks. An OFFSET pager over @ORDER BY created_at DESC@ would
+-- pass a two-page test on distinct timestamps and silently skip or repeat rows the moment two
+-- users share one — which is exactly what a bulk import produces. The cursor compares the whole
+-- @(created_at, user_id)@ tuple, so this test seeds three users and asserts the pages partition
+-- them.
+testListUsersOrderFilterAndPaging :: TestTree
+testListUsersOrderFilterAndPaging = testCase "listUsers: newest-first, status-filtered, keyset-paged" $ withDb \pool -> do
+  result <- runApp pool do
+    u1 <- createUser (NewUser {loginId = mkLoginId' "one", email = Nothing, displayName = Nothing})
+    u2 <- createUser (NewUser {loginId = mkLoginId' "two", email = Nothing, displayName = Nothing})
+    u3 <- createUser (NewUser {loginId = mkLoginId' "three", email = Nothing, displayName = Nothing})
+    updateUserStatus u2.userId UserSuspended
+    everyone <- listUsers emptyUserListQuery
+    suspended <- listUsers emptyUserListQuery {queryStatus = Just UserSuspended}
+    active <- listUsers emptyUserListQuery {queryStatus = Just UserActive}
+    page1 <- listUsers emptyUserListQuery {queryLimit = 2}
+    page2 <- case reverse page1 of
+      [] -> pure []
+      (lastUser : _) ->
+        listUsers
+          emptyUserListQuery
+            { queryLimit = 2,
+              queryBefore = Just (UserCursor {cursorCreatedAt = lastUser.createdAt, cursorUserId = lastUser.userId})
+            }
+    pure (u1, u2, u3, everyone, suspended, active, page1, page2)
+  (u1, u2, u3, everyone, suspended, active, page1, page2) <- expectApp result
+
+  -- Newest first. Rows created in one transaction can share a created_at, so assert on the set
+  -- and on the ordering key rather than on a fixed permutation.
+  map (.userId) everyone `shouldContainExactly` [u1.userId, u2.userId, u3.userId]
+  assertBool "newest-first" (isDescending (map (\u -> (u.createdAt, u.userId)) everyone))
+
+  map (.userId) suspended @?= [u2.userId]
+  map (.userId) active `shouldContainExactly` [u1.userId, u3.userId]
+
+  -- The keyset walk partitions the users: no overlap, nothing lost.
+  length page1 @?= 2
+  length page2 @?= 1
+  (map (.userId) page1 <> map (.userId) page2) `shouldContainExactly` [u1.userId, u2.userId, u3.userId]
+
+testListSessionsForUser :: TestTree
+testListSessionsForUser = testCase "listSessionsForUser returns every status, newest-first, for one user only" $ withDb \pool -> do
+  result <- runApp pool do
+    alice <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+    bob <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
+    t <- now
+    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    revokeSession s1.sessionId t
+    aliceSessions <- listSessionsForUser alice.userId
+    pure (s1, s2, aliceSessions)
+  (s1, s2, aliceSessions) <- expectApp result
+  -- Bob's session is absent; a revoked session is still listed (an admin must see it).
+  map (.sessionId) aliceSessions @?= [s2.sessionId, s1.sessionId]
+  map (.status) aliceSessions @?= [SessionActive, SessionRevoked]
+
+-- | Set equality with a readable failure, without imposing an order.
+shouldContainExactly :: (Ord a, Show a) => [a] -> [a] -> Assertion
+shouldContainExactly actual expected = sort actual @?= sort expected
+
+isDescending :: (Ord a) => [a] -> Bool
+isDescending xs = and (zipWith (>=) xs (drop 1 xs))
 
 testCredentialRoundTrip :: TestTree
 testCredentialRoundTrip = testCase "create credential + find-by-email" $ withDb \pool -> do

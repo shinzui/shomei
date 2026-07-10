@@ -79,15 +79,15 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Core capabilities (queries, workflows, events):
+Milestone 1 — Core capabilities (queries, workflows, events): **done 2026-07-09**
 
-- [ ] Add `ListUsers` (keyset-paginated, optional status filter) to the `UserStore` port (`shomei-core/src/Shomei/Effect/UserStore.hs`) with `UserListQuery`/`UserCursor`.
-- [ ] Add `ListSessionsForUser` to the `SessionStore` port (`shomei-core/src/Shomei/Effect/SessionStore.hs`).
-- [ ] Implement both in the PostgreSQL interpreters (`shomei-postgres/src/Shomei/Postgres/UserStore.hs`, `.../SessionStore.hs`) and the in-memory interpreters (`shomei-core/src/Shomei/Effect/InMemory.hs`).
-- [ ] Extend `UserSuspendedData`/`UserDeletedData` with `actor :: Maybe UserId`; add `UserReinstated`/`UserReinstatedData`; extend `SessionRevokedData` with `revokedBy :: Maybe UserId`; update `Shomei.Domain.EventCodec` + bump the constructor-count guard (27 → 28 after plan 38).
-- [ ] Add `InvalidUserStatus` and `UserHasNoEmail` to `AuthError` + `authErrorToServerError` mappings.
-- [ ] Add `Shomei.Workflow.Admin` (`suspendUser`, `reinstateUser`, `deleteUser`, `revokeUserSessions`, `revokeOneSession`) with status-transition rules, session revocation, and audit events.
-- [ ] Postgres + core tests for the new queries and workflows — suites green.
+- [x] `ListUsers` (keyset-paginated on `(created_at, user_id)`, optional status filter) on the `UserStore` port with `UserListQuery`/`UserCursor`/`emptyUserListQuery`/`maxUserLimit`/`clampUserLimit`.
+- [x] `ListSessionsForUser` on the `SessionStore` port (newest-first, every status, unpaginated).
+- [x] Both implemented in the PostgreSQL interpreters and the in-memory ones, with the same ordering and cursor predicate so the servant suite's pagination walk means something.
+- [x] `UserSuspendedData`/`UserDeletedData` gained `actor :: Maybe UserId`; new `UserReinstated`/`UserReinstatedData`; `SessionRevokedData` gained `revokedBy :: Maybe UserId`. `EventCodec` updated; the count guard is 28. A dedicated test decodes a **pre-EP-2 `session_revoked` payload** (no `revokedBy` key) and asserts `Nothing` — those rows exist in every deployment.
+- [x] `InvalidUserStatus` and `UserHasNoEmail` on `AuthError`, mapped to 409 problem documents through EP-3's catalog (`pcInvalidUserStatus`, `pcUserHasNoEmail` — added to `problemCatalog`, so the conformance suite already covers them).
+- [x] `Shomei.Workflow.Admin` (`suspendUser`, `reinstateUser`, `deleteUser`, `revokeUserSessions`, `revokeOneSession`): strict transitions, session revocation, actor-carrying audit events. It authorizes nothing — that is HTTP-layer policy, stated in the module haddock.
+- [x] Tests: `shomei-postgres` pins newest-first order, the status filter, and a disjoint+complete keyset walk, plus `listSessionsForUser` scoping and status visibility. `Shomei.Workflow.AdminSpec` (7 cases) covers all five workflows including the actor on every event. `cabal test all` green.
 
 Milestone 2 — HTTP surface:
 
@@ -113,7 +113,34 @@ Milestone 4 — Proof and docs:
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-09 (M1) — plan 40 landed first, so the boundary statement resolves to "adopt it".**
+Routes below become fields of `ShomeiAPI`, which `ShomeiRoutes` mounts under `/v1`, so they are
+born at `/v1/admin/...` with no extra work. Errors go through `toProblemError`; the two new
+`AuthError`s got `ProblemSpec` constants in `problemCatalog` rather than ad-hoc `json err409`
+bodies. Consequences for this plan's own numbers: the conformance path count is **25 → 33**, not
+the 24 → 32 written in Milestone 3, and the M2 `requireAdmin` guard throws a problem document.
+
+**2026-07-09 (M1) — the audit `user_id` column is the event's subject, not its actor.** Adding
+`revokedBy` to `SessionRevokedData` invited setting `session_revoked`'s `user_id` projection to the
+acting admin. That would have quietly corrupted the audit query: `GET /v1/admin/audit/events?user=<admin>`
+would return the sessions that admin revoked *for other people*, which reads as "things that
+happened to the admin". The column stays NULL (as it always was) and the actor rides in the
+payload. **Every actor-carrying event this plan adds follows the rule**: `user_id` = subject,
+payload = actor. `user_suspended` sets `user_id` to the *target*, not the admin.
+
+**2026-07-09 (M1) — `updateUserStatus` never moved `updated_at`.** Nothing had ever called it from
+a workflow, so the omission could not be observed. The admin listing exposes `updatedAt`, and a
+suspension that leaves it at the signup timestamp reads to an operator as "nothing has happened to
+this account". Fixed in the SQL (`SET status = $2, updated_at = now()`) and in the in-memory
+interpreter (which uses the `World` clock).
+
+**2026-07-09 (M1) — `revokeUserSessions` revokes session-by-session, not via
+`revokeAllUserSessions`.** The bulk primitive emits no per-session audit events and cannot report a
+count. Revoking each active session individually gives one `SessionRevoked` per session with
+`revokedBy` set, and returns the number actually ended — so an operator reading "revoked 0
+sessions" learns something true instead of "revoked 3" about three corpses. `suspendUser` and
+`deleteUser` still use the bulk primitive (per the plan), so their trail is the single
+`user_suspended`/`user_deleted` event; that is a deliberate asymmetry, not an oversight.
 
 
 ## Decision Log

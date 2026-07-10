@@ -11,6 +11,14 @@ module Shomei.Effect.UserStore
     findUserByEmail,
     updateUserStatus,
     markUserEmailVerified,
+
+    -- * Listing (EP-2)
+    UserCursor (..),
+    UserListQuery (..),
+    emptyUserListQuery,
+    maxUserLimit,
+    clampUserLimit,
+    listUsers,
   )
 where
 
@@ -22,6 +30,34 @@ import Shomei.Domain.LoginId (LoginId)
 import Shomei.Domain.User (NewUser, User, UserStatus)
 import Shomei.Id (UserId)
 
+-- | A keyset-pagination cursor over @(created_at, user_id)@, newest first. Pointing at a row
+-- rather than counting offsets means a page boundary cannot shift under concurrent signups.
+data UserCursor = UserCursor
+  { cursorCreatedAt :: !UTCTime,
+    cursorUserId :: !UserId
+  }
+  deriving stock (Eq, Show)
+
+-- | Filters and pagination for 'ListUsers'. Deliberately its own type rather than a share with
+-- 'Shomei.Effect.AuthEventReader.AuditEventQuery': different port, different filters.
+data UserListQuery = UserListQuery
+  { queryStatus :: !(Maybe UserStatus),
+    -- | Pass through 'clampUserLimit' before it reaches a database.
+    queryLimit :: !Int,
+    queryBefore :: !(Maybe UserCursor)
+  }
+  deriving stock (Eq, Show)
+
+-- | No filter, 50 rows, from the top.
+emptyUserListQuery :: UserListQuery
+emptyUserListQuery = UserListQuery Nothing 50 Nothing
+
+maxUserLimit :: Int
+maxUserLimit = 1000
+
+clampUserLimit :: Int -> Int
+clampUserLimit n = max 1 (min maxUserLimit n)
+
 data UserStore :: Effect where
   CreateUser :: NewUser -> UserStore m User
   FindUserById :: UserId -> UserStore m (Maybe User)
@@ -32,6 +68,9 @@ data UserStore :: Effect where
   FindUserByEmail :: Email -> UserStore m (Maybe User)
   UpdateUserStatus :: UserId -> UserStatus -> UserStore m ()
   MarkUserEmailVerified :: UserId -> UTCTime -> UserStore m ()
+  -- | Newest-first page of users, optionally filtered by status. Soft-deleted users are
+  -- included: the admin surface is honest about them.
+  ListUsers :: UserListQuery -> UserStore m [User]
 
 type instance DispatchOf UserStore = Dynamic
 
@@ -52,3 +91,6 @@ updateUserStatus uid st = send (UpdateUserStatus uid st)
 
 markUserEmailVerified :: (UserStore :> es) => UserId -> UTCTime -> Eff es ()
 markUserEmailVerified uid t = send (MarkUserEmailVerified uid t)
+
+listUsers :: (UserStore :> es) => UserListQuery -> Eff es [User]
+listUsers = send . ListUsers

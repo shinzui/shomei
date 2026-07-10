@@ -432,7 +432,8 @@ logout _cfg cmd = do
     Just _ -> do
       revokeSession sid ts
       revokeSessionRefreshTokens sid ts
-      publishAuthEvent (Event.SessionRevoked (Event.SessionRevokedData sid ts))
+      -- Self-service logout: no administrator revoked this session.
+      publishAuthEvent (Event.SessionRevoked (Event.SessionRevokedData sid Nothing ts))
       pure (Right ())
 
 verifyToken ::

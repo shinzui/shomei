@@ -10,6 +10,7 @@
 module Shomei.Domain.EventCodecSpec (tests) where
 
 import Data.Aeson (ToJSON, toJSON)
+import Data.Aeson qualified as Aeson
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -84,7 +85,8 @@ tests =
     "Shomei.Domain.EventCodec"
     [ testGroup "round-trips every constructor" roundTrips,
       testUnknownType,
-      testConstructorCount
+      testConstructorCount,
+      testOldSessionRevokedDecodes
     ]
 
 -- | One assertion per 'AuthEvent' constructor. The @event_type@ strings here MUST match
@@ -95,7 +97,7 @@ roundTrips =
     let d = LoginSucceededData uid sid t0 in check "login_succeeded" d (LoginSucceeded d),
     let d = LoginFailedData aliceLogin t0 in check "login_failed" d (LoginFailed d),
     let d = SessionStartedData sid uid t0 in check "session_started" d (SessionStarted d),
-    let d = SessionRevokedData sid t0 in check "session_revoked" d (SessionRevoked d),
+    let d = SessionRevokedData sid (Just uid2) t0 in check "session_revoked" d (SessionRevoked d),
     let d = RefreshTokenRotatedData sid rtid t0 in check "refresh_token_rotated" d (RefreshTokenRotated d),
     let d = RefreshTokenReuseDetectedData sid rtid t0 in check "refresh_token_reuse_detected" d (RefreshTokenReuseDetected d),
     let d = EmailVerificationRequestedData uid aliceEmail t0 in check "email_verification_requested" d (EmailVerificationRequested d),
@@ -103,8 +105,9 @@ roundTrips =
     let d = PasswordResetRequestedData uid aliceEmail t0 in check "password_reset_requested" d (PasswordResetRequested d),
     let d = PasswordResetCompletedData uid t0 in check "password_reset_completed" d (PasswordResetCompleted d),
     let d = PasswordChangedData uid t0 in check "password_changed" d (PasswordChanged d),
-    let d = UserSuspendedData uid t0 in check "user_suspended" d (UserSuspended d),
-    let d = UserDeletedData uid t0 in check "user_deleted" d (UserDeleted d),
+    let d = UserSuspendedData uid (Just uid2) t0 in check "user_suspended" d (UserSuspended d),
+    let d = UserDeletedData uid (Just uid2) t0 in check "user_deleted" d (UserDeleted d),
+    let d = UserReinstatedData uid (Just uid2) t0 in check "user_reinstated" d (UserReinstated d),
     let d = AccountLockedData (AccountKey "k-abc") (ClientIp "1.2.3.4") 5 t1 t0 in check "account_locked" d (AccountLocked d),
     let d = LoginThrottledData (ClientIp "1.2.3.4") 5 t0 in check "login_throttled" d (LoginThrottled d),
     let d = PasskeyRegisteredData uid pkid t0 in check "passkey_registered" d (PasskeyRegistered d),
@@ -129,7 +132,26 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 27).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 28).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 27 AuthEvent constructors" (length roundTrips @?= 27)
+  testCase "covers all 28 AuthEvent constructors" (length roundTrips @?= 28)
+
+-- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
+-- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all
+-- write them), and they carry no such key. Decoding one must still succeed, yielding 'Nothing' —
+-- which is precisely what those rows mean: nobody administrative revoked that session.
+--
+-- This is the compatibility rule for every future widening of an event payload: add 'Maybe'
+-- fields, never required ones.
+testOldSessionRevokedDecodes :: TestTree
+testOldSessionRevokedDecodes =
+  testCase "a pre-EP-2 session_revoked payload decodes with revokedBy = Nothing" $
+    reconstructAuthEvent "session_revoked" oldPayload @?= Right (SessionRevoked expected)
+  where
+    oldPayload =
+      Aeson.object
+        [ "sessionId" Aeson..= sid,
+          "occurredAt" Aeson..= t0
+        ]
+    expected = SessionRevokedData sid Nothing t0

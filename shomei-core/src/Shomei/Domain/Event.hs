@@ -24,6 +24,7 @@ module Shomei.Domain.Event
     PasswordChangedData (..),
     UserSuspendedData (..),
     UserDeletedData (..),
+    UserReinstatedData (..),
     AccountLockedData (..),
     LoginThrottledData (..),
     PasskeyRegisteredData (..),
@@ -81,8 +82,13 @@ data SessionStartedData = SessionStartedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | @revokedBy@ names the admin who revoked the session through the EP-2 admin API; it is
+-- 'Nothing' for the self-service revocations (logout, refresh-token reuse detection, stopping an
+-- impersonation). A missing key in a historical row decodes as 'Nothing', which is what those
+-- rows mean.
 data SessionRevokedData = SessionRevokedData
   { sessionId :: !SessionId,
+    revokedBy :: !(Maybe UserId),
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
@@ -142,8 +148,12 @@ data PasswordChangedData = PasswordChangedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | @actor@ is the administrator who performed the lifecycle change. It is a 'Maybe' because a
+-- future non-HTTP caller (a CLI, a migration) may have no acting principal — not because the
+-- admin API ever omits it.
 data UserSuspendedData = UserSuspendedData
   { userId :: !UserId,
+    actor :: !(Maybe UserId),
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
@@ -151,6 +161,16 @@ data UserSuspendedData = UserSuspendedData
 
 data UserDeletedData = UserDeletedData
   { userId :: !UserId,
+    actor :: !(Maybe UserId),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A suspended user was returned to service.
+data UserReinstatedData = UserReinstatedData
+  { userId :: !UserId,
+    actor :: !(Maybe UserId),
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
@@ -309,6 +329,7 @@ data AuthEvent
   | PasswordChanged PasswordChangedData
   | UserSuspended UserSuspendedData
   | UserDeleted UserDeletedData
+  | UserReinstated UserReinstatedData
   | AccountLocked AccountLockedData
   | LoginThrottled LoginThrottledData
   | PasskeyRegistered PasskeyRegisteredData

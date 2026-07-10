@@ -120,6 +120,19 @@ data AuthError
     -- was well-formed but names a role the deployment never declared. Guards against
     -- @roles grant --role adminn@ silently minting a role no gate will ever check.
     RoleNotDefined Role
+  | -- | The target is not in a state that permits the requested lifecycle transition —
+    -- suspending an already-suspended user, reinstating one who was never suspended, deleting a
+    -- deleted one. Maps to 409.
+    --
+    -- Deliberately not silently idempotent: two administrators acting on one incident must be
+    -- able to tell which of them changed the state.
+    InvalidUserStatus
+  | -- | An admin asked Shōmei to email the target (a password reset) and the target has no
+    -- address. Maps to 409.
+    --
+    -- A real 409 leaks nothing here, unlike on the public reset endpoint: the caller is an
+    -- authorized admin who named a user id, not a stranger probing an email.
+    UserHasNoEmail
   | InternalAuthError Text
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

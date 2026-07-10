@@ -46,6 +46,7 @@ reconstructAuthEvent etype payload = case etype of
   "password_changed" -> PasswordChanged <$> parse payload
   "user_suspended" -> UserSuspended <$> parse payload
   "user_deleted" -> UserDeleted <$> parse payload
+  "user_reinstated" -> UserReinstated <$> parse payload
   "account_locked" -> AccountLocked <$> parse payload
   "login_throttled" -> LoginThrottled <$> parse payload
   "passkey_registered" -> PasskeyRegistered <$> parse payload
@@ -83,8 +84,12 @@ projectAuthEvent = \case
     (Nothing, Nothing, "login_failed", toJSON d, occ)
   SessionStarted d@(SessionStartedData sid uid occ) ->
     (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "session_started", toJSON d, occ)
-  SessionRevoked d@(SessionRevokedData sid occ) ->
-    (Nothing, Just (sessionIdToUUID sid), "session_revoked", toJSON d, occ)
+  -- The @user_id@ column is the event's /subject/, not its actor: filtering @?user=@ by an
+  -- admin must not return the sessions they revoked for other people. 'SessionRevokedData'
+  -- names no subject (only the session), so the column stays NULL, as it always has; the
+  -- acting admin rides in the payload's @revokedBy@.
+  SessionRevoked d ->
+    (Nothing, Just (sessionIdToUUID d.sessionId), "session_revoked", toJSON d, d.occurredAt)
   RefreshTokenRotated d@(RefreshTokenRotatedData sid _ occ) ->
     (Nothing, Just (sessionIdToUUID sid), "refresh_token_rotated", toJSON d, occ)
   RefreshTokenReuseDetected d@(RefreshTokenReuseDetectedData sid _ occ) ->
@@ -99,10 +104,12 @@ projectAuthEvent = \case
     (Just (userIdToUUID uid), Nothing, "password_reset_completed", toJSON d, occ)
   PasswordChanged d@(PasswordChangedData uid occ) ->
     (Just (userIdToUUID uid), Nothing, "password_changed", toJSON d, occ)
-  UserSuspended d@(UserSuspendedData uid occ) ->
-    (Just (userIdToUUID uid), Nothing, "user_suspended", toJSON d, occ)
-  UserDeleted d@(UserDeletedData uid occ) ->
-    (Just (userIdToUUID uid), Nothing, "user_deleted", toJSON d, occ)
+  UserSuspended d ->
+    (Just (userIdToUUID d.userId), Nothing, "user_suspended", toJSON d, d.occurredAt)
+  UserDeleted d ->
+    (Just (userIdToUUID d.userId), Nothing, "user_deleted", toJSON d, d.occurredAt)
+  UserReinstated d ->
+    (Just (userIdToUUID d.userId), Nothing, "user_reinstated", toJSON d, d.occurredAt)
   AccountLocked d@(AccountLockedData _ _ _ _ occ) ->
     (Nothing, Nothing, "account_locked", toJSON d, occ)
   LoginThrottled d@(LoginThrottledData _ _ occ) ->

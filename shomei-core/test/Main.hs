@@ -11,6 +11,7 @@ import Shomei.Workflow.ConcurrencySpec qualified
 import Shomei.Workflow.ImpersonationSpec qualified
 import Shomei.Workflow.MfaSpec qualified
 import Shomei.Workflow.PasskeySpec qualified
+import Shomei.Workflow.AdminSpec qualified
 import Shomei.Workflow.RolesSpec qualified
 import Shomei.Workflow.ServiceTokenSpec qualified
 import Shomei.Workflow.EmailVerificationSpec qualified
@@ -34,6 +35,7 @@ main =
           Shomei.Workflow.MfaSpec.tests,
           Shomei.Workflow.ImpersonationSpec.tests,
           Shomei.Workflow.ServiceTokenSpec.tests,
+          Shomei.Workflow.AdminSpec.tests,
           Shomei.Workflow.RolesSpec.tests,
           Shomei.Workflow.TimingSpec.tests,
           Shomei.Workflow.EmailVerificationSpec.tests,

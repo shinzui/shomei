@@ -57,7 +57,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
 import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
-import Data.List (sortBy)
+import Data.List (sortBy, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
@@ -133,7 +133,7 @@ import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
 import Shomei.Effect.TokenGen (TokenGen (..))
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.TokenVerifier (TokenVerifier (..))
-import Shomei.Effect.UserStore (UserStore (..))
+import Shomei.Effect.UserStore (UserCursor (..), UserListQuery (..), UserStore (..), clampUserLimit)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore (..))
 import Shomei.Effect.WebAuthnCeremony
   ( BeginCeremony (..),
@@ -159,6 +159,8 @@ import Shomei.Id
     genSessionId,
     genUserId,
     genVerificationTokenId,
+    sessionIdToUUID,
+    userIdToUUID,
   )
 import Shomei.Prelude
 
@@ -292,13 +294,28 @@ runUserStore ref = interpret_ \case
   FindUserById uid -> liftIO ((Map.lookup uid . (.users)) <$> readIORef ref)
   FindUserByLoginId lid -> liftIO (findByLoginId lid <$> readIORef ref)
   FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
-  UpdateUserStatus uid st ->
-    liftIO (modifyWorld ref (#users %~ Map.adjust (#status .~ st) uid))
+  UpdateUserStatus uid st -> liftIO do
+    w <- readIORef ref
+    modifyWorld ref (#users %~ Map.adjust (\u -> u & #status .~ st & #updatedAt .~ w.clock) uid)
   MarkUserEmailVerified uid t ->
     liftIO (modifyWorld ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
+  ListUsers q -> liftIO (page q . Map.elems . (.users) <$> readIORef ref)
   where
     findByLoginId lid w = listToMaybe [u | u <- Map.elems w.users, u.loginId == lid]
     findByEmail e w = listToMaybe [u | u <- Map.elems w.users, u.email == Just e]
+
+    -- The same newest-first keyset page the PostgreSQL statement produces, so the servant
+    -- suite's pagination walk exercises identical semantics against the in-memory world.
+    page q =
+      take (clampUserLimit q.queryLimit)
+        . filter (beforeCursor q.queryBefore)
+        . filter (matchesStatus q.queryStatus)
+        . sortOn (Down . userKey)
+
+    userKey u = (u.createdAt, userIdToUUID u.userId)
+    matchesStatus mst u = maybe True (== u.status) mst
+    beforeCursor Nothing _ = True
+    beforeCursor (Just c) u = userKey u < (c.cursorCreatedAt, userIdToUUID c.cursorUserId)
 
 runCredentialStore :: (IOE :> es) => IORef World -> Eff (CredentialStore : es) a -> Eff es a
 runCredentialStore ref = interpret_ \case
@@ -346,8 +363,12 @@ runSessionStore ref = interpret_ \case
           ref
           (#sessions %~ Map.map (\s -> if s.userId == uid then revoke t s else s))
       )
+  ListSessionsForUser uid ->
+    liftIO (sessionsOf uid <$> readIORef ref)
   where
     revoke t s = s & #status .~ SessionRevoked & #revokedAt .~ Just t
+    sessionsOf uid w =
+      sortOn (Down . \s -> (s.createdAt, sessionIdToUUID s.sessionId)) [s | s <- Map.elems w.sessions, s.userId == uid]
 
 -- Build a fresh Session from a NewSession (kept separate to avoid a long inline record).
 mkSession :: SessionId -> NewSession -> Session

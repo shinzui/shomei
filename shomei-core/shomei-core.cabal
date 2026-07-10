@@ -88,6 +88,7 @@ library
     Shomei.Prelude
     Shomei.Workflow
     Shomei.Workflow.Account
+    Shomei.Workflow.Admin
     Shomei.Workflow.Breach
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
@@ -134,6 +135,7 @@ test-suite shomei-core-test
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
+    Shomei.Workflow.AdminSpec
     Shomei.Workflow.RolesSpec
     Shomei.Workflow.ServiceTokenSpec
     Shomei.Workflow.TimingSpec
