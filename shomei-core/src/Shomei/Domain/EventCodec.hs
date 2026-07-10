@@ -63,6 +63,8 @@ reconstructAuthEvent etype payload = case etype of
   "service_account_created" -> ServiceAccountCreated <$> parse payload
   "service_account_secret_rotated" -> ServiceAccountSecretRotated <$> parse payload
   "service_account_revoked" -> ServiceAccountRevoked <$> parse payload
+  "oauth_client_created" -> OAuthClientCreated <$> parse payload
+  "oauth_client_revoked" -> OAuthClientRevoked <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -151,3 +153,9 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.userId), Nothing, "service_account_secret_rotated", toJSON d, d.occurredAt)
   ServiceAccountRevoked d ->
     (Just (userIdToUUID d.userId), Nothing, "service_account_revoked", toJSON d, d.occurredAt)
+  -- An OAuth client has no backing user row and is never a token subject, so both id columns
+  -- stay NULL. The client is identified inside the payload.
+  OAuthClientCreated d ->
+    (Nothing, Nothing, "oauth_client_created", toJSON d, d.occurredAt)
+  OAuthClientRevoked d ->
+    (Nothing, Nothing, "oauth_client_revoked", toJSON d, d.occurredAt)

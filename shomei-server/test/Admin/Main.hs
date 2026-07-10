@@ -40,6 +40,7 @@ import Shomei.Admin.Keys
     listAllKeys,
     listPublishableSigningKeys,
   )
+import Shomei.Admin.OAuthClients qualified as OAuthClients
 import Shomei.Admin.Roles (RolesCommand (..), runRoles)
 import Shomei.Admin.ServiceAccounts (createAction, listAction, revokeAction, rotateSecretAction)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
@@ -50,6 +51,7 @@ import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.OAuthClient (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
 import Shomei.Domain.ServiceAccount (ServiceAccount (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
@@ -157,7 +159,10 @@ main =
           testUserCreateRefusesUndefinedDefaultRoles,
           testServiceAccountsLifecycle,
           testServiceAccountsRotateAndRevoke,
-          testServiceAccountsUnknownClientIdFails
+          testServiceAccountsUnknownClientIdFails,
+          testOAuthClientsLifecycle,
+          testOAuthClientsPublicHasNoSecret,
+          testOAuthClientsRevokeUnknownFails
         ]
     )
 
@@ -805,3 +810,84 @@ testServiceAccountsUnknownClientIdFails =
     let env = adminEnv pool connStr
     expectExitFailure "rotate-secret of an unknown client" (void (rotateSecretAction env "svcacct_nope"))
     expectExitFailure "revoke of an unknown client" (void (revokeAction env "svcacct_nope"))
+
+-- shomei-admin oauth-clients (EP-5) -----------------------------------------
+
+ocClientId' :: OAuthClient -> Text
+ocClientId' OAuthClient {clientId} = clientId
+
+ocStatus' :: OAuthClient -> OAuthClientStatus
+ocStatus' OAuthClient {status} = status
+
+ocDisplayName' :: OAuthClient -> Text
+ocDisplayName' OAuthClient {displayName} = displayName
+
+-- | create → the client exists, is active, stores only the digest of the once-printed secret,
+-- and owns NO backing user row (unlike a service account, it is never a token subject).
+-- Then list sees it, and revoke keeps the row while flipping its status.
+testOAuthClientsLifecycle :: TestTree
+testOAuthClientsLifecycle =
+  testCase "oauth-clients create/list/revoke: digest-only secret, no backing user, row survives revocation" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    (client, mSecret) <-
+      OAuthClients.createAction
+        env
+        "grafana"
+        ConfidentialClient
+        ["https://grafana.example.com/callback"]
+        ["openid", "profile"]
+    secret <- maybe (assertFailure "a confidential client must be issued a secret") pure mSecret
+    let cid = ocClientId' client
+
+    ocStatus' client @?= OAuthClientActive
+    n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_clients WHERE status = 'active'"
+    n @?= 1
+
+    -- The plaintext secret is nowhere in the database; only its SHA-256 hex digest is.
+    plaintext <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_oauth_clients WHERE secret_hash = '" <> secret <> "'")
+    assertEqual "the plaintext secret is never stored" 0 plaintext
+    digest <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_oauth_clients WHERE secret_hash = '" <> sha256Hex secret <> "'")
+    assertEqual "the stored hash is sha256Hex of the returned secret" 1 digest
+
+    -- An OAuth client is not a principal: no shomei_users row is provisioned for it.
+    backing <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_users WHERE login_id = '" <> cid <> "'")
+    assertEqual "an oauth client gets no backing user row" 0 backing
+
+    listed <- OAuthClients.listAction env
+    map ocDisplayName' listed @?= ["grafana"]
+
+    created <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'oauth_client_created'"
+    created @?= 1
+    -- The client is not a user, so the audit row files under no user.
+    withUser <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'oauth_client_created' AND user_id IS NOT NULL"
+    assertEqual "an oauth client lifecycle event names no user" 0 withUser
+
+    _ <- OAuthClients.revokeAction env cid
+    revoked <- scalarInt pool ("SELECT count(*) FROM shomei.shomei_oauth_clients WHERE client_id = '" <> cid <> "' AND status = 'revoked' AND revoked_at IS NOT NULL")
+    assertEqual "revocation flips status, stamps revoked_at, and keeps the row" 1 revoked
+    revokedEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'oauth_client_revoked'"
+    revokedEvents @?= 1
+
+-- | A public client is issued no secret at all — not one that is stored and never checked. PKCE
+-- is what binds its authorize request to its token request.
+testOAuthClientsPublicHasNoSecret :: TestTree
+testOAuthClientsPublicHasNoSecret =
+  testCase "oauth-clients create --type public: no secret is generated or stored" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    (client, mSecret) <-
+      OAuthClients.createAction env "spa" PublicClient ["https://spa.example.com/cb"] ["openid"]
+    assertEqual "a public client is issued no secret" Nothing mSecret
+    nulls <-
+      scalarInt
+        pool
+        ("SELECT count(*) FROM shomei.shomei_oauth_clients WHERE client_id = '" <> ocClientId' client <> "' AND secret_hash IS NULL AND client_type = 'public'")
+    assertEqual "its secret_hash is a real NULL" 1 nulls
+
+-- | Revoking an unknown client_id exits nonzero rather than silently updating zero rows.
+testOAuthClientsRevokeUnknownFails :: TestTree
+testOAuthClientsRevokeUnknownFails =
+  testCase "oauth-clients revoke of an unknown client_id exits nonzero and writes nothing" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    expectExitFailure "revoke unknown" (void (OAuthClients.revokeAction env "oauthclient_does_not_exist"))
+    events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'oauth_client_revoked'"
+    events @?= 0

@@ -42,6 +42,14 @@ in    { issuer = "shomei"
       -- `shomei-admin roles define <name>`; the server refuses to start if a name here is not
       -- in the registry. The empty list (the default) grants nothing.
       , defaultRoles = [] : List Text
+      -- OIDC provider. Keep disabled until `issuer` above is this deployment's real public
+      -- base URL (e.g. "https://auth.example.com") — the server refuses to start otherwise,
+      -- because every endpoint in the discovery document is derived from it. Register clients
+      -- with `shomei-admin oauth-clients create`. See docs/user/oidc.md.
+      , oidcEnabled = False
+      , oauthLoginUrl = None Text
+      , oauthAuthorizationCodeTtlSeconds = 60
+      , oauthIdTokenTtlSeconds = 900
       -- Service-token issuance for machine callers. Keep disabled until you create a Shōmei
       -- user for each account and replace the placeholder id/hash/scope values.
       , serviceToken =

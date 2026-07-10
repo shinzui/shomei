@@ -25,9 +25,11 @@ module Shomei.Config
     ServiceAccountId (..),
     ServiceAccountConfig (..),
     ServiceTokenConfig (..),
+    OAuthConfig (..),
     defaultWebAuthnConfig,
     defaultImpersonationConfig,
     defaultServiceTokenConfig,
+    defaultOAuthConfig,
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -264,6 +266,45 @@ data ServiceTokenConfig = ServiceTokenConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | OIDC provider policy (EP-5). Every field has a default (see 'defaultOAuthConfig') so the
+-- record stays append-only.
+--
+-- The OIDC issuer is 'ShomeiConfig.issuer', not a field here: OIDC Core requires the discovery
+-- document to live at @{issuer}\/.well-known\/openid-configuration@ and ID tokens to carry
+-- @iss = issuer@, so the issuer /is/ the deployment's public base URL by construction. A second
+-- "public base URL" field would be a second value that must agree with the first. When
+-- 'oidcEnabled' is set, the standalone server validates at boot that the issuer parses as an
+-- absolute @http(s)@ URL and refuses to start otherwise.
+data OAuthConfig = OAuthConfig
+  { -- | master switch, default 'False': discovery and @\/oauth\/authorize@ answer 404 when off,
+    --     so deploying the code before enabling the provider is safe. A disabled provider must
+    --     not advertise itself.
+    oidcEnabled :: !Bool,
+    -- | the host's own login page, to which an unauthenticated @\/oauth\/authorize@ request is
+    --     redirected with the original authorize URL in a @return_to@ query parameter. Shōmei
+    --     ships no login UI and persists no pending-authorize state; the host logs the user in
+    --     and navigates back to @return_to@. 'Nothing' makes an unauthenticated authorize
+    --     request a 401 with an OAuth error body instead.
+    loginUrl :: !(Maybe Text),
+    -- | how long an issued authorization code stays exchangeable; default 60 seconds, per
+    --     OAuth 2.0 Security BCP ("a maximum lifetime of 10 minutes"; codes are single-use and
+    --     exchanged within seconds by every real client)
+    authorizationCodeTTL :: !NominalDiffTime,
+    -- | ID-token lifetime; default 15 minutes, matching 'defaultAccessTokenTTL'
+    idTokenTTL :: !NominalDiffTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+defaultOAuthConfig :: OAuthConfig
+defaultOAuthConfig =
+  OAuthConfig
+    { oidcEnabled = False,
+      loginUrl = Nothing,
+      authorizationCodeTTL = 60,
+      idTokenTTL = defaultAccessTokenTTL
+    }
+
 defaultImpersonationConfig :: ImpersonationConfig
 defaultImpersonationConfig =
   ImpersonationConfig
@@ -309,6 +350,7 @@ data ShomeiConfig = ShomeiConfig
     webauthnConfig :: !WebAuthnConfig,
     impersonationConfig :: !ImpersonationConfig,
     serviceTokenConfig :: !ServiceTokenConfig,
+    oauthConfig :: !OAuthConfig,
     cookieConfig :: !CookieConfig,
     -- | roles granted to every user created through @Shomei.Workflow.signup@ (the HTTP signup
     --     route and @shomei-admin users create@ alike), applied before the first token is minted
@@ -386,6 +428,7 @@ defaultShomeiConfig iss aud =
       webauthnConfig = defaultWebAuthnConfig,
       impersonationConfig = defaultImpersonationConfig,
       serviceTokenConfig = defaultServiceTokenConfig,
+      oauthConfig = defaultOAuthConfig,
       cookieConfig = defaultCookieConfig,
       defaultRoles = Set.empty
     }

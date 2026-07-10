@@ -457,12 +457,34 @@ baselineSpecs op =
   [spec | not (null (op ^. O.security)), spec <- [pcMissingToken, pcTokenInvalidAuth]]
     <> [pcBodyParseError | has (O.requestBody . _Just) op]
 
--- | The single path exempt from the problem-details envelope: EP-4's OAuth2 token endpoint
--- answers RFC 6749 §5.2 error objects, because that is what stock OAuth2 clients parse. Plans 42
--- and 43 add grants to this same path; the OIDC endpoints they add
--- (@\/.well-known\/openid-configuration@, introspection, revocation) belong on this list too.
+-- | The paths exempt from the problem-details envelope: they answer RFC 6749 §5.2 error objects,
+-- because that is what stock OAuth2 \/ OIDC clients parse.
+--
+-- __Any new @\/oauth\/*@ or OIDC route must be added here__, with the statuses it can actually
+-- emit. Otherwise 'baselineSpecs' documents it with a @problem+json@ response it cannot produce
+-- (silently, for a route with a request body — no other conformance check inspects a non-problem
+-- response). Plan 43's token-exchange grant lands on @\/oauth\/token@ and needs no new entry.
+--
+-- Note @\/oauth\/userinfo@ is deliberately absent: it is guarded by the ordinary 'Authenticated'
+-- combinator and its @401@s are the ordinary problem documents, not OAuth error objects.
+oauthErrorResponsesByPath :: [(FilePath, [(Int, [T.Text])])]
+oauthErrorResponsesByPath =
+  [ -- @401@ is @invalid_client@ alone (and carries @WWW-Authenticate: Basic@); @400@ covers the
+    -- request-shape and scope failures. @500@ is documented because a database outage must still
+    -- answer in the OAuth shape rather than break the client's error parser.
+    ( "/oauth/token",
+      [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope"]),
+        (401, ["invalid_client"]),
+        (500, ["server_error"])
+      ]
+    ),
+    -- A deployment with @oidcEnabled = false@ must not advertise; the refusal reaches OIDC
+    -- tooling, so it speaks the OAuth error shape rather than the application envelope.
+    ("/.well-known/openid-configuration", [(404, ["not_found"])])
+  ]
+
 oauthPaths :: [FilePath]
-oauthPaths = ["/oauth/token"]
+oauthPaths = map fst oauthErrorResponsesByPath
 
 -- | The RFC 6749 §5.2 error object, as a @components.schemas@ entry.
 --
@@ -482,18 +504,6 @@ oauthErrorSchema =
           ("error_description", O.Inline (stringSchema & O.description ?~ "Human-readable explanation."))
         ]
     & O.required .~ ["error"]
-
--- | The error responses of @POST \/oauth\/token@, keyed by status.
---
--- @401@ is @invalid_client@ alone (and carries @WWW-Authenticate: Basic@); @400@ covers the
--- request-shape and scope failures. @500@ is documented because a database outage must still
--- answer in the OAuth shape rather than break the client's error parser.
-oauthErrorResponses :: [(Int, [T.Text])]
-oauthErrorResponses =
-  [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope"]),
-    (401, ["invalid_client"]),
-    (500, ["server_error"])
-  ]
 
 -- | The response object for one OAuth status, narrowing @error@ to the codes it can carry.
 oauthErrorResponse :: [T.Text] -> O.Response
@@ -519,16 +529,15 @@ withErrorResponses doc =
     & O.paths %~ imap decoratePath
   where
     decoratePath path item
-      | path `elem` oauthPaths =
-          -- Never fall through to the problem-details decoration: this operation has a request
-          -- body, so 'baselineSpecs' would otherwise document a problem+json 400 on an endpoint
-          -- that cannot emit one.
-          foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOAuthOp) item allMethods
+      | Just statuses <- lookup path oauthErrorResponsesByPath =
+          -- Never fall through to the problem-details decoration: a body-carrying operation here
+          -- would otherwise be documented with a problem+json 400 it cannot emit.
+          foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOAuthOp statuses) item allMethods
     decoratePath path item =
       foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOp path m) item allMethods
 
-    decorateOAuthOp op =
-      foldl' (\acc (status, codes) -> acc & at status ?~ O.Inline (oauthErrorResponse codes)) op oauthErrorResponses
+    decorateOAuthOp statuses op =
+      foldl' (\acc (status, codes) -> acc & at status ?~ O.Inline (oauthErrorResponse codes)) op statuses
 
     decorateOp path m op =
       foldl' addStatus op (byStatus (baselineSpecs op <> tabled path m))

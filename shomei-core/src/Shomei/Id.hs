@@ -24,6 +24,7 @@ module Shomei.Id
     PasskeyId,
     CeremonyId,
     ServiceAccountDbId,
+    OAuthClientId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
@@ -33,6 +34,7 @@ module Shomei.Id
     genPasskeyId,
     genCeremonyId,
     genServiceAccountDbId,
+    genOAuthClientId,
     idText,
     parseId,
     userIdToUUID,
@@ -53,6 +55,8 @@ module Shomei.Id
     ceremonyIdFromUUID,
     serviceAccountDbIdToUUID,
     serviceAccountDbIdFromUUID,
+    oauthClientIdToUUID,
+    oauthClientIdFromUUID,
   )
 where
 
@@ -88,6 +92,13 @@ type CeremonyId = KindID "webauthn_ceremony"
 -- copy-pasteable identifier and never a secret.
 type ServiceAccountDbId = KindID "svcacct"
 
+-- | An OAuth2 \/ OIDC client (EP-5): a relying party that drives the authorization-code flow.
+--
+-- Its TypeID text rendering is the OAuth2 @client_id@, exactly as 'ServiceAccountDbId'\'s is.
+-- The two are distinct types because they name distinct things: a service account /is/ a token
+-- subject (it has a backing user row), while an OAuth client only ever acts /for/ one.
+type OAuthClientId = KindID "oauthclient"
+
 genUserId :: (MonadIO m) => m UserId
 genUserId = KindID.genKindID @"user"
 
@@ -114,6 +125,9 @@ genCeremonyId = KindID.genKindID @"webauthn_ceremony"
 
 genServiceAccountDbId :: (MonadIO m) => m ServiceAccountDbId
 genServiceAccountDbId = KindID.genKindID @"svcacct"
+
+genOAuthClientId :: (MonadIO m) => m OAuthClientId
+genOAuthClientId = KindID.genKindID @"oauthclient"
 
 idText :: (ToPrefix p, ValidPrefix (PrefixSymbol p)) => KindID p -> Text
 idText = KindID.toText
@@ -176,6 +190,12 @@ serviceAccountDbIdToUUID = getUUID
 
 serviceAccountDbIdFromUUID :: UUID -> ServiceAccountDbId
 serviceAccountDbIdFromUUID = decorateKindID
+
+oauthClientIdToUUID :: OAuthClientId -> UUID
+oauthClientIdToUUID = getUUID
+
+oauthClientIdFromUUID :: UUID -> OAuthClientId
+oauthClientIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
   parseUrlPiece = parseId

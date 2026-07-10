@@ -56,6 +56,8 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- 2026-07-09 by MasterPlan-7 EP-1, requiring another recompile of this splice.
 -- Database-backed service accounts (shomei_service_accounts) were added on 2026-07-10 by
 -- MasterPlan-7 EP-4, requiring another recompile of this splice.
+-- OAuth2/OIDC clients (shomei_oauth_clients) were added on 2026-07-10 by MasterPlan-7 EP-5,
+-- requiring another recompile of this splice.
 --
 -- NB: touching the .cabal file (as the @migrate@ recipe does) does NOT force this rebuild —
 -- cabal detects changes by content hash, not mtime. Editing THIS module is what does; that is

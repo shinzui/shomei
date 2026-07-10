@@ -48,6 +48,7 @@ library
     Shomei.Postgres.Database
     Shomei.Postgres.LoginAttemptStore
     Shomei.Postgres.Maintenance
+    Shomei.Postgres.OAuthClientStore
     Shomei.Postgres.PasskeyStore
     Shomei.Postgres.PasswordResetTokenStore
     Shomei.Postgres.PendingCeremonyStore

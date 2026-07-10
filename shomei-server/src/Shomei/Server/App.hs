@@ -35,6 +35,7 @@ import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
 import Shomei.Effect.Notifier (Notifier)
+import Shomei.Effect.OAuthClientStore (OAuthClientStore)
 import Shomei.Effect.PasskeyStore (PasskeyStore)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
@@ -63,6 +64,7 @@ import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
+import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
@@ -95,6 +97,7 @@ type AppEffects =
      PasskeyStore,
      PendingCeremonyStore,
      ServiceAccountStore,
+     OAuthClientStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -166,6 +169,7 @@ runAppIO env action = do
     -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
     . runClaimsEnricherNull
     . runNotifierFromConfig env.envConfig
+    . runOAuthClientStorePostgres
     . runServiceAccountStorePostgres
     . runPendingCeremonyStorePostgres
     . runPasskeyStorePostgres

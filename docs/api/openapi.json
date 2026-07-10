@@ -688,6 +688,45 @@
                 }
             }
         },
+        "/.well-known/openid-configuration": {
+            "get": {
+                "operationId": "getWellKnownOpenidConfiguration",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AnyValue"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: not_found."
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "operationId": "getHealth",

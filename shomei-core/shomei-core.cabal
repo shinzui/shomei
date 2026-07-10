@@ -49,6 +49,7 @@ library
     Shomei.Domain.LoginAttempt
     Shomei.Domain.LoginId
     Shomei.Domain.Notification
+    Shomei.Domain.OAuthClient
     Shomei.Domain.OneTimeToken
     Shomei.Domain.Passkey
     Shomei.Domain.Password
@@ -69,6 +70,7 @@ library
     Shomei.Effect.InMemory
     Shomei.Effect.LoginAttemptStore
     Shomei.Effect.Notifier
+    Shomei.Effect.OAuthClientStore
     Shomei.Effect.PasskeyStore
     Shomei.Effect.PasswordBreachChecker
     Shomei.Effect.PasswordHasher
@@ -131,6 +133,7 @@ test-suite shomei-core-test
     Shomei.Domain.EventCodecSpec
     Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
+    Shomei.OAuthClientStoreSpec
     Shomei.PasskeyStoreSpec
     Shomei.ServiceAccountStoreSpec
     Shomei.WebAuthnCeremonySpec

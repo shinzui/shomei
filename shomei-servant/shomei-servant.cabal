@@ -44,6 +44,7 @@ library
     Shomei.Servant.Handlers
     Shomei.Servant.Middleware
     Shomei.Servant.OAuth
+    Shomei.Servant.Oidc
     Shomei.Servant.OpenApi
     Shomei.Servant.Seam
 

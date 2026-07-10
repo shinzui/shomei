@@ -129,7 +129,12 @@ roundTrips =
     let d = ServiceAccountSecretRotatedData "svcacct_01" "svcacct_01" uid t0
      in check "service_account_secret_rotated" d (ServiceAccountSecretRotated d),
     let d = ServiceAccountRevokedData "svcacct_01" "svcacct_01" uid t0
-     in check "service_account_revoked" d (ServiceAccountRevoked d)
+     in check "service_account_revoked" d (ServiceAccountRevoked d),
+    -- EP-5 OAuth-client lifecycle. No backing user, so no user id in the payload at all.
+    let d = OAuthClientCreatedData "oauthclient_01" "oauthclient_01" "confidential" "grafana" ["https://grafana.example.com/callback"] (Set.singleton (Scope "openid")) t0
+     in check "oauth_client_created" d (OAuthClientCreated d),
+    let d = OAuthClientRevokedData "oauthclient_01" "oauthclient_01" t0
+     in check "oauth_client_revoked" d (OAuthClientRevoked d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -140,10 +145,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 31).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 33).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 31 AuthEvent constructors" (length roundTrips @?= 31)
+  testCase "covers all 33 AuthEvent constructors" (length roundTrips @?= 33)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

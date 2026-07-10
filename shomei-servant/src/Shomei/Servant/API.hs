@@ -403,6 +403,17 @@ data ShomeiRoutes mode = ShomeiRoutes
     --     Unversioned, like the rest of this record: it describes the @\/v1@ surface and the
     --     root endpoints alike, including itself.
     openapi :: mode :- "openapi.json" :> Get '[JSON] Value,
+    -- | @GET \/.well-known\/openid-configuration@ (EP-5): the OIDC discovery document, from
+    --     which stock relying-party middleware auto-configures itself. Unversioned because OIDC
+    --     Core /defines/ this path relative to the issuer.
+    --
+    --     Answers @404@ with an RFC 6749-shaped body when @oauthConfig.oidcEnabled@ is off: a
+    --     disabled provider must not advertise endpoints it will refuse to serve.
+    oidcDiscovery ::
+      mode
+        :- ".well-known"
+          :> "openid-configuration"
+          :> Get '[JSON] Value,
     -- | @POST \/oauth\/token@ (EP-4): the standard OAuth2 token endpoint, RFC 6749. Unversioned
     --     and form-encoded, because that is where and how every stock OAuth2 client looks for it.
     --

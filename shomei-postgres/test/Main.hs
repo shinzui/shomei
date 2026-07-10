@@ -46,6 +46,12 @@ import Shomei.Domain.EventCodec (reconstructAuthEvent)
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
+import Shomei.Domain.OAuthClient
+  ( ClientType (..),
+    NewOAuthClient (..),
+    OAuthClient (..),
+    OAuthClientStatus (..),
+  )
 import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Passkey
   ( CeremonyKind (..),
@@ -91,6 +97,13 @@ import Shomei.Effect.LoginAttemptStore
     setAccountLockout,
   )
 import Shomei.Effect.Notifier (Notifier (..))
+import Shomei.Effect.OAuthClientStore
+  ( OAuthClientStore,
+    createOAuthClient,
+    findOAuthClientByClientId,
+    listOAuthClients,
+    revokeOAuthClient,
+  )
 import Shomei.Effect.PasskeyStore
   ( PasskeyStore,
     countPasskeysByUser,
@@ -153,7 +166,7 @@ import Shomei.Effect.VerificationTokenStore
   )
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
-import Shomei.Id (PasskeyId, ServiceAccountDbId, genCeremonyId, genServiceAccountDbId, genSessionId, genUserId, idText, userIdToUUID)
+import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
@@ -169,6 +182,7 @@ import Shomei.Postgres.Maintenance
     emptySweepReport,
     sweepOnce,
   )
+import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
@@ -212,6 +226,7 @@ type AppEffects =
      PasskeyStore,
      PendingCeremonyStore,
      ServiceAccountStore,
+     OAuthClientStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -253,6 +268,7 @@ runAppWithNotifications ref pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
@@ -289,6 +305,7 @@ runAppAtTime t pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
@@ -427,6 +444,7 @@ tests =
     testPasskeyCreateAndFind,
     testPasskeyUpdateCountDelete,
     testServiceAccountRoundTrip,
+    testOAuthClientRoundTrip,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
     testArgon2NewHashesArePhcFormatted,
@@ -1223,6 +1241,96 @@ testServiceAccountRoundTrip =
     assertBool "revoked_at is stamped" (maybe False (isJust . saRevokedAt) afterRevoke)
     n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_service_accounts"
     n @?= 1
+
+-- Field accessors: 'OAuthClient' shares field names with 'ServiceAccount' and 'User', so read
+-- it by record pattern (the MasterPlan-3 DuplicateRecordFields caution).
+
+ocStatus :: OAuthClient -> OAuthClientStatus
+ocStatus OAuthClient {status} = status
+
+ocSecretHash :: OAuthClient -> Maybe Text
+ocSecretHash OAuthClient {secretHash} = secretHash
+
+ocRevokedAt :: OAuthClient -> Maybe UTCTime
+ocRevokedAt OAuthClient {revokedAt} = revokedAt
+
+ocId :: OAuthClient -> OAuthClientId
+ocId OAuthClient {oauthClientId} = oauthClientId
+
+ocClientType :: OAuthClient -> ClientType
+ocClientType OAuthClient {clientType} = clientType
+
+ocRedirectUris :: OAuthClient -> [Text]
+ocRedirectUris OAuthClient {redirectUris} = redirectUris
+
+ocAllowedScopes :: OAuthClient -> Set.Set Scope
+ocAllowedScopes OAuthClient {allowedScopes} = allowedScopes
+
+-- | EP-5: the OAuth-client lifecycle against real PostgreSQL — create (confidential and public),
+-- find by client id, list, revoke — mirroring the in-memory 'Shomei.OAuthClientStoreSpec'.
+--
+-- Proves the two jsonb round-trips (@redirect_uris@ as an ordered array, @allowed_scopes@ as a
+-- set), the @client_type@ and @status@ text encodings, that a public client's @secret_hash@ is a
+-- real SQL NULL rather than an empty string, and that a revoked row survives so the authorize
+-- endpoint can resolve (and refuse) it.
+testOAuthClientRoundTrip :: TestTree
+testOAuthClientRoundTrip =
+  testCase "oauth clients: create confidential + public, find, list, revoke" $ withDb \pool -> do
+    result <- runApp pool do
+      t <- now
+      confId <- genOAuthClientId
+      pubId <- genOAuthClientId
+      let scopes = Set.fromList [Scope "openid", Scope "profile"]
+          uris = ["https://app.example.com/callback", "https://app.example.com/other"]
+      confidential <-
+        createOAuthClient
+          NewOAuthClient
+            { oauthClientId = confId,
+              clientId = idText confId,
+              secretHash = Just "hash-one",
+              clientType = ConfidentialClient,
+              displayName = "grafana",
+              redirectUris = uris,
+              allowedScopes = scopes,
+              createdAt = t
+            }
+      public <-
+        createOAuthClient
+          NewOAuthClient
+            { oauthClientId = pubId,
+              clientId = idText pubId,
+              secretHash = Nothing,
+              clientType = PublicClient,
+              displayName = "spa",
+              redirectUris = ["https://spa.example.com/cb"],
+              allowedScopes = Set.singleton (Scope "openid"),
+              createdAt = t
+            }
+      afterCreate <- findOAuthClientByClientId (idText confId)
+      foundPublic <- findOAuthClientByClientId (idText pubId)
+      listed <- listOAuthClients
+      revokeOAuthClient confId t
+      afterRevoke <- findOAuthClientByClientId (idText confId)
+      pure (confidential, public, afterCreate, foundPublic, listed, afterRevoke, scopes, uris)
+    (confidential, public, afterCreate, foundPublic, listed, afterRevoke, scopes, uris) <- expectApp result
+    -- a fresh client is active and unrevoked
+    ocStatus confidential @?= OAuthClientActive
+    ocRevokedAt confidential @?= Nothing
+    ocClientType public @?= PublicClient
+    -- the lookup resolves, and both jsonb columns survived the round trip (uris keep their order)
+    fmap ocId afterCreate @?= Just (ocId confidential)
+    fmap ocAllowedScopes afterCreate @?= Just scopes
+    fmap ocRedirectUris afterCreate @?= Just uris
+    fmap ocSecretHash afterCreate @?= Just (Just "hash-one")
+    -- a public client's secret_hash is a real NULL
+    fmap ocSecretHash foundPublic @?= Just Nothing
+    fmap ocClientType foundPublic @?= Just PublicClient
+    length listed @?= 2
+    -- revocation flips status and stamps revoked_at; the ROW SURVIVES so the lookup still resolves
+    fmap ocStatus afterRevoke @?= Just OAuthClientRevoked
+    assertBool "revoked_at is stamped" (maybe False (isJust . ocRevokedAt) afterRevoke)
+    nullSecrets <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_clients WHERE secret_hash IS NULL"
+    nullSecrets @?= 1
 
 testPasskeyCreateAndFind :: TestTree
 testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do

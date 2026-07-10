@@ -73,9 +73,10 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    -- 34 = 33 + EP-4's unversioned POST /oauth/token.
-    it "covers exactly 34 paths" $
-      pathCount `shouldBe` 34
+    -- 35 = 33 + EP-4's unversioned POST /oauth/token
+    --         + EP-5's unversioned GET /.well-known/openid-configuration.
+    it "covers exactly 35 paths" $
+      pathCount `shouldBe` 35
 
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
     it "declares the OAuthError schema" $
@@ -97,6 +98,22 @@ spec = do
 
     it "documents the RFC 6749 error codes it can actually emit" $
       sort (nub (concat oauthErrorCodes)) `shouldBe` sort ["invalid_client", "invalid_request", "invalid_scope", "server_error", "unsupported_grant_type"]
+
+  describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
+    -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling
+    -- parses. Pins the entry in `Shomei.Servant.OpenApi.oauthErrorResponsesByPath`.
+    it "documents no problem+json response on /.well-known/openid-configuration" $
+      [ Key.toText status
+      | (path, Object item) <- KM.toList paths,
+        path == "/.well-known/openid-configuration",
+        (_, Object op) <- KM.toList item,
+        (status, resp) <- responsesOf op,
+        isProblemResponse resp
+      ]
+        `shouldBe` []
+
+    it "documents the 404 it answers when the provider is disabled" $
+      sort (nub (concat (oauthErrorCodesAt "/.well-known/openid-configuration"))) `shouldBe` ["not_found"]
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
     it "declares the Problem schema with exactly the four required members" $
@@ -213,10 +230,14 @@ spec = do
 
     -- The `error` enum of every /oauth/token error response.
     oauthErrorCodes :: [[Text]]
-    oauthErrorCodes =
+    oauthErrorCodes = oauthErrorCodesAt "/oauth/token"
+
+    -- The `error` enum of every RFC 6749-shaped error response on one path.
+    oauthErrorCodesAt :: Key.Key -> [[Text]]
+    oauthErrorCodesAt wanted =
       [ codes
       | (path, Object item) <- KM.toList paths,
-        path == "/oauth/token",
+        path == wanted,
         (_, Object op) <- KM.toList item,
         (_, resp) <- responsesOf op,
         Just (Array xs) <-

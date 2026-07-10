@@ -25,9 +25,9 @@ import Data.Aeson ((.=))
 import Data.Aeson.Key qualified as Key
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
-import Data.Set qualified as Set
 import Effectful (Eff, inject, runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -41,9 +41,9 @@ import Servant
     serveWithContext,
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
+import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
-import Shomei.Domain.Claims (Role (..))
+import Shomei.Domain.Claims (Issuer (..), Role (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Error (AuthError)
 import Shomei.Jwt.Verify (verifyToken)
@@ -60,6 +60,7 @@ import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
 import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
+import Shomei.Servant.Oidc (isAbsoluteHttpUrl)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
@@ -88,6 +89,7 @@ main = do
   traverse_
     (\w -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack w))
     (argon2WarningFloor settings.serverArgon2)
+  validateOidcIssuer cfg
   env <- buildEnv cfg settings
   validateDefaultRoles cfg env
   installKeyReload cfg env
@@ -137,6 +139,29 @@ main = do
   hPutStrLn stderr "[shomei] drain complete; closing connection pool"
   Pool.release env.envPool
   hPutStrLn stderr "[shomei] shutdown complete"
+
+-- | Refuse to start with the OIDC provider enabled and an issuer that is not an absolute
+-- @http(s)@ URL.
+--
+-- The issuer doubles as the provider's public base URL: every endpoint in the discovery document
+-- is derived from it, and ID tokens carry it as @iss@. With the default issuer @"shomei"@ the
+-- document would advertise @shomei\/oauth\/token@ — a relative URL no client can fetch — and the
+-- failure would surface as an inscrutable error inside someone else's OIDC library. Checked
+-- before the pool is acquired, because it needs nothing but config.
+validateOidcIssuer :: ShomeiConfig -> IO ()
+validateOidcIssuer cfg =
+  when (cfg.oauthConfig.oidcEnabled && not (isAbsoluteHttpUrl iss)) do
+    hPutStrLn
+      stderr
+      ( "shomei-server: oidcEnabled is set but issuer is not an absolute http(s) URL: "
+          <> show iss
+          <> "\nThe OIDC issuer is also the base URL every published endpoint is derived from."
+          <> "\nSet SHOMEI_ISSUER (or `issuer` in the config file) to this deployment's public"
+          <> " base URL, e.g. https://auth.example.com"
+      )
+    exitFailure
+  where
+    iss = case cfg.issuer of Issuer t -> t
 
 -- | Refuse to start when @defaultRoles@ names a role missing from the @shomei_roles@ registry.
 --

@@ -21,11 +21,11 @@ import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
-import Network.HTTP.Types.Status (status400, status500)
+import Network.HTTP.Types.Status (status400, status404, status500)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Config (CookieConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
+import Shomei.Config (CookieConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (AuthClaims (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
@@ -133,6 +133,7 @@ import Shomei.Servant.Error
     toProblemError,
   )
 import Shomei.Servant.OAuth qualified as OAuth
+import Shomei.Servant.Oidc qualified as Oidc
 -- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
 import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
@@ -155,6 +156,7 @@ shomeiRoutes env =
     { v1 = shomeiServer env,
       jwks = jwksH env,
       openapi = pure openApiValue,
+      oidcDiscovery = oidcDiscoveryH env,
       oauthToken = oauthTokenH env,
       health = healthH,
       ready = readyH env
@@ -272,6 +274,22 @@ refreshH env mCookieHeader mOrigin mReferer req = do
     Nothing -> throwError (toProblemError pcBadRequest (Just "refreshToken required"))
   pair <- runAuth env (Wf.refresh env.config (RefreshCommand {refreshToken = RefreshToken presented}))
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
+
+-- | @GET \/.well-known\/openid-configuration@ (EP-5).
+--
+-- With the provider disabled the answer is @404@ carrying an RFC 6749-shaped body, not a problem
+-- document: a client that reaches this URL is OIDC tooling, and it must fail on a shape it can
+-- parse. This is the same envelope boundary the @\/oauth\/*@ endpoints observe.
+oidcDiscoveryH :: Env -> Handler Value
+oidcDiscoveryH env
+  | env.config.oauthConfig.oidcEnabled = pure (Oidc.discoveryDocument env.config)
+  | otherwise =
+      throwError
+        ( OAuth.oauthError
+            status404
+            "not_found"
+            "the OIDC provider is not enabled on this deployment"
+        )
 
 -- | @POST \/oauth\/token@ (EP-4): the OAuth2 token endpoint and its @grant_type@ dispatcher.
 --

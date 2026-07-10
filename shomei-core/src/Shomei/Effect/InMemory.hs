@@ -36,6 +36,7 @@ module Shomei.Effect.InMemory
     runPasskeyStore,
     runPendingCeremonyStore,
     runServiceAccountStore,
+    runOAuthClientStore,
     runNotifier,
     runClaimsEnricherNull,
     runPasswordHasher,
@@ -84,6 +85,11 @@ import Shomei.Domain.LoginAttempt
   )
 import Shomei.Domain.LoginId (LoginId)
 import Shomei.Domain.Notification (Notification)
+import Shomei.Domain.OAuthClient
+  ( NewOAuthClient (..),
+    OAuthClient (..),
+    OAuthClientStatus (..),
+  )
 import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus (..))
 import Shomei.Domain.Passkey
   ( NewPasskeyCredential (..),
@@ -127,6 +133,7 @@ import Shomei.Effect.Clock (Clock (..))
 import Shomei.Effect.CredentialStore (CredentialStore (..))
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Effect.Notifier (Notifier (..))
+import Shomei.Effect.OAuthClientStore (OAuthClientStore (..))
 import Shomei.Effect.PasskeyStore (PasskeyStore (..))
 import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChecker (..))
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
@@ -153,6 +160,7 @@ import Shomei.Effect.WebAuthnCeremony
 import Shomei.Error (TokenError (..))
 import Shomei.Id
   ( CeremonyId,
+    OAuthClientId,
     PasskeyId,
     PasswordResetTokenId,
     RefreshTokenId,
@@ -202,6 +210,9 @@ data World = World
     --     enforces no unique index on @clientId@; the id /is/ the client id's source, so a
     --     collision is impossible by construction.
     serviceAccounts :: !(Map ServiceAccountDbId ServiceAccount),
+    -- | EP-5 OAuth2/OIDC clients, keyed by id. As with 'serviceAccounts', @clientId@ is derived
+    --     from the id, so the database's unique index has no in-memory analogue to enforce.
+    oauthClients :: !(Map OAuthClientId OAuthClient),
     -- | newest-first
     publishedEvents :: ![Event.AuthEvent],
     -- | newest-first
@@ -239,6 +250,7 @@ emptyWorld t =
       passkeys = Map.empty,
       pendingCeremonies = Map.empty,
       serviceAccounts = Map.empty,
+      oauthClients = Map.empty,
       publishedEvents = [],
       sentNotifications = [],
       clock = t,
@@ -810,6 +822,51 @@ runServiceAccountStore ref = interpret_ \case
           (#serviceAccounts %~ Map.adjust (\sa -> sa & #status .~ ServiceAccountRevoked & #revokedAt .~ Just t) sid)
       )
 
+-- | Field accessors for the EP-5 OAuth-client records, for the same 'DuplicateRecordFields'
+-- reason as the service-account accessors above: 'OAuthClient' shares @clientId@, @status@,
+-- @createdAt@, @displayName@, @secretHash@ and @revokedAt@ with 'ServiceAccount'.
+ocId :: OAuthClient -> OAuthClientId
+ocId OAuthClient {oauthClientId} = oauthClientId
+
+ocClientId :: OAuthClient -> Text
+ocClientId OAuthClient {clientId} = clientId
+
+ocCreatedAt :: OAuthClient -> UTCTime
+ocCreatedAt OAuthClient {createdAt} = createdAt
+
+-- | In-memory interpreter for the EP-5 OAuth-client store.
+--
+-- 'RevokeOAuthClient' is a silent no-op on an unknown id, matching the PostgreSQL
+-- @UPDATE … WHERE oauth_client_id = $1@ that affects zero rows.
+runOAuthClientStore :: (IOE :> es) => IORef World -> Eff (OAuthClientStore : es) a -> Eff es a
+runOAuthClientStore ref = interpret_ \case
+  CreateOAuthClient NewOAuthClient {oauthClientId, clientId, secretHash, clientType, displayName, redirectUris, allowedScopes, createdAt} -> do
+    let oc =
+          OAuthClient
+            { oauthClientId,
+              clientId,
+              secretHash,
+              clientType,
+              displayName,
+              redirectUris,
+              allowedScopes,
+              status = OAuthClientActive,
+              createdAt,
+              revokedAt = Nothing
+            }
+    liftIO (modifyWorld ref (#oauthClients %~ Map.insert oauthClientId oc))
+    pure oc
+  FindOAuthClientByClientId cid ->
+    liftIO ((\w -> listToMaybe [oc | oc <- Map.elems w.oauthClients, ocClientId oc == cid]) <$> readIORef ref)
+  ListOAuthClients ->
+    liftIO (sortOn (Down . \oc -> (ocCreatedAt oc, idText (ocId oc))) . Map.elems . (.oauthClients) <$> readIORef ref)
+  RevokeOAuthClient cid t ->
+    liftIO
+      ( modifyWorld
+          ref
+          (#oauthClients %~ Map.adjust (\oc -> oc & #status .~ OAuthClientRevoked & #revokedAt .~ Just t) cid)
+      )
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -1024,6 +1081,7 @@ type InMemoryPorts =
     PasskeyStore,
     PendingCeremonyStore,
     ServiceAccountStore,
+    OAuthClientStore,
     Notifier,
     ClaimsEnricher,
     WebAuthnCeremony,
@@ -1054,6 +1112,7 @@ runInMemoryWith enrich ref =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherPure enrich
     . runNotifier ref
+    . runOAuthClientStore ref
     . runServiceAccountStore ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref

@@ -41,6 +41,8 @@ module Shomei.Domain.Event
     ServiceAccountCreatedData (..),
     ServiceAccountSecretRotatedData (..),
     ServiceAccountRevokedData (..),
+    OAuthClientCreatedData (..),
+    OAuthClientRevokedData (..),
   )
 where
 
@@ -356,6 +358,34 @@ data ServiceAccountRevokedData = ServiceAccountRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | An OAuth2 \/ OIDC client was registered (EP-5). The secret is never in the payload — only
+-- its SHA-256 digest is ever persisted, and not here. A public client has no secret at all.
+--
+-- Unlike a service account, an OAuth client has no backing user row, so these events carry no
+-- @user_id@ and the audit row's @user_id@ column stays NULL: the client is not a principal, it
+-- is a registered relying party.
+data OAuthClientCreatedData = OAuthClientCreatedData
+  { oauthClientId :: !Text,
+    clientId :: !Text,
+    clientType :: !Text,
+    displayName :: !Text,
+    redirectUris :: ![Text],
+    allowedScopes :: !(Set Scope),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | An OAuth client was revoked. Its row survives; every subsequent authorize request answers
+-- @400 invalid_request@ without redirecting, and every token exchange answers @invalid_client@.
+data OAuthClientRevokedData = OAuthClientRevokedData
+  { oauthClientId :: !Text,
+    clientId :: !Text,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -388,5 +418,7 @@ data AuthEvent
   | ServiceAccountCreated ServiceAccountCreatedData
   | ServiceAccountSecretRotated ServiceAccountSecretRotatedData
   | ServiceAccountRevoked ServiceAccountRevokedData
+  | OAuthClientCreated OAuthClientCreatedData
+  | OAuthClientRevoked OAuthClientRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

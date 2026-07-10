@@ -11,7 +11,7 @@
 module Main (main) where
 
 import Crypto.JOSE.JWK (JWK, JWKSet)
-import Data.Aeson (Value (..), decode, encode, object, (.=))
+import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
@@ -62,7 +62,7 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), defaultShomeiConfig)
+import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (emailText, mkEmail)
@@ -88,6 +88,7 @@ import Shomei.Effect.InMemory
     runInMemory,
     runLoginAttemptStore,
     runNotifier,
+    runOAuthClientStore,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordHasher,
@@ -191,6 +192,7 @@ runHybrid ref jwk jwkset cfg =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherNull
     . runNotifier ref
+    . runOAuthClientStore ref
     . runServiceAccountStore ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
@@ -362,6 +364,10 @@ main = do
         r <- newIORef (emptyWorld t0)
         clientId <- seedOAuthAccount r jwk jwkset cfg t0
         pure (clientId, mkEnv r)
+      -- EP-5: the OIDC provider switched on. The issuer doubles as the published base URL, so
+      -- every endpoint in the discovery document is derived from 'cfg's issuer.
+      oidcCfg = cfg {oauthConfig = cfg.oauthConfig {oidcEnabled = True}}
+      freshOidcEnv = mkEnvWith oidcCfg <$> newIORef (emptyWorld t0)
       -- EP-2's admin scenarios need the World ref (to grant the admin role in the store) and
       -- the signing key (to mint scoped/delegated tokens by hand).
       freshAdminEnv = do
@@ -370,7 +376,7 @@ main = do
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshAdminEnv jwk cfg adminToken impToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAdminEnv jwk cfg adminToken impToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1029,8 +1035,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshAdminEnv jwk cfg adminToken impToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAdminEnv jwk cfg adminToken impToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1074,6 +1080,11 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "POST /oauth/token: client_credentials over both auth methods; RFC 6749 errors, not problem docs" $ do
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
+      testCase "GET /.well-known/openid-configuration: derived from the issuer when enabled, 404 in the OAuth shape when not" $ do
+        e <- freshOidcEnv
+        testWithApplication (pure (app e)) scenarioOidcDiscoveryEnabled
+        d <- freshEnv
+        testWithApplication (pure (app d)) scenarioOidcDiscoveryDisabled,
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
@@ -1096,6 +1107,58 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
         e <- freshBothEnv
         testWithApplication (pure (app e)) scenarioBothTransport
     ]
+
+-- | EP-5 M1: the discovery document is what makes Shōmei consumable by stock middleware, and
+-- every URL in it is derived from the issuer — not from a second base-URL setting that could
+-- disagree with the @iss@ claim in the tokens.
+--
+-- The test env's issuer is @https:\/\/shomei.test@ (see 'main'), so each endpoint below is that
+-- issuer plus a fixed path.
+scenarioOidcDiscoveryEnabled :: Int -> IO ()
+scenarioOidcDiscoveryEnabled port = do
+  mgr <- newManager defaultManagerSettings
+  (status, hdrs, body) <- getRaw mgr port "/.well-known/openid-configuration" []
+  status @?= 200
+  headerValue "Content-Type" hdrs @?= Just "application/json;charset=utf-8"
+  doc <- must "discovery document" body
+  (dig ["issuer"] doc >>= asText) @?= Just "https://shomei.test"
+  (dig ["authorization_endpoint"] doc >>= asText) @?= Just "https://shomei.test/oauth/authorize"
+  (dig ["token_endpoint"] doc >>= asText) @?= Just "https://shomei.test/oauth/token"
+  (dig ["userinfo_endpoint"] doc >>= asText) @?= Just "https://shomei.test/oauth/userinfo"
+  (dig ["introspection_endpoint"] doc >>= asText) @?= Just "https://shomei.test/oauth/introspect"
+  (dig ["revocation_endpoint"] doc >>= asText) @?= Just "https://shomei.test/oauth/revoke"
+  -- The JWKS document really is served there, unversioned, by this same app.
+  (dig ["jwks_uri"] doc >>= asText) @?= Just "https://shomei.test/.well-known/jwks.json"
+  (jwksStatus, _) <- getJSON mgr port "/.well-known/jwks.json" []
+  jwksStatus @?= 200
+  -- Only the code flow is advertised: implicit and hybrid are excluded by the Security BCP, and
+  -- advertising a flow the server does not implement makes stock middleware negotiate it.
+  dig ["response_types_supported"] doc @?= Just (toJSON (["code"] :: [Text]))
+  -- Only S256: `plain` exists for clients that cannot hash, and every modern library can.
+  dig ["code_challenge_methods_supported"] doc @?= Just (toJSON (["S256"] :: [Text]))
+  dig ["subject_types_supported"] doc @?= Just (toJSON (["public"] :: [Text]))
+  -- EP-4's grant is advertised alongside the two EP-5 adds.
+  dig ["grant_types_supported"] doc
+    @?= Just (toJSON (["authorization_code", "refresh_token", "client_credentials"] :: [Text]))
+  -- The default test config signs with ES256.
+  dig ["id_token_signing_alg_values_supported"] doc @?= Just (toJSON (["ES256"] :: [Text]))
+  dig ["token_endpoint_auth_methods_supported"] doc
+    @?= Just (toJSON (["client_secret_basic", "client_secret_post"] :: [Text]))
+
+-- | With @oidcEnabled@ off (the default) the provider does not advertise. The refusal reaches
+-- OIDC tooling, so it is an RFC 6749-shaped object rather than a problem document — the same
+-- envelope boundary @\/oauth\/*@ observes.
+scenarioOidcDiscoveryDisabled :: Int -> IO ()
+scenarioOidcDiscoveryDisabled port = do
+  mgr <- newManager defaultManagerSettings
+  r@(_, hdrs, _) <- getRaw mgr port "/.well-known/openid-configuration" []
+  assertOAuthError "discovery with the provider disabled" 404 "not_found" r
+  assertBool
+    "a disabled provider must not answer with a problem document"
+    (headerValue "Content-Type" hdrs /= Just "application/problem+json")
+  -- Nothing else moved: the JWKS document is unconditional (verifiers need it regardless).
+  (jwksStatus, _) <- getJSON mgr port "/.well-known/jwks.json" []
+  jwksStatus @?= 200
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
 -- returned user has that login id and a @null@ email, and the same identifier logs in.

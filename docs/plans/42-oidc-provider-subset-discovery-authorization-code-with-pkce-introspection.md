@@ -55,10 +55,10 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `shomei_oauth_clients` migration; `OAuthClient` domain type; `OAuthClientStore` port; in-memory + Postgres interpreters; audit events.
-- [ ] M1: `shomei-admin oauth-clients create|list|revoke` subcommands.
-- [ ] M1: `OAuthConfig` sub-record in `ShomeiConfig` + server Dhall/env wiring.
-- [ ] M1: `GET /.well-known/openid-configuration` route + handler + tests.
+- [x] M1: `shomei_oauth_clients` migration; `OAuthClient` domain type; `OAuthClientStore` port; in-memory + Postgres interpreters; audit events.
+- [x] M1: `shomei-admin oauth-clients create|list|revoke` subcommands.
+- [x] M1: `OAuthConfig` sub-record in `ShomeiConfig` + server Dhall/env wiring.
+- [x] M1: `GET /.well-known/openid-configuration` route + handler + tests.
 - [ ] M2: `shomei_oauth_authorization_codes` migration; `OAuthCodeStore` port; both interpreters.
 - [ ] M2: `GET /oauth/authorize` handler: parameter validation, PKCE checks, authenticated path issues code redirect, unauthenticated path follows the login-redirect contract.
 - [ ] M2: In-process tests: happy redirect, invalid client/redirect (no redirect leak), error redirects with `state`, login-redirect round trip.
@@ -79,7 +79,48 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-10 (M1) — this plan's own `just new-migration name=<slug>` invocations are wrong.**
+The `Justfile` recipe takes the slug *positionally* and explicitly rejects a `name=` prefix
+(`grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "Invalid slug"; exit 1; }`). The Concrete Steps and
+Milestone sections below say `just new-migration name=shomei-oauth-clients`; the working command is
+`just new-migration shomei-oauth-clients`. M2 and M3 add migrations and must use the positional
+form.
+
+**2026-07-10 (M1) — the OpenAPI OAuth-exemption list had to become path-keyed, and the plan's
+"just add it to `oauthPaths`" is not sufficient.** `Shomei.Servant.OpenApi.oauthPaths` was a bare
+`[FilePath]` whose members all received `oauthErrorResponses` — the *token endpoint's* statuses
+(400/401/500). Putting `/.well-known/openid-configuration` on that list would have documented it as
+emitting `invalid_client` and `unsupported_grant_type`. It is now
+`oauthErrorResponsesByPath :: [(FilePath, [(Int, [Text])])]` with `oauthPaths = map fst …`, so each
+OAuth-shaped path declares the statuses it can actually answer with (discovery: `404 not_found`
+alone). **M4's `/oauth/introspect` and `/oauth/revoke` each need their own entry** — introspection
+never errors on a bad token (RFC 7662 → `{"active": false}` at 200), so its only entries are the
+`401 invalid_client` and `500`; revocation's are the same. `/oauth/userinfo` stays off the list
+entirely: it uses the ordinary `Authenticated` combinator and answers ordinary problem documents.
+
+**2026-07-10 (M1) — the discovery document is a pure function of config, not an `Env` field.**
+The plan says to precompute it at `seamEnv` construction "as `jwksJson` does". That analogy does not
+hold: `jwksJson` is an `IO Value` because the served key material is swapped at runtime by
+`reloadKeys`. The discovery document is derived from `ShomeiConfig` alone, so it is
+`Shomei.Servant.Oidc.discoveryDocument :: ShomeiConfig -> Value`, evaluated per request. Adding a
+field to `Shomei.Servant.Seam.Env` would have forced an edit at every host assembly (boot, the
+servant suite, the embedded example) to precompute a small constant object. Recorded in the
+Decision Log.
+
+**2026-07-10 (M1) — `nix fmt` still degrades `Shomei.Servant.OpenApi`'s module haddock, exactly as
+EP-4 warned.** Running it escaped the leading `|` of the module comment (`-- \| The OpenAPI 3.1
+description …`) and promoted the orphan-instances note into the module-doc position. The header was
+restored by hand after formatting. `nix fmt` also reformats `shomei-server/test/Shomei/Server/NotifySpec.hs`,
+untouched by this plan; it was reverted with `git checkout --`. **M2–M5 must do the same**: run
+`nix fmt`, then `git checkout --` every file the milestone did not semantically change, and re-read
+the `OpenApi.hs` header.
+
+**2026-07-10 (M1) — `cabal test all` failed once on `shomei-core`'s "100 concurrent refreshes:
+exactly one winner", and it is load flakiness, not a regression.** It reproduces neither in
+isolation (4/4 green at `HEAD` before any change, 3/3 on this tree) nor across two further full-suite
+runs on this tree; `cabal` runs the twelve suites concurrently, and `TASTY_NUM_THREADS=1` bounds
+parallelism only *within* a suite. Same class as the `SupervisorSpec` and ephemeral-PostgreSQL
+flakes the MasterPlan already records. Do not chase it.
 
 
 ## Decision Log
@@ -218,6 +259,38 @@ Record every decision made while working on the plan.
   of clients would repeat the dual-source situation plan 41 is deprecating for service
   accounts. If a bootstrap-from-config need appears, record it here and add it later.
   Date: 2026-07-07
+
+- Decision: The discovery document is a pure `discoveryDocument :: ShomeiConfig -> Value` in a
+  new `Shomei.Servant.Oidc`, evaluated per request, rather than a precomputed field on
+  `Shomei.Servant.Seam.Env`.
+  Rationale: It is derived from configuration alone, which never changes while the process runs.
+  The `jwksJson` precomputation this plan pointed at exists because key material *is* swapped at
+  runtime (`reloadKeys`), which is why that field is an `IO Value`. An `Env` field would have
+  forced an edit at every host assembly to cache a constant.
+  Date: 2026-07-10
+
+- Decision: An OAuth client gets no backing `shomei_users` row, and its lifecycle audit events
+  carry no `user_id` (the audit row's `user_id` column stays NULL).
+  Rationale: A service account (EP-4) *is* a token subject, so it needs a user row for
+  `AuthClaims.subject` and the `shomei_sessions.user_id` foreign key. An OAuth client is never a
+  subject: the token it exchanges a code for belongs to whoever authenticated at
+  `/oauth/authorize`. Giving it a user row would put a principal in the table that can never log
+  in and can never be a `sub`.
+  Date: 2026-07-10
+
+- Decision: There is no `oauth-clients rotate-secret` subcommand in this plan; a compromised
+  client secret is handled by `revoke` plus re-registration.
+  Rationale: A service account's secret is held by a machine an operator may not be able to
+  redeploy quickly, which is what rotation-without-downtime buys. An OAuth client's secret lives
+  in an application the same operator configures, and re-registration is a config change either
+  way. Recorded so a future plan can add rotation if this proves wrong.
+  Date: 2026-07-10
+
+- Decision: A public client is issued no secret at all, rather than one that is stored and never
+  checked; its `secret_hash` is a SQL NULL.
+  Rationale: A credential that exists but is never verified is worse than none, because an
+  operator will store and protect it under the belief that it does something.
+  Date: 2026-07-10
 
 - Decision: All new endpoints are unversioned root paths (`/oauth/*`, `/.well-known/*`),
   and all their errors use the RFC 6749/7662/7009 wire shapes, not the application

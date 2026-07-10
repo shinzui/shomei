@@ -10,6 +10,7 @@ import Options.Applicative
 import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysEncryptAtRest, keysGenerate, keysList, keysRetire, keysRevoke, keysRewrap)
+import Shomei.Admin.OAuthClients (OAuthClientsCommand, oauthClientsParser, runOAuthClients)
 import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
@@ -29,6 +30,7 @@ data Command
   | Users UsersCommand
   | Roles RolesCommand
   | ServiceAccounts ServiceAccountsCommand
+  | OAuthClients OAuthClientsCommand
   | Audit AuditCommand
   | Sweep SweepOptions
 
@@ -55,6 +57,7 @@ commandParser =
         <> command "users" (info (Users <$> usersParser) (progDesc "Manage user accounts"))
         <> command "roles" (info (Roles <$> rolesParser) (progDesc "Declare roles and grant them to users"))
         <> command "service-accounts" (info (ServiceAccounts <$> serviceAccountsParser) (progDesc "Manage OAuth2 client_credentials machine accounts"))
+        <> command "oauth-clients" (info (OAuthClients <$> oauthClientsParser) (progDesc "Manage OAuth2/OIDC clients for the authorization-code flow"))
         <> command "audit" (info (Audit <$> auditParser) (progDesc "Query the audit log / security events"))
         <> command "sweep" (info (Sweep <$> sweepParser) (progDesc "Delete expired and dead rows once, then exit"))
     )
@@ -134,6 +137,9 @@ run = \case
   ServiceAccounts sc -> do
     env <- loadAdminEnv
     runServiceAccounts env sc
+  OAuthClients oc -> do
+    env <- loadAdminEnv
+    runOAuthClients env oc
   Audit ac -> do
     env <- loadAdminEnv
     runAudit env ac

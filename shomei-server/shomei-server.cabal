@@ -97,6 +97,7 @@ executable shomei-admin
     Shomei.Admin.Audit
     Shomei.Admin.Env
     Shomei.Admin.Keys
+    Shomei.Admin.OAuthClients
     Shomei.Admin.Roles
     Shomei.Admin.ServiceAccounts
     Shomei.Admin.Sweep
@@ -148,6 +149,7 @@ test-suite shomei-admin-test
     Shomei.Admin.Audit
     Shomei.Admin.Env
     Shomei.Admin.Keys
+    Shomei.Admin.OAuthClients
     Shomei.Admin.Roles
     Shomei.Admin.ServiceAccounts
     Shomei.Admin.Sweep

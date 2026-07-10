@@ -37,6 +37,7 @@ import Shomei.Config
   ( AttestationPolicy (..),
     CookieConfig (..),
     NotifierConfig (..),
+    OAuthConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
     SameSitePolicy (..),
@@ -210,6 +211,13 @@ data FileConfig = FileConfig
     webauthnPendingCeremonyTtlSeconds :: !(Maybe Int),
     webauthnMfaRequired :: !(Maybe Bool),
     serviceToken :: !(Maybe FileServiceTokenConfig),
+    -- | enable the OIDC provider surface (discovery, @\/oauth\/authorize@). Requires @issuer@
+    --     to be the deployment's public @http(s)@ base URL; the server refuses to boot otherwise.
+    oidcEnabled :: !(Maybe Bool),
+    -- | the host's login page, for the unauthenticated-authorize redirect
+    oauthLoginUrl :: !(Maybe Text),
+    oauthAuthorizationCodeTtlSeconds :: !(Maybe Int),
+    oauthIdTokenTtlSeconds :: !(Maybe Int),
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     signingAlgorithm :: !(Maybe Text),
     -- | seconds between background reloads of signing-key material; 0 disables them
@@ -332,6 +340,7 @@ baseFromFile (Just fc) = do
                 },
             webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc,
             serviceTokenConfig = serviceTokenCfg,
+            oauthConfig = mergeOAuth cfg0.oauthConfig fc,
             signingKeyConfig =
               cfg0.signingKeyConfig
                 { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile,
@@ -515,6 +524,7 @@ overlayCoreFromEnv base = do
   sc <- sessionCheckEnv
   wa <- overlayWebAuthnFromEnv base.webauthnConfig
   serviceTokenCfg <- overlayServiceTokenFromEnv base.serviceTokenConfig
+  oauthCfg <- overlayOAuthFromEnv base.oauthConfig
   pwMin <- intEnvMaybe "SHOMEI_PASSWORD_MIN_LENGTH"
   pwMax <- intEnvMaybe "SHOMEI_PASSWORD_MAX_LENGTH"
   pwRejCommon <- boolEnv "SHOMEI_PASSWORD_REJECT_COMMON"
@@ -556,6 +566,7 @@ overlayCoreFromEnv base = do
         sessionCheckMode = fromMaybe base.sessionCheckMode sc,
         webauthnConfig = wa,
         serviceTokenConfig = serviceTokenCfg,
+        oauthConfig = oauthCfg,
         passwordPolicy =
           base.passwordPolicy
             { minLength = fromMaybe base.passwordPolicy.minLength pwMin,
@@ -566,6 +577,32 @@ overlayCoreFromEnv base = do
               breachCheckFailClosed = fromMaybe base.passwordPolicy.breachCheckFailClosed pwBreachFC,
               breachCheckTimeoutMs = fromMaybe base.passwordPolicy.breachCheckTimeoutMs pwBreachTo
             }
+      }
+
+-- | Apply the optional @oidc*@ \/ @oauth*@ fields of a decoded Dhall 'FileConfig' onto the
+-- 'OAuthConfig' defaults. Constructed in full rather than record-updated, for the same
+-- @-Wambiguous-fields@ reason as 'mergeSweep'.
+mergeOAuth :: OAuthConfig -> FileConfig -> OAuthConfig
+mergeOAuth base fc =
+  OAuthConfig
+    { oidcEnabled = fromMaybe base.oidcEnabled fc.oidcEnabled,
+      loginUrl = fc.oauthLoginUrl <|> base.loginUrl,
+      authorizationCodeTTL = maybe base.authorizationCodeTTL fromIntegral fc.oauthAuthorizationCodeTtlSeconds,
+      idTokenTTL = maybe base.idTokenTTL fromIntegral fc.oauthIdTokenTtlSeconds
+    }
+
+overlayOAuthFromEnv :: OAuthConfig -> IO OAuthConfig
+overlayOAuthFromEnv base = do
+  mEnabled <- boolEnv "SHOMEI_OIDC_ENABLED"
+  mLoginUrl <- textEnvMaybe "SHOMEI_OAUTH_LOGIN_URL"
+  mCodeTtl <- ttlEnv "SHOMEI_OAUTH_CODE_TTL"
+  mIdTtl <- ttlEnv "SHOMEI_OAUTH_ID_TOKEN_TTL"
+  pure
+    OAuthConfig
+      { oidcEnabled = fromMaybe base.oidcEnabled mEnabled,
+        loginUrl = mLoginUrl <|> base.loginUrl,
+        authorizationCodeTTL = fromMaybe base.authorizationCodeTTL mCodeTtl,
+        idTokenTTL = fromMaybe base.idTokenTTL mIdTtl
       }
 
 mergeServiceToken :: Text -> ServiceTokenConfig -> Maybe FileServiceTokenConfig -> IO ServiceTokenConfig
@@ -775,6 +812,16 @@ intEnv name def = do
     Just s -> case readMaybe s of
       Just n -> pure n
       Nothing -> ioError (userError (Text.unpack name <> " must be an integer"))
+
+-- | Like 'textEnv' but overlay-only: absent or empty → 'Nothing', so a caller can distinguish
+-- "the operator set nothing" from "the operator set the empty string" and fall back to the
+-- config-file value rather than clobbering it.
+textEnvMaybe :: Text -> IO (Maybe Text)
+textEnvMaybe name = do
+  m <- lookupEnv (Text.unpack name)
+  pure $ case m of
+    Just v | not (null v) -> Just (Text.pack v)
+    _ -> Nothing
 
 -- | Like 'intEnv' but overlay-only: absent/empty → Nothing, non-integer → error.
 intEnvMaybe :: Text -> IO (Maybe Int)
