@@ -14,15 +14,18 @@ module Shomei.Workflow.Impersonation
   ( StartImpersonation (..),
     startImpersonation,
     stopImpersonation,
+    DelegatedMint (..),
+    mintDelegatedToken,
   )
 where
 
+import Data.Set (Set)
 import Data.Set qualified as Set
-import Data.Time (addUTCTime)
+import Data.Time (NominalDiffTime, addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..))
-import Shomei.Domain.Claims (AuthClaims (..), noExtraClaims)
+import Shomei.Domain.Claims (AuthClaims (..), Scope, noExtraClaims)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.Session (NewSession (..), Session (..))
 import Shomei.Domain.Token (AccessToken)
@@ -74,31 +77,19 @@ startImpersonation cfg cmd = runErrorNoCallStack do
   -- Target check: the target must exist and be active.
   target <- maybe (throwError ImpersonationTargetInvalid) pure =<< findUserById cmd.targetUserId
   unless (target.status == UserActive) (throwError ImpersonationTargetInvalid)
-  -- Mint a dedicated, refresh-less, short-lived delegated session.
-  let expires = addUTCTime imp.impersonationSessionTTL ts
-  session <-
-    createSession
-      NewSession
-        { userId = cmd.targetUserId,
-          createdAt = ts,
-          expiresAt = expires,
-          actor = Just caller.subject,
-          oauthClientId = Nothing
+  -- Mint a dedicated, refresh-less, short-lived delegated session through the shared core. Empty
+  -- scopes: an impersonation token carries the operator's authority to /be/ the customer, not a
+  -- narrowed scope set (that is on-behalf-of's job).
+  (session, access) <-
+    mintDelegatedToken
+      cfg
+      ts
+      DelegatedMint
+        { subjectUserId = cmd.targetUserId,
+          actorUserId = caller.subject,
+          scopes = Set.empty,
+          ttl = imp.impersonationSessionTTL
         }
-  let claims =
-        AuthClaims
-          { subject = cmd.targetUserId,
-            sessionId = session.sessionId,
-            issuer = cfg.issuer,
-            audience = cfg.audience,
-            issuedAt = ts,
-            expiresAt = expires,
-            scopes = Set.empty,
-            roles = Set.empty,
-            actor = Just caller.subject,
-            extraClaims = noExtraClaims
-          }
-  access <- signAccessToken claims
   publishAuthEvent
     ( Event.ImpersonationStarted
         Event.ImpersonationStartedData
@@ -111,6 +102,65 @@ startImpersonation cfg cmd = runErrorNoCallStack do
             occurredAt = ts
           }
     )
+  pure (session, access)
+
+-- | The inputs to the shared delegated-token core: who the token represents, who is acting, the
+-- scopes it carries, and how long it lives. Everything policy — the scope\/freshness\/target
+-- guards, the audit event — lives in the /caller/ ('startImpersonation' for impersonation,
+-- 'Shomei.Workflow.TokenExchange.exchangeToken' for on-behalf-of); this record is only the mint.
+data DelegatedMint = DelegatedMint
+  { -- | the token's @sub@
+    subjectUserId :: !UserId,
+    -- | the token's @act@
+    actorUserId :: !UserId,
+    -- | empty for impersonation; the narrowed set for service on-behalf-of
+    scopes :: !(Set Scope),
+    ttl :: !NominalDiffTime
+  }
+  deriving stock (Generic, Show)
+
+-- | Mint a dedicated, __refresh-less__, short-lived delegated session and its signed access token:
+-- a fresh session row whose @actor@ is 'actorUserId', and a token carrying both identities (@sub@ =
+-- 'subjectUserId', @act@ = 'actorUserId') plus 'scopes'. No refresh token, no @LoginSucceeded@\/
+-- @SessionStarted@ events — the delegated session cannot be silently renewed and dies at its TTL.
+--
+-- This is the single mint both delegation flows share, so the standards-based token-exchange grant
+-- and the bespoke @\/auth\/impersonate@ endpoint cannot drift in session shape or claim contents.
+-- The audit event is the caller's responsibility, because impersonation and on-behalf-of publish
+-- different events.
+mintDelegatedToken ::
+  ( SessionStore :> es,
+    TokenSigner :> es
+  ) =>
+  ShomeiConfig ->
+  UTCTime ->
+  DelegatedMint ->
+  Eff es (Session, AccessToken)
+mintDelegatedToken cfg ts mint = do
+  let expires = addUTCTime mint.ttl ts
+  session <-
+    createSession
+      NewSession
+        { userId = mint.subjectUserId,
+          createdAt = ts,
+          expiresAt = expires,
+          actor = Just mint.actorUserId,
+          oauthClientId = Nothing
+        }
+  let claims =
+        AuthClaims
+          { subject = mint.subjectUserId,
+            sessionId = session.sessionId,
+            issuer = cfg.issuer,
+            audience = cfg.audience,
+            issuedAt = ts,
+            expiresAt = expires,
+            scopes = mint.scopes,
+            roles = Set.empty,
+            actor = Just mint.actorUserId,
+            extraClaims = noExtraClaims
+          }
+  access <- signAccessToken claims
   pure (session, access)
 
 -- | Stop impersonating: revoke the delegated session named by the presented token's

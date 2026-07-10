@@ -57,6 +57,7 @@ reconstructAuthEvent etype payload = case etype of
   "impersonation_started" -> ImpersonationStarted <$> parse payload
   "impersonation_stopped" -> ImpersonationStopped <$> parse payload
   "impersonation_action_blocked" -> ImpersonationActionBlocked <$> parse payload
+  "service_on_behalf_issued" -> ServiceOnBehalfIssued <$> parse payload
   "service_token_issued" -> ServiceTokenIssued <$> parse payload
   "role_granted" -> RoleGranted <$> parse payload
   "role_revoked" -> RoleRevoked <$> parse payload
@@ -138,6 +139,11 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_stopped", toJSON d, d.occurredAt)
   ImpersonationActionBlocked d ->
     (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "impersonation_action_blocked", toJSON d, d.occurredAt)
+  -- Like the impersonation events, the row's user_id is the SUBJECT (the user acted for); the
+  -- acting service and its backing user live in the JSONB payload. So `?user=<subject>` returns the
+  -- on-behalf-of grants made against that user alongside their own sessions.
+  ServiceOnBehalfIssued d ->
+    (Just (userIdToUUID d.subjectUserId), Just (sessionIdToUUID d.sessionId), "service_on_behalf_issued", toJSON d, d.occurredAt)
   ServiceTokenIssued d ->
     (Just (userIdToUUID d.userId), Just (sessionIdToUUID d.sessionId), "service_token_issued", toJSON d, d.occurredAt)
   -- The row's user_id is the grant's SUBJECT; the granting admin (when there is one) lives in

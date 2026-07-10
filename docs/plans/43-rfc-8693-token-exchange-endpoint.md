@@ -53,9 +53,9 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `Shomei.Workflow.Impersonation` refactored: shared `mintDelegatedToken` core; `startImpersonation` behavior byte-identical (existing specs untouched and green).
-- [ ] M1: `Shomei.Workflow.TokenExchange` with `exchangeToken` covering both modes; new errors; `ServiceOnBehalfIssued` audit event (+ codec + spec).
-- [ ] M1: Core unit tests: both happy paths, scope gate, freshness gate, narrowing violations, inactive users, refresh-less sessions.
+- [x] M1 (2026-07-10): `Shomei.Workflow.Impersonation` refactored: shared `mintDelegatedToken` core; `startImpersonation` behavior byte-identical (existing `ImpersonationSpec` untouched and green).
+- [x] M1 (2026-07-10): `Shomei.Workflow.TokenExchange` with `exchangeToken` covering both modes; new errors (`OAuthGrantInvalid`, `OAuthRequestMalformed`); `ServiceOnBehalfIssued` audit event (+ `EventCodec` + `EventCodecSpec` round-trip, count 34→35).
+- [x] M1 (2026-07-10): Core unit tests (`TokenExchangeSpec`, 16 cases): both happy paths, scope gate, freshness gate, narrowing violations, subject-scope bound, chain refusal, inactive users, refresh-less sessions, gate scope never granted, `requested_token_type` rejection. `cabal test shomei-core` green (211 tests).
 - [ ] M2: Token-endpoint dispatcher arm for the exchange grant; RFC 8693 request parsing and response shape; in-process HTTP tests.
 - [ ] M2: OpenAPI response schema extended (`issued_token_type`); spec regenerated (no new path).
 - [ ] M3: `/auth/impersonate` re-expressed over the shared core (thin endpoint, unchanged wire behavior) + deprecation notes in docs.
@@ -171,7 +171,24 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+### M1 (2026-07-10)
+
+`mintDelegatedToken` extracted; `startImpersonation` now calls it and `ImpersonationSpec` passes
+unmodified (the refactor-safety gate). `Shomei.Workflow.TokenExchange.exchangeToken` covers both
+modes; impersonation mode reuses `startImpersonation` verbatim so scope/freshness/self/active
+guards and the `impersonation_started` event are literally shared code. `TokenExchangeSpec`
+(16 cases) is green; `cabal test shomei-core` = 211 tests, PASS.
+
+Error-constructor decisions worth recording:
+
+- Following the EP-4 established pattern (`Shomei.Servant.Error` header note), the two new
+  `AuthError` constructors `OAuthGrantInvalid`\/`OAuthRequestMalformed` are total-mapped in
+  `authErrorToServerError` to existing catalog specs (`pcBadRequest`), never to new codes — no
+  route emits them through the envelope, so no `problemCatalog`\/`routeErrors` entry is needed.
+- An inactive\/absent __subject__ user and an inactive __service backing__ user both map to
+  `OAuthGrantInvalid` (→ `invalid_grant`, 400), not `invalid_client`: the service's secret already
+  verified, so this is not a client-authentication failure; the exchange simply cannot mint. This is
+  a deliberate narrowing of the plan's under-specified "require the service's backing user active".
 
 
 ## Context and Orientation

@@ -120,6 +120,16 @@ data AuthError
   | -- | EP-4: the @scope@ parameter was present but empty, or requested scopes outside the
     -- account's @allowed_scopes@. Rendered as RFC 6749 @invalid_scope@ (HTTP 400).
     OAuthScopeInvalid
+  | -- | EP-6 (RFC 8693 token exchange): the presented @subject_token@ or @actor_token@ failed
+    -- verification, named an inactive\/absent user, or was itself a delegated token (chained
+    -- exchanges are refused). Rendered as RFC 6749 @invalid_grant@ (HTTP 400) at
+    -- @POST \/oauth\/token@; like the other OAuth errors it never reaches the problem envelope.
+    OAuthGrantInvalid
+  | -- | EP-6 (RFC 8693 token exchange): the request was structurally wrong for the exchange grant —
+    -- an unsupported @requested_token_type@, or a @subject_token_type@\/@actor_token_type@
+    -- combination that names neither exchange mode. Rendered as RFC 6749 @invalid_request@ (HTTP
+    -- 400); never reaches the problem envelope.
+    OAuthRequestMalformed
   | -- | The named user does not exist. Raised by the role grant/revoke workflows, which
     -- resolve the subject before touching the grant table. Maps to 404.
     --

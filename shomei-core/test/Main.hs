@@ -20,6 +20,7 @@ import Shomei.Workflow.PasskeySpec qualified
 import Shomei.Workflow.RolesSpec qualified
 import Shomei.Workflow.ServiceTokenSpec qualified
 import Shomei.Workflow.TimingSpec qualified
+import Shomei.Workflow.TokenExchangeSpec qualified
 import Shomei.WorkflowSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
@@ -48,6 +49,7 @@ main =
           Shomei.Workflow.EmailVerificationSpec.tests,
           Shomei.Workflow.PasskeySpec.tests,
           Shomei.Workflow.ClientCredentialsSpec.tests,
-          Shomei.Workflow.ConcurrencySpec.tests
+          Shomei.Workflow.ConcurrencySpec.tests,
+          Shomei.Workflow.TokenExchangeSpec.tests
         ]
     )

@@ -119,6 +119,8 @@ roundTrips =
     let d = ImpersonationStoppedData uid2 uid sid t0 in check "impersonation_stopped" d (ImpersonationStopped d),
     let d = ImpersonationActionBlockedData uid2 uid sid "password_change" t0 in check "impersonation_action_blocked" d (ImpersonationActionBlocked d),
     let d = ServiceTokenIssuedData uid sid (ServiceAccountId "connector:rei") (Set.singleton (Scope "kawa:ingest")) (Just uid2) t0 in check "service_token_issued" d (ServiceTokenIssued d),
+    -- EP-6 on-behalf-of: subject (the user) is uid; actor (the service's backing user) is uid2.
+    let d = ServiceOnBehalfIssuedData "svcacct_01" uid2 uid sid (Set.singleton (Scope "kawa:ingest")) t0 in check "service_on_behalf_issued" d (ServiceOnBehalfIssued d),
     -- An HTTP grant records the acting admin; a CLI bootstrap grant / default role records none.
     let d = RoleGrantedData uid (Role "admin") (Just uid2) t0 in check "role_granted" d (RoleGranted d),
     let d = RoleRevokedData uid (Role "admin") Nothing t0 in check "role_revoked" d (RoleRevoked d),
@@ -147,10 +149,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 34).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 35).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 34 AuthEvent constructors" (length roundTrips @?= 34)
+  testCase "covers all 35 AuthEvent constructors" (length roundTrips @?= 35)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

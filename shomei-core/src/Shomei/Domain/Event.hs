@@ -35,6 +35,7 @@ module Shomei.Domain.Event
     ImpersonationStartedData (..),
     ImpersonationStoppedData (..),
     ImpersonationActionBlockedData (..),
+    ServiceOnBehalfIssuedData (..),
     ServiceTokenIssuedData (..),
     RoleGrantedData (..),
     RoleRevokedData (..),
@@ -285,6 +286,25 @@ data ImpersonationActionBlockedData = ImpersonationActionBlockedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | EP-6: a service account exchanged a user's access token for a narrowed, short-lived token that
+-- acts on the user's behalf (RFC 8693 on-behalf-of). Carries the subject (the user, whose id is the
+-- audit row's @user_id@ column), the actor (the service account's backing user, in @act@), the
+-- delegated session, and the scopes actually granted after narrowing. The @token-exchange:subject@
+-- gate scope is never among them.
+data ServiceOnBehalfIssuedData = ServiceOnBehalfIssuedData
+  { -- | the service account's TypeID text (@client_id@) that requested the exchange
+    serviceAccountId :: !Text,
+    -- | the service account's backing user, recorded in the issued token's @act@
+    actorUserId :: !UserId,
+    -- | the user the token now represents (@sub@)
+    subjectUserId :: !UserId,
+    sessionId :: !SessionId,
+    scopes :: !(Set Scope),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data ServiceTokenIssuedData = ServiceTokenIssuedData
   { userId :: !UserId,
     sessionId :: !SessionId,
@@ -428,6 +448,7 @@ data AuthEvent
   | ImpersonationStarted ImpersonationStartedData
   | ImpersonationStopped ImpersonationStoppedData
   | ImpersonationActionBlocked ImpersonationActionBlockedData
+  | ServiceOnBehalfIssued ServiceOnBehalfIssuedData
   | ServiceTokenIssued ServiceTokenIssuedData
   | RoleGranted RoleGrantedData
   | RoleRevoked RoleRevokedData

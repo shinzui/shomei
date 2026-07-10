@@ -106,6 +106,7 @@ library
     Shomei.Workflow.Roles
     Shomei.Workflow.ServiceToken
     Shomei.Workflow.Session
+    Shomei.Workflow.TokenExchange
 
   build-depends:
     , aeson
@@ -153,6 +154,7 @@ test-suite shomei-core-test
     Shomei.Workflow.RolesSpec
     Shomei.Workflow.ServiceTokenSpec
     Shomei.Workflow.TimingSpec
+    Shomei.Workflow.TokenExchangeSpec
     Shomei.WorkflowSpec
 
   build-depends:

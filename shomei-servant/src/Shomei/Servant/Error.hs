@@ -428,6 +428,12 @@ authErrorToServerError = \case
   -- future non-OAuth route to surface them, it would still answer with a sane envelope.
   OAuthClientInvalid -> plain pcServiceAccountInvalid
   OAuthScopeInvalid -> plain pcServiceTokenScopeDenied
+  -- EP-6's two token-exchange errors are, like EP-4's above, raised only by the
+  -- @POST \/oauth\/token@ dispatcher (via 'Shomei.Workflow.TokenExchange'), which renders them in
+  -- the RFC 6749 §5.2 shape, never through this function. These arms keep the @\case@ total and
+  -- reuse existing catalog specs (400s) rather than minting codes no route can emit.
+  OAuthGrantInvalid -> plain pcBadRequest
+  OAuthRequestMalformed -> plain pcBadRequest
   UserNotFound -> plain pcUserNotFound
   -- The offending name is request-specific, so it belongs in 'detail', keeping 'title' stable
   -- for the OpenAPI catalog.
