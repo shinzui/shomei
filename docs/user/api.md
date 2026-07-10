@@ -137,7 +137,7 @@ is a `401` instead, because the access token no longer verifies against the revo
 → `200` the caller's user record. `404` if the user row is missing.
 
 ### `GET /v1/auth/session` *(authenticated)*
-→ `200` the caller's session record.
+→ `200` the caller's session record: `{"sessionId","userId","createdAt","expiresAt","status","revokedAt"}`.
 
 ## Account lifecycle (EP-1)
 
@@ -219,6 +219,92 @@ Credential-changing endpoints (`POST /v1/auth/password/change`, `POST /v1/auth/p
 `POST /v1/auth/passkeys/register/complete`, `DELETE /v1/auth/passkeys/{passkeyId}`) **refuse** any request
 bearing a delegated token with `403 impersonation_action_blocked` and write an audit record. An
 operator can look but cannot change the customer's credentials.
+
+## Admin API
+
+Eleven operations for managing users and sessions over HTTP, so a deployed Shōmei is
+administrable without shell access to the box.
+
+**Authorization.** Every route below requires the `admin` **role** *or* the `shomei:admin`
+**scope**. The role is granted from the store (`shomei-admin roles grant`, or
+`PUT /v1/admin/users/{userId}/roles/admin` below); the scope is minted onto a service token, so a
+database-less support console or back-office job can administer too. Without either: `403` with
+`code: "missing_role"`. Without any token: `401`.
+
+**Two refusals.**
+
+- Every *mutation* refuses a **delegated (impersonation) token** — one carrying an `act` claim —
+  with `403 impersonation_action_blocked`, and audits the refusal. An operator impersonating a
+  customer must not be able to administer as that customer. Reads are allowed.
+- An administrator cannot **suspend or delete their own account** (`403 self_target_forbidden`),
+  so one mistyped id cannot lock the last admin out. They *may* revoke their own sessions, which
+  is what you do when a laptop is stolen.
+
+**Status transitions are strict, not idempotent.** Suspending an already-suspended user is
+`409 invalid_user_status`, not a silent success — two administrators responding to one incident
+must be able to tell which of them changed the state. Delete is a **soft delete**: the status
+becomes `deleted`, the row survives (sessions, role grants and audit events reference it), and the
+user still appears in listings.
+
+**Token staleness.** Suspending or deleting a user revokes their sessions immediately, so they
+cannot refresh. Their outstanding *access* tokens still work until they expire (default 15
+minutes) unless the deployment sets `sessionCheckMode = VerifyTokenAndSession`, which re-reads the
+session on every request. See [security.md](security.md).
+
+Every mutation is audited with the acting administrator's id: `user_suspended`, `user_reinstated`,
+`user_deleted` carry `payload.actor`; `session_revoked` carries `payload.revokedBy`.
+
+### `GET /v1/admin/users`
+`?status=active|suspended|deleted` `?limit=<n>` (default 50, clamped to 1000) `?before=<cursor>`.
+→ `200 {"users":[…],"nextCursor":"…"|null}`, newest first. Keyset-paginated on
+`(createdAt, userId)`: pass a page's `nextCursor` back as `?before=` for the next one. `nextCursor`
+is present whenever the page came back full. `400 bad_request` on an unknown status or a malformed
+cursor.
+
+### `GET /v1/admin/users/{userId}`
+→ `200 {"user":{…},"roles":["admin",…]}` — the user plus the roles actually granted in the store,
+which is not necessarily what an outstanding token of theirs carries. `404 user_not_found`.
+
+### `POST /v1/admin/users/{userId}/suspend`
+→ `204`. Suspends an active user and revokes all their sessions. `409 invalid_user_status` if they
+are not active; `403 self_target_forbidden` if they are you.
+
+### `POST /v1/admin/users/{userId}/reinstate`
+→ `204`. Returns a suspended user to service. Their old sessions stay revoked; they log in again.
+`409 invalid_user_status` if they are not suspended.
+
+### `DELETE /v1/admin/users/{userId}`
+→ `204`. Soft-deletes the user and revokes their sessions. `409` if already deleted; `403` if they
+are you.
+
+### `GET /v1/admin/users/{userId}/sessions`
+→ `200` every session of the user, newest first, in every status
+(`{"sessionId","userId","createdAt","expiresAt","status","revokedAt"}`). Unpaginated: sessions per
+user are bounded small. `404 user_not_found`.
+
+### `DELETE /v1/admin/users/{userId}/sessions`
+→ `204`. Revokes every *active* session of the user. `404 user_not_found`.
+
+### `DELETE /v1/admin/sessions/{sessionId}`
+→ `204`. Revokes one session, whoever owns it. `404 session_not_found`.
+
+### `POST /v1/admin/users/{userId}/password-reset`
+→ `202`. Drives the ordinary reset flow (same token table, same `Notifier` delivery, same audit
+event) for a user named by id. `409 user_has_no_email` if they have no address — unlike the public
+endpoint, an authorized admin who already holds the user id learns nothing from a real error.
+
+### `PUT /v1/admin/users/{userId}/roles/{role}`
+→ `204`. Grants a role. **Idempotent**: re-granting a held role is still `204`, and no duplicate
+audit event is written. `422 role_not_defined` if the role is not in the registry (define it with
+`shomei-admin roles define`); `400 bad_request` on a blank name.
+
+### `DELETE /v1/admin/users/{userId}/roles/{role}`
+→ `204`. `404 role_not_granted` if the user did not hold it — unlike the idempotent grant,
+revoking something that was never there is a request you got wrong, and silently succeeding would
+hide a typo in the role name.
+
+**Roles reach the next token, not the current one.** A grant takes effect at the target's next
+login or refresh. Revoke their sessions if you need it to bite immediately.
 
 ## Audit log (EP-7)
 

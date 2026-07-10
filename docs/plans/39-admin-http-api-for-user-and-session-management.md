@@ -98,15 +98,15 @@ Milestone 2 — HTTP surface: **done 2026-07-09**
 - [x] Six servant end-to-end scenarios: the authz matrix (no token 401 / ordinary 403 / role 200 / scope 200, and the 403 leaks nothing), the lifecycle walk (suspend → login dies + sessions revoked → 409 on repeat → reinstate → soft delete → still listed as `deleted`), sessions (revoke one, revoke all) with the audit event naming the acting admin, roles (idempotent PUT, 404 on revoking an unheld role, 422 on an undefined role, 400 on a blank name, and a grant reaching the *next* token but not one already in flight), the two refusals (delegated token, self-target), and the keyset pagination walk including a malformed cursor and an unknown status filter.
 - [x] Conformance path count 25 → **33** (not the 24 → 32 the plan predicted; EP-3 added `/openapi.json`). `routeErrors` extended for all eleven operations. Spec regenerated.
 
-Milestone 3 — Spec and client:
+Milestone 3 — Spec and client: **done 2026-07-09**
 
-- [ ] `ToSchema` instances for the new DTOs in `shomei-servant/src/Shomei/Servant/OpenApi.hs`; regenerate `docs/api/openapi.json`; bump the conformance suite's path count (24 → 32).
-- [ ] `shomei-client` wrappers for the eleven admin operations.
+- [x] `ToSchema` for `AdminUserResponse`/`AdminUsersPage`, `ToParamSchema` for the `UserId`/`SessionId` captures, spec regenerated, conformance path count 25 → **33**, `routeErrors` extended. (This landed with M2's commit: the conformance suite refuses a route surface the spec does not describe, which is the guard working as designed — there was no green tree in which to split the two.)
+- [x] Eleven `shomei-client` wrappers. Their round-trip test asserts **403, not 404 or 405**, for every one against a live server with an unauthorized token: a 404 would mean the derived client built a path the server does not serve, a 405 that it used the wrong verb. That is what actually needs proving here, since the bodies are shared with the server's own route types.
 
-Milestone 4 — Proof and docs:
+Milestone 4 — Proof and docs: **done 2026-07-09**
 
-- [ ] Live curl transcript recorded (below).
-- [ ] `docs/user/api.md` "Admin API" section; `docs/user/security.md` note on admin authz + impersonation refusal; CHANGELOG entry; MasterPlan 7 registry/progress updated.
+- [x] Live transcript against PostgreSQL recorded below — CLI bootstrap through the whole lifecycle, including the audit actor and both refusals.
+- [x] `docs/user/api.md` gained an "Admin API" section (authorization, the two refusals, strict transitions, token staleness, all eleven endpoints). `docs/user/security.md` gained an "Administering over HTTP" subsection and the HTTP grant path. `GET /v1/auth/session`'s documented body now lists `status`/`revokedAt`. CHANGELOG entry written. MasterPlan 7 registry/progress updated.
 
 
 ## Surprises & Discoveries
@@ -260,7 +260,82 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Complete, 2026-07-09.** All four milestones landed; `cabal test all` green.
+
+Against the original purpose — "a deployed Shōmei is administrable **only via the `shomei-admin`
+CLI on the box**" — an administrator can now answer *what users exist*, suspend a compromised
+account, kick a user's sessions, trigger a reset for a locked-out customer, and grant a role, all
+over HTTP, with every mutation naming who did it.
+
+The live transcript, against real PostgreSQL:
+
+```text
+### grant admin via the CLI (EP-1 bootstrap)
+granted admin to user_01kx4xbwgmetgtg23g4510cee3
+
+### GET /v1/admin/users
+  users: 3 | nextCursor: present
+
+### suspend
+  POST .../suspend            -> 204
+  target login after suspend  -> 401
+  target sessions: ['revoked']
+  repeat suspend:  {"code":"invalid_user_status","status":409,
+                    "title":"User is not in a state that allows this action","type":"about:blank"}
+
+### reinstate + roles over HTTP
+  POST .../reinstate          -> 204
+  target login again          -> 200
+  PUT .../roles/admin         -> 204
+  PUT again (idempotent)      -> 204
+  DELETE .../roles/admin      -> 204
+  DELETE again:    {"code":"role_not_granted","status":404,
+                    "title":"User does not hold that role","type":"about:blank"}
+
+### the audit event names the acting admin
+  payload.actor: user_01kx4xbwgmetgtg23g4510cee3
+  acting admin:  user_01kx4xbwgmetgtg23g4510cee3
+
+### refusals
+  no token                    -> 401
+  self-suspend:    {"code":"self_target_forbidden","status":403,…}
+  ghost user:      {"code":"user_not_found","status":404,…}
+```
+
+**What the plan got right.** Separating policy from workflow. `Shomei.Workflow.Admin` authorizes
+nothing and refuses no self-target; both live in the handlers. That let the core tests exercise the
+transitions and the audit actor without a single HTTP concept, and it means the `shomei-admin` CLI
+— which has no caller at all — can drive the same code.
+
+**What the plan got wrong, and what caught it.**
+
+- The DTO could not express the feature. `SessionResponse` had no `status`, so the plan's own M2.5
+  test ("their session shows revoked") was unwritable. Caught by trying to write it.
+- Three places assumed the shape of things they had not read: the conformance path count
+  (24 → 32; really 25 → 33), the `{"error"}` error bodies in the M2.1 guard sketch (EP-3 replaced
+  them), and `revokeUserSessions` on a nonexistent user (the workflow's honest `Right 0` becomes a
+  dishonest `204` over HTTP).
+- **EP-3's conformance suite found two defects before any EP-2 test ran**: `withErrorResponses`
+  had no `PUT` arm (so the API's first `PUT` documented zero errors), and two `problemCatalog`
+  edits had silently no-op'd (so four codes the server emits were absent from the catalog). Neither
+  is the kind of bug a feature test looks for. That machinery has now paid for itself twice.
+
+**Gap: `suspendUser`/`deleteUser` emit no per-session `SessionRevoked` events.** They call the bulk
+`revokeAllUserSessions`, so the trail shows one `user_suspended` and no record of *which* sessions
+died. `revokeUserSessions` does emit one per session. The asymmetry is deliberate (the plan
+specified the bulk primitive) but an operator reconstructing an incident from the audit log will
+notice. Fixing it means either widening the bulk port operation to return the revoked ids, or
+looping in the workflow as `revokeUserSessions` does.
+
+**Gap: `POST /v1/admin/users/{id}/password-reset` answers `202` unconditionally once the user
+exists and has an email.** It does not report whether delivery succeeded — the `Notifier` is
+asynchronous by design. That is the same contract the public endpoint has, and correct, but an
+admin clicking "send reset" gets no more assurance than the user does.
+
+**Gap: no rate limiting on `/v1/admin/*`.** The limiter guards the unauthenticated endpoints only.
+An admin token is a bearer credential and the surface is authorized, so this is defensible, but a
+compromised admin token can enumerate every user at 1000 rows per request as fast as the network
+allows.
 
 
 ## Context and Orientation

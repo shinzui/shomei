@@ -7,6 +7,37 @@ tagged release.
 
 ## Unreleased
 
+### Added — MasterPlan 7 (Interop Wave), EP-2: the admin HTTP API
+
+A deployed Shōmei is now administrable over HTTP, not only with the `shomei-admin` CLI on the box.
+
+- **Eleven operations under `/v1/admin`**: list and get users (keyset-paginated, `?status=`
+  filtered), suspend, reinstate, soft-delete, list and revoke sessions, revoke one session,
+  trigger a password reset for a user by id, and grant/revoke a role. All eleven have typed
+  `shomei-client` wrappers and are documented in the OpenAPI spec.
+- **The gate is the `admin` role OR the `shomei:admin` scope.** The role is for humans (granted
+  from the store); the scope is minted onto a service token, so a database-less support console
+  can administer too.
+- **Two refusals.** A delegated (impersonation) token cannot perform an admin mutation
+  (`403 impersonation_action_blocked`, itself audited) — otherwise impersonation would launder
+  privilege. An administrator cannot suspend or delete their own account
+  (`403 self_target_forbidden`), so one mistyped id cannot lock the last admin out; revoking your
+  own sessions is still allowed.
+- **Strict status transitions.** Suspending an already-suspended user is `409 invalid_user_status`,
+  not a silent success: two administrators handling one incident must be able to tell which of
+  them changed the state. Delete is a soft delete; the row and its audit trail survive.
+- **Every mutation is audited with the acting administrator.** `user_suspended`,
+  `user_reinstated` (new) and `user_deleted` carry `payload.actor`; `session_revoked` carries
+  `payload.revokedBy`. Both are `null` for self-service revocations (logout, refresh-token reuse,
+  stopping an impersonation) and for events written before this release.
+- **`SessionResponse` gains `status` and `revokedAt`** (additive). Without them an admin listing a
+  user's sessions could not tell a live one from a revoked one. `GET /v1/auth/session` returns
+  them too.
+
+Suspending or deleting a user revokes their sessions immediately, so they cannot refresh. Their
+outstanding *access* tokens ride out their TTL unless the deployment sets
+`sessionCheckMode = VerifyTokenAndSession`.
+
 ### Breaking (pre-1.0 window) — MasterPlan 7 (Interop Wave), EP-3: `/v1` and problem-details errors
 
 Shōmei has never cut a tagged release. These changes land together, deliberately, so that a

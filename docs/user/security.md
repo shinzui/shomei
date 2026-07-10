@@ -405,11 +405,36 @@ $ shomei-admin roles revoke --user user_01ABC… --role admin
 revoked admin from user_01ABC…
 ```
 
-This is the **bootstrap path for your first administrator**: `/admin` is gated on the `admin`
-role, so the first grant has to come from outside HTTP. Grants and revocations are audited as
-`role_granted` / `role_revoked`; a CLI grant records no acting admin (there is no authenticated
-principal on the box), while an HTTP grant records the admin who performed it. Both `grant` and
-`revoke` are idempotent, and only a real state change publishes an audit event.
+This is the **bootstrap path for your first administrator**: `/v1/admin/*` is gated on the `admin`
+role, so the first grant has to come from outside HTTP. After that, roles can be granted over HTTP
+with `PUT /v1/admin/users/{userId}/roles/{role}` (see the [Admin API](api.md#admin-api)).
+
+Grants and revocations are audited as `role_granted` / `role_revoked`; a CLI grant records no
+acting admin (there is no authenticated principal on the box), while an HTTP grant records the
+admin who performed it. Both `grant` and `revoke` are idempotent at the CLI, and only a real state
+change publishes an audit event. (Over HTTP, `PUT` is likewise idempotent, but `DELETE` of a role
+the user does not hold is a `404`, so a typo in the role name is visible rather than silent.)
+
+### Administering over HTTP
+
+The `/v1/admin/*` surface accepts the `admin` **role** or the `shomei:admin` **scope**. The role is
+for humans; the scope is minted onto a service token so a database-less support console can
+administer without a role grant. Two refusals are worth knowing about:
+
+- A **delegated (impersonation) token cannot administer.** An operator impersonating a customer
+  gets `403 impersonation_action_blocked` on every admin mutation, and the refusal is itself
+  audited. Otherwise impersonation would launder privilege: act as the customer, then act as an
+  admin "as" them.
+- An **administrator cannot suspend or delete their own account** (`403 self_target_forbidden`).
+  One mistyped user id must not be able to lock the last administrator out of a deployment. The
+  CLI on the box remains the escape hatch for genuinely removing an admin. Revoking your *own*
+  sessions is allowed.
+
+Suspending or deleting a user revokes their sessions at once, so they cannot refresh. Their
+outstanding **access** tokens keep working until they expire (default 15 minutes) unless you set
+`sessionCheckMode = VerifyTokenAndSession`, which re-reads the session on every request. If you
+need a suspension to bite instantly, that is the setting; the cost is one database read per
+authenticated request.
 
 ### Default roles for new users
 

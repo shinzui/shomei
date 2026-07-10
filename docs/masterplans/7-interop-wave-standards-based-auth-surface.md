@@ -102,7 +102,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Persistent Roles and Scopes with a Granting Path and Claims Enrichment | docs/plans/38-persistent-roles-and-scopes-with-a-granting-path-and-claims-enrichment.md | None | None | Complete |
-| 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | In Progress |
+| 2 | Admin HTTP API for User and Session Management | docs/plans/39-admin-http-api-for-user-and-session-management.md | EP-1 | EP-3 | Complete |
 | 3 | API v1 Prefix and Universal Problem-Details Error Envelope | docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md | None | None | Complete |
 | 4 | Database-Backed Service Accounts with OAuth2 Client-Credentials Grant | docs/plans/41-database-backed-service-accounts-with-oauth2-client-credentials-grant.md | None | EP-3 | Not Started |
 | 5 | OIDC Provider Subset: Discovery, Authorization Code with PKCE, Introspection | docs/plans/42-oidc-provider-subset-discovery-authorization-code-with-pkce-introspection.md | EP-4 | EP-1 | Not Started |
@@ -249,8 +249,8 @@ the other.
 - [x] EP-1: Claims population at token mint through an enrichment hook
 - [x] EP-1: `shomei-admin roles grant`
 - [x] EP-1: `RequireRole`/`RequireScope` enforce via `HasServer` (or are removed from the public surface)
-- [ ] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
-- [ ] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
+- [x] EP-2: Admin routes: list/get users, suspend/reinstate/delete, revoke sessions, grant/revoke roles
+- [x] EP-2: Admin surface authorized by role/scope; audited; OpenAPI documented
 - [x] EP-3: `/v1` prefix with unversioned protocol/infra exceptions; redirect-or-410 policy for old paths
 - [x] EP-3: Universal problem-details envelope on every error path (including auth combinator 401s)
 - [x] EP-3: OpenAPI error schema + per-route error responses; status-code fixes (201 signup, idempotent logout)
@@ -341,6 +341,29 @@ to `loadAdminEnv` too, and must supply whatever validation the server performs a
 has no boot). **EP-4** (service accounts, `service-accounts create/rotate/revoke`), **EP-8**
 (notifier config), and **EP-9** (grant-expiry flags) are all exposed to this. Driving the same
 workflow does not mean loading the same configuration; an end-to-end run is what closes the gap.
+
+**2026-07-09 (EP-2) — EP-3's conformance suite is now the workspace's best bug detector, and
+later plans should lean on it.** Adding the admin routes tripped two of its checks before any
+EP-2 test ran. (a) `Shomei.Servant.OpenApi.withErrorResponses` folded over a hard-coded
+`[MGet, MPost, MDelete]`; the role-grant route is the API's first `PUT`, so it was documented with
+no error responses at all. `Method` now derives `Enum`/`Bounded` and the fold uses `allMethods`.
+(b) Two `problemCatalog` insertions silently no-op'd, so the server could emit four codes the
+catalog denied existed — the suite named all four. **EP-4, EP-5, EP-6, EP-7, and EP-9 all add
+error codes and routes**: adding an `AuthError` or a handler-raised problem is not finished until
+it appears in `problemCatalog` and, if the route is new, in `routeErrors`.
+
+**2026-07-09 (EP-2) — audit events carry the subject in the `user_id` column and the actor in the
+payload.** `SessionRevokedData` gained `revokedBy`, and `UserSuspendedData`/`UserDeletedData`
+gained `actor`. The `user_id` column stays the event's *subject*: filtering
+`?user=<admin>` must not return the sessions that admin revoked for other people. **EP-9's
+time-bound grants and EP-6's token exchange both add actor-carrying events**; follow the same rule.
+Event payloads widen with `Maybe` fields only, so historical rows keep decoding — pinned by a test
+that decodes a pre-EP-2 `session_revoked` payload.
+
+**2026-07-09 (EP-2) — `SessionResponse` gained `status` and `revokedAt`.** It had neither, so a
+session listing could not distinguish a live session from a revoked one. Additive on the wire.
+**EP-7** (TOTP) and **EP-6** (exchanged sessions) will both want to read session state; the DTO now
+carries it.
 
 **2026-07-09 (EP-3) — a route's path is written down in four places, and three of them fail
 silently.** Moving the application routes under `/v1` compiled clean and left the whole suite
