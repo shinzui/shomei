@@ -21,7 +21,7 @@ import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
-import Data.Time (NominalDiffTime)
+import Data.Time (NominalDiffTime, addUTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
@@ -31,7 +31,7 @@ import Network.HTTP.Types.URI (renderSimpleQuery)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Config (CookieConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
+import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
@@ -65,6 +65,7 @@ import Shomei.Effect.AuthEventReader
   )
 import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (findOAuthClientByClientId)
+import Shomei.Effect.RecoveryCodeStore (countUnusedRecoveryCodes)
 import Shomei.Effect.RefreshTokenStore (findRefreshTokenByHash, revokeRefreshTokenFamily, revokeSessionRefreshTokens)
 import Shomei.Effect.ServiceAccountStore (findServiceAccountByClientId)
 import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser, revokeSession)
@@ -119,6 +120,8 @@ import Shomei.Servant.DTO
     PasskeyResponse,
     PasswordResetRequest (..),
     ReadyResponse (..),
+    RecoveryCodesCountResponse (..),
+    RecoveryCodesResponse (..),
     RefreshRequest (..),
     ServiceTokenRequest (..),
     ServiceTokenResponse,
@@ -126,9 +129,14 @@ import Shomei.Servant.DTO
     SignupRequest (..),
     SignupResponse (..),
     TokenPairResponse,
+    TotpEnrollResponse (..),
+    TotpRemoveRequest (..),
+    TotpVerifyRequest (..),
     UserResponse,
     VerifyEmailRequest (..),
     adminUserToResponse,
+    mfaCompletionOf,
+    totpRemovalProofOf,
     decodeCursor,
     decodeUserCursor,
     encodeCursor,
@@ -145,6 +153,7 @@ import Shomei.Servant.DTO
 import Shomei.Servant.Error
   ( authErrorToServerError,
     pcBadRequest,
+    pcReauthenticationRequired,
     pcRoleNotGranted,
     pcSelfTargetForbidden,
     pcSessionNotFound,
@@ -162,6 +171,7 @@ import Shomei.Workflow.Admin qualified as Admin
 import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
+import Shomei.Workflow.Totp qualified as Totp
 import Shomei.Workflow.OAuthAuthorize qualified as OAuthAuthorize
 import Shomei.Workflow.OAuthTokenGrant qualified as OAuthTokenGrant
 import Shomei.Workflow.Passkey qualified as Passkey
@@ -208,6 +218,11 @@ shomeiServer env =
       passkeyRegisterComplete = passkeyRegisterCompleteH env,
       passkeyList = passkeysListH env,
       passkeyDelete = passkeyDeleteH env,
+      totpEnroll = totpEnrollH env,
+      totpVerify = totpVerifyH env,
+      totpDelete = totpDeleteH env,
+      recoveryCodesGenerate = recoveryCodesGenerateH env,
+      recoveryCodesCount = recoveryCodesCountH env,
       mfaComplete = mfaCompleteH env,
       passkeyLoginBegin = passkeyLoginBeginH env,
       passkeyLoginComplete = passkeyLoginCompleteH env,
@@ -1029,8 +1044,66 @@ passkeyDeleteH env user pid = do
 mfaCompleteH :: Env -> MfaCompleteRequest -> Handler (WithCookies TokenPairResponse)
 mfaCompleteH env req = do
   cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
-  (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid req.assertion)
+  (_user, pair) <- runAuth env (Mfa.completeMfa env.config cid (mfaCompletionOf req))
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
+
+-- | Load the full 'User' behind an authenticated caller. A valid token whose user row is gone is
+-- an internal inconsistency, surfaced as @404 user_not_found@.
+loadUser :: Env -> AuthUser -> Handler User
+loadUser env user = do
+  mUser <- runPort env (findUserById user.authUserId)
+  maybe (throwError (toProblemError pcUserNotFound Nothing)) pure mUser
+
+-- | Require that the caller's access token was issued recently — within
+-- @impersonationConfig.actorFreshnessWindow@ — reusing that window rather than adding a new knob.
+-- The gate for regenerating recovery codes, which prints new secrets and invalidates the old set.
+requireFreshAuth :: Env -> AuthUser -> Handler ()
+requireFreshAuth env user = do
+  ts <- runPort env now
+  let window = env.config.impersonationConfig.actorFreshnessWindow
+  when (ts > addUTCTime window user.authClaims.issuedAt) $
+    throwError (toProblemError pcReauthenticationRequired Nothing)
+
+-- | @POST /v1/auth/totp/enroll@: mint a TOTP secret (shown once) for the caller. Blocked under a
+-- delegated token; refused when TOTP is disabled or a confirmed credential already exists.
+totpEnrollH :: Env -> AuthUser -> Handler TotpEnrollResponse
+totpEnrollH env authUser = do
+  denyUnderImpersonation env "totp_enroll" authUser
+  user <- loadUser env authUser
+  Totp.TotpEnrollment {secretBase32, otpauthUri} <- runAuth env (Totp.enrollTotp env.config user)
+  pure TotpEnrollResponse {secret = secretBase32, otpauthUri = otpauthUri}
+
+-- | @POST /v1/auth/totp/verify@: activate a pending enrollment with a first valid code.
+totpVerifyH :: Env -> AuthUser -> TotpVerifyRequest -> Handler NoContent
+totpVerifyH env authUser req = do
+  user <- loadUser env authUser
+  runAuth env (Totp.verifyTotpEnrollment env.config user req.code)
+  pure NoContent
+
+-- | @DELETE /v1/auth/totp@: remove the factor, gated on proof of possession. Blocked under a
+-- delegated token.
+totpDeleteH :: Env -> AuthUser -> TotpRemoveRequest -> Handler NoContent
+totpDeleteH env authUser req = do
+  denyUnderImpersonation env "totp_remove" authUser
+  user <- loadUser env authUser
+  runAuth env (Totp.removeTotp env.config user (totpRemovalProofOf req))
+  pure NoContent
+
+-- | @POST /v1/auth/recovery-codes@: generate a fresh single-use set (shown once). Blocked under a
+-- delegated token and gated on a freshly issued access token.
+recoveryCodesGenerateH :: Env -> AuthUser -> Handler RecoveryCodesResponse
+recoveryCodesGenerateH env authUser = do
+  denyUnderImpersonation env "recovery_codes_generate" authUser
+  requireFreshAuth env authUser
+  user <- loadUser env authUser
+  codes <- runAuth env (Totp.regenerateRecoveryCodes env.config user)
+  pure RecoveryCodesResponse {codes = codes}
+
+-- | @GET /v1/auth/recovery-codes@: how many unused recovery codes remain.
+recoveryCodesCountH :: Env -> AuthUser -> Handler RecoveryCodesCountResponse
+recoveryCodesCountH env authUser = do
+  n <- runPort env (countUnusedRecoveryCodes authUser.authUserId)
+  pure RecoveryCodesCountResponse {remaining = n}
 
 -- | @POST /v1/auth/login/passkey/begin@: start a passwordless passkey login (no password).
 passkeyLoginBeginH :: Env -> Handler PasskeyLoginBeginResponse

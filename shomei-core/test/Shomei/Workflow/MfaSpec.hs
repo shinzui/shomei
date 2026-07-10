@@ -35,7 +35,7 @@ import Shomei.Effect.PasskeyStore (createPasskey)
 import Shomei.Error (AuthError (MfaAssertionInvalid, PendingCeremonyNotFound))
 import Shomei.Id (CeremonyId, genCeremonyId)
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..), login, signup)
-import Shomei.Workflow.Mfa (beginPasswordlessLogin, completeMfa, completePasswordlessLogin)
+import Shomei.Workflow.Mfa (MfaCompletion (..), beginPasswordlessLogin, completeMfa, completePasswordlessLogin)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -143,7 +143,7 @@ testMfaRequired = testCase "passkey + mfaRequired login yields MfaRequired, no t
   seedUserWithPasskey ref
   res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
   case res of
-    MfaRequired (MfaChallenge _cid opts) ->
+    MfaRequired (MfaChallenge _cid opts _methods) ->
       assertBool "a challenge is present in the options" (challengeOf opts /= Nothing)
     LoginComplete _ _ -> assertFailure "expected MfaRequired (passkey enrolled, mfaRequired on)"
 
@@ -153,7 +153,7 @@ testCompleteMfa = testCase "completeMfa with a valid assertion yields a token pa
   seedUserWithPasskey ref
   (cid, opts) <- loginExpectingChallenge ref
   chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-  done <- expectRight =<< runInMemory ref (completeMfa cfg cid (acceptedAssertion chal))
+  done <- expectRight =<< runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
   assertTokenPresent done
 
 testCeremonyHygiene :: TestTree
@@ -162,13 +162,13 @@ testCeremonyHygiene = testCase "bogus or consumed ceremony is rejected (PendingC
   seedUserWithPasskey ref
   -- A ceremony id that was never stored.
   bogus <- genCeremonyId
-  bad <- runInMemory ref (completeMfa cfg bogus (acceptedAssertion "x"))
+  bad <- runInMemory ref (completeMfa cfg bogus (MfaPasskey (acceptedAssertion "x")))
   bad @?= Left PendingCeremonyNotFound
   -- A real challenge succeeds once; re-completing the now-consumed ceremony is a 404.
   (cid, opts) <- loginExpectingChallenge ref
   chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-  _ <- expectRight =<< runInMemory ref (completeMfa cfg cid (acceptedAssertion chal))
-  again <- runInMemory ref (completeMfa cfg cid (acceptedAssertion chal))
+  _ <- expectRight =<< runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
+  again <- runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
   again @?= Left PendingCeremonyNotFound
 
 testBadAssertion :: TestTree
@@ -184,7 +184,7 @@ testBadAssertion = testCase "completeMfa with an unknown credential fails with M
             "userHandle" .= UserHandle "uh-x",
             "publicKey" .= PublicKeyBytes "pk-x"
           ]
-  res <- runInMemory ref (completeMfa cfg cid wrong)
+  res <- runInMemory ref (completeMfa cfg cid (MfaPasskey wrong))
   res @?= Left MfaAssertionInvalid
 
 testPasswordless :: TestTree
@@ -202,5 +202,5 @@ loginExpectingChallenge :: IORef World -> IO (CeremonyId, Value)
 loginExpectingChallenge ref = do
   res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
   case res of
-    MfaRequired (MfaChallenge cid opts) -> pure (cid, opts)
+    MfaRequired (MfaChallenge cid opts _methods) -> pure (cid, opts)
     LoginComplete _ _ -> assertFailure "expected MfaRequired"

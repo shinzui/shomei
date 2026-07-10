@@ -59,6 +59,7 @@ import Data.Aeson (Value, eitherDecode, eitherDecodeStrict', encode, object)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser, parseMaybe, withObject, (.:))
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
 import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
@@ -1159,6 +1160,13 @@ runTokenGen ref = interpret_ \case
     writeIORef ref (w & #tokenCounter .~ (n + 1))
     pure (RefreshToken ("rt-" <> Text.pack (show n)))
   HashRefreshToken (RefreshToken t) -> pure (RefreshTokenHash ("hash:" <> t))
+  -- Deterministic pseudo-random bytes: varied within a call and distinct across calls (the
+  -- counter advances), so ten recovery codes drawn in a row differ. Never used for real secrecy.
+  GenerateRandomBytes n -> liftIO do
+    w <- readIORef ref
+    let c = w.tokenCounter
+    writeIORef ref (w & #tokenCounter .~ (c + 1))
+    pure (BS.pack [fromIntegral ((c * 131 + i * 17 + 7) `mod` 256) | i <- [0 .. n - 1]])
 
 -- | A deterministic, cryptography-free fake of 'WebAuthnCeremony' for tests
 -- (EP-3/EP-4 drive their workflows through this without a real authenticator).

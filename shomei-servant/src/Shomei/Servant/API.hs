@@ -48,6 +48,8 @@ import Shomei.Servant.DTO
     PasskeyResponse,
     PasswordResetRequest,
     ReadyResponse,
+    RecoveryCodesCountResponse,
+    RecoveryCodesResponse,
     RefreshRequest,
     ServiceTokenRequest,
     ServiceTokenResponse,
@@ -55,6 +57,9 @@ import Shomei.Servant.DTO
     SignupRequest,
     SignupResponse,
     TokenPairResponse,
+    TotpEnrollResponse,
+    TotpRemoveRequest,
+    TotpVerifyRequest,
     UserResponse,
     VerifyEmailRequest,
   )
@@ -193,6 +198,45 @@ data ShomeiAPI mode = ShomeiAPI
           :> Authenticated
           :> Capture "passkeyId" PasskeyId
           :> Verb 'DELETE 204 '[JSON] NoContent,
+    -- | Begin TOTP enrollment: mint a secret (shown once) for the authenticated caller. EP-7.
+    totpEnroll ::
+      mode
+        :- "auth"
+          :> "totp"
+          :> "enroll"
+          :> Authenticated
+          :> Post '[JSON] TotpEnrollResponse,
+    -- | Activate a pending TOTP enrollment with a first valid code.
+    totpVerify ::
+      mode
+        :- "auth"
+          :> "totp"
+          :> "verify"
+          :> Authenticated
+          :> ReqBody '[JSON] TotpVerifyRequest
+          :> Post '[JSON] NoContent,
+    -- | Remove the TOTP factor, gated on proof of possession (a current code or a recovery code).
+    totpDelete ::
+      mode
+        :- "auth"
+          :> "totp"
+          :> Authenticated
+          :> ReqBody '[JSON] TotpRemoveRequest
+          :> Verb 'DELETE 204 '[JSON] NoContent,
+    -- | Generate a fresh set of single-use recovery codes (shown once), replacing any prior set.
+    recoveryCodesGenerate ::
+      mode
+        :- "auth"
+          :> "recovery-codes"
+          :> Authenticated
+          :> Post '[JSON] RecoveryCodesResponse,
+    -- | How many unused recovery codes remain for the authenticated caller.
+    recoveryCodesCount ::
+      mode
+        :- "auth"
+          :> "recovery-codes"
+          :> Authenticated
+          :> Get '[JSON] RecoveryCodesCountResponse,
     -- | Finish a password-then-passkey step-up. Unauthenticated: completing the second
     --     factor is exactly how the caller obtains a session. (The challenge itself rides in the
     --     @mfa_required@ arm of @POST \/v1\/auth\/login@, so there is no @\/v1\/auth\/mfa\/begin@.)

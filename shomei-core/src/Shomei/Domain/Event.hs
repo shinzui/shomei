@@ -32,6 +32,10 @@ module Shomei.Domain.Event
     MfaChallengedData (..),
     MfaSucceededData (..),
     MfaFailedData (..),
+    TotpEnrolledData (..),
+    TotpRemovedData (..),
+    RecoveryCodesGeneratedData (..),
+    RecoveryCodeUsedData (..),
     ImpersonationStartedData (..),
     ImpersonationStoppedData (..),
     ImpersonationActionBlockedData (..),
@@ -249,6 +253,43 @@ data MfaFailedData = MfaFailedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | A user activated a TOTP second factor (EP-7): a confirmed credential now exists.
+data TotpEnrolledData = TotpEnrolledData
+  { userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A user removed their TOTP second factor (EP-7). Removal proves possession of the factor
+-- (a current code) or its fallback (a recovery code), and is blocked under a delegated token.
+data TotpRemovedData = TotpRemovedData
+  { userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A fresh set of recovery codes was generated (EP-7), invalidating any previous set. 'count'
+-- is how many were issued; the codes themselves are never in the payload (only their hashes are
+-- ever persisted, and not here).
+data RecoveryCodesGeneratedData = RecoveryCodesGeneratedData
+  { userId :: !UserId,
+    count :: !Int,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A recovery code was spent to complete an MFA challenge (EP-7). Single-use: the code cannot
+-- complete a second challenge.
+data RecoveryCodeUsedData = RecoveryCodeUsedData
+  { userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 -- | An operator started impersonating a subject: a delegated session was minted.
 -- Carries both identities, the required reason, the optional support ticket id, and
 -- the client IP for the audit trail.
@@ -445,6 +486,10 @@ data AuthEvent
   | MfaChallenged MfaChallengedData
   | MfaSucceeded MfaSucceededData
   | MfaFailed MfaFailedData
+  | TotpEnrolled TotpEnrolledData
+  | TotpRemoved TotpRemovedData
+  | RecoveryCodesGenerated RecoveryCodesGeneratedData
+  | RecoveryCodeUsed RecoveryCodeUsedData
   | ImpersonationStarted ImpersonationStartedData
   | ImpersonationStopped ImpersonationStoppedData
   | ImpersonationActionBlocked ImpersonationActionBlockedData

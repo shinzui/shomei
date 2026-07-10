@@ -50,12 +50,14 @@ import Shomei.Effect.InMemory
     runPasswordBreachCheckerFake,
     runPasswordResetTokenStore,
     runPendingCeremonyStore,
+    runRecoveryCodeStore,
     runRefreshTokenStore,
     runSessionStore,
     runSigningKeyStore,
     runTokenGen,
     runTokenSigner,
     runTokenVerifier,
+    runTotpCredentialStore,
     runRoleStore,
     runUserStore,
     runVerificationTokenStore,
@@ -69,6 +71,7 @@ import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.SessionStore (SessionStore)
@@ -76,6 +79,7 @@ import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore)
 import Shomei.Effect.UserStore (UserStore, updateUserStatus)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
@@ -124,6 +128,8 @@ type Ports =
      LoginAttemptStore,
      PasskeyStore,
      PendingCeremonyStore,
+     TotpCredentialStore,
+     RecoveryCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -166,6 +172,8 @@ runCounting ref counter =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherNull
     . runNotifier ref
+    . runRecoveryCodeStore ref
+    . runTotpCredentialStore ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
     . runLoginAttemptStore ref

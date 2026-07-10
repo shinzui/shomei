@@ -68,6 +68,8 @@ import Shomei.Servant.DTO
     PasskeyResponse,
     PasswordResetRequest,
     ReadyResponse,
+    RecoveryCodesCountResponse,
+    RecoveryCodesResponse,
     RefreshRequest,
     ServiceTokenRequest,
     ServiceTokenResponse,
@@ -75,6 +77,9 @@ import Shomei.Servant.DTO
     SignupRequest,
     SignupResponse,
     TokenPairResponse,
+    TotpEnrollResponse,
+    TotpRemoveRequest,
+    TotpVerifyRequest,
     UserResponse,
     VerifyEmailRequest,
   )
@@ -100,6 +105,8 @@ import Shomei.Servant.Error
     pcMissingToken,
     pcPasskeyNotFound,
     pcPasswordResetTokenInvalid,
+    pcReauthenticationRequired,
+    pcRecoveryCodeInvalid,
     pcRefreshTokenExpired,
     pcRefreshTokenInvalid,
     pcRoleNotDefined,
@@ -114,6 +121,10 @@ import Shomei.Servant.Error
     pcTokenInvalidAuth,
     pcTokenReuse,
     pcTooManyRequests,
+    pcTotpAlreadyEnrolled,
+    pcTotpCodeInvalid,
+    pcTotpDisabled,
+    pcTotpEnrollmentNotFound,
     pcUserHasNoEmail,
     pcUserNotFound,
     pcVerificationTokenInvalid,
@@ -160,6 +171,16 @@ instance ToSchema HealthResponse
 instance ToSchema ReadyResponse
 
 instance ToSchema MfaCompleteRequest
+
+instance ToSchema TotpEnrollResponse
+
+instance ToSchema TotpVerifyRequest
+
+instance ToSchema TotpRemoveRequest
+
+instance ToSchema RecoveryCodesResponse
+
+instance ToSchema RecoveryCodesCountResponse
 
 instance ToSchema PasskeyRegisterBeginResponse
 
@@ -312,6 +333,12 @@ instance ToSchema LoginResponse where
                   ("token", tokenRef)
                 ]
             & O.required .~ ["status", "user", "token"]
+        stringArrayProp =
+          O.Inline
+            ( mempty
+                & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiArray
+                & O.items ?~ O.OpenApiItemsObject stringProp
+            )
         mfaBranch =
           mempty
             & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
@@ -319,9 +346,10 @@ instance ToSchema LoginResponse where
               .~ IOHM.fromList
                 [ ("status", stringProp),
                   ("ceremonyId", stringProp),
-                  ("options", optionsRef)
+                  ("options", optionsRef),
+                  ("methods", stringArrayProp)
                 ]
-            & O.required .~ ["status", "ceremonyId", "options"]
+            & O.required .~ ["status", "ceremonyId", "options", "methods"]
     pure $
       O.NamedSchema (Just "LoginResponse") $
         mempty & O.oneOf ?~ [O.Inline completeBranch, O.Inline mfaBranch]
@@ -470,6 +498,11 @@ routeErrors =
     -- A malformed capture is a 400, not a 404: servant's @Capture@ runs 'urlParseErrorFormatter',
     -- which this codebase points at 'pcBadRequest'. Verified against the running server.
     ("/v1/auth/passkeys/{passkeyId}", MDelete, [pcBadRequest, pcPasskeyNotFound]),
+    -- EP-7 TOTP + recovery codes. The 401s and body-parse 400s come from 'baselineSpecs'.
+    ("/v1/auth/totp/enroll", MPost, [pcTotpDisabled, pcTotpAlreadyEnrolled, pcImpersonationActionBlocked, pcUserNotFound]),
+    ("/v1/auth/totp/verify", MPost, [pcTotpDisabled, pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcUserNotFound]),
+    ("/v1/auth/totp", MDelete, [pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcRecoveryCodeInvalid, pcImpersonationActionBlocked, pcUserNotFound]),
+    ("/v1/auth/recovery-codes", MPost, [pcReauthenticationRequired, pcImpersonationActionBlocked, pcUserNotFound]),
     ("/v1/auth/mfa/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
     ("/v1/auth/login/passkey/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
     ("/v1/auth/impersonate", MPost, [pcImpersonationTargetInvalid, pcImpersonationForbidden, pcImpersonationActionBlocked]),

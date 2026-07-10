@@ -67,6 +67,9 @@ import Shomei.Effect.LoginAttemptStore
     setAccountLockout,
   )
 import Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
+import Shomei.Domain.Totp (isTotpConfirmed)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore, findTotpByUser)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
@@ -91,13 +94,16 @@ import Shomei.Workflow.Mfa (prepareMfaChallenge)
 import Shomei.Workflow.Roles (applyDefaultRoles)
 import Shomei.Workflow.Session (buildEnrichedClaims, ensureEmailVerified, issueSession)
 
--- | The WebAuthn step-up challenge handed back when an account with a passkey logs in with
--- the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once pending-MFA
--- handle the client echoes to 'Shomei.Workflow.Mfa.completeMfa'; 'options' is the
--- @navigator.credentials.get()@ options the browser runs.
+-- | The step-up challenge handed back when an account with any enrolled second factor logs in
+-- with the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once
+-- pending-MFA handle the client echoes to 'Shomei.Workflow.Mfa.completeMfa'; 'options' is the
+-- @navigator.credentials.get()@ options the browser runs (the empty object @{}@ for a TOTP-only
+-- user, who has no WebAuthn ceremony); 'methods' advertises which factors can complete it
+-- (@"passkey"@, @"totp"@, @"recovery_code"@).
 data MfaChallenge = MfaChallenge
   { ceremonyId :: !CeremonyId,
-    options :: !Value
+    options :: !Value,
+    methods :: ![Text]
   }
   deriving stock (Generic, Eq, Show)
 
@@ -198,6 +204,8 @@ login ::
     PasskeyStore :> es,
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
+    TotpCredentialStore :> es,
+    RecoveryCodeStore :> es,
     Clock :> es,
     TokenGen :> es,
     IOE :> es
@@ -263,10 +271,12 @@ login cfg ctx cmd = runErrorNoCallStack do
   -- account has a passkey and MFA is required, return a challenge WITHOUT a token; otherwise
   -- mint the session inline as before.
   passkeyCount <- countPasskeysByUser user.userId
-  if mfaRequired (webauthnConfig cfg) && passkeyCount > 0
+  totpEnrolled <- maybe False isTotpConfirmed <$> findTotpByUser user.userId
+  let hasSecondFactor = passkeyCount > 0 || totpEnrolled
+  if mfaRequired (webauthnConfig cfg) && hasSecondFactor
     then do
-      (cid, optionsJson) <- prepareMfaChallenge cfg user ts
-      pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson})
+      (cid, optionsJson, methods) <- prepareMfaChallenge cfg user ts
+      pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson, methods = methods})
     else do
       (_sid, pair) <- issueSession cfg user ts
       pure (LoginComplete user pair)

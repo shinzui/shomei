@@ -12,6 +12,7 @@ module Shomei.Domain.Totp
     TotpCredential (..),
     NewRecoveryCode (..),
     RecoveryCode (..),
+    isTotpConfirmed,
   )
 where
 
@@ -61,3 +62,9 @@ data RecoveryCode = RecoveryCode
     usedAt :: !(Maybe UTCTime)
   }
   deriving stock (Generic, Eq, Show)
+
+-- | Whether a credential has been activated with a first valid code. A 'DuplicateRecordFields'
+-- record's @.confirmedAt@ dot access is ambiguous at call sites that do not fix the type, so
+-- this named predicate is the canonical read.
+isTotpConfirmed :: TotpCredential -> Bool
+isTotpConfirmed TotpCredential {confirmedAt} = isJust confirmedAt

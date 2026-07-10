@@ -73,11 +73,10 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    -- 39 = 33 + EP-4's POST /oauth/token
-    --         + EP-5's GET /.well-known/openid-configuration, GET /oauth/authorize,
-    --           GET /oauth/userinfo, POST /oauth/introspect, POST /oauth/revoke.
-    it "covers exactly 39 paths" $
-      pathCount `shouldBe` 39
+    -- 43 = 39 + EP-7's POST /auth/totp/enroll, POST /auth/totp/verify, DELETE /auth/totp,
+    --           and /auth/recovery-codes (GET + POST share one path).
+    it "covers exactly 43 paths" $
+      pathCount `shouldBe` 43
 
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
     it "declares the OAuthError schema" $
@@ -344,6 +343,16 @@ deriving stock instance Show ReadyResponse
 
 deriving stock instance Show MfaCompleteRequest
 
+deriving stock instance Show TotpEnrollResponse
+
+deriving stock instance Show TotpVerifyRequest
+
+deriving stock instance Show TotpRemoveRequest
+
+deriving stock instance Show RecoveryCodesResponse
+
+deriving stock instance Show RecoveryCodesCountResponse
+
 deriving stock instance Show PasskeyRegisterBeginResponse
 
 deriving stock instance Show PasskeyRegisterCompleteRequest
@@ -389,7 +398,7 @@ instance Arbitrary LoginResponse where
   arbitrary =
     oneof
       [ LoginCompleteResponse <$> arbitrary <*> arbitrary,
-        LoginMfaRequiredResponse <$> arbitrary <*> arbitrary
+        LoginMfaRequiredResponse <$> arbitrary <*> arbitrary <*> arbitrary
       ]
 
 instance Arbitrary RefreshRequest where
@@ -411,7 +420,22 @@ instance Arbitrary ChangePasswordRequest where
   arbitrary = ChangePasswordRequest <$> arbitrary <*> arbitrary
 
 instance Arbitrary MfaCompleteRequest where
-  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary
+  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary TotpEnrollResponse where
+  arbitrary = TotpEnrollResponse <$> arbitrary <*> arbitrary
+
+instance Arbitrary TotpVerifyRequest where
+  arbitrary = TotpVerifyRequest <$> arbitrary
+
+instance Arbitrary TotpRemoveRequest where
+  arbitrary = TotpRemoveRequest <$> arbitrary <*> arbitrary
+
+instance Arbitrary RecoveryCodesResponse where
+  arbitrary = RecoveryCodesResponse <$> arbitrary
+
+instance Arbitrary RecoveryCodesCountResponse where
+  arbitrary = RecoveryCodesCountResponse <$> arbitrary
 
 instance Arbitrary PasskeyRegisterBeginResponse where
   arbitrary = PasskeyRegisterBeginResponse <$> arbitrary <*> arbitrary

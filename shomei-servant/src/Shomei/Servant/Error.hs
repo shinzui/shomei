@@ -70,6 +70,12 @@ module Shomei.Servant.Error
     pcCeremonyNotFound,
     pcWebAuthnFailed,
     pcMfaFailed,
+    pcTotpDisabled,
+    pcTotpAlreadyEnrolled,
+    pcTotpEnrollmentNotFound,
+    pcTotpCodeInvalid,
+    pcRecoveryCodeInvalid,
+    pcReauthenticationRequired,
     pcImpersonationForbidden,
     pcImpersonationTargetInvalid,
     pcImpersonationActionBlocked,
@@ -269,6 +275,20 @@ pcCeremonyNotFound = ProblemSpec "ceremony_not_found" err404 "Registration cerem
 pcWebAuthnFailed = ProblemSpec "webauthn_verification_failed" err400 "Passkey registration could not be verified"
 pcMfaFailed = ProblemSpec "mfa_failed" err401 "Multi-factor authentication failed"
 
+-- | EP-7 TOTP / recovery-code failures. The invalid-code specs are 401s that deliberately do
+-- not distinguish a wrong code from a replayed one from an absent credential.
+pcTotpDisabled, pcTotpAlreadyEnrolled, pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcRecoveryCodeInvalid :: ProblemSpec
+pcTotpDisabled = ProblemSpec "totp_disabled" err403 "TOTP is not enabled"
+pcTotpAlreadyEnrolled = ProblemSpec "totp_already_enrolled" err409 "A TOTP credential is already enrolled"
+pcTotpEnrollmentNotFound = ProblemSpec "totp_enrollment_not_found" err404 "No pending TOTP enrollment to verify"
+pcTotpCodeInvalid = ProblemSpec "totp_code_invalid" err401 "TOTP code is invalid"
+pcRecoveryCodeInvalid = ProblemSpec "recovery_code_invalid" err401 "Recovery code is invalid"
+
+-- | EP-7: a sensitive self-service action (recovery-code regeneration) requires a recently issued
+-- access token. Raised by the HTTP layer's freshness gate, not by an 'AuthError'.
+pcReauthenticationRequired :: ProblemSpec
+pcReauthenticationRequired = ProblemSpec "reauthentication_required" err403 "Recent authentication required for this action"
+
 pcImpersonationForbidden, pcImpersonationTargetInvalid, pcImpersonationActionBlocked :: ProblemSpec
 pcImpersonationForbidden = ProblemSpec "impersonation_forbidden" err403 "Not allowed to impersonate"
 pcImpersonationTargetInvalid = ProblemSpec "impersonation_target_invalid" err400 "Invalid impersonation target"
@@ -360,6 +380,12 @@ problemCatalog =
     pcCeremonyNotFound,
     pcWebAuthnFailed,
     pcMfaFailed,
+    pcTotpDisabled,
+    pcTotpAlreadyEnrolled,
+    pcTotpEnrollmentNotFound,
+    pcTotpCodeInvalid,
+    pcRecoveryCodeInvalid,
+    pcReauthenticationRequired,
     pcImpersonationForbidden,
     pcImpersonationTargetInvalid,
     pcImpersonationActionBlocked,
@@ -412,6 +438,11 @@ authErrorToServerError = \case
   PendingCeremonyNotFound -> plain pcCeremonyNotFound
   WebAuthnCeremonyError _ -> plain pcWebAuthnFailed
   MfaAssertionInvalid -> plain pcMfaFailed
+  TotpDisabled -> plain pcTotpDisabled
+  TotpAlreadyEnrolled -> plain pcTotpAlreadyEnrolled
+  TotpEnrollmentNotFound -> plain pcTotpEnrollmentNotFound
+  TotpCodeInvalid -> plain pcTotpCodeInvalid
+  RecoveryCodeInvalid -> plain pcRecoveryCodeInvalid
   ImpersonationForbidden -> plain pcImpersonationForbidden
   ImpersonationTargetInvalid -> plain pcImpersonationTargetInvalid
   ImpersonationActionBlocked -> plain pcImpersonationActionBlocked

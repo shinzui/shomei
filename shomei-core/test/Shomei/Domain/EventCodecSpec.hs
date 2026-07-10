@@ -115,6 +115,11 @@ roundTrips =
     let d = MfaChallengedData uid cid t0 in check "mfa_challenged" d (MfaChallenged d),
     let d = MfaSucceededData uid sid t0 in check "mfa_succeeded" d (MfaSucceeded d),
     let d = MfaFailedData (Just uid) "bad assertion" t0 in check "mfa_failed" d (MfaFailed d),
+    -- EP-7 TOTP / recovery-code factor management.
+    let d = TotpEnrolledData uid t0 in check "totp_enrolled" d (TotpEnrolled d),
+    let d = TotpRemovedData uid t0 in check "totp_removed" d (TotpRemoved d),
+    let d = RecoveryCodesGeneratedData uid 10 t0 in check "recovery_codes_generated" d (RecoveryCodesGenerated d),
+    let d = RecoveryCodeUsedData uid t0 in check "recovery_code_used" d (RecoveryCodeUsed d),
     let d = ImpersonationStartedData uid2 uid sid "support ticket" (Just "TICKET-1") (Just "1.2.3.4") t0 in check "impersonation_started" d (ImpersonationStarted d),
     let d = ImpersonationStoppedData uid2 uid sid t0 in check "impersonation_stopped" d (ImpersonationStopped d),
     let d = ImpersonationActionBlockedData uid2 uid sid "password_change" t0 in check "impersonation_action_blocked" d (ImpersonationActionBlocked d),
@@ -152,7 +157,7 @@ testUnknownType =
 -- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 35).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 35 AuthEvent constructors" (length roundTrips @?= 35)
+  testCase "covers all 39 AuthEvent constructors" (length roundTrips @?= 39)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

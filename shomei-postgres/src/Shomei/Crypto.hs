@@ -325,3 +325,4 @@ runTokenGenCrypto :: (IOE :> es) => Eff (TokenGen : es) a -> Eff es a
 runTokenGenCrypto = interpret_ \case
   GenerateOpaqueToken -> liftIO (RefreshToken <$> generateOpaqueToken)
   HashRefreshToken (RefreshToken t) -> pure (RefreshTokenHash (hashRefreshToken t))
+  GenerateRandomBytes n -> liftIO (getRandomBytes n :: IO ByteString)

@@ -111,6 +111,7 @@ library
     Shomei.Workflow.ServiceToken
     Shomei.Workflow.Session
     Shomei.Workflow.TokenExchange
+    Shomei.Workflow.Totp
 
   build-depends:
     , aeson

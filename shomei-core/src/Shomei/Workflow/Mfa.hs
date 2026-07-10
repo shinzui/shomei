@@ -17,14 +17,16 @@
 module Shomei.Workflow.Mfa
   ( prepareMfaChallenge,
     completeMfa,
+    MfaCompletion (..),
     beginPasswordlessLogin,
     completePasswordlessLogin,
   )
 where
 
-import Data.Aeson (Value)
+import Data.Aeson (Value, object)
 import Data.Aeson.Types (parseMaybe, withObject, (.:))
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
@@ -37,6 +39,7 @@ import Shomei.Domain.Passkey
     WebAuthnCredentialId,
   )
 import Shomei.Domain.Token (TokenPair)
+import Shomei.Domain.Totp (TotpCredential (..))
 import Shomei.Domain.User (User (..), UserStatus (UserActive))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
@@ -49,9 +52,11 @@ import Shomei.Effect.PasskeyStore
     updatePasskeySignCounter,
   )
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore, consumeRecoveryCode, countUnusedRecoveryCodes)
 import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore, findTotpByUser, setTotpLastUsedCounter)
 import Shomei.Effect.UserStore (UserStore, findUserById)
 import Shomei.Effect.WebAuthnCeremony
   ( BeginCeremony (..),
@@ -64,7 +69,22 @@ import Shomei.Effect.WebAuthnCeremony
 import Shomei.Error (AuthError (..))
 import Shomei.Id (CeremonyId, UserId, genCeremonyId)
 import Shomei.Prelude
+import Shomei.Totp (verifyTotp)
 import Shomei.Workflow.Session (ensureEmailVerified, issueSession)
+import Shomei.Workflow.Totp (recoveryCodeHash)
+
+-- | How a client completes an MFA challenge. Exactly one arm is populated by the HTTP layer's
+-- 'Shomei.Servant.DTO.MfaCompleteRequest' decoder: 'MfaPasskey' is the legacy WebAuthn assertion,
+-- 'MfaTotp' a six-digit code, 'MfaRecoveryCode' a single-use recovery code.
+data MfaCompletion
+  = MfaPasskey Value
+  | MfaTotp Text
+  | MfaRecoveryCode Text
+  deriving stock (Generic, Eq, Show)
+
+-- Field accessors for the TOTP credential (DuplicateRecordFields make @value.field@ unreliable).
+totpConfirmed :: TotpCredential -> Bool
+totpConfirmed TotpCredential {confirmedAt} = isJust confirmedAt
 
 -- | The step-up branch of 'Shomei.Workflow.login'. Begins a WebAuthn authentication
 -- ceremony whose @allowCredentials@ is restricted to this user's enrolled passkeys, stashes
@@ -75,18 +95,36 @@ prepareMfaChallenge ::
   ( PasskeyStore :> es,
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
+    TotpCredentialStore :> es,
+    RecoveryCodeStore :> es,
     AuthEventPublisher :> es,
     IOE :> es
   ) =>
   ShomeiConfig ->
   User ->
   UTCTime ->
-  Eff es (CeremonyId, Value)
+  Eff es (CeremonyId, Value, [Text])
 prepareMfaChallenge cfg user ts = do
   let User {userId = uid} = user
   creds <- findPasskeysByUser uid
-  let allowIds = map (\PasskeyCredential {credentialId} -> credentialId) creds
-  BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony allowIds
+  mTotp <- findTotpByUser uid
+  unusedRecovery <- countUnusedRecoveryCodes uid
+  let hasPasskey = not (null creds)
+      hasTotp = maybe False totpConfirmed mTotp
+      methods =
+        ["passkey" | hasPasskey]
+          <> ["totp" | hasTotp]
+          <> ["recovery_code" | unusedRecovery > 0]
+  -- Passkey-holders get a real WebAuthn ceremony (options carry the challenge); a TOTP-only
+  -- user gets an empty options object and no ceremony call — the empty @optionsBlob@ is what
+  -- 'completeMfa' checks to refuse a passkey assertion for a challenge that never began one.
+  (optionsJson, optionsBlob) <-
+    if hasPasskey
+      then do
+        let allowIds = map (\PasskeyCredential {credentialId} -> credentialId) creds
+        BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony allowIds
+        pure (optionsJson, optionsBlob)
+      else pure (object [], BS.empty)
   cid <- genCeremonyId
   putPendingCeremony
     PendingCeremony
@@ -98,7 +136,7 @@ prepareMfaChallenge cfg user ts = do
         expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
       }
   publishAuthEvent (Event.MfaChallenged (Event.MfaChallengedData uid cid ts))
-  pure (cid, optionsJson)
+  pure (cid, optionsJson, methods)
 
 -- | Finish a password-then-passkey step-up. The client posts the ceremony id from the
 -- 'MfaRequired' challenge plus the browser's signed assertion. We consume the pending ceremony
@@ -113,6 +151,8 @@ completeMfa ::
     PasskeyStore :> es,
     PendingCeremonyStore :> es,
     WebAuthnCeremony :> es,
+    TotpCredentialStore :> es,
+    RecoveryCodeStore :> es,
     TokenSigner :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
@@ -122,9 +162,9 @@ completeMfa ::
   ) =>
   ShomeiConfig ->
   CeremonyId ->
-  Value ->
+  MfaCompletion ->
   Eff es (Either AuthError (User, TokenPair))
-completeMfa cfg ceremonyId assertion = runErrorNoCallStack do
+completeMfa cfg ceremonyId completion = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, userId = mUid, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
@@ -136,14 +176,71 @@ completeMfa cfg ceremonyId assertion = runErrorNoCallStack do
   -- 'login' already gates before handing out a ceremony id, so this rarely fires; it keeps
   -- the guarantee local to every path that can issue a token.
   either throwError pure (ensureEmailVerified cfg user)
-  (passkey, verified) <- verifyAssertion (Just uid) optionsBlob assertion
-  let PasskeyCredential {userId = pkUid, passkeyId} = passkey
-      VerifiedAuthentication {newSignCounter} = verified
-  when (pkUid /= uid) (failMfa (Just uid) "credential not owned by user")
-  updatePasskeySignCounter passkeyId newSignCounter ts
+  -- Each arm proves the factor (spending the consume-once ceremony on any outcome); all three
+  -- converge on the shared 'issueSession' tail.
+  case completion of
+    MfaPasskey assertion -> do
+      -- The ceremony must have begun a WebAuthn challenge; a TOTP-only user's empty blob cannot
+      -- carry an assertion, so refuse it rather than let the ceremony interpreter fail obscurely.
+      when (BS.null optionsBlob) (failMfa (Just uid) "no passkey ceremony was begun")
+      (passkey, verified) <- verifyAssertion (Just uid) optionsBlob assertion
+      let PasskeyCredential {userId = pkUid, passkeyId} = passkey
+          VerifiedAuthentication {newSignCounter} = verified
+      when (pkUid /= uid) (failMfa (Just uid) "credential not owned by user")
+      updatePasskeySignCounter passkeyId newSignCounter ts
+    MfaTotp code -> completeTotp uid ts code
+    MfaRecoveryCode code -> completeRecovery uid ts code
   (sid, pair) <- issueSession cfg user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData uid sid ts))
   pure (user, pair)
+
+-- | Verify a presented TOTP code against the user's /confirmed/ credential and persist the
+-- accepted counter (RFC 6238 replay defense). Any failure — no credential, unconfirmed, wrong
+-- code, replayed counter — publishes 'MfaFailed' and throws 'TotpCodeInvalid'.
+completeTotp ::
+  (TotpCredentialStore :> es, AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  UserId ->
+  UTCTime ->
+  Text ->
+  Eff es ()
+completeTotp uid ts code = do
+  mtc <- findTotpByUser uid
+  case mtc of
+    Just TotpCredential {totpCredentialId, secret, lastUsedCounter, confirmedAt}
+      | isJust confirmedAt ->
+          case verifyTotp secret lastUsedCounter ts code of
+            Just accepted -> setTotpLastUsedCounter totpCredentialId accepted
+            Nothing -> failTyped (Just uid) "totp_invalid" TotpCodeInvalid
+    _ -> failTyped (Just uid) "totp_invalid" TotpCodeInvalid
+
+-- | Spend a recovery code to complete the challenge: normalize (strip the dash, casefold), hash,
+-- and consume via the store's compare-and-set. Success publishes 'RecoveryCodeUsed'; a miss
+-- publishes 'MfaFailed' and throws 'RecoveryCodeInvalid'.
+completeRecovery ::
+  (RecoveryCodeStore :> es, AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  UserId ->
+  UTCTime ->
+  Text ->
+  Eff es ()
+completeRecovery uid ts code = do
+  ok <- consumeRecoveryCode uid (recoveryCodeHash code) ts
+  if ok
+    then publishAuthEvent (Event.RecoveryCodeUsed (Event.RecoveryCodeUsedData uid ts))
+    else failTyped (Just uid) "recovery_invalid" RecoveryCodeInvalid
+
+-- | Publish 'MfaFailed' with the reason (recorded only in the audit event) and abort with a
+-- specific typed error. Unlike 'failMfa' (which always throws the generic 'MfaAssertionInvalid'),
+-- this lets the TOTP and recovery arms surface their own machine codes.
+failTyped ::
+  (AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  Maybe UserId ->
+  Text ->
+  AuthError ->
+  Eff es a
+failTyped mUid reason err = do
+  ts <- now
+  publishAuthEvent (Event.MfaFailed (Event.MfaFailedData mUid reason ts))
+  throwError err
 
 -- | Begin a passwordless login: emit authentication options with NO @allowCredentials@ so
 -- the browser offers its discoverable passkeys, stash the pending ceremony with no user

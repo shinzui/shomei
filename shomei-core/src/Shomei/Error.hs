@@ -90,6 +90,19 @@ data AuthError
     -- counter, user-not-present, or a credential not owned by the expected user). The
     -- HTTP layer maps this to a generic 401 so nothing about the failure leaks.
     MfaAssertionInvalid
+  | -- | EP-7: TOTP enrollment was attempted while @totpConfig.totpEnabled@ is off. Maps to 403.
+    TotpDisabled
+  | -- | EP-7: TOTP enrollment was attempted while a /confirmed/ credential already exists;
+    -- removal (a separate, proof-gated step) must come first. Maps to 409.
+    TotpAlreadyEnrolled
+  | -- | EP-7: no unconfirmed, unexpired TOTP enrollment exists to verify (or it has lapsed).
+    -- Maps to 404.
+    TotpEnrollmentNotFound
+  | -- | EP-7: a presented TOTP code did not verify (wrong code, outside the window, or a
+    -- replayed counter). Maps to a generic 401 so nothing about the failure leaks.
+    TotpCodeInvalid
+  | -- | EP-7: a presented recovery code was unknown or already spent. Maps to a generic 401.
+    RecoveryCodeInvalid
   | -- | The caller may not start impersonation: they lack the @impersonate:user@ scope
     -- or their own access token is older than the freshness window. Maps to 403.
     ImpersonationForbidden

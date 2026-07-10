@@ -1134,35 +1134,41 @@ countingDatabase counter = interpose \_env op -> do
     RunSession sess -> send (RunSession sess)
     RunTransaction t -> send (RunTransaction t)
 
--- | A successful password login costs exactly eight database round-trips:
+-- | A successful password login costs exactly nine database round-trips:
 --
 --   1. @countRecentFailuresByIp@   (per-IP throttle)
 --   2. @getAccountLockout@         (lockout gate)
 --   3. @findPasswordCredentialByLoginId@
 --   4. @findUserById@
 --   5. @recordLoginAttempt@        (success row)
---   6. @countPasskeysByUser@       (MFA gate)
---   7. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
---   8. @listRolesForUser@          (the roles claim, via @buildEnrichedClaims@)
+--   6. @countPasskeysByUser@       (MFA gate: passkey factor)
+--   7. @findTotpByUser@            (MFA gate: confirmed-TOTP factor — EP-7)
+--   8. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
+--   9. @listRolesForUser@          (the roles claim, via @buildEnrichedClaims@)
 --
 -- There is deliberately no @clearAccountLockout@: the lockout read at step 2 found nothing.
 -- Password verification and access-token signing are CPU-only and cost no round-trip.
 --
--- Step 8 is the price of a populated @roles@ claim: every user-session mint reads the grant
+-- Step 7 was added by EP-7's generalized MFA gate: login now challenges for /any/ enrolled
+-- second factor, so it reads the TOTP credential alongside the passkey count. It is one
+-- single-row indexed lookup on @user_id@. (The @recovery-codes@ count is read only inside the
+-- challenge branch, which this no-factor login does not enter.)
+--
+-- Step 9 is the price of a populated @roles@ claim: every user-session mint reads the grant
 -- table once. It is a single-row indexed lookup on the primary key prefix, and it buys the
 -- alternative — re-reading roles on every /verification/ — never happening.
 --
 -- If this number drifts, something added a round-trip to the login path. Find it before
 -- changing the constant.
 testLoginRoundTripBudget :: TestTree
-testLoginRoundTripBudget = testCase "a successful login costs exactly 8 database round-trips" $ withDb \pool -> do
+testLoginRoundTripBudget = testCase "a successful login costs exactly 9 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
   loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
   _ <- expectApp loginRes >>= expectRight
-  readIORef counter >>= (@?= 8)
+  readIORef counter >>= (@?= 9)
 
 -- | A token refresh costs exactly four database round-trips:
 --

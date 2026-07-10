@@ -23,7 +23,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.CaseInsensitive qualified as CI
 import Data.Foldable (toList)
 import Data.Generics.Labels ()
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
@@ -67,7 +67,8 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), defaultShomeiConfig)
+import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
+import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
 import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
@@ -403,12 +404,18 @@ main = do
         gateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcgate" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
         noGateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcnogate" (Set.singleton ingestScope)
         pure (gateId, noGateId, mkEnv r)
+      -- EP-7: TOTP enabled, over its own World. The World ref comes back so the scenario can
+      -- read (and advance) the deterministic clock to move TOTP time-step counters forward.
+      totpCfg = cfg {totpConfig = cfg.totpConfig {totpEnabled = True}}
+      freshTotpEnv = do
+        r <- newIORef (emptyWorld t0)
+        pure (r, mkEnvWith totpCfg r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1102,8 +1109,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv jwk cfg adminToken impToken staleImpToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1150,6 +1157,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "POST /oauth/token: RFC 8693 token-exchange, both modes, denyUnderImpersonation inheritance, and wire refusals" $ do
         (gateId, noGateId, e) <- freshExchangeEnv
         testWithApplication (pure (app e)) (scenarioTokenExchange jwk gateId noGateId impToken staleImpToken),
+      testCase "EP-7 TOTP: enroll → verify → mfa_required(methods) → complete; replay 401; recovery gen/use/count; impersonation 403; remove; freshness 403" $ do
+        (r, e) <- freshTotpEnv
+        testWithApplication (pure (app e)) (scenarioTotp r jwk cfg),
       testCase "GET /.well-known/openid-configuration: derived from the issuer when enabled, 404 in the OAuth shape when not" $ do
         e <- freshOidcEnv
         testWithApplication (pure (app e)) scenarioOidcDiscoveryEnabled
@@ -2658,6 +2668,150 @@ latestResetToken ref = do
     PasswordResetRequested {token = OneTimeToken t} : _ -> pure t
     _ -> assertFailure "expected password-reset notification"
 
+-- | EP-7: the TOTP + recovery-code flow end to end over HTTP. The in-memory World's clock is
+-- fixed, so the scenario advances it deliberately to move TOTP time-step counters forward (a
+-- confirmed code cannot be reused for a login at the same counter — the strictly-greater replay
+-- rule) and, at the end, to age a token past the freshness window.
+scenarioTotp :: IORef World -> JWK -> ShomeiConfig -> Int -> IO ()
+scenarioTotp r jwk cfg port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "totp@example.com" :: Text
+      pw = "correct horse battery staple totp" :: Text
+      login = postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= pw])
+      complete cid body = postJSON mgr port "/v1/auth/mfa/complete" (object (["ceremonyId" .= cid] <> body))
+
+  -- signup, then a first (factor-free) login for a working token.
+  (suStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("T" :: Text)])
+  suStatus @?= 201
+  (liStatus, liBody) <- login
+  liStatus @?= 200
+  (liBody >>= dig ["status"] >>= asText) @?= Just "complete"
+  access <- must "login accessToken" (liBody >>= dig ["token", "accessToken"] >>= asText)
+
+  -- Move the deterministic World clock ~2 minutes into the PAST relative to the real wall clock,
+  -- then step it forward. Tokens minted at these World times keep an @nbf@/@exp@ that jose (which
+  -- validates against the real clock) still accepts, while their time-step counters advance so a
+  -- confirmed code cannot be replayed at the next login (the strictly-greater rule).
+  now0 <- clock <$> readIORef r
+  let start = addUTCTime (-120) now0
+  setClock r start
+
+  -- enroll: secret shown once, plus an otpauth URI.
+  (enStatus, enBody) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer access)
+  assertEqual ("enroll body: " <> show enBody) 200 enStatus
+  secretB32 <- must "enroll secret" (enBody >>= dig ["secret"] >>= asText)
+  assertBool "otpauth uri present" (isJust (enBody >>= dig ["otpauthUri"]))
+  secret <- either (\e -> assertFailure ("bad base32 secret: " <> e)) pure (base32ToSecret secretB32)
+  let codeAt t = totpCode 6 secret (totpCounter t)
+
+  -- activate with the current code.
+  (vStatus, _) <- postJSONAuth mgr port "/v1/auth/totp/verify" (bearer access) (object ["code" .= codeAt start])
+  vStatus @?= 200
+
+  -- step the clock so a login-complete code is a strictly-later counter than the confirming one.
+  let t1 = addUTCTime 60 start
+  setClock r t1
+
+  -- login now challenges; a TOTP-only user gets empty options and a methods list naming totp.
+  (m1Status, m1Body) <- login
+  m1Status @?= 200
+  (m1Body >>= dig ["status"] >>= asText) @?= Just "mfa_required"
+  m1Methods <- must "methods" (m1Body >>= dig ["methods"] >>= asTextArray)
+  assertBool "totp advertised in methods" ("totp" `elem` m1Methods)
+  (m1Body >>= dig ["options"]) @?= Just (object [])
+  cid1 <- must "ceremonyId" (m1Body >>= dig ["ceremonyId"] >>= asText)
+
+  -- complete with the code for the current counter.
+  let code1 = codeAt t1
+  (c1Status, c1Body) <- complete cid1 ["totpCode" .= code1]
+  c1Status @?= 200
+  totpAccess <- must "totp accessToken" (c1Body >>= dig ["accessToken"] >>= asText)
+
+  -- replaying that same code at a fresh challenge fails: its counter is now spent.
+  (m2Status, m2Body) <- login
+  m2Status @?= 200
+  cid2 <- must "cid2" (m2Body >>= dig ["ceremonyId"] >>= asText)
+  (rStatus, rBody) <- complete cid2 ["totpCode" .= code1]
+  rStatus @?= 401
+  (rBody >>= dig ["code"] >>= asText) @?= Just "totp_code_invalid"
+
+  -- a completion naming two arms is a 400 (the exactly-one rule) before any workflow runs.
+  (arityStatus, _) <- complete ("webauthn_ceremony_x" :: Text) ["totpCode" .= code1, "recoveryCode" .= ("7Q2FK-9XPRD" :: Text)]
+  arityStatus @?= 400
+
+  -- generate recovery codes (the token is fresh: issued at the current clock).
+  (gStatus, gBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
+  gStatus @?= 200
+  codes <- must "recovery codes" (gBody >>= dig ["codes"] >>= asTextArray)
+  length codes @?= 10
+  (cntStatus, cntBody) <- getJSON mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
+  cntStatus @?= 200
+  (cntBody >>= dig ["remaining"] >>= asInt) @?= Just 10
+
+  -- complete a login with a recovery code; the count then drops by one.
+  (m3Status, m3Body) <- login
+  m3Status @?= 200
+  m3Methods <- must "m3 methods" (m3Body >>= dig ["methods"] >>= asTextArray)
+  assertBool "recovery_code advertised in methods" ("recovery_code" `elem` m3Methods)
+  cid3 <- must "cid3" (m3Body >>= dig ["ceremonyId"] >>= asText)
+  let firstRecovery = head codes
+  (rc1Status, rc1Body) <- complete cid3 ["recoveryCode" .= firstRecovery]
+  rc1Status @?= 200
+  rcAccess <- must "recovery accessToken" (rc1Body >>= dig ["accessToken"] >>= asText)
+  (cnt2Status, cnt2Body) <- getJSON mgr port "/v1/auth/recovery-codes" (bearer rcAccess)
+  cnt2Status @?= 200
+  (cnt2Body >>= dig ["remaining"] >>= asInt) @?= Just 9
+
+  -- the same recovery code cannot be spent twice.
+  (m4Status, m4Body) <- login
+  m4Status @?= 200
+  cid4 <- must "cid4" (m4Body >>= dig ["ceremonyId"] >>= asText)
+  (rc2Status, rc2Body) <- complete cid4 ["recoveryCode" .= firstRecovery]
+  rc2Status @?= 401
+  (rc2Body >>= dig ["code"] >>= asText) @?= Just "recovery_code_invalid"
+
+  -- enrolling under a delegated (impersonation) token is refused with an audited 403.
+  delegatedTok <- do
+    uid <- genUserId
+    sid <- genSessionId
+    opUid <- genUserId
+    let claims =
+          AuthClaims
+            { subject = uid,
+              sessionId = sid,
+              issuer = cfg.issuer,
+              audience = cfg.audience,
+              issuedAt = start,
+              expiresAt = addUTCTime 900 start,
+              scopes = Set.empty,
+              roles = Set.empty,
+              actor = Just opUid,
+              extraClaims = mempty
+            }
+    signAccessToken jwk claims >>= either (\e -> assertFailure ("sign delegated: " <> show e)) (\(AccessToken t) -> pure t)
+  (impStatus, impBody) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer delegatedTok)
+  impStatus @?= 403
+  (impBody >>= dig ["code"] >>= asText) @?= Just "impersonation_action_blocked"
+
+  -- remove the factor with a current code (step the clock again so the code is a later counter),
+  -- after which login no longer challenges (recovery codes alone do not trigger MFA).
+  let t2 = addUTCTime 60 t1
+  setClock r t2
+  (delStatus, _) <- deleteAuthBody mgr port "/v1/auth/totp" (bearer totpAccess) (object ["code" .= codeAt t2])
+  delStatus @?= 204
+  (afterStatus, afterBody) <- login
+  afterStatus @?= 200
+  (afterBody >>= dig ["status"] >>= asText) @?= Just "complete"
+
+  -- regenerating recovery codes on a token older than the freshness window is refused. Advancing
+  -- the World clock ages the earlier token (its jose exp is checked against real time, so it stays
+  -- otherwise valid); the freshness gate compares the token's issuedAt to the World clock's now.
+  let t3 = addUTCTime 600 t1
+  setClock r t3
+  (frStatus, frBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
+  frStatus @?= 403
+  (frBody >>= dig ["code"] >>= asText) @?= Just "reauthentication_required"
+
 -- Request helpers (parseRequest does not throw on non-2xx, so 401/403/404 come back
 -- as ordinary responses).
 
@@ -2717,6 +2871,19 @@ deleteAuth mgr port path hdrs = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), decode (responseBody resp))
 
+-- | DELETE with a JSON body and extra headers (the TOTP-removal shape).
+deleteAuthBody :: Manager -> Int -> String -> [Header] -> Value -> IO (Int, Maybe Value)
+deleteAuthBody mgr port path hdrs body = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req =
+        req0
+          { method = "DELETE",
+            requestHeaders = ("Content-Type", "application/json") : hdrs,
+            requestBody = RequestBodyLBS (encode body)
+          }
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), decode (responseBody resp))
+
 -- | PUT with a bearer token and no body (the role-grant shape).
 putAuth :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
 putAuth mgr port path hdrs = do
@@ -2755,6 +2922,19 @@ dig ks v0 = foldl (\mv k -> mv >>= field k) (Just v0) ks
 asText :: Value -> Maybe Text
 asText (String t) = Just t
 asText _ = Nothing
+
+asTextArray :: Value -> Maybe [Text]
+asTextArray (Array xs) = traverse asText (toList xs)
+asTextArray _ = Nothing
+
+asInt :: Value -> Maybe Int
+asInt (Number n) = Just (round n)
+asInt _ = Nothing
+
+-- | Move the in-memory World's deterministic clock (EP-7 tests advance it to step TOTP counters
+-- forward and to age a token past the freshness window).
+setClock :: IORef World -> UTCTime -> IO ()
+setClock r t = modifyIORef' r (\w -> w {clock = t})
 
 -- | Does the document have @keys@ as a non-empty array whose first element has a @kid@?
 jwksHasKid :: Value -> Bool

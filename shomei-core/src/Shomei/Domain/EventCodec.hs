@@ -54,6 +54,10 @@ reconstructAuthEvent etype payload = case etype of
   "mfa_challenged" -> MfaChallenged <$> parse payload
   "mfa_succeeded" -> MfaSucceeded <$> parse payload
   "mfa_failed" -> MfaFailed <$> parse payload
+  "totp_enrolled" -> TotpEnrolled <$> parse payload
+  "totp_removed" -> TotpRemoved <$> parse payload
+  "recovery_codes_generated" -> RecoveryCodesGenerated <$> parse payload
+  "recovery_code_used" -> RecoveryCodeUsed <$> parse payload
   "impersonation_started" -> ImpersonationStarted <$> parse payload
   "impersonation_stopped" -> ImpersonationStopped <$> parse payload
   "impersonation_action_blocked" -> ImpersonationActionBlocked <$> parse payload
@@ -131,6 +135,15 @@ projectAuthEvent = \case
     (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "mfa_succeeded", toJSON d, occ)
   MfaFailed d@(MfaFailedData mUid _ occ) ->
     (fmap userIdToUUID mUid, Nothing, "mfa_failed", toJSON d, occ)
+  -- The row's user_id is the affected user; these are all self-service factor-management events.
+  TotpEnrolled d@(TotpEnrolledData uid occ) ->
+    (Just (userIdToUUID uid), Nothing, "totp_enrolled", toJSON d, occ)
+  TotpRemoved d@(TotpRemovedData uid occ) ->
+    (Just (userIdToUUID uid), Nothing, "totp_removed", toJSON d, occ)
+  RecoveryCodesGenerated d@(RecoveryCodesGeneratedData uid _ occ) ->
+    (Just (userIdToUUID uid), Nothing, "recovery_codes_generated", toJSON d, occ)
+  RecoveryCodeUsed d@(RecoveryCodeUsedData uid occ) ->
+    (Just (userIdToUUID uid), Nothing, "recovery_code_used", toJSON d, occ)
   -- For impersonation events the subject (customer) is the row's user_id; the actor
   -- (operator) and reason/ticket live inside the JSONB payload.
   ImpersonationStarted d ->

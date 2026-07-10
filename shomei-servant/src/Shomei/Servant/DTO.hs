@@ -25,6 +25,13 @@ module Shomei.Servant.DTO
     PasskeyRegisterCompleteRequest (..),
     PasskeyResponse (..),
     MfaCompleteRequest (..),
+    mfaCompletionOf,
+    TotpEnrollResponse (..),
+    TotpVerifyRequest (..),
+    TotpRemoveRequest (..),
+    totpRemovalProofOf,
+    RecoveryCodesResponse (..),
+    RecoveryCodesCountResponse (..),
     PasskeyLoginBeginResponse (..),
     PasskeyLoginCompleteRequest (..),
     ImpersonateRequest (..),
@@ -51,8 +58,8 @@ module Shomei.Servant.DTO
   )
 where
 
-import Data.Aeson (Value, object, withObject, (.:))
-import Data.Maybe (catMaybes)
+import Data.Aeson (Value (Null), object, withObject, (.:), (.:?))
+import Data.Maybe (catMaybes, isJust)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser)
 import Data.Text qualified as Text
@@ -73,6 +80,8 @@ import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Effect.UserStore (UserCursor (..))
 import Shomei.Id (idText, userIdFromUUID, userIdToUUID)
+import Shomei.Workflow.Mfa (MfaCompletion (..))
+import Shomei.Workflow.Totp (TotpRemovalProof (..))
 import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
 import Shomei.Workflow.ServiceToken (IssuedServiceToken (..))
@@ -163,7 +172,9 @@ data LoginResponse
       }
   | LoginMfaRequiredResponse
       { ceremonyId :: !Text,
-        options :: !Value
+        options :: !Value,
+        -- | which factors can complete this challenge: @"passkey"@, @"totp"@, @"recovery_code"@
+        methods :: ![Text]
       }
   deriving stock (Generic)
 
@@ -171,11 +182,12 @@ instance ToJSON LoginResponse where
   toJSON = \case
     LoginCompleteResponse u t ->
       object ["status" Aeson..= ("complete" :: Text), "user" Aeson..= u, "token" Aeson..= t]
-    LoginMfaRequiredResponse cid opts ->
+    LoginMfaRequiredResponse cid opts methods ->
       object
         [ "status" Aeson..= ("mfa_required" :: Text),
           "ceremonyId" Aeson..= cid,
-          "options" Aeson..= opts
+          "options" Aeson..= opts,
+          "methods" Aeson..= methods
         ]
 
 instance FromJSON LoginResponse where
@@ -183,14 +195,103 @@ instance FromJSON LoginResponse where
     status <- o .: "status" :: Parser Text
     case status of
       "complete" -> LoginCompleteResponse <$> o .: "user" <*> o .: "token"
-      "mfa_required" -> LoginMfaRequiredResponse <$> o .: "ceremonyId" <*> o .: "options"
+      -- A missing @methods@ decodes as @["passkey"]@, so pre-EP-7 recorded fixtures (which had no
+      -- such field, and could only ever be passkey challenges) still parse.
+      "mfa_required" ->
+        LoginMfaRequiredResponse
+          <$> o .: "ceremonyId"
+          <*> o .: "options"
+          <*> (o .:? "methods" Aeson..!= ["passkey"])
       other -> fail ("unknown login status: " <> Text.unpack other)
 
--- | @POST /v1/auth/mfa/complete@ body: the ceremony id from the login challenge + the assertion JSON.
+-- | @POST /v1/auth/mfa/complete@ body: the ceremony id from the login challenge plus __exactly
+-- one__ of @assertion@ (passkey), @totpCode@, or @recoveryCode@. The legacy two-field
+-- @{ceremonyId, assertion}@ shape parses unchanged as the passkey arm.
 data MfaCompleteRequest = MfaCompleteRequest
   { ceremonyId :: !Text,
-    assertion :: !Value
+    assertion :: !(Maybe Value),
+    totpCode :: !(Maybe Text),
+    recoveryCode :: !(Maybe Text)
   }
+  deriving stock (Generic)
+
+instance FromJSON MfaCompleteRequest where
+  parseJSON = withObject "MfaCompleteRequest" \o -> do
+    cid <- o .: "ceremonyId"
+    assertion <- o .:? "assertion"
+    totpCode <- o .:? "totpCode"
+    recoveryCode <- o .:? "recoveryCode"
+    case length (filter id [isJust assertion, isJust totpCode, isJust recoveryCode]) of
+      1 -> pure (MfaCompleteRequest cid assertion totpCode recoveryCode)
+      _ -> fail "exactly one of assertion, totpCode, recoveryCode must be present"
+
+instance ToJSON MfaCompleteRequest where
+  toJSON (MfaCompleteRequest cid a t r) =
+    object $
+      ("ceremonyId" Aeson..= cid)
+        : catMaybes
+          [ ("assertion" Aeson..=) <$> a,
+            ("totpCode" Aeson..=) <$> t,
+            ("recoveryCode" Aeson..=) <$> r
+          ]
+
+-- | The core 'MfaCompletion' a decoded request maps to. The @FromJSON@ above guarantees exactly
+-- one arm, so the final fallthrough is unreachable.
+mfaCompletionOf :: MfaCompleteRequest -> MfaCompletion
+mfaCompletionOf (MfaCompleteRequest _ a t r) = case (a, t, r) of
+  (Just assertion, _, _) -> MfaPasskey assertion
+  (_, Just code, _) -> MfaTotp code
+  (_, _, Just code) -> MfaRecoveryCode code
+  _ -> MfaPasskey Null
+
+-- | @POST /v1/auth/totp/enroll@ response: the Base32 secret (shown once) and the @otpauth://@ URI.
+data TotpEnrollResponse = TotpEnrollResponse
+  { secret :: !Text,
+    otpauthUri :: !Text
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | @POST /v1/auth/totp/verify@ body: the first valid code that activates an enrollment.
+newtype TotpVerifyRequest = TotpVerifyRequest {code :: Text}
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | @DELETE /v1/auth/totp@ body: proof of possession — __exactly one__ of a current @code@ or a
+-- @recoveryCode@.
+data TotpRemoveRequest = TotpRemoveRequest
+  { code :: !(Maybe Text),
+    recoveryCode :: !(Maybe Text)
+  }
+  deriving stock (Generic)
+
+instance FromJSON TotpRemoveRequest where
+  parseJSON = withObject "TotpRemoveRequest" \o -> do
+    code <- o .:? "code"
+    recoveryCode <- o .:? "recoveryCode"
+    case (isJust code, isJust recoveryCode) of
+      (True, False) -> pure (TotpRemoveRequest code recoveryCode)
+      (False, True) -> pure (TotpRemoveRequest code recoveryCode)
+      _ -> fail "exactly one of code, recoveryCode must be present"
+
+instance ToJSON TotpRemoveRequest where
+  toJSON (TotpRemoveRequest c r) =
+    object (catMaybes [("code" Aeson..=) <$> c, ("recoveryCode" Aeson..=) <$> r])
+
+-- | The core 'TotpRemovalProof' a decoded request maps to (exactly-one is enforced by @FromJSON@).
+totpRemovalProofOf :: TotpRemoveRequest -> TotpRemovalProof
+totpRemovalProofOf (TotpRemoveRequest c r) = case (c, r) of
+  (Just code, _) -> RemoveWithCode code
+  (_, Just code) -> RemoveWithRecoveryCode code
+  _ -> RemoveWithCode ""
+
+-- | @POST /v1/auth/recovery-codes@ response: the freshly generated plaintext codes (shown once).
+newtype RecoveryCodesResponse = RecoveryCodesResponse {codes :: [Text]}
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | @GET /v1/auth/recovery-codes@ response: how many unused codes remain.
+newtype RecoveryCodesCountResponse = RecoveryCodesCountResponse {remaining :: Int}
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -355,8 +456,8 @@ loginResultToResponse :: ShomeiConfig -> LoginResult -> LoginResponse
 loginResultToResponse cfg = \case
   LoginComplete user pair ->
     LoginCompleteResponse {user = userToResponse user, token = tokenPairToResponse cfg pair}
-  MfaRequired (MfaChallenge cid opts) ->
-    LoginMfaRequiredResponse {ceremonyId = idText cid, options = opts}
+  MfaRequired (MfaChallenge cid opts methods) ->
+    LoginMfaRequiredResponse {ceremonyId = idText cid, options = opts, methods = methods}
 
 -- | @POST /v1/auth/impersonate@ body: the target user id, a required reason, and an
 -- optional support ticket id.

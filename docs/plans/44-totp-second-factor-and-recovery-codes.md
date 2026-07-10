@@ -54,9 +54,9 @@ This section must always reflect the actual current state of the work.
 - [x] M1 (2026-07-10): Pure TOTP module `Shomei.Totp` (HMAC-SHA1 over crypton, RFC 6238 vectors pass); Base32 via `ram`'s `Data.ByteArray.Encoding` (no `base32` dep); otpauth URI builder. `TotpSpec` green (14 cases), `cabal test shomei-core` = 225 passed.
 - [x] M2 (2026-07-10): Migrations `shomei_totp_credentials` + `shomei_recovery_codes`; `TotpCredentialStore` + `RecoveryCodeStore` ports; in-memory + Postgres interpreters (AES-256-GCM at the Postgres boundary); `TotpConfig` sub-record; new TypeIDs `totp`/`recovery`; all five effect-stack sites + `App.Env.envTotpKey` (dummy key in Boot, real load deferred to M4).
 - [x] M2 (2026-07-10): Postgres round-trip tests incl. encryption-at-rest (ciphertext ≠ plaintext, nonce+tag framed) and atomic recovery-code consume-once. `cabal test shomei-core` = 228; `TASTY_NUM_THREADS=1 cabal test shomei-postgres` = 53, both green.
-- [ ] M3: Enrollment/verify/removal workflows + routes; recovery-code generate/count workflows + routes; `denyUnderImpersonation` on all credential-changing handlers.
-- [ ] M3: Login generalization (challenge if any factor enrolled); `LoginResponse` `methods` field (DTO + hand-written JSON + OpenAPI oneOf + Arbitrary); `MfaCompleteRequest` union (passkey/totp/recovery_code arms); replay defense (`last_used_counter`).
-- [ ] M3: Audit events (TotpEnrolled/TotpRemoved/RecoveryCodesGenerated/RecoveryCodeUsed) + codec + spec; in-process HTTP tests for every path.
+- [x] M3 (2026-07-10): Enrollment/verify/removal workflows + routes (`Shomei.Workflow.Totp`); recovery-code generate/count workflows + routes; `denyUnderImpersonation` on enroll/remove/regenerate; `requireFreshAuth` gate on regenerate.
+- [x] M3 (2026-07-10): Login generalization (challenge if any factor enrolled); `LoginResponse` `methods` field (DTO hand-written JSON + OpenAPI oneOf + Arbitrary); `MfaCompleteRequest` union (passkey/totp/recovery_code, exactly-one FromJSON); `MfaCompletion` dispatch in `completeMfa`; replay defense via `last_used_counter`.
+- [x] M3 (2026-07-10): Audit events (TotpEnrolled/TotpRemoved/RecoveryCodesGenerated/RecoveryCodeUsed) + codec + spec (39 constructors); `TokenGen.GenerateRandomBytes`; 5 new `AuthError`s + problem specs; in-process HTTP scenario covering enroll→verify→mfa_required(methods)→complete, replay 401, recovery gen/use/count, arity 400, impersonation 403, remove, freshness 403. Also did the OpenAPI schema/path-count/routeErrors work here (planned for M4) to keep every commit's `cabal test shomei-servant` green. `cabal test shomei-core` = 232, `shomei-servant` = 30 + 56, `shomei-postgres` = 53, all green.
 - [ ] M4: Server config wiring (Dhall/env incl. `SHOMEI_TOTP_ENCRYPTION_KEY`); OpenAPI path count bumped (+4) and spec regenerated; `docs/user/mfa.md` written, `docs/user/passkeys.md` recovery section updated.
 - [ ] M4: Postgres E2E transcript automated.
 - [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
@@ -92,6 +92,40 @@ EP-4/EP-5 notes enumerate, plus `Shomei.Server.App.Env` gained `envTotpKey :: To
 The `shomei-postgres` test-suite needed `bytestring` added to its `build-depends` (it had none —
 the round-trip tests inspect the raw `secret_enc` bytea). **EP-9 adds a port + column and will
 hit the same five-plus sites.**
+
+**2026-07-10 (M3) — the servant HTTP test's clock split: jose validates tokens against the REAL
+wall clock, but the app reads the in-memory World clock.** The deterministic World clock means a
+confirmed TOTP code cannot be reused for a login at the same time-step counter (the
+strictly-greater replay rule), so the test must advance the World clock to move the counter. But
+advancing it *forward* past real time makes minted tokens' `nbf`/`iat` future-dated, and jose
+rejects them (`401`). The fix: base the scenario's clock ~120 s in the PAST
+(`start = now - 120`) and step forward through `[start, start+60, start+120]` — every mint stays
+inside jose's `[nbf ≤ realNow ≤ exp]` window while counters still advance. The freshness gate
+(`requireFreshAuth`, which uses the World clock's `now`) is then exercised by jumping the World
+clock to `start + 660`: the earlier token stays jose-valid (real-time `exp`) yet reads as stale
+(`403 reauthentication_required`). **Any future servant test that mints tokens under an advanced
+World clock hits this.**
+
+**2026-07-10 (M3) — the login round-trip budget rose 8 → 9.** The generalized MFA gate reads
+`findTotpByUser` alongside `countPasskeysByUser` on every login, so `testLoginRoundTripBudget`
+tripped (as EP-1 warned it would for factor/claims additions). The `recovery-codes` count is read
+only inside the challenge branch, so a no-factor login is +1, not +2. **EP-9's permission claim
+will touch the same mint path and trip this again — raise the constant only after justifying the
+new round-trip.**
+
+**2026-07-10 (M3) — `TotpEnrolled` fires on confirmation, not on enrollment start.** The plan's
+M3 text put `publish TotpEnrolled` in `enrollTotp`, but an abandoned unconfirmed enrollment
+should not emit "enrolled". `Shomei.Workflow.Totp.verifyTotpEnrollment` publishes it on the
+first-valid-code success instead (matching the event's "a confirmed credential now exists"
+meaning); the E2E's `totp_enrolled` assertion still holds because it runs after verify.
+
+**2026-07-10 (M3) — OpenAPI schema work landed in M3, not M4.** `cabal test shomei-servant` runs
+the conformance suite (`validateEveryToJSON`, path-count) continuously, so the new DTOs' `ToSchema`
+/ `Arbitrary` / `Show`, the `LoginResponse` `methods` branch, the `routeErrors` entries, and the
+path-count bump (39 → 43) had to land with the routes to keep every commit green. M4 keeps only
+the openapi.json regeneration + docs + server config. `MfaCompleteRequest` and `TotpRemoveRequest`
+keep a generic `ToSchema` (all-optional object) rather than a hand-written `oneOf`: the exactly-one
+rule lives in `FromJSON`, and an all-optional schema still validates every `ToJSON` output.
 
 
 ## Decision Log
@@ -223,6 +257,21 @@ Record every decision made while working on the plan.
   the semantics are the natural reading once more factors exist. The docs change is
   explicit (M4).
   Date: 2026-07-07
+
+
+- Decision (2026-07-10, M3): `TotpEnrolled` is published on confirmation
+  (`verifyTotpEnrollment`), not on `enrollTotp`.
+  Rationale: an unconfirmed enrollment that a user abandons should not appear in the audit
+  trail as "enrolled"; the event's meaning is "a confirmed credential now exists". The E2E's
+  `totp_enrolled` assertion runs after verify, so it is unaffected.
+  Date: 2026-07-10
+
+- Decision (2026-07-10, M3): the recovery-code normalization+hash is centralized in
+  `Shomei.Workflow.Totp.recoveryCodeHash` (`sha256Hex . toLower . filter (/= '-')`), imported by
+  `Shomei.Workflow.Mfa`, so generation and consumption cannot drift on normalization.
+  Rationale: the code is stored hashed at generation and compared hashed at consumption in two
+  different modules; a single definition removes the drift risk the plan flagged.
+  Date: 2026-07-10
 
 
 ## Outcomes & Retrospective
