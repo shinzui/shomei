@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Shomei.Jwt.IdTokenSpec qualified as IdTokenSpec
 import Shomei.Jwt.InterpreterSpec qualified as InterpreterSpec
 import Shomei.Jwt.JwksSpec qualified as JwksSpec
 import Shomei.Jwt.KeyProtectionSpec qualified as KeyProtectionSpec
@@ -17,6 +18,7 @@ main =
       [ KeySpec.tests,
         KeyProtectionSpec.tests,
         SignVerifySpec.tests,
+        IdTokenSpec.tests,
         JwksSpec.tests,
         InterpreterSpec.tests,
         RotationSpec.tests,

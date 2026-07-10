@@ -82,7 +82,8 @@ startImpersonation cfg cmd = runErrorNoCallStack do
         { userId = cmd.targetUserId,
           createdAt = ts,
           expiresAt = expires,
-          actor = Just caller.subject
+          actor = Just caller.subject,
+          oauthClientId = Nothing
         }
   let claims =
         AuthClaims

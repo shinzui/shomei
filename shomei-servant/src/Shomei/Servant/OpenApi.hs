@@ -203,8 +203,28 @@ instance ToSchema TokenResponse where
               [ ("access_token", O.Inline (stringSchema & O.description ?~ "The signed JWT access token.")),
                 ("token_type", O.Inline (stringSchema & O.description ?~ "Always \"Bearer\".")),
                 ("expires_in", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger & O.description ?~ "Token lifetime in seconds.")),
-                ("scope", O.Inline (stringSchema & O.description ?~ "The space-delimited scopes actually granted."))
+                ("scope", O.Inline (stringSchema & O.description ?~ "The space-delimited scopes actually granted.")),
+                ( "refresh_token",
+                  O.Inline
+                    ( stringSchema
+                        & O.description
+                          ?~ "The rotating opaque refresh token. Present for the authorization_code and \
+                             \refresh_token grants; omitted for client_credentials, whose tokens are \
+                             \deliberately refresh-less."
+                    )
+                ),
+                ( "id_token",
+                  O.Inline
+                    ( stringSchema
+                        & O.description
+                          ?~ "The signed OIDC ID token. Present exactly when the granted scopes include \
+                             \`openid`. Its `aud` is the client_id, not the API audience: it is a \
+                             \statement to the client, never a bearer credential."
+                    )
+                )
               ]
+          -- The two optional members are omitted rather than null when they do not apply, so they
+          -- are documented as not required.
           & O.required .~ ["access_token", "token_type", "expires_in", "scope"]
 
 -- | The @application\/x-www-form-urlencoded@ request body of @POST \/oauth\/token@.
@@ -473,7 +493,7 @@ oauthErrorResponsesByPath =
     -- request-shape and scope failures. @500@ is documented because a database outage must still
     -- answer in the OAuth shape rather than break the client's error parser.
     ( "/oauth/token",
-      [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope"]),
+      [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope", "invalid_grant"]),
         (401, ["invalid_client"]),
         (500, ["server_error"])
       ]

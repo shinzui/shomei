@@ -70,6 +70,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -77,10 +78,11 @@ import Shomei.Domain.AuthorizationCode
   ( AuthorizationCode (..),
     NewAuthorizationCode (..),
   )
-import Shomei.Domain.Claims (AuthClaims, Role (..))
+import Shomei.Domain.Claims (AuthClaims, Issuer (..), Role (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (projectAuthEvent)
+import Shomei.Domain.IdTokenClaims (IdToken (..), IdTokenClaims (..))
 import Shomei.Domain.LoginAttempt
   ( AccountKey,
     AccountLockout (..),
@@ -416,7 +418,8 @@ mkSession sid ns =
       createdAt = ns.createdAt,
       expiresAt = ns.expiresAt,
       revokedAt = Nothing,
-      actor = ns.actor
+      actor = ns.actor,
+      oauthClientId = ns.oauthClientId
     }
 
 runRefreshTokenStore :: (IOE :> es) => IORef World -> Eff (RefreshTokenStore : es) a -> Eff es a
@@ -951,6 +954,24 @@ runPasswordBreachCheckerFake ref = interpret_ \case
 runTokenSigner :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSigner = interpret_ \case
   SignAccessToken claims -> pure (AccessToken (renderClaims claims))
+  -- The fake ID token is the claims as JSON, as the fake access token is. It does not round-trip
+  -- through 'runTokenVerifier': nothing verifies an ID token server-side (the client does).
+  SignIdToken idc -> pure (IdToken (TL.toStrict (TLE.decodeUtf8 (encode (renderIdTokenClaims idc)))))
+
+-- | The fake ID token's payload: the same claim names the real @jose@ signer emits, so a test can
+-- assert on them without a JWT library.
+renderIdTokenClaims :: IdTokenClaims -> Value
+renderIdTokenClaims idc =
+  object
+    ( [ ("iss", Aeson.String (issuerText idc.issuer)),
+        ("sub", Aeson.String (idText idc.subject)),
+        ("aud", Aeson.String idc.audience),
+        ("auth_time", Aeson.toJSON (floor (utcTimeToPOSIXSeconds idc.authTime) :: Integer))
+      ]
+        <> foldMap (\n -> [("nonce", Aeson.String n)]) idc.nonce
+    )
+  where
+    issuerText (Issuer t) = t
 
 runTokenVerifier :: Eff (TokenVerifier : es) a -> Eff es a
 runTokenVerifier = interpret_ \case

@@ -97,7 +97,7 @@ spec = do
         `shouldBe` []
 
     it "documents the RFC 6749 error codes it can actually emit" $
-      sort (nub (concat oauthErrorCodes)) `shouldBe` sort ["invalid_client", "invalid_request", "invalid_scope", "server_error", "unsupported_grant_type"]
+      sort (nub (concat oauthErrorCodes)) `shouldBe` sort ["invalid_client", "invalid_grant", "invalid_request", "invalid_scope", "server_error", "unsupported_grant_type"]
 
   describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
     -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling
@@ -440,7 +440,7 @@ instance Arbitrary ServiceTokenResponse where
   arbitrary = ServiceTokenResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary TokenResponse where
-  arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary SessionResponse where
   arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

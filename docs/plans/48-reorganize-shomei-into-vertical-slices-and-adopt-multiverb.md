@@ -105,10 +105,15 @@ operation declares its error responses. Those are strengthened, not rebuilt.
 - [ ] Milestone 1 (spike): prove a single route (`signup`) can be a `MultiVerb` that still
       emits the two `Set-Cookie` headers on success. Pin the exact servant-0.20.2 combinator
       names for response headers by reading servant's source. Nothing else changes.
-- [ ] Milestone 2: add the shared response vocabulary (`Shomei.Servant.Response`) and convert
+- [ ] Milestone 2: first add a runtime dispatch test pinning the same-typed admin families
+      (`adminSuspendUser`/`adminReinstateUser`/`adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset`,
+      all `AuthUser -> UserId -> Handler NoContent`; `adminGrantRole`/`adminRevokeRole`, both
+      `AuthUser -> UserId -> Text -> Handler NoContent`) each to its own handler — `NamedRoutes`
+      does not catch a same-typed transposition (falsified in meibo; see Surprises). Then add the
+      shared response vocabulary (`Shomei.Servant.Response`) and convert
       every `ShomeiAPI` field to `MultiVerb`; rewrite the handlers to return the result sum;
       wire `ErrorFormatters` into the server assembly. `cabal build all && cabal test all`
-      passes (conformance test updated in Milestone 3).
+      passes, the dispatch test included (OpenAPI conformance test updated in Milestone 3).
 - [ ] Milestone 3: regenerate `docs/api/openapi.json` and review the diff (new
       `400/401/403/404/409/429/503` responses per operation); harden the `shomei-openapi`
       executable to emit **sorted keys and a trailing newline** so the artifact is byte-diffable;
@@ -137,6 +142,31 @@ operation declares its error responses. Those are strengthened, not rebuilt.
 ## Surprises & Discoveries
 
 Findings from the pre-implementation audit that shape the plan. Add to this as work proceeds.
+
+- **2026-07-10 — `NamedRoutes` does not stop a same-typed transposition, and shomei has two such
+  families.** A claim repeated across the fleet's ExecPlans — that a `NamedRoutes` record means
+  "you cannot transpose two same-typed routes by accident" — was **falsified by experiment** in the
+  meibo service. Meibo converted to `NamedRoutes`, swapped its two genuinely same-typed handlers
+  (`byHandle`/`byCredential`, both `AuthUser -> Text -> Handler (MeiboResult PrincipalView)`), and
+  `cabal build` **succeeded**: the swap compiles, serves, and silently returns the wrong data; only
+  a runtime dispatch test caught it. (Meibo also moved a field to be first with all 43 tests still
+  green, disproving the related claim that record field order governs static-segment-versus-capture
+  precedence — servant hoists a literal segment above a sibling `Capture` regardless of declaration
+  order.) A record removes only the *positional* failure mode; a differing-typed transposition is a
+  compile error naming the field, while a same-typed transposition is caught only by a runtime
+  dispatch test. Shomei's `ShomeiAPI` has two same-typed sibling families in its admin surface:
+  five routes reduce to `AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`,
+  `adminReinstateUser`, `adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset` — the exact
+  transposition pairs are {`adminSuspendUser`, `adminReinstateUser`} at POST 204 and
+  {`adminDeleteUser`, `adminRevokeSessions`} at DELETE 204, which differ only by their static
+  segment), and two reduce to `AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`,
+  `adminRevokeRole`). The Milestone 2 handler rewrite is where one could be bound to the wrong field
+  and compile clean, so Milestone 2 now requires a runtime dispatch test pinning each admin path to
+  its own handler, written *before* the rewrite. Every non-admin route has a distinct handler type
+  (the three cookie-issuing token routes `refresh`/`mfaComplete`/`passkeyLoginComplete` all *return*
+  `WithCookies TokenPairResponse` but differ by request body, so they are distinct), so only the
+  admin families need pinning. (The `AppAPI` `:<|>` operators are unaffected: those alternatives
+  have distinct types, which is the one case where `:<|>` carries no misordering hazard.)
 
 - **shomei already JSON-encodes its domain errors.** `Shomei/Servant/Error.hs` builds every
   `ServerError` with `errBody = Aeson.encode (object ["error" .= code, "message" .= msg])` and
@@ -203,6 +233,22 @@ Findings from the pre-implementation audit that shape the plan. Add to this as w
   misordering hazard). Converting either would be churn with no benefit and would contradict
   the source-of-truth document.
   Date: 2026-07-09
+
+- Decision: Milestone 2 must add a runtime dispatch test for shomei's same-typed admin route
+  families, written *before* the handler rewrite.
+  Rationale: `ShomeiAPI` contains two same-typed sibling families —
+  `adminSuspendUser`/`adminReinstateUser`/`adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset`,
+  all `AuthUser -> UserId -> Handler NoContent`, and `adminGrantRole`/`adminRevokeRole`, both
+  `AuthUser -> UserId -> Text -> Handler NoContent` — whose fields differ only by a static path
+  segment. `NamedRoutes` does **not** make a swap between same-typed fields a compile error; that
+  claim was falsified by experiment in meibo (the swap compiled and served the wrong data; only a
+  runtime dispatch test caught it — see Surprises & Discoveries). Milestone 2 rewrites every handler
+  in one pass, which is exactly where an admin handler could be bound to a sibling's field and
+  compile clean, so a runtime dispatch test pinning each admin path to its own handler must exist
+  before that rewrite. No non-admin route needs it: each has a distinct handler type, so a
+  transposition elsewhere is already a compile error. There was no field-order-versus-capture claim
+  in this plan to correct.
+  Date: 2026-07-10
 
 - Decision: Adopt a single shared error-envelope wire type `ErrorEnvelopeWire { code, message,
   retryable }` (matching the `en-servant` reference and meibo), superseding the ad-hoc
@@ -339,8 +385,18 @@ LoginResponse` describes `POST /auth/login`.
 per route, each field's type joined to the field name by the `:-` operator, and the record
 parameterized by a `mode` type variable. `mode` is filled in differently to get different
 things: `AsServerT Handler` yields a record of handlers, `AsClientT ClientM` yields a record of
-client functions, `AsApi` yields a description. Because handlers are supplied by *field name*,
-you cannot transpose two same-typed routes by accident. `ShomeiAPI` is such a record.
+client functions, `AsApi` yields a description. Because handlers are supplied by *field name*
+rather than by position, the record removes the *positional* failure mode: you cannot miscount,
+and inserting a route mid-record cannot shift every later handler. It does **not**, on its own,
+stop you transposing two *same-typed* routes — binding one same-typed field's handler to another's
+typechecks, compiles, and silently misroutes (falsified by experiment in meibo; see Surprises &
+Discoveries). A transposition is a compile error only where the two fields have *different* handler
+types; where they coincide, only a runtime dispatch test catches a swap. This is not academic for
+shomei: `ShomeiAPI` contains same-typed admin families — five routes reduce to
+`AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`, `adminReinstateUser`,
+`adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset`) and two to
+`AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`, `adminRevokeRole`) — so those
+must be pinned by a runtime dispatch test (see Milestone 2). `ShomeiAPI` is such a record.
 
 **`MultiVerb`** is a Servant combinator that replaces a single terminal verb (`Post '[JSON]
 X`) with a *type-level list of response alternatives*, one per HTTP status the operation can
@@ -649,6 +705,22 @@ instances, and the total `faultToResult :: AuthError -> AuthResult a`. Convert e
 return the result sum instead of throwing. Install `ErrorFormatters` in the server assembly. At
 the end, `cabal build all` succeeds and `cabal test all` passes except the OpenAPI conformance
 test, which Milestone 3 updates.
+
+**Before rewriting the handlers, pin the same-typed admin families with a runtime dispatch test.**
+`ShomeiAPI` has two families whose fields share one handler type and differ only by a static path
+segment: five routes reduce to `AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`,
+`adminReinstateUser`, `adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset` — the closest
+transposition risks are the exact-verb pairs {`adminSuspendUser`, `adminReinstateUser`} at POST 204
+and {`adminDeleteUser`, `adminRevokeSessions`} at DELETE 204), and two reduce to
+`AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`, `adminRevokeRole`). Because
+`NamedRoutes` does **not** make a same-typed transposition a compile error (falsified in meibo; see
+Surprises & Discoveries), rewriting every handler in one pass is exactly the moment one admin
+handler could be bound to a sibling's field and compile clean. Add a runtime dispatch test that
+drives each of these admin paths against the real server and asserts each reaches its *own* handler
+(suspending a user leaves the user suspended, not reinstated; granting a role grants it, not revokes
+it), written *before* the handler rewrite, and keep it green through the conversion. Every non-admin
+`ShomeiAPI` route has a distinct handler type (distinct `ReqBody` or distinct response — e.g. the
+three cookie-issuing token routes differ by request body), so only the admin families need pinning.
 
 `Shomei/Servant/Response.hs` defines the envelope exactly as the convention and the
 `en-servant` reference specify:
@@ -1314,3 +1386,23 @@ deprecated re-export shim exporting the exact symbol set nagare and `shomei-clie
   adopting `MultiVerb` makes the fork pin and the per-operation-error conformance property
   load-bearing, and a byte-diffable artifact plus a CI drift check are what keep the derived
   document honest as the API grows.
+
+- 2026-07-10 — Corrected the "you cannot transpose two same-typed routes by accident" claim and
+  added a dispatch test. The *Terms of art* definition of a `NamedRoutes` record previously stated
+  that "you cannot transpose two same-typed routes by accident." That is false: a record does not
+  turn a swap of two identically-typed fields into a compile error — the meibo service proved it by
+  experiment (the swap compiled and served the wrong data; only a runtime dispatch test caught it),
+  and meibo separately disproved the related field-order-versus-capture-precedence claim. The
+  definition now states the honest property (a record removes the positional failure mode; a
+  differing-typed transposition is a compile error naming the field; a same-typed transposition is
+  caught only by a runtime dispatch test). This matters concretely for shomei, which — an audit
+  found — has two same-typed admin families: `adminSuspendUser`/`adminReinstateUser`/
+  `adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset` (all
+  `AuthUser -> UserId -> Handler NoContent`) and `adminGrantRole`/`adminRevokeRole` (both
+  `AuthUser -> UserId -> Text -> Handler NoContent`). Because Milestone 2 rewrites every handler in
+  one pass, a new Surprises & Discoveries entry, a new Decision Log entry, and additions to
+  Milestone 2 and the Progress list now require a runtime dispatch test pinning each admin path to
+  its own handler, written *before* the rewrite. Shomei stays on `NamedRoutes` and the `AppAPI`
+  `:<|>` operators are untouched (their alternatives have distinct types — the one hazard-free use
+  of `:<|>`). Reflected in *Terms of art used in this plan*, *Surprises & Discoveries*, the Decision
+  Log, Milestone 2, Progress, and this note.

@@ -16,17 +16,21 @@ module Shomei.Workflow.Session
   ( buildClaims,
     buildClaimsWith,
     buildEnrichedClaims,
+    SessionOptions (..),
+    defaultSessionOptions,
     issueSession,
+    issueSessionWith,
     ensureEmailVerified,
   )
 where
 
 import Data.Aeson (Object)
+import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
-import Shomei.Domain.Claims (AuthClaims (..), mkExtraClaims, noExtraClaims)
+import Shomei.Domain.Claims (AuthClaims (..), Scope, mkExtraClaims, noExtraClaims)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.Session (NewSession (..), Session (..))
 import Shomei.Domain.Token (TokenPair (..))
@@ -121,6 +125,21 @@ buildEnrichedClaims cfg uid sid ts = do
 -- leave a session without its token. Signing the access token is pure CPU work and stays
 -- outside the transaction. The session id is generated inside the unit-of-work interpreter,
 -- which is why the events are supplied as a function of it.
+-- | What distinguishes one issuance from another. Everything here is 'mempty'-ish by default, so
+-- 'issueSession' — the login\/MFA\/passwordless tail — behaves exactly as it did before EP-5.
+data SessionOptions = SessionOptions
+  { -- | the OAuth2 @client_id@ that minted this session (EP-5's authorization-code grant), which
+    --     binds the session's refresh token to that client. 'Nothing' for every other flow.
+    oauthClientId :: !(Maybe Text),
+    -- | scopes to add to the minted access token's claims, beyond whatever the 'ClaimsEnricher'
+    --     supplies. EP-5's authorization-code grant puts the scopes it granted here.
+    extraScopes :: !(Set Scope)
+  }
+  deriving stock (Generic, Eq, Show)
+
+defaultSessionOptions :: SessionOptions
+defaultSessionOptions = SessionOptions {oauthClientId = Nothing, extraScopes = Set.empty}
+
 issueSession ::
   ( AuthUnitOfWork :> es,
     TokenSigner :> es,
@@ -133,6 +152,27 @@ issueSession ::
   UTCTime ->
   Eff es (SessionId, TokenPair)
 issueSession cfg user ts = do
+  (sid, pair, _claims) <- issueSessionWith cfg defaultSessionOptions user ts
+  pure (sid, pair)
+
+-- | 'issueSession' with the OAuth-specific knobs, and returning the claims it signed.
+--
+-- The claims come back because EP-5's authorization-code grant must build its __ID token__ from
+-- the same 'buildEnrichedClaims' output as the access token, per this MasterPlan's claims
+-- integration point — never by re-reading the role store in the HTTP layer.
+issueSessionWith ::
+  ( AuthUnitOfWork :> es,
+    TokenSigner :> es,
+    TokenGen :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es
+  ) =>
+  ShomeiConfig ->
+  SessionOptions ->
+  User ->
+  UTCTime ->
+  Eff es (SessionId, TokenPair, AuthClaims)
+issueSessionWith cfg opts user ts = do
   rawToken <- generateOpaqueToken
   tokHash <- hashRefreshToken rawToken
   (session, _token) <-
@@ -141,7 +181,8 @@ issueSession cfg user ts = do
         { userId = user.userId,
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
-          actor = Nothing
+          actor = Nothing,
+          oauthClientId = opts.oauthClientId
         }
       NewSessionToken
         { tokenHash = tokHash,
@@ -152,8 +193,13 @@ issueSession cfg user ts = do
         [ Event.LoginSucceeded (Event.LoginSucceededData user.userId sid ts),
           Event.SessionStarted (Event.SessionStartedData sid user.userId ts)
         ]
-  access <- signAccessToken =<< buildEnrichedClaims cfg user.userId session.sessionId ts
+  base <- buildEnrichedClaims cfg user.userId session.sessionId ts
+  -- Union rather than replace: the host's 'ClaimsEnricher' scopes and the OAuth-granted scopes
+  -- are both things this principal legitimately holds on this token.
+  let claims = base {scopes = base.scopes <> opts.extraScopes}
+  access <- signAccessToken claims
   pure
     ( session.sessionId,
-      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
+      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL},
+      claims
     )

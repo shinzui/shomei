@@ -63,9 +63,9 @@ This section must always reflect the actual current state of the work.
 - [x] M2: `GET /oauth/authorize` handler: parameter validation, PKCE checks, authenticated path issues code redirect, unauthenticated path follows the login-redirect contract.
 - [x] M2: In-process tests: happy redirect, invalid client/redirect (no redirect leak), error redirects with `state`, login-redirect round trip.
 - [x] M2 (beyond plan): `DeleteExpiredAuthorizationCodes` wired into the plan-34 sweeper (`authorization_codes` in `SweepReport`), reusing the ceremony grace window.
-- [ ] M3: `grant_type=authorization_code` in the token dispatcher: code consumption (single-use), PKCE S256 verification, session + refresh issuance, `oauth_client_id` session binding.
-- [ ] M3: ID-token issuance (`SignIdToken` on the `TokenSigner` effect + jwt interpreter + in-memory fake); `nonce`/`auth_time` plumbed from authorize to token.
-- [ ] M3: `grant_type=refresh_token` mapped onto the existing rotation/reuse-detection workflow with client binding.
+- [x] M3: `grant_type=authorization_code` in the token dispatcher: code consumption (single-use), PKCE S256 verification, session + refresh issuance, `oauth_client_id` session binding.
+- [x] M3: ID-token issuance (`SignIdToken` on the `TokenSigner` effect + jwt interpreter + in-memory fake); `nonce`/`auth_time` plumbed from authorize to token.
+- [x] M3: `grant_type=refresh_token` mapped onto the existing rotation/reuse-detection workflow with client binding.
 - [ ] M4: `GET /oauth/userinfo` (bearer).
 - [ ] M4: `POST /oauth/introspect` (client-authenticated, RFC 7662 response, session-aware).
 - [ ] M4: `POST /oauth/revoke` (RFC 7009; refresh → family+session revocation; access → session revocation with documented caveat).
@@ -130,6 +130,43 @@ made to block on a shared `MVar` and grown to eight. What actually guarantees th
 the consume is ONE statement (`UPDATE … WHERE consumed_at IS NULL … RETURNING`); the test is a
 regression guard against someone splitting it, not a proof. The assertion that exactly one row ends
 up with `consumed_at IS NOT NULL` is the part that would catch a two-statement rewrite deterministically.
+
+**2026-07-10 (M3) — `issueSession`'s signature was kept; the OAuth knobs went on a new
+`issueSessionWith`.** The plan suggested "add a `Maybe Text` oauth-client parameter, existing
+callers passing `Nothing`". A parameter would have churned all three call sites (login, MFA,
+passwordless) and every private interpreter chain. Instead `issueSession` delegates to
+`issueSessionWith cfg defaultSessionOptions`, which additionally returns the `AuthClaims` it signed
+— because the authorization-code grant must build its ID token from the *same* `buildEnrichedClaims`
+output as the access token (the MasterPlan's claims integration point), and returning them is how it
+gets that without re-reading the role store in the HTTP layer. The `SessionOptions` record also
+carries `extraScopes`, so the OAuth-granted scopes land on the access token's claims through one
+path.
+
+**2026-07-10 (M3) — the code is consumed BEFORE the client/PKCE/redirect checks that can fail, on
+purpose.** `exchangeAuthorizationCode` calls `consumeAuthorizationCode` immediately after
+authenticating the client, then checks the client binding, redirect_uri, and PKCE against the
+consumed row. So a wrong-PKCE or wrong-client attempt still burns the code: an attacker who steals a
+code from the redirect cannot grind verifiers against it. The alternative — validate, then consume —
+would let a thief retry indefinitely.
+
+**2026-07-10 (M3) — `refreshViaOAuth` checks the client binding before delegating, and a mismatch
+does NOT run reuse detection.** Reuse detection revokes the whole token family and the session. If a
+binding mismatch went through the normal `refresh` path, any client that merely *observed* another
+client's refresh token could revoke that user's session by presenting it — turning a theft defense
+into a DoS tool. So the binding is a gate in front of `Wf.refresh`, and a session with a NULL
+`oauth_client_id` (every password/passkey/impersonation/service session) is refusable at
+`/oauth/token` outright while the bespoke `/v1/auth/refresh` keeps rotating it.
+
+**2026-07-10 (M3) — an EP-4 servant test asserted `grant_type=authorization_code` was
+`unsupported_grant_type`; M3 makes it supported.** The assertion in
+`scenarioOAuthTokenEndpoint` had to be updated, not just extended. **Any plan that turns a
+previously-unsupported grant into a real arm (EP-6's token-exchange) will hit the same stale
+assertion.** Left `password` there as the permanently-unsupported example.
+
+**2026-07-10 (M3) — the round-trip budget guards did NOT trip, because the OAuth exchange is not
+the login/refresh path they pin.** `testLoginRoundTripBudget`/`testRefreshRoundTripBudget` count the
+bespoke flows; `exchangeAuthorizationCode` is a distinct path (consume + issueSessionWith), so it
+does not touch those constants. EP-6 and EP-9, which add work to the *shared* mint, still will.
 
 **2026-07-10 (M2) — the session cookie is `Path=/`, so `/oauth/authorize` already inherits the
 cookie transport.** EP-3's "a route's path is written down in four places" check was run for this
@@ -315,6 +352,28 @@ Record every decision made while working on the plan.
   checked; its `secret_hash` is a SQL NULL.
   Rationale: A credential that exists but is never verified is worse than none, because an
   operator will store and protect it under the belief that it does something.
+  Date: 2026-07-10
+
+- Decision: `issueSession`'s public signature is unchanged; a new `issueSessionWith` /
+  `SessionOptions` carries the OAuth client binding and extra scopes, and returns the signed
+  `AuthClaims`.
+  Rationale: The plan proposed an added parameter with existing callers passing `Nothing`, but
+  that churns three call sites and every interpreter chain. Delegation keeps one issuance path.
+  Returning the claims is what lets the authorization-code grant build its ID token from the same
+  `buildEnrichedClaims` output as the access token, per the MasterPlan claims integration point,
+  instead of re-reading stores in the HTTP layer.
+  Date: 2026-07-10
+
+- Decision: The authorization code is consumed before the redirect_uri / client / PKCE checks that
+  can fail.
+  Rationale: A stolen code must be single-use even against an attacker who does not know the
+  verifier: consuming first means a failed PKCE attempt still burns the code, so it cannot be
+  ground against.
+  Date: 2026-07-10
+
+- Decision: No ID token is minted on the `refresh_token` grant.
+  Rationale: An ID token's `nonce` and `auth_time` belong to the authorize request, and Shōmei
+  persists neither past the code. A client needing a fresh ID token re-runs the authorize flow.
   Date: 2026-07-10
 
 - Decision: `authorize`'s failures are a dedicated `AuthorizeError` in the workflow, not new

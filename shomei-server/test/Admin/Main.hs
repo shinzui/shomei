@@ -50,6 +50,7 @@ import Shomei.Crypto (Argon2Params (..), sha256Hex)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginId (loginIdFromEmail)
 import Shomei.Domain.OAuthClient (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
 import Shomei.Domain.ServiceAccount (ServiceAccount (..))
@@ -722,6 +723,7 @@ runGrant pool grant =
 runTokenSignerFakeAdmin :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFakeAdmin = interpret_ \case
   SignAccessToken _ -> pure (AccessToken "admin-test-token")
+  SignIdToken _ -> pure (IdToken "admin-test-id-token")
 
 grantWith :: Pool -> Text -> Text -> Maybe (Set Scope) -> IO (Either AuthError GrantedToken)
 grantWith pool cid secret scopes = do

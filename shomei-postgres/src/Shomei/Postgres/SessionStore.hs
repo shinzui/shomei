@@ -14,7 +14,7 @@ module Shomei.Postgres.SessionStore
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip7)
+import Contravariant.Extras (contrazip2, contrazip8)
 import Data.UUID (UUID)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -31,7 +31,7 @@ import Shomei.Postgres.Codec (sessionStatusFromText, sessionStatusToText, tshow)
 import Shomei.Postgres.Database (Database, runSession)
 import Shomei.Prelude
 
-type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID)
+type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID, Maybe Text)
 
 runSessionStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -48,7 +48,8 @@ runSessionStorePostgres = interpret_ \case
             ns.createdAt,
             ns.expiresAt,
             Nothing,
-            userIdToUUID <$> ns.actor
+            userIdToUUID <$> ns.actor,
+            ns.oauthClientId
           )
     res <- runSession (Session.statement row insertSessionStmt)
     either dbFail (const (pure session)) res
@@ -79,11 +80,12 @@ mkSession sid ns =
       createdAt = ns.createdAt,
       expiresAt = ns.expiresAt,
       revokedAt = Nothing,
-      actor = ns.actor
+      actor = ns.actor,
+      oauthClientId = ns.oauthClientId
     }
 
 rebuildSession :: SessionRow -> Either Text Session
-rebuildSession (sid, uid, st, c, e, r, act) = do
+rebuildSession (sid, uid, st, c, e, r, act, oauthClientId) = do
   status <- sessionStatusFromText st
   pure
     Session
@@ -93,12 +95,13 @@ rebuildSession (sid, uid, st, c, e, r, act) = do
         createdAt = c,
         expiresAt = e,
         revokedAt = r,
-        actor = userIdFromUUID <$> act
+        actor = userIdFromUUID <$> act,
+        oauthClientId
       }
 
 sessionRowDecoder :: D.Row SessionRow
 sessionRowDecoder =
-  (,,,,,,)
+  (,,,,,,,)
     <$> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.text)
@@ -106,16 +109,17 @@ sessionRowDecoder =
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nullable D.uuid)
+    <*> D.column (D.nullable D.text)
 
 insertSessionStmt :: Statement SessionRow ()
 insertSessionStmt =
   preparable
     """
     INSERT INTO shomei.shomei_sessions
-      (session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+      (session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     """
-    ( contrazip7
+    ( contrazip8
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.text))
@@ -123,6 +127,7 @@ insertSessionStmt =
         (E.param (E.nonNullable E.timestamptz))
         (E.param (E.nullable E.timestamptz))
         (E.param (E.nullable E.uuid))
+        (E.param (E.nullable E.text))
     )
     D.noResult
 
@@ -132,7 +137,7 @@ listSessionsForUserStmt :: Statement UUID [SessionRow]
 listSessionsForUserStmt =
   preparable
     """
-    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id
     FROM shomei.shomei_sessions
     WHERE user_id = $1
     ORDER BY created_at DESC, session_id DESC
@@ -144,7 +149,7 @@ findSessionByIdStmt :: Statement UUID (Maybe SessionRow)
 findSessionByIdStmt =
   preparable
     """
-    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id
     FROM shomei.shomei_sessions
     WHERE session_id = $1
     """

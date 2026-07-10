@@ -188,18 +188,29 @@ data TokenResponse = TokenResponse
     -- | lifetime in seconds
     expiresIn :: !Int,
     -- | space-delimited granted scopes
-    scope :: !Text
+    scope :: !Text,
+    -- | present for the @authorization_code@ and @refresh_token@ grants (EP-5), absent for
+    --     @client_credentials@ — a machine credential dies at its TTL and asks again.
+    refreshToken :: !(Maybe Text),
+    -- | present exactly when the granted scopes include @openid@ (EP-5)
+    idToken :: !(Maybe Text)
   }
   deriving stock (Generic, Eq, Show)
 
+-- | Absent optional members are __omitted__, never @null@: RFC 6749 §5.1 says a parameter that
+-- does not apply is not sent, and a client that sees @"refresh_token": null@ may well store the
+-- string @"null"@.
 instance Aeson.ToJSON TokenResponse where
   toJSON r =
     Aeson.object
-      [ "access_token" Aeson..= r.accessToken,
-        "token_type" Aeson..= r.tokenType,
-        "expires_in" Aeson..= r.expiresIn,
-        "scope" Aeson..= r.scope
-      ]
+      ( [ "access_token" Aeson..= r.accessToken,
+          "token_type" Aeson..= r.tokenType,
+          "expires_in" Aeson..= r.expiresIn,
+          "scope" Aeson..= r.scope
+        ]
+          <> foldMap (\t -> ["refresh_token" Aeson..= t]) r.refreshToken
+          <> foldMap (\t -> ["id_token" Aeson..= t]) r.idToken
+      )
 
 instance Aeson.FromJSON TokenResponse where
   parseJSON = Aeson.withObject "TokenResponse" \o ->
@@ -208,3 +219,5 @@ instance Aeson.FromJSON TokenResponse where
       <*> o Aeson..: "token_type"
       <*> o Aeson..: "expires_in"
       <*> o Aeson..: "scope"
+      <*> o Aeson..:? "refresh_token"
+      <*> o Aeson..:? "id_token"

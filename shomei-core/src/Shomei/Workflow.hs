@@ -155,7 +155,8 @@ signup cfg cmd = runErrorNoCallStack do
         { userId = user.userId,
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
-          actor = Nothing
+          actor = Nothing,
+          oauthClientId = Nothing
         }
       NewSessionToken
         { tokenHash = tokHash,

@@ -115,7 +115,8 @@ sessionRow session =
     session.createdAt,
     session.expiresAt,
     Nothing,
-    userIdToUUID <$> session.actor
+    userIdToUUID <$> session.actor,
+    session.oauthClientId
   )
 
 -- | The column tuple 'insertRefreshTokenStmt' encodes. A freshly inserted token is always

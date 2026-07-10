@@ -47,6 +47,7 @@ library
     Shomei.Domain.Email
     Shomei.Domain.Event
     Shomei.Domain.EventCodec
+    Shomei.Domain.IdTokenClaims
     Shomei.Domain.LoginAttempt
     Shomei.Domain.LoginId
     Shomei.Domain.Notification
@@ -100,6 +101,7 @@ library
     Shomei.Workflow.Impersonation
     Shomei.Workflow.Mfa
     Shomei.Workflow.OAuthAuthorize
+    Shomei.Workflow.OAuthTokenGrant
     Shomei.Workflow.Passkey
     Shomei.Workflow.Roles
     Shomei.Workflow.ServiceToken

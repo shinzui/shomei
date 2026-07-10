@@ -60,6 +60,7 @@ test-suite shomei-jwt-test
   hs-source-dirs: test
   main-is:        Main.hs
   other-modules:
+    Shomei.Jwt.IdTokenSpec
     Shomei.Jwt.InterpreterSpec
     Shomei.Jwt.JwksSpec
     Shomei.Jwt.KeyProtectionSpec

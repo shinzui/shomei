@@ -84,7 +84,8 @@ issueServiceToken cfg cmd = runErrorNoCallStack do
         { userId = serviceUser ^. #userId,
           createdAt = ts,
           expiresAt = expires,
-          actor = cmd ^. #actorId
+          actor = cmd ^. #actorId,
+          oauthClientId = Nothing
         }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)

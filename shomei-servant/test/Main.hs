@@ -10,7 +10,10 @@
 -- rotation, the public JWKS document, and the @RequireRole "admin"@ guard (403/200).
 module Main (main) where
 
+import Crypto.JOSE.Compact (decodeCompact)
+import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.JWK (JWK, JWKSet)
+import Crypto.JWT (ClaimsSet, JWTError, SignedJWT, defaultJWTValidationSettings, verifyClaims)
 import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
@@ -125,6 +128,7 @@ import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Workflow qualified as Wf
+import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -530,14 +534,12 @@ scenarioOAuthToken clientId port = do
   noGrant <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) []
   assertOAuthError "missing grant_type" 400 "invalid_request" noGrant
 
-  -- (10) ...and an unimplemented one is unsupported_grant_type. Plans 42/43 turn these two
-  -- into supported arms of the same dispatcher.
+  -- (10) ...and a grant this server does not implement is unsupported_grant_type. (EP-5 made
+  -- authorization_code and refresh_token supported arms; `password` is the OAuth Security BCP's
+  -- deprecated grant, which Shōmei will never add.)
   password <-
     postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "password")]
   assertOAuthError "grant_type=password" 400 "unsupported_grant_type" password
-  authCode <-
-    postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "authorization_code")]
-  assertOAuthError "grant_type=authorization_code" 400 "unsupported_grant_type" authCode
 
 -- | A human's login token carries no scopes, so it must NOT satisfy the scope-guarded route that
 -- an OAuth client-credentials token does. Guards against the grant leaking scopes onto sessions.
@@ -1109,6 +1111,12 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
         testWithApplication (pure (app withLogin)) (scenarioAuthorizeLoginRedirect confId)
         (_, confId', _, noLogin) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app noLogin)) (scenarioAuthorizeNoLoginUrl confId'),
+      testCase "POST /oauth/token: authorization_code + PKCE + ID token; replay, wrong verifier, and a stolen code are one invalid_grant" $ do
+        (_, confId, pubId, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioOAuthCodeExchange jwk confId pubId),
+      testCase "POST /oauth/token: refresh_token is bound to the client that minted the session" $ do
+        (_, confId, _, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioOAuthRefreshRejectsUnboundSession confId),
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
@@ -1443,6 +1451,218 @@ scenarioAuthorizeNoLoginUrl confId port = do
       []
   assertOAuthError "unauthenticated with no loginUrl" 401 "login_required" r
   headerValue "Location" (headersOf r) @?= Nothing
+
+-- | EP-5 M3: the whole authorization-code exchange, over the real Servant tree with the real
+-- ES256 signer.
+--
+-- Drives the flow exactly as a client does — authorize, parse the code out of the @Location@,
+-- exchange it with the PKCE verifier — and then attacks it: replay, wrong verifier, missing
+-- verifier, a different client, a mismatched @redirect_uri@. Every one of those must be an
+-- indistinguishable @invalid_grant@, and none may mint a token.
+scenarioOAuthCodeExchange :: JWK -> Text -> Text -> Int -> IO ()
+scenarioOAuthCodeExchange jwk confId pubId port = do
+  mgr <- newManager defaultManagerSettings
+  token <- signupToken mgr port "exchange-user"
+  let verifier = "a-high-entropy-code-verifier-of-sufficient-length-1234567890" :: Text
+      challenge = pkceChallengeFor verifier
+      basic = Just (confId, confidentialClientSecret)
+
+      getCode client = do
+        r <-
+          getNoRedirect
+            mgr
+            port
+            ( authorizeUrl
+                [ ("client_id", client),
+                  ("response_type", "code"),
+                  ("redirect_uri", authorizeRedirectUri),
+                  ("scope", "openid profile"),
+                  ("nonce", "n-0S6"),
+                  ("code_challenge", challenge),
+                  ("code_challenge_method", "S256")
+                ]
+            )
+            [("Authorization", "Bearer " <> Text.encodeUtf8 token)]
+        (_, params) <- locationOf "authorize" r
+        maybe (assertFailure "no code in the redirect") pure (lookup "code" params)
+
+      exchange extra = postForm mgr port "/oauth/token" basic ([("grant_type", "authorization_code")] <> extra)
+
+      exchangeOf code =
+        exchange
+          [ ("code", Text.encodeUtf8 code),
+            ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+            ("code_verifier", Text.encodeUtf8 verifier)
+          ]
+
+  -- (1) The happy path: three tokens, and the ID token really verifies against the served key.
+  code <- getCode confId
+  ok@(okStatus, okHdrs, _) <- exchangeOf code
+  okStatus @?= 200
+  headerValue "Cache-Control" okHdrs @?= Just "no-store"
+  body <- must "token body" (bodyOf ok)
+  accessToken <- must "access_token" (dig ["access_token"] body >>= asText)
+  refreshToken <- must "refresh_token" (dig ["refresh_token"] body >>= asText)
+  idToken <- must "id_token" (dig ["id_token"] body >>= asText)
+  (dig ["token_type"] body >>= asText) @?= Just "Bearer"
+  (dig ["scope"] body >>= asText) @?= Just "openid profile"
+
+  -- The ID token is a real JWS over the same key, addressed to the client, echoing the nonce.
+  idClaims <- verifyIdToken jwk idToken
+  (KM.lookup "aud" idClaims) @?= Just (String confId)
+  (KM.lookup "nonce" idClaims) @?= Just (String "n-0S6")
+  (KM.lookup "iss" idClaims) @?= Just (String "https://shomei.test")
+  assertBool "auth_time is a number of seconds, not a timestamp string" $
+    case KM.lookup "auth_time" idClaims of
+      Just (Number _) -> True
+      _ -> False
+  -- Its `sub` is the very user the access token names.
+  accessSub <- subjectOf mgr port accessToken
+  KM.lookup "sub" idClaims @?= Just (String accessSub)
+  -- An ID token is not a credential: presenting it as a bearer token is refused.
+  (meWithId, _) <- getJSON mgr port "/v1/auth/me" [("Authorization", "Bearer " <> Text.encodeUtf8 idToken)]
+  meWithId @?= 401
+
+  -- (2) Replay: the code is single-use, and the replay is indistinguishable from an unknown code.
+  replay <- exchangeOf code
+  assertOAuthError "replaying a code" 400 "invalid_grant" replay
+  unknown <- exchangeOf "not-a-real-code"
+  assertOAuthError "an unknown code" 400 "invalid_grant" unknown
+  assertEqual "a replay and an unknown code are indistinguishable" (bodyOf replay) (bodyOf unknown)
+
+  -- (3) A wrong or absent PKCE verifier. Note each burns its own fresh code.
+  wrongVerifier <- do
+    c <- getCode confId
+    exchange
+      [ ("code", Text.encodeUtf8 c),
+        ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+        ("code_verifier", "the-wrong-verifier-entirely-0000000000000000000000")
+      ]
+  assertOAuthError "a wrong code_verifier" 400 "invalid_grant" wrongVerifier
+
+  absentVerifier <- do
+    c <- getCode confId
+    exchange [("code", Text.encodeUtf8 c), ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri)]
+  assertOAuthError "an absent code_verifier when a challenge was stored" 400 "invalid_grant" absentVerifier
+
+  -- (4) A mismatched redirect_uri at the exchange.
+  mismatchedUri <- do
+    c <- getCode confId
+    exchange
+      [ ("code", Text.encodeUtf8 c),
+        ("redirect_uri", "https://app.example.com/somewhere-else"),
+        ("code_verifier", Text.encodeUtf8 verifier)
+      ]
+  assertOAuthError "a mismatched redirect_uri" 400 "invalid_grant" mismatchedUri
+
+  -- (5) A stolen code exchanged by a DIFFERENT client. The public client authenticates with a bare
+  -- client_id, which is exactly what a code thief would present.
+  stolen <- do
+    c <- getCode confId
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ ("grant_type", "authorization_code"),
+        ("client_id", Text.encodeUtf8 pubId),
+        ("code", Text.encodeUtf8 c),
+        ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+        ("code_verifier", Text.encodeUtf8 verifier)
+      ]
+  assertOAuthError "a code stolen by another client" 400 "invalid_grant" stolen
+
+  -- (6) A wrong client secret is invalid_client, not invalid_grant: the client never authenticated.
+  badSecret <- do
+    c <- getCode confId
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (confId, "not-the-secret"))
+      [ ("grant_type", "authorization_code"),
+        ("code", Text.encodeUtf8 c),
+        ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+        ("code_verifier", Text.encodeUtf8 verifier)
+      ]
+  assertOAuthError "a wrong client secret" 401 "invalid_client" badSecret
+
+  -- (7) The refresh grant rotates, and is bound to the client that minted the session.
+  let refreshWith who params = postForm mgr port "/oauth/token" who ([("grant_type", "refresh_token")] <> params)
+
+  -- A different client cannot rotate this token, and the refusal does NOT revoke the family.
+  wrongClient <- refreshWith Nothing [("client_id", Text.encodeUtf8 pubId), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  assertOAuthError "another client refreshing" 400 "invalid_grant" wrongClient
+
+  rotated <- refreshWith basic [("refresh_token", Text.encodeUtf8 refreshToken)]
+  let (rotStatus, _, _) = rotated
+  rotStatus @?= 200
+  rotBody <- must "rotate body" (bodyOf rotated)
+  newRefresh <- must "rotated refresh_token" (dig ["refresh_token"] rotBody >>= asText)
+  assertBool "the refresh token really rotated" (newRefresh /= refreshToken)
+  assertBool "the rotation mints a new access token" (isJust (dig ["access_token"] rotBody >>= asText))
+  -- A refresh does not mint an ID token: its nonce and auth_time belong to the authorize request.
+  dig ["id_token"] rotBody @?= Nothing
+
+  -- Replaying the now-used refresh token is reuse: the family and the session die.
+  reuse <- refreshWith basic [("refresh_token", Text.encodeUtf8 refreshToken)]
+  assertOAuthError "replaying a rotated refresh token" 400 "invalid_grant" reuse
+  dead <- refreshWith basic [("refresh_token", Text.encodeUtf8 newRefresh)]
+  assertOAuthError "the whole family is revoked after reuse" 400 "invalid_grant" dead
+
+-- | A session minted by password login carries no @oauth_client_id@, so it cannot be refreshed at
+-- the OAuth token endpoint at all — only at the endpoint that created it.
+scenarioOAuthRefreshRejectsUnboundSession :: Text -> Int -> IO ()
+scenarioOAuthRefreshRejectsUnboundSession confId port = do
+  mgr <- newManager defaultManagerSettings
+  (status, body) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/signup"
+      (object ["loginId" .= ("unbound-user" :: Text), "password" .= ("correct horse battery staple" :: Text), "displayName" .= ("" :: Text)])
+  status @?= 201
+  resp <- must "signup body" body
+  refreshToken <- must "signup refreshToken" (dig ["token", "refreshToken"] resp >>= asText)
+
+  r <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (confId, confidentialClientSecret))
+      [("grant_type", "refresh_token"), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  assertOAuthError "an OAuth client refreshing a password-login session" 400 "invalid_grant" r
+
+  -- And the bespoke endpoint still rotates it, unchanged.
+  (bespoke, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= refreshToken])
+  bespoke @?= 200
+
+-- | The @sub@ claim of an access token, read back through the server's own @\/v1\/auth\/me@.
+subjectOf :: Manager -> Int -> Text -> IO Text
+subjectOf mgr port accessToken = do
+  (status, body) <- getJSON mgr port "/v1/auth/me" [("Authorization", "Bearer " <> Text.encodeUtf8 accessToken)]
+  status @?= 200
+  resp <- must "me body" body
+  must "me userId" (dig ["userId"] resp >>= asText)
+
+-- | Verify an ID token's signature against the test signing key and return its claims.
+--
+-- Verifying rather than merely decoding is the point: an ID token a relying party cannot check is
+-- worthless, and only signing it with the same active key and @kid@ as the access token makes it
+-- checkable against the JWKS document this deployment already publishes.
+verifyIdToken :: JWK -> Text -> IO (KM.KeyMap Value)
+verifyIdToken jwk idToken = do
+  result <- runJOSE @JWTError do
+    jwt <- decodeCompact (LBS.fromStrict (Text.encodeUtf8 idToken))
+    -- `aud` is the client_id, so the audience predicate accepts anything: what is under test is
+    -- the signature and the claim contents, which the caller asserts on.
+    verifyClaims (defaultJWTValidationSettings (const True)) jwk (jwt :: SignedJWT)
+  case result of
+    Left e -> assertFailure ("the id_token failed signature verification: " <> show (e :: JWTError))
+    Right claims -> case toJSON (claims :: ClaimsSet) of
+      Object o -> pure o
+      other -> assertFailure ("id_token claims were not an object: " <> show other)
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
 -- returned user has that login id and a @null@ email, and the same identifier logs in.

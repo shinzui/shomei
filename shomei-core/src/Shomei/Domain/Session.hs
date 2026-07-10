@@ -23,7 +23,12 @@ data Session = Session
     revokedAt :: !(Maybe UTCTime),
     -- | for a delegated (impersonation) session, the operator acting on behalf
     -- of 'userId'; 'Nothing' for every ordinary login session.
-    actor :: !(Maybe UserId)
+    actor :: !(Maybe UserId),
+    -- | the OAuth2 @client_id@ that minted this session through the authorization-code grant
+    --     (EP-5); 'Nothing' for every other flow, including every session that predates the
+    --     column. It exists to bind refresh: a token issued through client A must not be
+    --     rotatable by client B at @\/oauth\/token@. The bespoke @\/v1\/auth\/refresh@ ignores it.
+    oauthClientId :: !(Maybe Text)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -33,7 +38,9 @@ data NewSession = NewSession
     createdAt :: !UTCTime,
     expiresAt :: !UTCTime,
     -- | set to @Just operator@ when minting a delegated session; 'Nothing' otherwise.
-    actor :: !(Maybe UserId)
+    actor :: !(Maybe UserId),
+    -- | set to @Just client_id@ by the authorization-code grant; 'Nothing' otherwise.
+    oauthClientId :: !(Maybe Text)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

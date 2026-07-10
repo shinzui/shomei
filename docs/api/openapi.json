@@ -593,6 +593,14 @@
                         "description": "Token lifetime in seconds.",
                         "type": "integer"
                     },
+                    "id_token": {
+                        "description": "The signed OIDC ID token. Present exactly when the granted scopes include `openid`. Its `aud` is the client_id, not the API audience: it is a statement to the client, never a bearer credential.",
+                        "type": "string"
+                    },
+                    "refresh_token": {
+                        "description": "The rotating opaque refresh token. Present for the authorization_code and refresh_token grants; omitted for client_credentials, whose tokens are deliberately refresh-less.",
+                        "type": "string"
+                    },
                     "scope": {
                         "description": "The space-delimited scopes actually granted.",
                         "type": "string"
@@ -974,7 +982,8 @@
                                             "enum": [
                                                 "invalid_request",
                                                 "unsupported_grant_type",
-                                                "invalid_scope"
+                                                "invalid_scope",
+                                                "invalid_grant"
                                             ],
                                             "type": "string"
                                         }
@@ -982,7 +991,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_request, unsupported_grant_type, invalid_scope."
+                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_request, unsupported_grant_type, invalid_scope, invalid_grant."
                     },
                     "401": {
                         "content": {

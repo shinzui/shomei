@@ -44,6 +44,7 @@ import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
+import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
@@ -341,6 +342,7 @@ runClockFixed t = interpret_ \case
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFake = interpret_ \case
   SignAccessToken _ -> pure (AccessToken "test-access-token")
+  SignIdToken _ -> pure (IdToken "test-id-token")
 
 runNotifierRef :: (IOE :> es) => IORef [Notification] -> Eff (Notifier : es) a -> Eff es a
 runNotifierRef ref = interpret_ \case
@@ -682,9 +684,9 @@ testListSessionsForUser = testCase "listSessionsForUser returns every status, ne
     alice <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     bob <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
     t <- now
-    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
-    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing})
-    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
     revokeSession s1.sessionId t
     aliceSessions <- listSessionsForUser alice.userId
     pure (s1, s2, aliceSessions)
@@ -721,7 +723,7 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
     revokeSession s.sessionId t
     findSessionById s.sessionId
   found <- expectApp result
@@ -739,10 +741,11 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
             { userId = subject.userId,
               createdAt = t,
               expiresAt = addUTCTime 3600 t,
-              actor = Just operator.userId
+              actor = Just operator.userId,
+              oauthClientId = Nothing
             }
         )
-    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
     foundDelegated <- findSessionById delegated.sessionId
     foundNormal <- findSessionById normal.sessionId
     pure (operator.userId, foundDelegated, foundNormal)
@@ -759,7 +762,7 @@ testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is 
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
     h <- hashRefreshToken (RefreshToken "token-1")
     persisted <-
       createRefreshToken

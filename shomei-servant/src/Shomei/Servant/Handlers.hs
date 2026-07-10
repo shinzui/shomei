@@ -20,6 +20,7 @@ import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
+import Data.Time (NominalDiffTime)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
@@ -39,6 +40,7 @@ import Shomei.Domain.Command
   )
 import Shomei.Domain.Email (Email, mkEmail)
 import Shomei.Domain.Event qualified as Event
+import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginAttempt (ClientIp (..))
 import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.OAuthClient (OAuthClientStatus (..), isRegisteredRedirectUri)
@@ -149,6 +151,7 @@ import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
 import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
 import Shomei.Workflow.OAuthAuthorize qualified as OAuthAuthorize
+import Shomei.Workflow.OAuthTokenGrant qualified as OAuthTokenGrant
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.Roles qualified as Roles
 import Shomei.Workflow.ServiceToken qualified as ServiceToken
@@ -450,6 +453,8 @@ oauthTokenH env mAuthHeader form =
   case OAuth.lookupParam "grant_type" form of
     Nothing -> throwError (OAuth.invalidRequest "grant_type is required")
     Just "client_credentials" -> clientCredentialsGrant env mAuthHeader form
+    Just "authorization_code" -> authorizationCodeGrant env mAuthHeader form
+    Just "refresh_token" -> refreshTokenGrant env mAuthHeader form
     Just other -> throwError (OAuth.unsupportedGrantType other)
 
 -- | RFC 6749 §4.4. Authenticate the client, read the optional @scope@, mint the token.
@@ -476,9 +481,110 @@ clientCredentialsGrant env mAuthHeader form = do
           { accessToken = token,
             tokenType = "Bearer",
             expiresIn = round (granted ^. #expiresIn),
-            scope = Text.unwords [s | Scope s <- Set.toList (granted ^. #grantedScopes)]
+            scope = Text.unwords [s | Scope s <- Set.toList (granted ^. #grantedScopes)],
+            -- Deliberately refresh-less: the credential dies at its TTL and the client asks again.
+            refreshToken = Nothing,
+            idToken = Nothing
           }
   pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | RFC 6749 §4.1.3 with PKCE (RFC 7636). Redeem the code, mint access + refresh + (for @openid@)
+-- an ID token.
+authorizationCodeGrant ::
+  Env ->
+  Maybe Text ->
+  Form ->
+  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+authorizationCodeGrant env mAuthHeader form = do
+  (clientId, mSecret) <- oauthClientCredentials mAuthHeader form
+  code <- requireParam "code" form
+  redirectUri <- requireParam "redirect_uri" form
+  let grant =
+        OAuthTokenGrant.ExchangeAuthorizationCode
+          { clientId,
+            clientSecret = mSecret,
+            code,
+            redirectUri,
+            codeVerifier = OAuth.lookupParam "code_verifier" form
+          }
+  outcome <- runPort env (OAuthTokenGrant.exchangeAuthorizationCode env.config grant)
+  exchanged <- either (throwError . grantError) pure outcome
+  let AccessToken access = exchanged ^. #tokens . #accessToken
+      RefreshToken refresh = exchanged ^. #tokens . #refreshToken
+      body =
+        OAuth.TokenResponse
+          { accessToken = access,
+            tokenType = "Bearer",
+            expiresIn = round env.config.accessTokenTTL,
+            scope = Text.unwords [sc | Scope sc <- Set.toList (exchanged ^. #grantedScopes)],
+            refreshToken = Just refresh,
+            idToken = (\(IdToken t) -> t) <$> exchanged ^. #idToken
+          }
+  pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | RFC 6749 §6, bound to the client that minted the session. Rotation and reuse detection are the
+-- existing workflow's; this arm adds only the client check.
+refreshTokenGrant ::
+  Env ->
+  Maybe Text ->
+  Form ->
+  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+refreshTokenGrant env mAuthHeader form = do
+  (clientId, mSecret) <- oauthClientCredentials mAuthHeader form
+  presented <- requireParam "refresh_token" form
+  let grant =
+        OAuthTokenGrant.RefreshViaOAuth
+          { clientId,
+            clientSecret = mSecret,
+            refreshToken = RefreshToken presented
+          }
+  outcome <- runPort env (OAuthTokenGrant.refreshViaOAuth env.config grant)
+  pair <- either (throwError . grantError) pure outcome
+  -- Read through lens labels: 'TokenPair' shares @accessToken@/@refreshToken@/@expiresIn@ with
+  -- 'OAuth.TokenResponse' and 'ExchangedTokens', so dot access is ambiguous here.
+  let AccessToken access = pair ^. #accessToken
+      RefreshToken rotated = pair ^. #refreshToken
+      body =
+        OAuth.TokenResponse
+          { accessToken = access,
+            tokenType = "Bearer",
+            expiresIn = round (pair ^. #expiresIn :: NominalDiffTime),
+            -- The rotated token carries the session's scopes, which the access token already
+            -- states; echoing the granted set would need a second claims read for no gain.
+            scope = "",
+            refreshToken = Just rotated,
+            -- No ID token on refresh: the nonce and auth_time an ID token must carry belong to the
+            -- authorize request, and Shōmei does not persist them past the code. A client that
+            -- needs a fresh ID token runs the authorize flow again.
+            idToken = Nothing
+          }
+  pure (addHeader "no-store" (addHeader "no-cache" body))
+
+-- | Client credentials for the EP-5 grants, which admit __public__ clients (no secret at all)
+-- alongside the @client_secret_basic@\/@client_secret_post@ methods 'OAuth.extractClientAuth'
+-- covers.
+--
+-- A public client identifies itself with a bare @client_id@ body parameter. That is not
+-- authentication and is not treated as such: what actually binds its authorize request to this
+-- exchange is PKCE, which the workflow requires of it.
+oauthClientCredentials :: Maybe Text -> Form -> Handler (Text, Maybe Text)
+oauthClientCredentials mAuthHeader form =
+  case OAuth.extractClientAuth mAuthHeader form of
+    Right auth -> pure (auth ^. #clientId, Just (auth ^. #clientSecret))
+    Left _ -> case (mAuthHeader, OAuth.lookupParam "client_id" form) of
+      -- No Authorization header and a bare client_id: a public client.
+      (Nothing, Just clientId) -> pure (clientId, Nothing)
+      _ -> throwError OAuth.invalidClient
+
+requireParam :: Text -> Form -> Handler Text
+requireParam k form =
+  maybe (throwError (OAuth.invalidRequest (k <> " is required"))) pure (OAuth.lookupParam k form)
+
+-- | Render an EP-5 grant failure as its RFC 6749 §5.2 object.
+grantError :: OAuthTokenGrant.TokenGrantError -> ServerError
+grantError e = case OAuthTokenGrant.grantErrorCode e of
+  "invalid_client" -> OAuth.invalidClient
+  code -> OAuth.oauthError status400 code (OAuthTokenGrant.grantErrorDescription e)
 
 -- | The OAuth-local error mapping. Deliberately not 'authErrorToServerError': that renders the
 -- problem-details envelope, which this endpoint must not emit.

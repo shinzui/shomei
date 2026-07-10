@@ -14,11 +14,12 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Crypto (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Config (ShomeiConfig (..))
+import Shomei.Crypto (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
+import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Token (AccessToken (..))
@@ -140,6 +141,7 @@ checkDefaultRoles env
 runTokenSignerFake :: Eff (TokenSigner : es) a -> Eff es a
 runTokenSignerFake = interpret_ \case
   SignAccessToken _ -> pure (AccessToken "admin-cli-token")
+  SignIdToken _ -> pure (IdToken "admin-cli-id-token")
 
 -- | The admin CLI does not perform the network breach check (mirroring its fake signer): it is
 -- an operator-trusted seeding path, so every password is treated as not-breached. The HTTP HIBP
