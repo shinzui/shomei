@@ -25,6 +25,8 @@ module Shomei.Id
     CeremonyId,
     ServiceAccountDbId,
     OAuthClientId,
+    TotpCredentialId,
+    RecoveryCodeId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
@@ -35,6 +37,8 @@ module Shomei.Id
     genCeremonyId,
     genServiceAccountDbId,
     genOAuthClientId,
+    genTotpCredentialId,
+    genRecoveryCodeId,
     idText,
     parseId,
     userIdToUUID,
@@ -57,6 +61,10 @@ module Shomei.Id
     serviceAccountDbIdFromUUID,
     oauthClientIdToUUID,
     oauthClientIdFromUUID,
+    totpCredentialIdToUUID,
+    totpCredentialIdFromUUID,
+    recoveryCodeIdToUUID,
+    recoveryCodeIdFromUUID,
   )
 where
 
@@ -99,6 +107,14 @@ type ServiceAccountDbId = KindID "svcacct"
 -- subject (it has a backing user row), while an OAuth client only ever acts /for/ one.
 type OAuthClientId = KindID "oauthclient"
 
+-- | A user's TOTP (RFC 6238) credential (EP-7). One per user (@UNIQUE (user_id)@); the id
+-- names the row, not a token subject.
+type TotpCredentialId = KindID "totp"
+
+-- | A single-use MFA recovery code (EP-7). The id names the row; the code itself is stored
+-- only as a hash.
+type RecoveryCodeId = KindID "recovery"
+
 genUserId :: (MonadIO m) => m UserId
 genUserId = KindID.genKindID @"user"
 
@@ -128,6 +144,12 @@ genServiceAccountDbId = KindID.genKindID @"svcacct"
 
 genOAuthClientId :: (MonadIO m) => m OAuthClientId
 genOAuthClientId = KindID.genKindID @"oauthclient"
+
+genTotpCredentialId :: (MonadIO m) => m TotpCredentialId
+genTotpCredentialId = KindID.genKindID @"totp"
+
+genRecoveryCodeId :: (MonadIO m) => m RecoveryCodeId
+genRecoveryCodeId = KindID.genKindID @"recovery"
 
 idText :: (ToPrefix p, ValidPrefix (PrefixSymbol p)) => KindID p -> Text
 idText = KindID.toText
@@ -196,6 +218,18 @@ oauthClientIdToUUID = getUUID
 
 oauthClientIdFromUUID :: UUID -> OAuthClientId
 oauthClientIdFromUUID = decorateKindID
+
+totpCredentialIdToUUID :: TotpCredentialId -> UUID
+totpCredentialIdToUUID = getUUID
+
+totpCredentialIdFromUUID :: UUID -> TotpCredentialId
+totpCredentialIdFromUUID = decorateKindID
+
+recoveryCodeIdToUUID :: RecoveryCodeId -> UUID
+recoveryCodeIdToUUID = getUUID
+
+recoveryCodeIdFromUUID :: UUID -> RecoveryCodeId
+recoveryCodeIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
   parseUrlPiece = parseId

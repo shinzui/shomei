@@ -38,6 +38,8 @@ module Shomei.Effect.InMemory
     runServiceAccountStore,
     runOAuthClientStore,
     runOAuthCodeStore,
+    runTotpCredentialStore,
+    runRecoveryCodeStore,
     runNotifier,
     runClaimsEnricherNull,
     runPasswordHasher,
@@ -124,6 +126,12 @@ import Shomei.Domain.ServiceAccount
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
+import Shomei.Domain.Totp
+  ( NewRecoveryCode (..),
+    NewTotpCredential (..),
+    RecoveryCode (..),
+    TotpCredential (..),
+  )
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher (..))
@@ -147,6 +155,7 @@ import Shomei.Effect.PasswordBreachChecker (BreachResult (..), PasswordBreachChe
 import Shomei.Effect.PasswordHasher (PasswordHasher (..))
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore (..))
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore (..))
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Effect.RoleStore (RoleDefinition (..), RoleStore (..))
 import Shomei.Effect.ServiceAccountStore (ServiceAccountStore (..))
@@ -155,6 +164,7 @@ import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
 import Shomei.Effect.TokenGen (TokenGen (..))
 import Shomei.Effect.TokenSigner (TokenSigner (..))
 import Shomei.Effect.TokenVerifier (TokenVerifier (..))
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore (..))
 import Shomei.Effect.UserStore (UserCursor (..), UserListQuery (..), UserStore (..), clampUserLimit)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore (..))
 import Shomei.Effect.WebAuthnCeremony
@@ -171,9 +181,11 @@ import Shomei.Id
     OAuthClientId,
     PasskeyId,
     PasswordResetTokenId,
+    RecoveryCodeId,
     RefreshTokenId,
     ServiceAccountDbId,
     SessionId,
+    TotpCredentialId,
     UserId,
     VerificationTokenId,
     genCredentialId,
@@ -224,6 +236,12 @@ data World = World
     -- | EP-5 single-use authorization codes, keyed by the code's SHA-256 hex digest exactly as
     --     the PostgreSQL primary key is. Consumed rows stay, so a replay finds a consumed row.
     oauthCodes :: !(Map Text AuthorizationCode),
+    -- | EP-7 TOTP credentials, keyed by user id (@UNIQUE (user_id)@). The in-memory interpreter
+    --     holds the /raw/ 'Shomei.Totp.TotpSecret'; only the PostgreSQL boundary encrypts it.
+    totpCredentials :: !(Map UserId TotpCredential),
+    -- | EP-7 recovery codes, keyed by id. Consumed rows stay (with @usedAt@ set), so a replayed
+    --     code finds a spent row exactly as the database does.
+    recoveryCodes :: !(Map RecoveryCodeId RecoveryCode),
     -- | newest-first
     publishedEvents :: ![Event.AuthEvent],
     -- | newest-first
@@ -263,6 +281,8 @@ emptyWorld t =
       serviceAccounts = Map.empty,
       oauthClients = Map.empty,
       oauthCodes = Map.empty,
+      totpCredentials = Map.empty,
+      recoveryCodes = Map.empty,
       publishedEvents = [],
       sentNotifications = [],
       clock = t,
@@ -931,6 +951,88 @@ runOAuthCodeStore ref = interpret_ \case
   DeleteExpiredAuthorizationCodes t ->
     liftIO (modifyWorld ref (#oauthCodes %~ Map.filter (\c -> acExpiresAt c > t)))
 
+-- | Field accessors for the EP-7 TOTP records ('TotpCredential' shares @userId@ / @createdAt@ /
+-- @secret@ with other domain records; the 'DuplicateRecordFields' caution applies).
+tcId :: TotpCredential -> TotpCredentialId
+tcId TotpCredential {totpCredentialId} = totpCredentialId
+
+tcUserId :: TotpCredential -> UserId
+tcUserId TotpCredential {userId} = userId
+
+-- | In-memory interpreter for the EP-7 TOTP credential store.
+--
+-- Keyed by user id, so 'UpsertTotpEnrollment' replaces any existing (unconfirmed) row exactly as
+-- the PostgreSQL @ON CONFLICT (user_id) DO UPDATE@ does. Raw secrets are held as-is; the
+-- encryption boundary is PostgreSQL-only (Decision Log).
+runTotpCredentialStore :: (IOE :> es) => IORef World -> Eff (TotpCredentialStore : es) a -> Eff es a
+runTotpCredentialStore ref = interpret_ \case
+  UpsertTotpEnrollment NewTotpCredential {totpCredentialId, userId, secret, createdAt} -> do
+    let tc =
+          TotpCredential
+            { totpCredentialId,
+              userId,
+              secret,
+              lastUsedCounter = Nothing,
+              confirmedAt = Nothing,
+              createdAt
+            }
+    liftIO (modifyWorld ref (#totpCredentials %~ Map.insert userId tc))
+    pure tc
+  FindTotpByUser uid ->
+    liftIO ((Map.lookup uid . (.totpCredentials)) <$> readIORef ref)
+  ConfirmTotp tcid t ->
+    liftIO (modifyWorld ref (#totpCredentials %~ Map.map (\c -> if tcId c == tcid then c & #confirmedAt .~ Just t else c)))
+  SetTotpLastUsedCounter tcid c ->
+    liftIO (modifyWorld ref (#totpCredentials %~ Map.map (\x -> if tcId x == tcid then x & #lastUsedCounter .~ Just c else x)))
+  DeleteTotpByUser uid ->
+    liftIO (modifyWorld ref (#totpCredentials %~ Map.delete uid))
+
+-- | Field accessors for the EP-7 recovery-code records.
+rcId :: RecoveryCode -> RecoveryCodeId
+rcId RecoveryCode {recoveryCodeId} = recoveryCodeId
+
+rcUserId :: RecoveryCode -> UserId
+rcUserId RecoveryCode {userId} = userId
+
+rcCodeHash :: RecoveryCode -> Text
+rcCodeHash RecoveryCode {codeHash} = codeHash
+
+rcUsedAt :: RecoveryCode -> Maybe UTCTime
+rcUsedAt RecoveryCode {usedAt} = usedAt
+
+-- | In-memory interpreter for the EP-7 recovery-code store.
+--
+-- 'ConsumeRecoveryCode' is a single 'casWorld' (atomic), the in-memory analogue of PostgreSQL's
+-- @UPDATE … WHERE used_at IS NULL RETURNING@: of two racing consumes of one code, exactly one
+-- sees it unused. 'ReplaceRecoveryCodes' drops the user's whole set and inserts the new one.
+runRecoveryCodeStore :: (IOE :> es) => IORef World -> Eff (RecoveryCodeStore : es) a -> Eff es a
+runRecoveryCodeStore ref = interpret_ \case
+  ReplaceRecoveryCodes uid newCodes -> liftIO do
+    let fresh =
+          [ ( nc.recoveryCodeId,
+              RecoveryCode
+                { recoveryCodeId = nc.recoveryCodeId,
+                  userId = uid,
+                  codeHash = nc.codeHash,
+                  createdAt = nc.createdAt,
+                  usedAt = Nothing
+                }
+            )
+          | nc <- newCodes
+          ]
+    modifyWorld
+      ref
+      (#recoveryCodes %~ (\m -> Map.union (Map.fromList fresh) (Map.filter (\rc -> rcUserId rc /= uid) m)))
+  ConsumeRecoveryCode uid h t ->
+    liftIO
+      ( casWorld ref \w ->
+          case listToMaybe [rc | rc <- Map.elems w.recoveryCodes, rcUserId rc == uid, rcCodeHash rc == h, isNothing (rcUsedAt rc)] of
+            Just rc -> Just (w & #recoveryCodes %~ Map.adjust (#usedAt .~ Just t) (rcId rc))
+            Nothing -> Nothing
+      )
+  CountUnusedRecoveryCodes uid ->
+    liftIO ((\w -> length [rc | rc <- Map.elems w.recoveryCodes, rcUserId rc == uid, isNothing (rcUsedAt rc)]) <$> readIORef ref)
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -1165,6 +1267,8 @@ type InMemoryPorts =
     ServiceAccountStore,
     OAuthClientStore,
     OAuthCodeStore,
+    TotpCredentialStore,
+    RecoveryCodeStore,
     Notifier,
     ClaimsEnricher,
     WebAuthnCeremony,
@@ -1195,6 +1299,8 @@ runInMemoryWith enrich ref =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherPure enrich
     . runNotifier ref
+    . runRecoveryCodeStore ref
+    . runTotpCredentialStore ref
     . runOAuthCodeStore ref
     . runOAuthClientStore ref
     . runServiceAccountStore ref

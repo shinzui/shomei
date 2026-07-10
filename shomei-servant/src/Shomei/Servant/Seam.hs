@@ -39,6 +39,7 @@ import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.ServiceAccountStore (ServiceAccountStore)
@@ -47,6 +48,7 @@ import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore)
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
@@ -72,6 +74,8 @@ type AppEffects =
      ServiceAccountStore,
      OAuthClientStore,
      OAuthCodeStore,
+     TotpCredentialStore,
+     RecoveryCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,

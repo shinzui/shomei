@@ -26,6 +26,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
 import Data.Set qualified as Set
+import Data.ByteString qualified as BS
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
 import Effectful (Eff, inject, runEff)
@@ -52,6 +53,7 @@ import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
@@ -285,6 +287,7 @@ buildEnv cfg settings = do
     )
   pool <- acquirePool settings.serverDbPoolSize (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs) settings.serverConnStr
   kek <- loadKekFromEnv
+  totpKey <- loadTotpKeyFromEnv cfg
   keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
@@ -308,8 +311,21 @@ buildEnv cfg settings = do
         envKek = kek,
         envHttpManager = mgr,
         envArgon2Params = settings.serverArgon2,
-        envHashingLimiter = limiter
+        envHashingLimiter = limiter,
+        envTotpKey = totpKey
       }
+
+-- | The AES-256-GCM key that encrypts stored TOTP secrets (EP-7).
+--
+-- NOTE (EP-7 M2): this is a placeholder returning a dummy all-zero key. TOTP is disabled by
+-- default and has no routes yet, so the store is unreachable. EP-7 M4 replaces this with real
+-- loading from @SHOMEI_TOTP_ENCRYPTION_KEY@ (base64 of 32 bytes) plus a loud boot failure when
+-- @totpConfig.totpEnabled@ is set and the key is absent or malformed.
+loadTotpKeyFromEnv :: ShomeiConfig -> IO TotpEncryptionKey
+loadTotpKeyFromEnv _cfg =
+  case totpEncryptionKeyFromBytes (BS.replicate 32 0) of
+    Right k -> pure k
+    Left err -> hPutStrLn stderr ("[shomei] " <> Text.unpack err) >> exitFailure
 
 -- | Milliseconds to a 'DiffTime', exactly (a 'DiffTime' counts picoseconds, so this loses
 -- nothing). Used for the pool's acquisition timeout, which config carries as an integer count

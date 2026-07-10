@@ -54,11 +54,13 @@ library
     Shomei.Postgres.PasswordResetTokenStore
     Shomei.Postgres.PendingCeremonyStore
     Shomei.Postgres.Pool
+    Shomei.Postgres.RecoveryCodeStore
     Shomei.Postgres.RefreshTokenStore
     Shomei.Postgres.RoleStore
     Shomei.Postgres.ServiceAccountStore
     Shomei.Postgres.SessionStore
     Shomei.Postgres.SigningKeyStore
+    Shomei.Postgres.TotpCredentialStore
     Shomei.Postgres.UserStore
     Shomei.Postgres.VerificationTokenStore
 
@@ -90,6 +92,7 @@ test-suite shomei-postgres-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     , base
+    , bytestring
     , containers
     , effectful
     , effectful-core

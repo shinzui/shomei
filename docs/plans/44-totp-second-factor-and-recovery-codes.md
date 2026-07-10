@@ -52,8 +52,8 @@ even if it requires splitting a partially completed task into two ("done" vs. "r
 This section must always reflect the actual current state of the work.
 
 - [x] M1 (2026-07-10): Pure TOTP module `Shomei.Totp` (HMAC-SHA1 over crypton, RFC 6238 vectors pass); Base32 via `ram`'s `Data.ByteArray.Encoding` (no `base32` dep); otpauth URI builder. `TotpSpec` green (14 cases), `cabal test shomei-core` = 225 passed.
-- [ ] M2: Migrations `shomei_totp_credentials` + `shomei_recovery_codes`; `TotpCredentialStore` + `RecoveryCodeStore` ports; in-memory + Postgres interpreters (AES-256-GCM at the Postgres boundary); `TotpConfig` sub-record.
-- [ ] M2: Postgres round-trip tests incl. encryption round-trip and atomic recovery-code consumption.
+- [x] M2 (2026-07-10): Migrations `shomei_totp_credentials` + `shomei_recovery_codes`; `TotpCredentialStore` + `RecoveryCodeStore` ports; in-memory + Postgres interpreters (AES-256-GCM at the Postgres boundary); `TotpConfig` sub-record; new TypeIDs `totp`/`recovery`; all five effect-stack sites + `App.Env.envTotpKey` (dummy key in Boot, real load deferred to M4).
+- [x] M2 (2026-07-10): Postgres round-trip tests incl. encryption-at-rest (ciphertext ≠ plaintext, nonce+tag framed) and atomic recovery-code consume-once. `cabal test shomei-core` = 228; `TASTY_NUM_THREADS=1 cabal test shomei-postgres` = 53, both green.
 - [ ] M3: Enrollment/verify/removal workflows + routes; recovery-code generate/count workflows + routes; `denyUnderImpersonation` on all credential-changing handlers.
 - [ ] M3: Login generalization (challenge if any factor enrolled); `LoginResponse` `methods` field (DTO + hand-written JSON + OpenAPI oneOf + Arbitrary); `MfaCompleteRequest` union (passkey/totp/recovery_code arms); replay defense (`last_used_counter`).
 - [ ] M3: Audit events (TotpEnrolled/TotpRemoved/RecoveryCodesGenerated/RecoveryCodeUsed) + codec + spec; in-process HTTP tests for every path.
@@ -78,6 +78,20 @@ Base32 chars, so the output is unpadded (no trailing `=` to strip). Verified:
 No `cabal.project`/`shomei-core.cabal` dependency block was needed. **M2's AES-256-GCM uses
 the same `ram`/crypton surface** (`Crypto.Cipher.AES`, `Crypto.Cipher.Types`), following the
 ChaChaPoly1305 AEAD pattern already in `shomei-jwt/src/Shomei/Jwt/KeyProtection.hs`.
+
+**2026-07-10 (M2) — crypton's `aeadSimpleEncrypt` returns `(AuthTag, ciphertext)`, NOT
+`(ciphertext, AuthTag)`.** The tag comes first (verified in the crypton source,
+`Crypto/Cipher/Types/AEAD.hs`: `aeadSimpleEncrypt aeadIni header input taglen = (tag, output)`).
+The compiler catches the swap, but the error message ("expected ByteString, got AuthTag") is
+easy to misread. `aeadSimpleDecrypt` takes them in the opposite order (ciphertext then tag).
+
+**2026-07-10 (M2) — the effect stack is FIVE sites and `App.Env` grew a field.** The two new
+ports (`TotpCredentialStore`, `RecoveryCodeStore`) went into all five stack declarations the
+EP-4/EP-5 notes enumerate, plus `Shomei.Server.App.Env` gained `envTotpKey :: TotpEncryptionKey`
+(threaded into `runTotpCredentialStorePostgres` in `runAppIO`, constructed in `Boot.buildEnv`).
+The `shomei-postgres` test-suite needed `bytestring` added to its `build-depends` (it had none —
+the round-trip tests inspect the raw `secret_enc` bytea). **EP-9 adds a port + column and will
+hit the same five-plus sites.**
 
 
 ## Decision Log

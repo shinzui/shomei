@@ -42,6 +42,7 @@ import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher)
 import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.RoleStore (RoleStore)
 import Shomei.Effect.ServiceAccountStore (ServiceAccountStore)
@@ -50,6 +51,7 @@ import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
 import Shomei.Effect.TokenSigner (TokenSigner)
 import Shomei.Effect.TokenVerifier (TokenVerifier)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore)
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
@@ -68,6 +70,7 @@ import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.OAuthCodeStore (runOAuthCodeStorePostgres)
 import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
+import Shomei.Postgres.RecoveryCodeStore (runRecoveryCodeStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
@@ -75,6 +78,7 @@ import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, runTotpCredentialStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Prelude
@@ -101,6 +105,8 @@ type AppEffects =
      ServiceAccountStore,
      OAuthClientStore,
      OAuthCodeStore,
+     TotpCredentialStore,
+     RecoveryCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -133,6 +139,11 @@ data Env = Env
     --     can decrypt the signer; deliberately not part of 'ShomeiConfig', which is 'Show'able
     --     and serializable.
     envKek :: !(Maybe KeyEncryptionKey),
+    -- | the AES-256-GCM key that encrypts stored TOTP secrets (EP-7), loaded from
+    --     @SHOMEI_TOTP_ENCRYPTION_KEY@. Deliberately not part of 'ShomeiConfig' (a secret). When
+    --     TOTP is disabled this is a dummy key: enrollment is refused, so the store is
+    --     unreachable, but the interpreter-stack shape stays fixed.
+    envTotpKey :: !TotpEncryptionKey,
     -- | shared TLS manager for the HIBP breach-check interpreter (EP-3)
     envHttpManager :: !Manager,
     -- | Argon2id cost parameters for hashing new passwords. Verification reads the parameters
@@ -172,6 +183,8 @@ runAppIO env action = do
     -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
     . runClaimsEnricherNull
     . runNotifierFromConfig env.envConfig
+    . runRecoveryCodeStorePostgres
+    . runTotpCredentialStorePostgres env.envTotpKey
     . runOAuthCodeStorePostgres
     . runOAuthClientStorePostgres
     . runServiceAccountStorePostgres

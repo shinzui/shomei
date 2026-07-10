@@ -26,10 +26,12 @@ module Shomei.Config
     ServiceAccountConfig (..),
     ServiceTokenConfig (..),
     OAuthConfig (..),
+    TotpConfig (..),
     defaultWebAuthnConfig,
     defaultImpersonationConfig,
     defaultServiceTokenConfig,
     defaultOAuthConfig,
+    defaultTotpConfig,
     defaultShomeiConfig,
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
@@ -296,6 +298,31 @@ data OAuthConfig = OAuthConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | TOTP second-factor policy (EP-7). Every field has a default (see 'defaultTotpConfig') so
+-- the record stays append-only.
+--
+-- The AES-256-GCM encryption key for stored secrets is deliberately __not__ a field here: it
+-- is a secret, loaded by the standalone server from @SHOMEI_TOTP_ENCRYPTION_KEY@ and carried
+-- in the server @Env@, never in this 'Show'able / serializable record (the same treatment the
+-- key-encryption key gets).
+data TotpConfig = TotpConfig
+  { -- | master switch, default 'False': enrollment is refused and login never challenges for
+    --     TOTP when off, so deploying the code before enabling the factor is safe.
+    totpEnabled :: !Bool,
+    -- | how long an unconfirmed enrollment stays activatable before it is treated as absent
+    --     (and replaced on re-enroll); default 15 minutes.
+    enrollmentTTL :: !NominalDiffTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+defaultTotpConfig :: TotpConfig
+defaultTotpConfig =
+  TotpConfig
+    { totpEnabled = False,
+      enrollmentTTL = 15 * 60
+    }
+
 defaultOAuthConfig :: OAuthConfig
 defaultOAuthConfig =
   OAuthConfig
@@ -351,6 +378,7 @@ data ShomeiConfig = ShomeiConfig
     impersonationConfig :: !ImpersonationConfig,
     serviceTokenConfig :: !ServiceTokenConfig,
     oauthConfig :: !OAuthConfig,
+    totpConfig :: !TotpConfig,
     cookieConfig :: !CookieConfig,
     -- | roles granted to every user created through @Shomei.Workflow.signup@ (the HTTP signup
     --     route and @shomei-admin users create@ alike), applied before the first token is minted
@@ -429,6 +457,7 @@ defaultShomeiConfig iss aud =
       impersonationConfig = defaultImpersonationConfig,
       serviceTokenConfig = defaultServiceTokenConfig,
       oauthConfig = defaultOAuthConfig,
+      totpConfig = defaultTotpConfig,
       cookieConfig = defaultCookieConfig,
       defaultRoles = Set.empty
     }

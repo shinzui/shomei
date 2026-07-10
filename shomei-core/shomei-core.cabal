@@ -61,6 +61,7 @@ library
     Shomei.Domain.Session
     Shomei.Domain.SigningKey
     Shomei.Domain.Token
+    Shomei.Domain.Totp
     Shomei.Domain.User
     Shomei.Domain.VerificationToken
     Shomei.Effect.AuthEventPublisher
@@ -79,12 +80,14 @@ library
     Shomei.Effect.PasswordHasher
     Shomei.Effect.PasswordResetTokenStore
     Shomei.Effect.PendingCeremonyStore
+    Shomei.Effect.RecoveryCodeStore
     Shomei.Effect.RefreshTokenStore
     Shomei.Effect.RoleStore
     Shomei.Effect.ServiceAccountStore
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
     Shomei.Effect.TokenGen
+    Shomei.Effect.TotpCredentialStore
     Shomei.Effect.TokenSigner
     Shomei.Effect.TokenVerifier
     Shomei.Effect.UserStore
@@ -145,6 +148,7 @@ test-suite shomei-core-test
     Shomei.PasskeyStoreSpec
     Shomei.ServiceAccountStoreSpec
     Shomei.TotpSpec
+    Shomei.TotpStoreSpec
     Shomei.WebAuthnCeremonySpec
     Shomei.Workflow.AdminSpec
     Shomei.Workflow.ClientCredentialsSpec

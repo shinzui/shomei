@@ -7,6 +7,8 @@ module Main (main) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Monad (forM_, replicateM, void)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort)
@@ -72,6 +74,7 @@ import Shomei.Domain.ServiceAccount (NewServiceAccount (..), ServiceAccount (..)
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
+import Shomei.Domain.Totp (NewRecoveryCode (..), NewTotpCredential (..), TotpCredential (..))
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
 import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
@@ -131,6 +134,12 @@ import Shomei.Effect.PasswordResetTokenStore
     markPasswordResetTokenConsumed,
   )
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
+import Shomei.Effect.RecoveryCodeStore
+  ( RecoveryCodeStore,
+    consumeRecoveryCode,
+    countUnusedRecoveryCodes,
+    replaceRecoveryCodes,
+  )
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
 import Shomei.Effect.RoleStore
   ( RoleDefinition (..),
@@ -153,6 +162,14 @@ import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById,
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner (..))
+import Shomei.Effect.TotpCredentialStore
+  ( TotpCredentialStore,
+    confirmTotp,
+    deleteTotpByUser,
+    findTotpByUser,
+    setTotpLastUsedCounter,
+    upsertTotpEnrollment,
+  )
 import Shomei.Effect.UserStore
   ( UserCursor (..),
     UserListQuery (..),
@@ -174,8 +191,9 @@ import Shomei.Effect.VerificationTokenStore
   )
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
-import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, userIdToUUID)
+import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Totp (TotpSecret (..))
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
 import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
@@ -196,11 +214,17 @@ import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
 import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.RecoveryCodeStore (runRecoveryCodeStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
+import Shomei.Postgres.TotpCredentialStore
+  ( TotpEncryptionKey,
+    runTotpCredentialStorePostgres,
+    totpEncryptionKeyFromBytes,
+  )
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Workflow (login, refresh, signup)
@@ -237,6 +261,8 @@ type AppEffects =
      ServiceAccountStore,
      OAuthClientStore,
      OAuthCodeStore,
+     TotpCredentialStore,
+     RecoveryCodeStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -278,6 +304,8 @@ runAppWithNotifications ref pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runRecoveryCodeStorePostgres
+      . runTotpCredentialStorePostgres testTotpKey
       . runOAuthCodeStorePostgres
       . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
@@ -316,6 +344,8 @@ runAppAtTime t pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runRecoveryCodeStorePostgres
+      . runTotpCredentialStorePostgres testTotpKey
       . runOAuthCodeStorePostgres
       . runOAuthClientStorePostgres
       . runServiceAccountStorePostgres
@@ -423,6 +453,35 @@ scalarInt pool sql = do
     fromIntegral64 :: Int64 -> Int
     fromIntegral64 = fromIntegral
 
+-- | A single @bytea@ column, run directly against the pool (used to inspect @secret_enc@).
+scalarBytea :: Pool -> Text -> IO ByteString
+scalarBytea pool sql = do
+  res <- Pool.use pool (Session.statement () stmt)
+  either (\e -> assertFailure ("scalar bytea query failed: " <> show e)) pure res
+  where
+    stmt = preparable sql E.noParams (D.singleRow (D.column (D.nonNullable D.bytea)))
+
+-- | A fixed 32-byte AES-256-GCM key for the TOTP round-trip tests. Value is irrelevant; the test
+-- only proves encrypt-then-decrypt is the identity and that the ciphertext is not the plaintext.
+testTotpKey :: TotpEncryptionKey
+testTotpKey = case totpEncryptionKeyFromBytes (BS.replicate 32 7) of
+  Right k -> k
+  Left e -> error ("bad test TOTP key: " <> Text.unpack e)
+
+-- | 20 raw secret bytes (the RFC 6238 Appendix B secret).
+totpRawSecret :: ByteString
+totpRawSecret = "12345678901234567890"
+
+-- Field accessors: OverloadedRecordDot is unreliable for these DuplicateRecordFields records.
+tcSecret :: TotpCredential -> TotpSecret
+tcSecret TotpCredential {secret} = secret
+
+tcConfirmedAt :: TotpCredential -> Maybe UTCTime
+tcConfirmedAt TotpCredential {confirmedAt} = confirmedAt
+
+tcLastUsedCounter :: TotpCredential -> Maybe Int64
+tcLastUsedCounter TotpCredential {lastUsedCounter} = lastUsedCounter
+
 -- Tests ----------------------------------------------------------------------
 
 main :: IO ()
@@ -460,6 +519,9 @@ tests =
     testOAuthClientRoundTrip,
     testAuthorizationCodeRoundTrip,
     testAuthorizationCodeConsumeIsAtomicUnderRace,
+    testTotpCredentialRoundTrip,
+    testTotpEncryptionAtRest,
+    testRecoveryCodeCasAndReplace,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
     testArgon2NewHashesArePhcFormatted,
@@ -593,6 +655,81 @@ testGrantedRoleReachesEnrichedClaims =
 -- | The description the @shomei-role-grants@ migration seeds onto the @admin@ role.
 adminSeedDescription :: Text
 adminSeedDescription = "Full access to the shomei /admin surface and admin CLI-equivalent HTTP routes"
+
+-- | The TOTP credential store's contract against real PostgreSQL: the raw secret survives the
+-- encrypt→store→decrypt round-trip, @confirm@ and the last-used counter land, and delete removes
+-- the row.
+testTotpCredentialRoundTrip :: TestTree
+testTotpCredentialRoundTrip =
+  testCase "totp credential: enroll, find (raw secret round-trips), confirm, counter, delete" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      tcid <- genTotpCredentialId
+      t <- now
+      created <-
+        upsertTotpEnrollment
+          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+      found0 <- findTotpByUser u.userId
+      confirmTotp tcid t
+      setTotpLastUsedCounter tcid 42
+      found1 <- findTotpByUser u.userId
+      deleteTotpByUser u.userId
+      found2 <- findTotpByUser u.userId
+      pure (created, found0, found1, found2)
+    (created, found0, found1, found2) <- expectApp result
+    tcSecret created @?= TotpSecret totpRawSecret
+    fmap tcSecret found0 @?= Just (TotpSecret totpRawSecret)
+    fmap tcConfirmedAt found0 @?= Just Nothing
+    fmap (isJust . tcConfirmedAt) found1 @?= Just True
+    fmap tcLastUsedCounter found1 @?= Just (Just 42)
+    found2 @?= Nothing
+
+-- | The stored @secret_enc@ is genuine ciphertext: it differs from the plaintext secret and is
+-- longer by exactly the 12-byte nonce and 16-byte GCM tag. Decryption is proven by the round-trip
+-- test above; here we prove nothing recoverable sits at rest.
+testTotpEncryptionAtRest :: TestTree
+testTotpEncryptionAtRest =
+  testCase "totp secret is encrypted at rest (ciphertext differs from plaintext, nonce+tag framed)" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      tcid <- genTotpCredentialId
+      t <- now
+      _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+      pure ()
+    _ <- expectApp result
+    stored <- scalarBytea pool "SELECT secret_enc FROM shomei.shomei_totp_credentials LIMIT 1"
+    assertBool "stored ciphertext must differ from the plaintext secret" (stored /= totpRawSecret)
+    -- 12-byte nonce + 20-byte ciphertext + 16-byte GCM tag
+    BS.length stored @?= 48
+
+-- | The recovery-code store's contract: a replaced set is the live set, consumption is a
+-- consume-once compare-and-set, the unused count tracks it, and regeneration drops the old set.
+testRecoveryCodeCasAndReplace :: TestTree
+testRecoveryCodeCasAndReplace =
+  testCase "recovery codes: replace-set, consume-once CAS, count drops, regeneration replaces" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      ids <- replicateM 3 genRecoveryCodeId
+      let mk i h = NewRecoveryCode {recoveryCodeId = i, codeHash = h, createdAt = t}
+          codes = zipWith mk ids ["h1", "h2", "h3"]
+      replaceRecoveryCodes u.userId codes
+      countBefore <- countUnusedRecoveryCodes u.userId
+      firstConsume <- consumeRecoveryCode u.userId "h1" t
+      secondConsume <- consumeRecoveryCode u.userId "h1" t
+      countAfter <- countUnusedRecoveryCodes u.userId
+      ids2 <- replicateM 2 genRecoveryCodeId
+      replaceRecoveryCodes u.userId (zipWith mk ids2 ["n1", "n2"])
+      countAfterReplace <- countUnusedRecoveryCodes u.userId
+      oldConsume <- consumeRecoveryCode u.userId "h2" t
+      pure (countBefore, firstConsume, secondConsume, countAfter, countAfterReplace, oldConsume)
+    (countBefore, firstConsume, secondConsume, countAfter, countAfterReplace, oldConsume) <- expectApp result
+    countBefore @?= 3
+    firstConsume @?= True
+    secondConsume @?= False
+    countAfter @?= 2
+    countAfterReplace @?= 2
+    oldConsume @?= False
 
 testUserRoundTrip :: TestTree
 testUserRoundTrip = testCase "create + find user round-trips" $ withDb \pool -> do
