@@ -30,6 +30,12 @@ runNotifierFromConfig :: (IOE :> es) => ShomeiConfig -> Eff (Notifier : es) a ->
 runNotifierFromConfig cfg =
   case cfg.notifierConfig.notifierTransport of
     LogNotifier -> runNotifierLog cfg.notifierConfig
+    -- Temporary until M2/M3 land the real interpreters and M4 rewires selection; the config
+    -- surface (M1) is complete but the delivery code is not, so both selectable transports fall
+    -- back to the log sender for now. The default transport stays 'LogNotifier', so no deployment
+    -- behaves differently.
+    SmtpNotifier -> runNotifierLog cfg.notifierConfig
+    WebhookNotifier -> runNotifierLog cfg.notifierConfig
 
 runNotifierLog :: (IOE :> es) => NotifierConfig -> Eff (Notifier : es) a -> Eff es a
 runNotifierLog cfg = interpret_ \case

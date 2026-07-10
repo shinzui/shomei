@@ -15,6 +15,9 @@ module Shomei.Config
     SigningKeyConfig (..),
     NotifierConfig (..),
     NotifierTransport (..),
+    SmtpTlsMode (..),
+    SmtpConfig (..),
+    WebhookConfig (..),
     RateLimitConfig (..),
     ObservabilityConfig (..),
     LogFormat (..),
@@ -131,15 +134,67 @@ data SigningKeyConfig = SigningKeyConfig
 -- | Which built-in 'Shomei.Effect.Notifier.Notifier' interpreter the standalone
 -- server uses.
 --
--- Shōmei does __not__ send email itself. It emits a 'Shomei.Domain.Notification.Notification'
--- (recipient, one-time link/token, expiry) through the 'Notifier' effect; delivering that to a
--- user is the operator's responsibility, wired to their existing provider (SendGrid, Resend, …)
--- by supplying their own 'Notifier' interpreter. The toolkit ships one built-in interpreter —
--- 'LogNotifier', which writes the link to the server log (ideal for development and for
--- operators who scrape logs) — plus an in-memory interpreter for tests. A dedicated
--- @shomei-email@ package may add provider-backed senders in the future; until then the effect
--- itself is the integration seam.
-data NotifierTransport = LogNotifier
+-- Shōmei emits a 'Shomei.Domain.Notification.Notification' (recipient, one-time link/token,
+-- expiry) through the 'Notifier' effect. The standalone server can interpret that three ways:
+--
+-- * 'LogNotifier' (the default) writes the link to the server log — ideal for development and
+--   for operators who scrape logs.
+--
+-- * 'SmtpNotifier' delivers a plain-text email through a __provider relay__ (see 'SmtpConfig').
+--   It is deliberately not a self-hosted mail server and does no direct-to-MX delivery; it
+--   points at a provider's authenticated submission endpoint (SES, SendGrid, Resend, Postmark).
+--
+-- * 'WebhookNotifier' POSTs the notification as signed JSON to a configured URL (see
+--   'WebhookConfig'), doubling as Shōmei's lightweight eventing hook.
+--
+-- An in-memory interpreter serves the tests, and a host may always supply its own 'Notifier'
+-- interpreter for a provider Shōmei does not ship.
+data NotifierTransport = LogNotifier | SmtpNotifier | WebhookNotifier
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | SMTP connection security. Names the three ubiquitous modes; the conventional ports are 25,
+-- 587, and 465 respectively (see 'SmtpConfig').
+--
+-- * 'SmtpPlain' — plaintext (no TLS). A lab/test sink only; never a production configuration.
+-- * 'SmtpStartTls' — start plaintext, then @STARTTLS@ to upgrade before authenticating (587).
+-- * 'SmtpImplicitTls' — TLS from the first byte (465).
+data SmtpTlsMode = SmtpPlain | SmtpStartTls | SmtpImplicitTls
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Provider-relay SMTP settings (EP-8). This is a __relay client__ aimed at a provider's
+-- authenticated submission endpoint, not a mail server. 'password' is populated from the
+-- environment only (@SHOMEI_SMTP_PASSWORD@), never from the Dhall file; 'username' and
+-- 'password' must be both present (authenticated relay) or both absent (a lab sink).
+data SmtpConfig = SmtpConfig
+  { host :: !Text,
+    -- | conventional: 25 plaintext (lab only), 587 STARTTLS, 465 implicit-TLS
+    port :: !Int,
+    tlsMode :: !SmtpTlsMode,
+    -- | 'Nothing' = unauthenticated (lab sinks only)
+    username :: !(Maybe Text),
+    -- | populated from @SHOMEI_SMTP_PASSWORD@ only; never from Dhall
+    password :: !(Maybe Text),
+    fromAddress :: !Text,
+    -- | per-attempt send timeout in seconds (default 10)
+    timeoutSeconds :: !Int
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Webhook-notifier settings (EP-8). The notification is POSTed as JSON, signed with an
+-- HMAC-SHA256 header (see @Shomei.Notify.runNotifierWebhook@). 'secret' is populated from the
+-- environment only (@SHOMEI_WEBHOOK_SECRET@), never from the Dhall file.
+data WebhookConfig = WebhookConfig
+  { url :: !Text,
+    -- | populated from @SHOMEI_WEBHOOK_SECRET@ only; never from Dhall
+    secret :: !Text,
+    -- | per-attempt request timeout in seconds (default 5)
+    timeoutSeconds :: !Int,
+    -- | total delivery attempts, initial + retries (default 3)
+    maxAttempts :: !Int
+  }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -154,7 +209,15 @@ data NotifierConfig = NotifierConfig
     -- log can then complete a password reset for the account. Default 'False' logs a
     -- SHA-256 prefix of the token instead, which correlates with the stored token hash but
     -- cannot be redeemed.
-    logRawTokens :: !Bool
+    logRawTokens :: !Bool,
+    -- | present when 'notifierTransport' is 'SmtpNotifier'; boot validation guarantees it.
+    smtpConfig :: !(Maybe SmtpConfig),
+    -- | present when 'notifierTransport' is 'WebhookNotifier'; boot validation guarantees it.
+    webhookConfig :: !(Maybe WebhookConfig),
+    -- | when 'True', every notification is also written through the 'LogNotifier' in addition
+    -- to the selected transport — a staged-rollout aid. Default 'False'. Has no effect when the
+    -- transport is already 'LogNotifier'.
+    alsoLogNotifications :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -449,7 +512,10 @@ defaultShomeiConfig iss aud =
             passwordResetTokenTTL = defaultPasswordResetTokenTTL,
             notifierTransport = LogNotifier,
             publicBaseUrl = "http://localhost:8080",
-            logRawTokens = False
+            logRawTokens = False,
+            smtpConfig = Nothing,
+            webhookConfig = Nothing,
+            alsoLogNotifications = False
           },
       rateLimitConfig = defaultRateLimitConfig,
       observabilityConfig = defaultObservabilityConfig,

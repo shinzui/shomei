@@ -8,7 +8,7 @@ module Main (main) where
 import Control.Exception (try)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), WebAuthnConfig (..))
+import Shomei.Config (NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Crypto (Argon2Params (..))
 import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
@@ -333,3 +333,149 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   sweepEnvOverrides
   sweepRejectsNonPositive
   argon2Settings
+  notifierDefaults
+  notifierSmtpDhallAndEnv
+  notifierWebhookEnv
+  notifierSmtpMissingHostFails
+  notifierSmtpUsernameWithoutPasswordFails
+  notifierWebhookMissingSecretFails
+
+-- EP-8 notifier transport ------------------------------------------------------
+
+notifierEnvVars :: [String]
+notifierEnvVars =
+  [ "SHOMEI_NOTIFIER_TRANSPORT",
+    "SHOMEI_NOTIFIER_ALSO_LOG",
+    "SHOMEI_SMTP_HOST",
+    "SHOMEI_SMTP_PORT",
+    "SHOMEI_SMTP_TLS_MODE",
+    "SHOMEI_SMTP_USERNAME",
+    "SHOMEI_SMTP_PASSWORD",
+    "SHOMEI_SMTP_FROM",
+    "SHOMEI_SMTP_TIMEOUT",
+    "SHOMEI_WEBHOOK_URL",
+    "SHOMEI_WEBHOOK_SECRET",
+    "SHOMEI_WEBHOOK_TIMEOUT",
+    "SHOMEI_WEBHOOK_MAX_ATTEMPTS"
+  ]
+
+-- | With no config and no env, the notifier is the log sender and both sub-configs are absent.
+notifierDefaults :: Assertion
+notifierDefaults = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  (cfg, _) <- loadConfigFromEnv
+  let nc = cfg.notifierConfig
+  nc.notifierTransport @?= LogNotifier
+  nc.smtpConfig @?= Nothing
+  nc.webhookConfig @?= Nothing
+  nc.alsoLogNotifications @?= False
+  unsetEnv "PG_CONNECTION_STRING"
+
+smtpConfigPath :: FilePath
+smtpConfigPath = "/tmp/shomei-config-smtp-test.dhall"
+
+-- | The SMTP transport loads from the Dhall file, and the relay password enters from the
+-- environment only (never the file) — the username/password pair is completed at load time.
+notifierSmtpDhallAndEnv :: Assertion
+notifierSmtpDhallAndEnv = do
+  mapM_ unsetEnv notifierEnvVars
+  writeFile
+    smtpConfigPath
+    ( "{ databaseUrl = \"host=fromfile dbname=shomei\""
+        <> ", notifierTransport = \"smtp\""
+        <> ", smtpHost = \"email-smtp.us-east-1.amazonaws.com\""
+        <> ", smtpPort = 587"
+        <> ", smtpTlsMode = \"starttls\""
+        <> ", smtpUsername = \"AKIAEXAMPLE\""
+        <> ", smtpFromAddress = \"auth@example.com\""
+        <> ", smtpTimeoutSeconds = 20"
+        <> ", publicBaseUrl = \"https://auth.example.com\""
+        <> " }"
+    )
+  setEnv "SHOMEI_CONFIG" smtpConfigPath
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_SMTP_PASSWORD" "smtp-secret-from-env"
+  (cfg, _) <- loadConfig
+  let nc = cfg.notifierConfig
+  nc.notifierTransport @?= SmtpNotifier
+  case nc.smtpConfig of
+    Just (SmtpConfig {host = h, port = p, tlsMode = tls, username = u, password = pw, fromAddress = fromA, timeoutSeconds = to}) -> do
+      h @?= "email-smtp.us-east-1.amazonaws.com"
+      p @?= 587
+      tls @?= SmtpStartTls
+      u @?= Just "AKIAEXAMPLE"
+      pw @?= Just "smtp-secret-from-env"
+      fromA @?= "auth@example.com"
+      to @?= 20
+    Nothing -> assertFailure "expected smtpConfig to be populated for transport=smtp"
+  unsetEnv "SHOMEI_SMTP_PASSWORD"
+  unsetEnv "SHOMEI_CONFIG"
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | The webhook transport can be configured entirely from the environment, secret included.
+notifierWebhookEnv :: Assertion
+notifierWebhookEnv = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
+  setEnv "SHOMEI_WEBHOOK_URL" "https://hooks.example.com/shomei"
+  setEnv "SHOMEI_WEBHOOK_SECRET" "webhook-secret"
+  setEnv "SHOMEI_WEBHOOK_MAX_ATTEMPTS" "5"
+  setEnv "SHOMEI_NOTIFIER_ALSO_LOG" "true"
+  (cfg, _) <- loadConfigFromEnv
+  let nc = cfg.notifierConfig
+  nc.notifierTransport @?= WebhookNotifier
+  nc.alsoLogNotifications @?= True
+  case nc.webhookConfig of
+    Just (WebhookConfig {url = u, secret = s, maxAttempts = ma}) -> do
+      u @?= "https://hooks.example.com/shomei"
+      s @?= "webhook-secret"
+      ma @?= 5
+    Nothing -> assertFailure "expected webhookConfig to be populated for transport=webhook"
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | Selecting smtp without a host fails the boot, naming the missing variable.
+notifierSmtpMissingHostFails :: Assertion
+notifierSmtpMissingHostFails = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "smtp"
+  setEnv "SHOMEI_SMTP_FROM" "auth@example.com"
+  result <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SMTP_HOST" result
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | An SMTP username with no password (or vice versa) is refused: it is neither a valid
+-- authenticated relay nor a valid lab sink.
+notifierSmtpUsernameWithoutPasswordFails :: Assertion
+notifierSmtpUsernameWithoutPasswordFails = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "smtp"
+  setEnv "SHOMEI_SMTP_HOST" "smtp.example.com"
+  setEnv "SHOMEI_SMTP_FROM" "auth@example.com"
+  setEnv "SHOMEI_SMTP_USERNAME" "relay-user"
+  result <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SMTP_PASSWORD" result
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+-- | Selecting webhook without a signing secret fails the boot, naming the missing variable.
+notifierWebhookMissingSecretFails :: Assertion
+notifierWebhookMissingSecretFails = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
+  setEnv "SHOMEI_WEBHOOK_URL" "https://hooks.example.com/shomei"
+  result <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_WEBHOOK_SECRET" result
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"

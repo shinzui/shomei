@@ -37,6 +37,7 @@ import Shomei.Config
   ( AttestationPolicy (..),
     CookieConfig (..),
     NotifierConfig (..),
+    NotifierTransport (..),
     OAuthConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
@@ -47,10 +48,13 @@ import Shomei.Config
     SessionCheckMode (..),
     ShomeiConfig (..),
     SigningKeyConfig (..),
+    SmtpConfig (..),
+    SmtpTlsMode (..),
     TokenTransport (..),
     TotpConfig (..),
     UserVerificationPolicy (..),
     WebAuthnConfig (..),
+    WebhookConfig (..),
     defaultShomeiConfig,
   )
 import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
@@ -188,6 +192,22 @@ data FileConfig = FileConfig
     sessionTtlSeconds :: !(Maybe Int),
     publicBaseUrl :: !(Maybe Text),
     emailVerificationRequired :: !(Maybe Bool),
+    -- | EP-8 notifier transport: @log@ (default) | @smtp@ | @webhook@. Secrets (SMTP password,
+    --     webhook signing secret) are deliberately NOT config-file fields — they come from the
+    --     environment only (@SHOMEI_SMTP_PASSWORD@, @SHOMEI_WEBHOOK_SECRET@).
+    notifierTransport :: !(Maybe Text),
+    -- | also tee every notification through the log sender (staged rollout). Default False.
+    alsoLogNotifications :: !(Maybe Bool),
+    smtpHost :: !(Maybe Text),
+    smtpPort :: !(Maybe Int),
+    -- | @plain@ (lab only) | @starttls@ | @implicit@
+    smtpTlsMode :: !(Maybe Text),
+    smtpUsername :: !(Maybe Text),
+    smtpFromAddress :: !(Maybe Text),
+    smtpTimeoutSeconds :: !(Maybe Int),
+    webhookUrl :: !(Maybe Text),
+    webhookTimeoutSeconds :: !(Maybe Int),
+    webhookMaxAttempts :: !(Maybe Int),
     rateLimitEnabled :: !(Maybe Bool),
     maxFailedLoginsPerAccount :: !(Maybe Int),
     perIpRequestsPerMinute :: !(Maybe Int),
@@ -309,6 +329,8 @@ baseFromFile (Just fc) = do
   algFile <- traverse (normalizeSigningAlg "signingAlgorithm (config file)") fc.signingAlgorithm
   transportFile <- traverse (parseTransport "tokenTransport (config file)") fc.tokenTransport
   sameSiteFile <- traverse (parseSameSite "cookieSameSite (config file)") fc.cookieSameSite
+  notifierTransportFile <- traverse (parseNotifierTransport "notifierTransport (config file)") fc.notifierTransport
+  smtpTlsModeFile <- traverse (parseSmtpTlsMode "smtpTlsMode (config file)") fc.smtpTlsMode
   let iss = fromMaybe "shomei" fc.issuer
       aud = fromMaybe "shomei-clients" fc.audience
       cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
@@ -321,7 +343,11 @@ baseFromFile (Just fc) = do
             notifierConfig =
               cfg0.notifierConfig
                 { emailVerificationRequired = fromMaybe cfg0.notifierConfig.emailVerificationRequired fc.emailVerificationRequired,
-                  publicBaseUrl = fromMaybe cfg0.notifierConfig.publicBaseUrl fc.publicBaseUrl
+                  publicBaseUrl = fromMaybe cfg0.notifierConfig.publicBaseUrl fc.publicBaseUrl,
+                  notifierTransport = fromMaybe cfg0.notifierConfig.notifierTransport notifierTransportFile,
+                  alsoLogNotifications = fromMaybe cfg0.notifierConfig.alsoLogNotifications fc.alsoLogNotifications,
+                  smtpConfig = smtpFromFile smtpTlsModeFile fc,
+                  webhookConfig = webhookFromFile fc
                 },
             rateLimitConfig =
               cfg0.rateLimitConfig
@@ -452,6 +478,9 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
   -- Zero permits would block every login forever.
   requirePositive "SHOMEI_HASHING_MAX_CONCURRENCY" "hashingMaxConcurrency" hashingConcurrency
+  -- Validated after the overlay so a selected notifier transport is proven fully configured
+  -- whichever layer supplied its fields (secrets always come from the environment).
+  validateNotifierConfig cfg.notifierConfig
   pure
     ( cfg,
       ServerSettings
@@ -546,6 +575,7 @@ overlayCoreFromEnv base = do
   -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
+  notifierCfg <- overlayNotifierFromEnv base.notifierConfig logSecrets
   cookieSecure' <- boolEnv "SHOMEI_COOKIE_SECURE"
   cookieSameSite' <- sameSiteEnv
   csrfOrigins <- csrfOriginsEnv
@@ -554,10 +584,7 @@ overlayCoreFromEnv base = do
     base
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
         defaultRoles = fromMaybe base.defaultRoles defaultRoles',
-        notifierConfig =
-          base.notifierConfig
-            { logRawTokens = fromMaybe base.notifierConfig.logRawTokens logSecrets
-            },
+        notifierConfig = notifierCfg,
         signingKeyConfig =
           base.signingKeyConfig
             { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
@@ -635,6 +662,236 @@ overlayOAuthFromEnv base = do
         authorizationCodeTTL = fromMaybe base.authorizationCodeTTL mCodeTtl,
         idTokenTTL = fromMaybe base.idTokenTTL mIdTtl
       }
+
+-- Notifier transport (EP-8) ---------------------------------------------------
+
+-- | Conventional per-attempt defaults for the notifier transports. Missing scalar fields fall
+-- back to these; they match the defaults documented on 'SmtpConfig'/'WebhookConfig'.
+defaultSmtpTimeoutSeconds :: Int
+defaultSmtpTimeoutSeconds = 10
+
+defaultWebhookTimeoutSeconds :: Int
+defaultWebhookTimeoutSeconds = 5
+
+defaultWebhookMaxAttempts :: Int
+defaultWebhookMaxAttempts = 3
+
+-- | @log@ | @smtp@ | @webhook@. @label@ names the source in the error.
+parseNotifierTransport :: Text -> Text -> IO NotifierTransport
+parseNotifierTransport label t = case Text.toLower (Text.strip t) of
+  "log" -> pure LogNotifier
+  "smtp" -> pure SmtpNotifier
+  "webhook" -> pure WebhookNotifier
+  other -> ioError (userError (Text.unpack label <> " must be log|smtp|webhook, got " <> Text.unpack other))
+
+-- | @plain@ (lab only) | @starttls@ | @implicit@. Accepts a couple of common spellings.
+parseSmtpTlsMode :: Text -> Text -> IO SmtpTlsMode
+parseSmtpTlsMode label t = case Text.toLower (Text.strip t) of
+  "plain" -> pure SmtpPlain
+  "starttls" -> pure SmtpStartTls
+  "start-tls" -> pure SmtpStartTls
+  "implicit" -> pure SmtpImplicitTls
+  "implicit-tls" -> pure SmtpImplicitTls
+  "tls" -> pure SmtpImplicitTls
+  other -> ioError (userError (Text.unpack label <> " must be plain|starttls|implicit, got " <> Text.unpack other))
+
+notifierTransportEnv :: IO (Maybe NotifierTransport)
+notifierTransportEnv = do
+  m <- lookupEnv "SHOMEI_NOTIFIER_TRANSPORT"
+  case m of
+    Nothing -> pure Nothing
+    Just "" -> pure Nothing
+    Just s -> Just <$> parseNotifierTransport "SHOMEI_NOTIFIER_TRANSPORT" (Text.pack s)
+
+smtpTlsModeEnv :: IO (Maybe SmtpTlsMode)
+smtpTlsModeEnv = do
+  m <- lookupEnv "SHOMEI_SMTP_TLS_MODE"
+  case m of
+    Nothing -> pure Nothing
+    Just "" -> pure Nothing
+    Just s -> Just <$> parseSmtpTlsMode "SHOMEI_SMTP_TLS_MODE" (Text.pack s)
+
+-- | Build a partial 'SmtpConfig' from the Dhall file's flat @smtp*@ fields, whenever any is
+-- present. The password is never here — it comes from @SHOMEI_SMTP_PASSWORD@. Missing scalars
+-- take their conventional defaults (port 587, STARTTLS, 10 s); completeness is validated at boot.
+smtpFromFile :: Maybe SmtpTlsMode -> FileConfig -> Maybe SmtpConfig
+smtpFromFile tls fc
+  | anyPresent =
+      Just
+        SmtpConfig
+          { host = fromMaybe "" fc.smtpHost,
+            port = fromMaybe 587 fc.smtpPort,
+            tlsMode = fromMaybe SmtpStartTls tls,
+            username = fc.smtpUsername,
+            password = Nothing,
+            fromAddress = fromMaybe "" fc.smtpFromAddress,
+            timeoutSeconds = fromMaybe defaultSmtpTimeoutSeconds fc.smtpTimeoutSeconds
+          }
+  | otherwise = Nothing
+  where
+    anyPresent =
+      isJust fc.smtpHost
+        || isJust fc.smtpPort
+        || isJust tls
+        || isJust fc.smtpUsername
+        || isJust fc.smtpFromAddress
+        || isJust fc.smtpTimeoutSeconds
+
+-- | Build a partial 'WebhookConfig' from the Dhall file's flat @webhook*@ fields. The signing
+-- secret is never here — it comes from @SHOMEI_WEBHOOK_SECRET@.
+webhookFromFile :: FileConfig -> Maybe WebhookConfig
+webhookFromFile fc
+  | anyPresent =
+      Just
+        WebhookConfig
+          { url = fromMaybe "" fc.webhookUrl,
+            secret = "",
+            timeoutSeconds = fromMaybe defaultWebhookTimeoutSeconds fc.webhookTimeoutSeconds,
+            maxAttempts = fromMaybe defaultWebhookMaxAttempts fc.webhookMaxAttempts
+          }
+  | otherwise = Nothing
+  where
+    anyPresent = isJust fc.webhookUrl || isJust fc.webhookTimeoutSeconds || isJust fc.webhookMaxAttempts
+
+-- | Overlay the @SHOMEI_NOTIFIER_*@ / @SHOMEI_SMTP_*@ / @SHOMEI_WEBHOOK_*@ environment variables
+-- onto the notifier policy the Dhall file produced. @logSecrets@ is the already-read
+-- @SHOMEI_NOTIFIER_LOG_SECRETS@ (env-only; see 'overlayCoreFromEnv').
+overlayNotifierFromEnv :: NotifierConfig -> Maybe Bool -> IO NotifierConfig
+overlayNotifierFromEnv base logSecrets = do
+  transport <- notifierTransportEnv
+  alsoLog <- boolEnv "SHOMEI_NOTIFIER_ALSO_LOG"
+  smtp <- overlaySmtpFromEnv base.smtpConfig
+  webhook <- overlayWebhookFromEnv base.webhookConfig
+  pure
+    base
+      { logRawTokens = fromMaybe base.logRawTokens logSecrets,
+        notifierTransport = fromMaybe base.notifierTransport transport,
+        alsoLogNotifications = fromMaybe base.alsoLogNotifications alsoLog,
+        smtpConfig = smtp,
+        webhookConfig = webhook
+      }
+
+-- | Overlay the SMTP environment variables onto the file-supplied 'SmtpConfig' (or build one if
+-- the file supplied none but the environment does). @SHOMEI_SMTP_PASSWORD@ is read here — it is
+-- the only place the relay password ever enters, never the Dhall file.
+overlaySmtpFromEnv :: Maybe SmtpConfig -> IO (Maybe SmtpConfig)
+overlaySmtpFromEnv base = do
+  host <- textEnvMaybe "SHOMEI_SMTP_HOST"
+  port <- intEnvMaybe "SHOMEI_SMTP_PORT"
+  tls <- smtpTlsModeEnv
+  username <- textEnvMaybe "SHOMEI_SMTP_USERNAME"
+  password <- textEnvMaybe "SHOMEI_SMTP_PASSWORD"
+  fromAddr <- textEnvMaybe "SHOMEI_SMTP_FROM"
+  timeout <- intEnvMaybe "SHOMEI_SMTP_TIMEOUT"
+  let anyEnv =
+        isJust host
+          || isJust port
+          || isJust tls
+          || isJust username
+          || isJust password
+          || isJust fromAddr
+          || isJust timeout
+  case base of
+    Nothing | not anyEnv -> pure Nothing
+    _ ->
+      let SmtpConfig
+            { host = bHost,
+              port = bPort,
+              tlsMode = bTls,
+              username = bUser,
+              password = bPass,
+              fromAddress = bFrom,
+              timeoutSeconds = bTimeout
+            } = fromMaybe emptySmtp base
+       in pure
+            ( Just
+                SmtpConfig
+                  { host = fromMaybe bHost host,
+                    port = fromMaybe bPort port,
+                    tlsMode = fromMaybe bTls tls,
+                    username = username <|> bUser,
+                    password = password <|> bPass,
+                    fromAddress = fromMaybe bFrom fromAddr,
+                    timeoutSeconds = fromMaybe bTimeout timeout
+                  }
+            )
+  where
+    emptySmtp =
+      SmtpConfig
+        { host = "",
+          port = 587,
+          tlsMode = SmtpStartTls,
+          username = Nothing,
+          password = Nothing,
+          fromAddress = "",
+          timeoutSeconds = defaultSmtpTimeoutSeconds
+        }
+
+-- | Overlay the webhook environment variables onto the file-supplied 'WebhookConfig' (or build
+-- one from the environment). @SHOMEI_WEBHOOK_SECRET@ is read here — the only place the signing
+-- secret ever enters, never the Dhall file.
+overlayWebhookFromEnv :: Maybe WebhookConfig -> IO (Maybe WebhookConfig)
+overlayWebhookFromEnv base = do
+  url <- textEnvMaybe "SHOMEI_WEBHOOK_URL"
+  secret <- textEnvMaybe "SHOMEI_WEBHOOK_SECRET"
+  timeout <- intEnvMaybe "SHOMEI_WEBHOOK_TIMEOUT"
+  maxAttempts <- intEnvMaybe "SHOMEI_WEBHOOK_MAX_ATTEMPTS"
+  let anyEnv = isJust url || isJust secret || isJust timeout || isJust maxAttempts
+  case base of
+    Nothing | not anyEnv -> pure Nothing
+    _ ->
+      let WebhookConfig
+            { url = bUrl,
+              secret = bSecret,
+              timeoutSeconds = bTimeout,
+              maxAttempts = bMax
+            } = fromMaybe emptyWebhook base
+       in pure
+            ( Just
+                WebhookConfig
+                  { url = fromMaybe bUrl url,
+                    secret = fromMaybe bSecret secret,
+                    timeoutSeconds = fromMaybe bTimeout timeout,
+                    maxAttempts = fromMaybe bMax maxAttempts
+                  }
+            )
+  where
+    emptyWebhook =
+      WebhookConfig
+        { url = "",
+          secret = "",
+          timeoutSeconds = defaultWebhookTimeoutSeconds,
+          maxAttempts = defaultWebhookMaxAttempts
+        }
+
+-- | Refuse to boot when the selected notifier transport is not fully configured. The default
+-- ('LogNotifier') needs nothing. @smtp@ needs a host and from-address (and, if authenticated, a
+-- username/password pair, both or neither) plus a non-empty @publicBaseUrl@ (the body embeds
+-- links). @webhook@ needs an http(s) URL and a non-empty signing secret.
+validateNotifierConfig :: NotifierConfig -> IO ()
+validateNotifierConfig nc = case nc.notifierTransport of
+  LogNotifier -> pure ()
+  SmtpNotifier -> case nc.smtpConfig of
+    Nothing ->
+      failWith "SHOMEI_NOTIFIER_TRANSPORT=smtp requires SMTP settings (at least SHOMEI_SMTP_HOST and SHOMEI_SMTP_FROM)"
+    Just sc -> do
+      let SmtpConfig {host = h, fromAddress = fromA, username = u, password = p} = sc
+      when (Text.null (Text.strip h)) (failWith "notifier transport smtp requires a non-empty SMTP host (SHOMEI_SMTP_HOST / smtpHost)")
+      when (Text.null (Text.strip fromA)) (failWith "notifier transport smtp requires a non-empty from address (SHOMEI_SMTP_FROM / smtpFromAddress)")
+      when (isJust u /= isJust p) (failWith "SMTP username and password must be set together (SHOMEI_SMTP_USERNAME / SHOMEI_SMTP_PASSWORD): both for an authenticated relay, or neither for a lab sink")
+      when (Text.null (Text.strip nc.publicBaseUrl)) (failWith "notifier transport smtp requires a non-empty publicBaseUrl (the email body embeds confirm links)")
+  WebhookNotifier -> case nc.webhookConfig of
+    Nothing ->
+      failWith "SHOMEI_NOTIFIER_TRANSPORT=webhook requires SHOMEI_WEBHOOK_URL and SHOMEI_WEBHOOK_SECRET"
+    Just wc -> do
+      let WebhookConfig {url = u, secret = s} = wc
+      unless (isHttpUrl u) (failWith "notifier transport webhook requires an http(s) SHOMEI_WEBHOOK_URL / webhookUrl")
+      when (Text.null s) (failWith "notifier transport webhook requires a non-empty SHOMEI_WEBHOOK_SECRET")
+  where
+    failWith = ioError . userError
+    isHttpUrl u =
+      let u' = Text.toLower (Text.strip u)
+       in Text.isPrefixOf "http://" u' || Text.isPrefixOf "https://" u'
 
 mergeServiceToken :: Text -> ServiceTokenConfig -> Maybe FileServiceTokenConfig -> IO ServiceTokenConfig
 mergeServiceToken _ base Nothing = pure base

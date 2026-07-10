@@ -64,8 +64,8 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `NotifierTransport` gains `SmtpNotifier`/`WebhookNotifier`; `SmtpConfig`/`WebhookConfig` sub-records + defaults in `Shomei.Config`; `alsoLogNotifications` flag.
-- [ ] M1: Server `FileConfig`/env wiring (`SHOMEI_NOTIFIER_TRANSPORT`, SMTP/webhook fields, secrets from env only); boot-time validation; Dhall schema + example updated; `ConfigSpec` cases.
+- [x] M1 (2026-07-10): `NotifierTransport` gains `SmtpNotifier`/`WebhookNotifier`; `SmtpTlsMode`/`SmtpConfig`/`WebhookConfig` sub-records + `smtpConfig`/`webhookConfig`/`alsoLogNotifications` on `NotifierConfig`, all defaulted in `defaultShomeiConfig`. Temporary log-fallback arms added to `runNotifierFromConfig`.
+- [x] M1 (2026-07-10): Server `FileConfig`/env wiring (`SHOMEI_NOTIFIER_TRANSPORT`, `SHOMEI_NOTIFIER_ALSO_LOG`, `SHOMEI_SMTP_*`, `SHOMEI_WEBHOOK_*`; password/secret from env only); `validateNotifierConfig` boot-time validation; Dhall schema + example updated (new fields `Optional`, example keeps `log`); six `ConfigSpec` cases. `shomei-server-config-test` green; `dhall-to-json` on the example succeeds.
 - [ ] M2: Nix availability check for `smtp-mail`/`mime-mail` recorded; deps added to `shomei-server`.
 - [ ] M2: SMTP interpreter (`runNotifierSmtp`) with the enumerated copy; failure semantics (catch-all, redacted log, `NotificationDeliveryFailed` audit event).
 - [ ] M2: `NotificationDeliveryFailed` event + codec + spec; SMTP sink-server test green.
@@ -82,7 +82,23 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-10 (M1) — the tree moved on since this plan was written: plan 30 (token redaction)
+and EP-3 (the `/v1` move) both landed.** `NotifierConfig` already carries a `logRawTokens`
+field, and `renderNotification`/`runNotifierLog` already redact the token by default (env
+`SHOMEI_NOTIFIER_LOG_SECRETS` restores the full link). Two consequences for the rest of this
+plan: (a) the confirm-link paths the current `LogNotifier` prints are `/v1/auth/verify-email/confirm`
+and `/v1/auth/password-reset/confirm` — **the M2 SMTP copy must use the `/v1` paths**, not the
+un-versioned paths the plan text quotes, so the emailed link matches the live route; (b) the M1
+env overlay folds the pre-existing `logRawTokens` read into the new `overlayNotifierFromEnv`
+rather than a standalone record update.
+
+**2026-07-10 (M1) — the new Dhall config fields are `Optional`, not required.** Unlike the
+existing scalar schema fields (`totpEnabled : Bool`, …), the EP-8 notifier fields
+(`notifierTransport`, `smtpHost`, `webhookUrl`, …) are `Optional` in `config/shomei-types.dhall`
+so a `log` deployment omits them entirely (`None Text` / absent → `Nothing` → defaults). Secrets
+(`SHOMEI_SMTP_PASSWORD`, `SHOMEI_WEBHOOK_SECRET`) have no schema field at all — env-only, matching
+how `SHOMEI_NOTIFIER_LOG_SECRETS` is already treated. `dhall-to-json` renders `None` as `null`,
+which the all-`Maybe` `FileConfig` decodes as absent.
 
 
 ## Decision Log

@@ -12,6 +12,22 @@ in    { issuer = "shomei"
       , sessionTtlSeconds = 2592000
       , publicBaseUrl = "http://localhost:8080"
       , emailVerificationRequired = False
+      -- Notification delivery (EP-8). Default "log" writes verification/reset links to the
+      -- server log. Switch to "smtp" for provider-relay email (SES/SendGrid/Resend/Postmark —
+      -- set smtpHost/smtpFromAddress here and SHOMEI_SMTP_PASSWORD in the environment) or
+      -- "webhook" for a signed JSON POST (set webhookUrl here and SHOMEI_WEBHOOK_SECRET in the
+      -- environment). smtpTlsMode is "starttls" (587) | "implicit" (465) | "plain" (lab only).
+      , notifierTransport = Some "log"
+      , alsoLogNotifications = Some False
+      , smtpHost = None Text
+      , smtpPort = None Natural
+      , smtpTlsMode = None Text
+      , smtpUsername = None Text
+      , smtpFromAddress = None Text
+      , smtpTimeoutSeconds = None Natural
+      , webhookUrl = None Text
+      , webhookTimeoutSeconds = None Natural
+      , webhookMaxAttempts = None Natural
       , rateLimitEnabled = True
       , maxFailedLoginsPerAccount = 7
       , perIpRequestsPerMinute = 60

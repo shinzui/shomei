@@ -12,6 +12,24 @@
 , sessionTtlSeconds : Natural
 , publicBaseUrl : Text
 , emailVerificationRequired : Bool
+-- Notification delivery (MasterPlan 7 EP-8). `notifierTransport` selects the built-in sender:
+-- "log" (default; writes the link to the server log), "smtp" (deliver via a provider RELAY —
+-- SES/SendGrid/Resend/Postmark — not a self-hosted mail server), or "webhook" (signed JSON POST).
+-- Secrets are NEVER in this file: the SMTP password comes from SHOMEI_SMTP_PASSWORD and the
+-- webhook signing secret from SHOMEI_WEBHOOK_SECRET. `alsoLogNotifications` additionally tees
+-- every notification through the log sender (staged rollout). See docs/user/notifications.md.
+-- smtpTlsMode: "starttls" (587) | "implicit" (465) | "plain" (25, lab sink only, never prod).
+, notifierTransport : Optional Text
+, alsoLogNotifications : Optional Bool
+, smtpHost : Optional Text
+, smtpPort : Optional Natural
+, smtpTlsMode : Optional Text
+, smtpUsername : Optional Text
+, smtpFromAddress : Optional Text
+, smtpTimeoutSeconds : Optional Natural
+, webhookUrl : Optional Text
+, webhookTimeoutSeconds : Optional Natural
+, webhookMaxAttempts : Optional Natural
 , rateLimitEnabled : Bool
 , maxFailedLoginsPerAccount : Natural
 , perIpRequestsPerMinute : Natural
