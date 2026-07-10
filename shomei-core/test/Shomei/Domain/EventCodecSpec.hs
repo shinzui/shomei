@@ -143,7 +143,11 @@ roundTrips =
     let d = OAuthClientRevokedData "oauthclient_01" "oauthclient_01" t0
      in check "oauth_client_revoked" d (OAuthClientRevoked d),
     let d = OAuthCodeIssuedData "oauthclient_01" uid (Set.singleton (Scope "openid")) t0
-     in check "oauth_code_issued" d (OAuthCodeIssued d)
+     in check "oauth_code_issued" d (OAuthCodeIssued d),
+    -- EP-8 notifier delivery failure. No principal, so both id columns stay NULL; the token is
+    -- never in the payload.
+    let d = NotificationDeliveryFailedData "smtp" "email_verification_requested" "alice@example.com" "Network.Socket.connect: does not exist (Connection refused)" t0
+     in check "notification_delivery_failed" d (NotificationDeliveryFailed d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -154,10 +158,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 35).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 40).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 39 AuthEvent constructors" (length roundTrips @?= 39)
+  testCase "covers all 40 AuthEvent constructors" (length roundTrips @?= 40)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

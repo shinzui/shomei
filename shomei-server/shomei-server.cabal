@@ -51,6 +51,7 @@ library
     , base                  >=4.18 && <5
     , bytestring
     , containers
+    , crypton
     , effectful
     , effectful-core
     , hasql-pool
@@ -58,6 +59,8 @@ library
     , http-client-tls
     , http-types
     , jose
+    , memory
+    , mime-mail
     , network
     , process
     , servant-server
@@ -67,6 +70,7 @@ library
     , shomei-postgres
     , shomei-servant
     , shomei-webauthn
+    , smtp-mail
     , stm
     , text
     , time
@@ -198,6 +202,7 @@ test-suite shomei-server-test
     , base64
     , bytestring
     , containers
+    , crypton
     , directory
     , effectful
     , effectful-core
@@ -205,6 +210,8 @@ test-suite shomei-server-test
     , hasql-pool
     , http-client
     , http-types
+    , memory
+    , network
     , shomei-core
     , shomei-jwt
     , shomei-migrations:test-support

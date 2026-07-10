@@ -66,9 +66,9 @@ This section must always reflect the actual current state of the work.
 
 - [x] M1 (2026-07-10): `NotifierTransport` gains `SmtpNotifier`/`WebhookNotifier`; `SmtpTlsMode`/`SmtpConfig`/`WebhookConfig` sub-records + `smtpConfig`/`webhookConfig`/`alsoLogNotifications` on `NotifierConfig`, all defaulted in `defaultShomeiConfig`. Temporary log-fallback arms added to `runNotifierFromConfig`.
 - [x] M1 (2026-07-10): Server `FileConfig`/env wiring (`SHOMEI_NOTIFIER_TRANSPORT`, `SHOMEI_NOTIFIER_ALSO_LOG`, `SHOMEI_SMTP_*`, `SHOMEI_WEBHOOK_*`; password/secret from env only); `validateNotifierConfig` boot-time validation; Dhall schema + example updated (new fields `Optional`, example keeps `log`); six `ConfigSpec` cases. `shomei-server-config-test` green; `dhall-to-json` on the example succeeds.
-- [ ] M2: Nix availability check for `smtp-mail`/`mime-mail` recorded; deps added to `shomei-server`.
-- [ ] M2: SMTP interpreter (`runNotifierSmtp`) with the enumerated copy; failure semantics (catch-all, redacted log, `NotificationDeliveryFailed` audit event).
-- [ ] M2: `NotificationDeliveryFailed` event + codec + spec; SMTP sink-server test green.
+- [x] M2 (2026-07-10): deps added to `shomei-server` (`smtp-mail`, `mime-mail`, `crypton`, `memory`; test stanza `network`); the pinned set resolved them with __no__ `flake.module.nix` override — but `smtp-mail` is __0.3.0.0__, not the ≥0.5 the plan assumed (see Surprises). `cabal build shomei-server` green.
+- [x] M2 (2026-07-10): SMTP interpreter `runNotifierSmtp` with the enumerated copy (on `/v1` paths), TLS-mode dispatch over smtp-mail 0.3's `sendMail'`/`sendMailSTARTTLS'`/`sendMailTLS'` (+ `WithLogin` variants), `System.Timeout` guard, `try @SomeException` catch-all, one redacted stderr line, and a `NotificationDeliveryFailed` audit event. Shared `publishDeliveryFailed`/`truncateError` helpers (reused by M3).
+- [x] M2 (2026-07-10): `NotificationDeliveryFailed` event + `EventCodec` (both directions) + round-trip spec (count 39→40); socket-based SMTP sink test (`NotifySpec`) asserts RCPT/subject/link; refused-port failure test asserts the audit event, no throw, and no token in the error. Both green.
 - [ ] M3: Webhook interpreter (`runNotifierWebhook`): HMAC-SHA256 signature, timeout, bounded retries with backoff; reuses `Env.envHttpManager`.
 - [ ] M3: Warp stub-server test asserting body, headers, and signature; retry/failure tests.
 - [ ] M4: `runNotifierFromConfig` selection + log-tee wiring in `Shomei.Server.App.runAppIO`; constraint widening.
@@ -91,6 +91,22 @@ and `/v1/auth/password-reset/confirm` — **the M2 SMTP copy must use the `/v1` 
 un-versioned paths the plan text quotes, so the emailed link matches the live route; (b) the M1
 env overlay folds the pre-existing `logRawTokens` read into the new `overlayNotifierFromEnv`
 rather than a standalone record update.
+
+**2026-07-10 (M2) — the pinned nixpkgs set has `smtp-mail` 0.3.0.0, not the ≥0.5 the plan's
+Decision Log named, and it resolved with zero Nix overrides.** `cabal build` pulled `smtp-mail-0.3.0.0`
+and `mime-mail-0.5.2` straight from the index into the dev shell's GHC 9.12.4 set; `crypton`/`memory`
+were already present. No `flake.module.nix` override was needed. 0.3.0.0 still exports every function
+this plan uses — `sendMail'`, `sendMailSTARTTLS'`, `sendMailTLS'` and their `sendMailWithLogin*'`
+authenticated variants (`UserName`/`Password` are `String`) — plus `mime-mail`'s pure
+`simpleMail' :: Address -> Address -> Text -> LText -> Mail`, so the interpreter is unchanged from the
+plan's intent; only the version number differs. **M3's `crypton` HMAC is unaffected.**
+
+**2026-07-10 (M2) — `AuthEvent` already has `EmailVerificationRequested`/`PasswordResetRequested`
+constructors that collide with `Notification`'s.** `Shomei.Notify` and `NotifySpec` both pattern-match
+`Notification`, so `import Shomei.Domain.Event (..)` is ambiguous — import it selectively
+(`AuthEvent (NotificationDeliveryFailed)`, `NotificationDeliveryFailedData (..)`). Likewise a
+test-local `expiresAt` binding clashes with the `Notification` field `expiresAt` under
+`DuplicateRecordFields`; rename the fixture. **M3 imports the same modules and hits both.**
 
 **2026-07-10 (M1) — the new Dhall config fields are `Optional`, not required.** Unlike the
 existing scalar schema fields (`totpEnabled : Bool`, …), the EP-8 notifier fields

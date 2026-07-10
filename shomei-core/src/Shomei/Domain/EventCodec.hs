@@ -71,6 +71,7 @@ reconstructAuthEvent etype payload = case etype of
   "oauth_client_created" -> OAuthClientCreated <$> parse payload
   "oauth_client_revoked" -> OAuthClientRevoked <$> parse payload
   "oauth_code_issued" -> OAuthCodeIssued <$> parse payload
+  "notification_delivery_failed" -> NotificationDeliveryFailed <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -183,3 +184,7 @@ projectAuthEvent = \case
   -- yet -- the exchange creates it.
   OAuthCodeIssued d ->
     (Just (userIdToUUID d.userId), Nothing, "oauth_code_issued", toJSON d, d.occurredAt)
+  -- A delivery failure names no principal (the recipient is an email address, not a user id) and
+  -- no session, so both id columns stay NULL; channel/type/recipient/error ride in the payload.
+  NotificationDeliveryFailed d ->
+    (Nothing, Nothing, "notification_delivery_failed", toJSON d, d.occurredAt)

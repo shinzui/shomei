@@ -49,6 +49,7 @@ module Shomei.Domain.Event
     OAuthClientCreatedData (..),
     OAuthClientRevokedData (..),
     OAuthCodeIssuedData (..),
+    NotificationDeliveryFailedData (..),
   )
 where
 
@@ -463,6 +464,21 @@ data OAuthCodeIssuedData = OAuthCodeIssuedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | A notifier interpreter (EP-8) failed to deliver a notification after exhausting its
+-- attempts. The triggering HTTP request still succeeds (fire-and-forget); this event is the
+-- operator's observability signal. It deliberately carries no session or user id — the row's
+-- id columns stay NULL — and __never__ the one-time token: only the channel
+-- (@"smtp"@/@"webhook"@), the notification type, the recipient address, and a truncated error.
+data NotificationDeliveryFailedData = NotificationDeliveryFailedData
+  { channel :: !Text,
+    notificationType :: !Text,
+    recipient :: !Text,
+    errorText :: !Text,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -503,5 +519,6 @@ data AuthEvent
   | OAuthClientCreated OAuthClientCreatedData
   | OAuthClientRevoked OAuthClientRevokedData
   | OAuthCodeIssued OAuthCodeIssuedData
+  | NotificationDeliveryFailed NotificationDeliveryFailedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
