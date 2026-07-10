@@ -922,6 +922,167 @@
                 }
             }
         },
+        "/oauth/introspect": {
+            "post": {
+                "operationId": "createOauthIntrospect",
+                "parameters": [
+                    {
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenRequestForm"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AnyValue"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "400": {
+                        "description": "Invalid `body` or `Authorization`"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "invalid_client"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_client."
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "server_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: server_error."
+                    }
+                }
+            }
+        },
+        "/oauth/revoke": {
+            "post": {
+                "operationId": "createOauthRevoke",
+                "parameters": [
+                    {
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TokenRequestForm"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Success."
+                    },
+                    "400": {
+                        "description": "Invalid `body` or `Authorization`"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "invalid_client"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: invalid_client."
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/OAuthError"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "error": {
+                                            "enum": [
+                                                "server_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 6749 error response. The `error` member is one of: server_error."
+                    }
+                }
+            }
+        },
         "/oauth/token": {
             "post": {
                 "operationId": "createOauthToken",
@@ -1038,6 +1199,51 @@
                         "description": "An RFC 6749 error response. The `error` member is one of: server_error."
                     }
                 }
+            }
+        },
+        "/oauth/userinfo": {
+            "get": {
+                "operationId": "getOauthUserinfo",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AnyValue"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
             }
         },
         "/openapi.json": {

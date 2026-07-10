@@ -510,7 +510,11 @@ oauthErrorResponsesByPath =
         (401, ["login_required"]),
         (404, ["not_found"])
       ]
-    )
+    ),
+    -- RFC 7662/7009: introspection and revocation never error on a bad TOKEN (that would let a
+    -- caller probe) -- {"active": false} at 200 / empty 200. Their only failure is a bad CLIENT.
+    ("/oauth/introspect", [(401, ["invalid_client"]), (500, ["server_error"])]),
+    ("/oauth/revoke", [(401, ["invalid_client"]), (500, ["server_error"])])
   ]
 
 oauthPaths :: [FilePath]

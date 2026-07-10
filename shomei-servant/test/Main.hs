@@ -15,6 +15,7 @@ import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.JWK (JWK, JWKSet)
 import Crypto.JWT (ClaimsSet, JWTError, SignedJWT, defaultJWTValidationSettings, verifyClaims)
 import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
@@ -1117,6 +1118,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "POST /oauth/token: refresh_token is bound to the client that minted the session" $ do
         (_, confId, _, e) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app e)) (scenarioOAuthRefreshRejectsUnboundSession confId),
+      testCase "userinfo, introspection, and the revoke->introspect flip" $ do
+        (_, confId, pubId, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId),
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
@@ -1663,6 +1667,105 @@ verifyIdToken jwk idToken = do
     Right claims -> case toJSON (claims :: ClaimsSet) of
       Object o -> pure o
       other -> assertFailure ("id_token claims were not an object: " <> show other)
+
+-- | EP-5 M4: userinfo, introspection, and revocation, and the revoke->introspect flip that is
+-- this plan's headline acceptance behavior.
+scenarioOAuthUserinfoIntrospectRevoke :: JWK -> Text -> Text -> Int -> IO ()
+scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
+  mgr <- newManager defaultManagerSettings
+  token <- signupToken mgr port "resource-user"
+  let verifier = "another-high-entropy-verifier-of-good-length-abcdefghij" :: Text
+      challenge = pkceChallengeFor verifier
+      basic = Just (confId, confidentialClientSecret)
+  code <- do
+    r <-
+      getNoRedirect
+        mgr
+        port
+        ( authorizeUrl
+            [ ("client_id", confId),
+              ("response_type", "code"),
+              ("redirect_uri", authorizeRedirectUri),
+              ("scope", "openid profile"),
+              ("code_challenge", challenge),
+              ("code_challenge_method", "S256")
+            ]
+        )
+        [("Authorization", "Bearer " <> Text.encodeUtf8 token)]
+    (_, params) <- locationOf "authorize" r
+    maybe (assertFailure "no code") pure (lookup "code" params)
+  resp <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      basic
+      [ ("grant_type", "authorization_code"),
+        ("code", Text.encodeUtf8 code),
+        ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+        ("code_verifier", Text.encodeUtf8 verifier)
+      ]
+  body <- must "token body" (bodyOf resp)
+  accessToken <- must "access_token" (dig ["access_token"] body >>= asText)
+  refreshToken <- must "refresh_token" (dig ["refresh_token"] body >>= asText)
+  idToken <- must "id_token" (dig ["id_token"] body >>= asText)
+
+  -- userinfo: sub matches the ID token's sub, and it is bearer-protected.
+  (uiStatus, uiBody) <- getJSON mgr port "/oauth/userinfo" [("Authorization", "Bearer " <> Text.encodeUtf8 accessToken)]
+  uiStatus @?= 200
+  ui <- must "userinfo body" uiBody
+  uiSub <- must "userinfo sub" (dig ["sub"] ui >>= asText)
+  idSub <- idTokenSub jwk idToken
+  uiSub @?= idSub
+  assertBool "userinfo carries scopes" (isJust (dig ["scopes"] ui))
+  (noTokenUi, _) <- getJSON mgr port "/oauth/userinfo" []
+  noTokenUi @?= 401
+
+  -- introspection requires client auth; without it, 401.
+  noAuth <- postForm mgr port "/oauth/introspect" Nothing [("token", Text.encodeUtf8 accessToken)]
+  assertOAuthError "introspect without client auth" 401 "invalid_client" noAuth
+  -- A public client cannot introspect either: it holds no secret.
+  pubAuth <- postForm mgr port "/oauth/introspect" Nothing [("client_id", Text.encodeUtf8 pubId), ("token", Text.encodeUtf8 accessToken)]
+  assertOAuthError "a public client introspecting" 401 "invalid_client" pubAuth
+
+  -- A live access token introspects active, with the RFC 7662 fields.
+  active <- introspect mgr port basic accessToken
+  (dig ["active"] active) @?= Just (Aeson.Bool True)
+  (dig ["token_type"] active >>= asText) @?= Just "Bearer"
+  (dig ["scope"] active >>= asText) @?= Just "openid profile"
+  (dig ["sub"] active >>= asText) @?= Just uiSub
+  assertBool "introspection reports sid" (isJust (dig ["sid"] active))
+
+  -- Garbage introspects inactive, at 200 (never an error, to prevent probing).
+  garbage <- introspect mgr port basic "not-a-token"
+  garbage @?= object ["active" .= False]
+
+  -- The flip: revoke the refresh token, and the access token's session dies with it, so
+  -- introspection -- which is session-aware regardless of sessionCheckMode -- now reports inactive.
+  (revStatus, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", Text.encodeUtf8 refreshToken), ("token_type_hint", "refresh_token")]
+  revStatus @?= 200
+  afterRevoke <- introspect mgr port basic accessToken
+  (dig ["active"] afterRevoke) @?= Just (Aeson.Bool False)
+  -- The refresh token no longer rotates.
+  reuse <- postForm mgr port "/oauth/token" basic [("grant_type", "refresh_token"), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  assertOAuthError "a revoked refresh token" 400 "invalid_grant" reuse
+  -- Revoking an unknown token is still 200 (RFC 7009 forbids erroring, to prevent probing).
+  (unknownRev, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", "nonexistent")]
+  unknownRev @?= 200
+
+introspect :: Manager -> Int -> Maybe (Text, Text) -> Text -> IO Value
+introspect mgr port basic tok = do
+  r <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 tok)]
+  must "introspection body" (bodyOf r)
+
+-- | The @sub@ claim of an ID token, read through the same signature-verifying path the M3 test
+-- uses (so it doubles as a second check that the token verifies). @jwk@ is the test signing key.
+idTokenSub :: JWK -> Text -> IO Text
+idTokenSub jwk idToken = do
+  claims <- verifyIdToken jwk idToken
+  case KM.lookup "sub" claims of
+    Just (String s) -> pure s
+    _ -> assertFailure "id_token has no string sub"
 
 -- | SH-25 M4 acceptance: an HTTP caller can sign up with ONLY a @loginId@ (no email). The
 -- returned user has that login id and a @null@ email, and the same identifier logs in.

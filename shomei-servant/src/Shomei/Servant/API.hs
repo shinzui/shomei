@@ -468,6 +468,36 @@ data ShomeiRoutes mode = ShomeiRoutes
           :> Header "Authorization" Text
           :> ReqBody '[FormUrlEncoded] Form
           :> Post '[JSON] (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] TokenResponse),
+    -- | @GET \/oauth\/userinfo@ (EP-5, OIDC Core §5.3): the bearer-protected claims endpoint.
+    --     Uses the ordinary 'Authenticated' combinator, so its @401@s are the ordinary problem
+    --     documents and both the bearer and (later) cookie transports work.
+    oauthUserinfo ::
+      mode
+        :- "oauth"
+          :> "userinfo"
+          :> Authenticated
+          :> Get '[JSON] Value,
+    -- | @POST \/oauth\/introspect@ (EP-5, RFC 7662): a resource server asks whether a token is
+    --     live. Client-authenticated (an OAuth client or an EP-4 service account). The answer is
+    --     always @200@ — @{"active": false}@ for anything invalid, never an error, to stop probing
+    --     — so its error shape is RFC 6749's, not the application envelope.
+    oauthIntrospect ::
+      mode
+        :- "oauth"
+          :> "introspect"
+          :> Header "Authorization" Text
+          :> ReqBody '[FormUrlEncoded] Form
+          :> Post '[JSON] Value,
+    -- | @POST \/oauth\/revoke@ (EP-5, RFC 7009): revoke a refresh or access token. Always @200@
+    --     with an empty body, even for an unknown token; only a failed client authentication is an
+    --     error (@401 invalid_client@).
+    oauthRevoke ::
+      mode
+        :- "oauth"
+          :> "revoke"
+          :> Header "Authorization" Text
+          :> ReqBody '[FormUrlEncoded] Form
+          :> Post '[JSON] NoContent,
     health :: mode :- "health" :> Get '[JSON] HealthResponse,
     ready :: mode :- "ready" :> Get '[JSON] ReadyResponse
   }

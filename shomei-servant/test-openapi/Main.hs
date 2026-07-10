@@ -73,10 +73,11 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    -- 36 = 33 + EP-4's unversioned POST /oauth/token
-    --         + EP-5's unversioned GET /.well-known/openid-configuration and GET /oauth/authorize.
-    it "covers exactly 36 paths" $
-      pathCount `shouldBe` 36
+    -- 39 = 33 + EP-4's POST /oauth/token
+    --         + EP-5's GET /.well-known/openid-configuration, GET /oauth/authorize,
+    --           GET /oauth/userinfo, POST /oauth/introspect, POST /oauth/revoke.
+    it "covers exactly 39 paths" $
+      pathCount `shouldBe` 39
 
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
     it "declares the OAuthError schema" $

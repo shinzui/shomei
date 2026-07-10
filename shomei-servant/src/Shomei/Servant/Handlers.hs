@@ -16,11 +16,13 @@ module Shomei.Servant.Handlers
 where
 
 import Data.Aeson (Value, encode)
+import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
@@ -30,7 +32,7 @@ import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Config (CookieConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
     LoginCommand (..),
@@ -38,15 +40,18 @@ import Shomei.Domain.Command
     RefreshCommand (..),
     SignupCommand (..),
   )
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginAttempt (ClientIp (..))
 import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
 import Shomei.Domain.OAuthClient (OAuthClientStatus (..), isRegisteredRedirectUri)
+import Shomei.Domain.OAuthClient qualified as OAuthClient
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
 import Shomei.Domain.Password (PlainPassword (..))
-import Shomei.Domain.RefreshToken (RefreshToken (..))
+import Shomei.Domain.RefreshToken (RefreshToken (..), RefreshTokenStatus (RefreshTokenActive))
+import Shomei.Domain.ServiceAccount qualified as ServiceAccount
+import Shomei.Domain.Session qualified as Session
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Effect.AuthEventPublisher (publishAuthEvent)
@@ -60,8 +65,12 @@ import Shomei.Effect.AuthEventReader
   )
 import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (findOAuthClientByClientId)
-import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser)
+import Shomei.Effect.RefreshTokenStore (findRefreshTokenByHash, revokeRefreshTokenFamily, revokeSessionRefreshTokens)
+import Shomei.Effect.ServiceAccountStore (findServiceAccountByClientId)
+import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser, revokeSession)
 import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
+import Shomei.Effect.TokenGen (hashRefreshToken)
+import Shomei.Effect.TokenVerifier (verifyAccessToken)
 import Shomei.Effect.UserStore
   ( UserCursor (..),
     UserListQuery (..),
@@ -168,6 +177,9 @@ shomeiRoutes env =
       oidcDiscovery = oidcDiscoveryH env,
       oauthAuthorize = oauthAuthorizeH env,
       oauthToken = oauthTokenH env,
+      oauthUserinfo = oauthUserinfoH env,
+      oauthIntrospect = oauthIntrospectH env,
+      oauthRevoke = oauthRevokeH env,
       health = healthH,
       ready = readyH env
     }
@@ -585,6 +597,176 @@ grantError :: OAuthTokenGrant.TokenGrantError -> ServerError
 grantError e = case OAuthTokenGrant.grantErrorCode e of
   "invalid_client" -> OAuth.invalidClient
   code -> OAuth.oauthError status400 code (OAuthTokenGrant.grantErrorDescription e)
+
+-- | @GET \/oauth\/userinfo@ (OIDC Core §5.3). Bearer-protected by the ordinary 'Authenticated'
+-- combinator, so its @401@s are the ordinary problem documents.
+--
+-- Returns @sub@ (always), @roles@ and @scopes@ (from the presented token's claims, possibly empty
+-- before EP-1's enrichment lands), and @email@\/@email_verified@ when the user row has them. The
+-- roles\/scopes come from the verified claims, not a fresh store read: userinfo reports what /this
+-- token/ carries, which is what a relying party correlating it with the ID token expects.
+oauthUserinfoH :: Env -> AuthUser -> Handler Value
+oauthUserinfoH env user = do
+  mUser <- runPort env (findUserById user.authUserId)
+  let base =
+        [ "sub" Aeson..= idText user.authUserId,
+          "roles" Aeson..= [r | Role r <- Set.toList user.authRoles],
+          "scopes" Aeson..= [s | Scope s <- Set.toList user.authScopes]
+        ]
+      emailFields u =
+        foldMap (\e -> ["email" Aeson..= emailText e, "email_verified" Aeson..= isJust u.emailVerifiedAt]) u.email
+  pure (Aeson.object (base <> maybe [] emailFields mUser))
+
+-- | @POST \/oauth\/introspect@ (RFC 7662): session-aware token status for resource servers.
+--
+-- Client-authenticated (an OAuth client or an EP-4 service account). The response is @200@ in
+-- every case: @{"active": false}@ for anything invalid, expired, or revoked — never an error,
+-- because an introspection endpoint that distinguished failures would let a caller probe for valid
+-- tokens. On success the fields the RFC defines are filled from the claims.
+--
+-- __It always consults the session store__, regardless of @sessionCheckMode@ (Decision Log): a
+-- token is @active@ only if it verifies /and/ its @sid@ resolves to a live session. That is the
+-- whole point of RFC 7662 — a resource server can see a revocation that stateless JWT verification
+-- cannot — and it is what makes the revoke→introspect flip observable.
+oauthIntrospectH :: Env -> Maybe Text -> Form -> Handler Value
+oauthIntrospectH env mAuthHeader form = do
+  authenticateOAuthCaller env mAuthHeader form
+  case OAuth.lookupParam "token" form of
+    Nothing -> pure inactive
+    Just presented -> case OAuth.lookupParam "token_type_hint" form of
+      -- The hint is advisory; we honor `refresh_token` because a refresh token is opaque and
+      -- would never verify as a JWT, so without the hint it would always look inactive.
+      Just "refresh_token" -> introspectRefresh env presented
+      _ -> do
+        verified <- runPort env (verifyAccessToken (AccessToken presented))
+        case verified of
+          Left _ -> pure inactive
+          Right claims -> do
+            mSession <- runPort env (findSessionById claims.sessionId)
+            now' <- runPort env now
+            case mSession of
+              Just s | sessionIsLive now' s -> pure (activeAccess claims s)
+              -- The signature is fine but the session is gone or dead: to a resource server the
+              -- token is not active, which is exactly what revocation must make observable.
+              _ -> pure inactive
+
+-- | Introspect a presented refresh token: hash it, look it up, and report from its status and its
+-- session's liveness.
+introspectRefresh :: Env -> Text -> Handler Value
+introspectRefresh env presented = do
+  tokHash <- runPort env (hashRefreshToken (RefreshToken presented))
+  mTok <- runPort env (findRefreshTokenByHash tokHash)
+  case mTok of
+    Nothing -> pure inactive
+    Just tok
+      | (tok ^. #status) /= RefreshTokenActive -> pure inactive
+      | otherwise -> do
+          mSession <- runPort env (findSessionById (tok ^. #sessionId))
+          now' <- runPort env now
+          case mSession of
+            Just s | sessionIsLive now' s -> pure (Aeson.object ["active" Aeson..= True, "token_type" Aeson..= ("refresh_token" :: Text)])
+            _ -> pure inactive
+
+-- | @POST \/oauth\/revoke@ (RFC 7009): revoke what we recognize, and always answer @200@.
+--
+-- A refresh token revokes its whole family and its session; an access token revokes its session
+-- and that session's refresh tokens (documented caveat: a stateless verifier keeps accepting the
+-- JWT until @exp@). An unknown token is not an error — RFC 7009 §2.2 forbids that, to stop probing
+-- — so this only ever raises on a failed client authentication.
+oauthRevokeH :: Env -> Maybe Text -> Form -> Handler NoContent
+oauthRevokeH env mAuthHeader form = do
+  authenticateOAuthCaller env mAuthHeader form
+  case OAuth.lookupParam "token" form of
+    Nothing -> pure NoContent
+    Just presented -> do
+      now' <- runPort env now
+      tokHash <- runPort env (hashRefreshToken (RefreshToken presented))
+      mTok <- runPort env (findRefreshTokenByHash tokHash)
+      case mTok of
+        -- A refresh token: revoke the family and the session it belongs to.
+        Just tok -> do
+          runPort env do
+            revokeRefreshTokenFamily (tok ^. #refreshTokenId) now'
+            revokeSession (tok ^. #sessionId) now'
+          pure NoContent
+        -- Otherwise try to read it as an access JWT and revoke its session.
+        Nothing -> do
+          verified <- runPort env (verifyAccessToken (AccessToken presented))
+          case verified of
+            Right claims -> do
+              runPort env do
+                revokeSession claims.sessionId now'
+                revokeSessionRefreshTokens claims.sessionId now'
+              pure NoContent
+            -- Neither a known refresh token nor a valid access token: nothing to do, still 200.
+            Left _ -> pure NoContent
+
+-- | Client-authenticate a caller of @\/oauth\/introspect@ or @\/oauth\/revoke@ against __either__ a
+-- confidential OAuth client or an EP-4 service account, both of which legitimately introspect.
+--
+-- A failure is @401 invalid_client@, the same shape the token endpoint uses. Public OAuth clients
+-- cannot introspect: they hold no secret, and an unauthenticated introspection endpoint is a
+-- probing oracle.
+authenticateOAuthCaller :: Env -> Maybe Text -> Form -> Handler ()
+authenticateOAuthCaller env mAuthHeader form = do
+  auth <- either throwError pure (OAuth.extractClientAuth mAuthHeader form)
+  let clientId = auth ^. #clientId
+      secret = auth ^. #clientSecret
+  ok <-
+    runPort env do
+      mClient <- findOAuthClientByClientId clientId
+      case mClient of
+        Just client
+          | Just h <- oauthClientSecretHash client,
+            client ^. #status == OAuthClientActive ->
+              pure (ServiceToken.verifyServiceSecret h secret)
+        _ -> do
+          mAccount <- findServiceAccountByClientId clientId
+          pure (maybe False (serviceAccountAuthenticates secret) mAccount)
+  unless ok (throwError OAuth.invalidClient)
+
+-- | A service account authenticates iff it is active and its secret matches. Read through record
+-- patterns because 'ServiceAccount' shares field names with 'User'.
+serviceAccountAuthenticates :: Text -> ServiceAccount.ServiceAccount -> Bool
+serviceAccountAuthenticates secret account =
+  ServiceToken.verifyServiceSecret (saSecretHash account) secret
+    && saStatus account == ServiceAccount.ServiceAccountActive
+  where
+    saSecretHash ServiceAccount.ServiceAccount {secretHash} = secretHash
+    saStatus ServiceAccount.ServiceAccount {status} = status
+
+-- | An OAuth client's secret hash, read through a record pattern.
+oauthClientSecretHash :: OAuthClient.OAuthClient -> Maybe Text
+oauthClientSecretHash OAuthClient.OAuthClient {secretHash} = secretHash
+
+-- | @{"active": false}@, the one answer to every introspection failure.
+inactive :: Value
+inactive = Aeson.object ["active" Aeson..= False]
+
+-- | Is this session usable right now — active and unexpired?
+sessionIsLive :: UTCTime -> Session.Session -> Bool
+sessionIsLive now' s = s.status == Session.SessionActive && s.expiresAt > now'
+
+-- | The RFC 7662 active-response object for a verified access token whose session is live.
+activeAccess :: AuthClaims -> Session.Session -> Value
+activeAccess claims _s =
+  Aeson.object
+    ( [ "active" Aeson..= True,
+        "token_type" Aeson..= ("Bearer" :: Text),
+        "scope" Aeson..= Text.unwords [s | Scope s <- Set.toList claims.scopes],
+        "sub" Aeson..= idText claims.subject,
+        "sid" Aeson..= idText claims.sessionId,
+        "iss" Aeson..= issuerClaimText claims.issuer,
+        "aud" Aeson..= audienceClaimText claims.audience,
+        "exp" Aeson..= (floor (utcTimeToPOSIXSeconds claims.expiresAt) :: Integer),
+        "iat" Aeson..= (floor (utcTimeToPOSIXSeconds claims.issuedAt) :: Integer)
+      ]
+        -- `act` per the RFC 8693 convention when the token was delegated (impersonation).
+        <> foldMap (\a -> ["act" Aeson..= Aeson.object ["sub" Aeson..= idText a]]) claims.actor
+    )
+  where
+    issuerClaimText (Issuer t) = t
+    audienceClaimText (Audience t) = t
 
 -- | The OAuth-local error mapping. Deliberately not 'authErrorToServerError': that renders the
 -- problem-details envelope, which this endpoint must not emit.

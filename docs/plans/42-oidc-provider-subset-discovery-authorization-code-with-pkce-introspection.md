@@ -66,9 +66,9 @@ This section must always reflect the actual current state of the work.
 - [x] M3: `grant_type=authorization_code` in the token dispatcher: code consumption (single-use), PKCE S256 verification, session + refresh issuance, `oauth_client_id` session binding.
 - [x] M3: ID-token issuance (`SignIdToken` on the `TokenSigner` effect + jwt interpreter + in-memory fake); `nonce`/`auth_time` plumbed from authorize to token.
 - [x] M3: `grant_type=refresh_token` mapped onto the existing rotation/reuse-detection workflow with client binding.
-- [ ] M4: `GET /oauth/userinfo` (bearer).
-- [ ] M4: `POST /oauth/introspect` (client-authenticated, RFC 7662 response, session-aware).
-- [ ] M4: `POST /oauth/revoke` (RFC 7009; refresh → family+session revocation; access → session revocation with documented caveat).
+- [x] M4: `GET /oauth/userinfo` (bearer).
+- [x] M4: `POST /oauth/introspect` (client-authenticated, RFC 7662 response, session-aware).
+- [x] M4: `POST /oauth/revoke` (RFC 7009; refresh → family+session revocation; access → session revocation with documented caveat).
 - [ ] M5: OpenAPI (schemas, path count updated — recount at implementation time), spec regenerated.
 - [ ] M5: `docs/user/oidc.md` written; `docs/user/api.md` and `docs/user/security.md` updated.
 - [ ] M5: Postgres E2E: the full transcript from Purpose, automated.
@@ -162,6 +162,28 @@ into a DoS tool. So the binding is a gate in front of `Wf.refresh`, and a sessio
 `scenarioOAuthTokenEndpoint` had to be updated, not just extended. **Any plan that turns a
 previously-unsupported grant into a real arm (EP-6's token-exchange) will hit the same stale
 assertion.** Left `password` there as the permanently-unsupported example.
+
+**2026-07-10 (M4) — `authenticateOAuthCaller` lives in `Shomei.Servant.Handlers`, not
+`Shomei.Servant.OAuth` as the plan sketched.** The helper must consult the OAuth-client store AND
+the service-account store (both may introspect), which means running port actions through `runPort
+env`. `Shomei.Servant.OAuth` is a wire-mechanics module below the seam and has no `Env`, so putting
+a store-touching helper there would invert the dependency. It stays in the handlers with the other
+port-driving code; `Shomei.Servant.OAuth` keeps only the pure `extractClientAuth`/`oauthError`
+pieces. **EP-6's introspection consistency work will call this same handler-level helper.**
+
+**2026-07-10 (M4) — introspection is session-aware unconditionally, which is what makes revocation
+observable, and it costs one session read per call.** `oauthIntrospectH` verifies the JWT and then
+loads the session by `sid`, reporting `active` only if the session is live — regardless of
+`sessionCheckMode`, whose default (`VerifyTokenOnly`) is about the *resource-path* hot loop, not
+this endpoint. That extra read is deliberate: RFC 7662 exists so a resource server sees a
+revocation that stateless verification cannot, and without the session read the revoke→introspect
+flip (this plan's headline acceptance) would not flip.
+
+**2026-07-10 (M4) — `object`/`(.=)` collide with `Shomei.Prelude`'s lens re-exports, exactly like
+`Context`/`:>` did for combinators.** `Shomei.Prelude` re-exports `Control.Lens`, whose `(.=)` is the
+state setter. The M4 handlers build JSON with aeson's `(.=)` and `object`, so they are written
+`Aeson..=` / `Aeson.object` under an `import Data.Aeson qualified as Aeson`. Any later handler that
+constructs JSON inline hits this.
 
 **2026-07-10 (M3) — the round-trip budget guards did NOT trip, because the OAuth exchange is not
 the login/refresh path they pin.** `testLoginRoundTripBudget`/`testRefreshRoundTripBudget` count the
