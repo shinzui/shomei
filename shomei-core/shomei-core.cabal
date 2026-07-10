@@ -93,6 +93,7 @@ library
     Shomei.Error
     Shomei.Id
     Shomei.Prelude
+    Shomei.Totp
     Shomei.Workflow
     Shomei.Workflow.Account
     Shomei.Workflow.Admin
@@ -143,6 +144,7 @@ test-suite shomei-core-test
     Shomei.OAuthCodeStoreSpec
     Shomei.PasskeyStoreSpec
     Shomei.ServiceAccountStoreSpec
+    Shomei.TotpSpec
     Shomei.WebAuthnCeremonySpec
     Shomei.Workflow.AdminSpec
     Shomei.Workflow.ClientCredentialsSpec

@@ -9,6 +9,7 @@ import Shomei.OAuthClientStoreSpec qualified
 import Shomei.OAuthCodeStoreSpec qualified
 import Shomei.PasskeyStoreSpec qualified
 import Shomei.ServiceAccountStoreSpec qualified
+import Shomei.TotpSpec qualified
 import Shomei.WebAuthnCeremonySpec qualified
 import Shomei.Workflow.AdminSpec qualified
 import Shomei.Workflow.ClientCredentialsSpec qualified
@@ -30,6 +31,7 @@ main =
     ( testGroup
         "shomei-core-test"
         [ Shomei.WorkflowSpec.tests,
+          Shomei.TotpSpec.tests,
           Shomei.AccountSpec.tests,
           Shomei.BreachSpec.tests,
           Shomei.Domain.EventCodecSpec.tests,

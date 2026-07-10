@@ -51,7 +51,7 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: Pure TOTP module `Shomei.Totp` (HMAC-SHA1 over crypton, RFC 6238 vectors pass); `base32` dependency added; otpauth URI builder.
+- [x] M1 (2026-07-10): Pure TOTP module `Shomei.Totp` (HMAC-SHA1 over crypton, RFC 6238 vectors pass); Base32 via `ram`'s `Data.ByteArray.Encoding` (no `base32` dep); otpauth URI builder. `TotpSpec` green (14 cases), `cabal test shomei-core` = 225 passed.
 - [ ] M2: Migrations `shomei_totp_credentials` + `shomei_recovery_codes`; `TotpCredentialStore` + `RecoveryCodeStore` ports; in-memory + Postgres interpreters (AES-256-GCM at the Postgres boundary); `TotpConfig` sub-record.
 - [ ] M2: Postgres round-trip tests incl. encryption round-trip and atomic recovery-code consumption.
 - [ ] M3: Enrollment/verify/removal workflows + routes; recovery-code generate/count workflows + routes; `denyUnderImpersonation` on all credential-changing handlers.
@@ -67,7 +67,17 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-10 (M1) — the `base32` package is unnecessary; `ram`'s `Data.ByteArray.Encoding`
+already provides RFC 4648 Base32.** `shomei-core` already depends on `ram` (the memory fork
+crypton uses; the tree forbids `memory`). Its `Data.ByteArray.Encoding` exports
+`Base (Base16 | Base32 | Base64 | Base64URLUnpadded | Base64OpenBSD)`, so
+`convertToBase Base32` / `convertFromBase Base32` give the uppercase RFC 4648 alphabet with
+zero new dependencies and no hand-rolled encoder. A 20-byte secret is 160 bits = exactly 32
+Base32 chars, so the output is unpadded (no trailing `=` to strip). Verified:
+`secretToBase32 (TotpSecret "12345678901234567890") == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"`.
+No `cabal.project`/`shomei-core.cabal` dependency block was needed. **M2's AES-256-GCM uses
+the same `ram`/crypton surface** (`Crypto.Cipher.AES`, `Crypto.Cipher.Types`), following the
+ChaChaPoly1305 AEAD pattern already in `shomei-jwt/src/Shomei/Jwt/KeyProtection.hs`.
 
 
 ## Decision Log
@@ -85,6 +95,9 @@ Record every decision made while working on the plan.
   `base64` package already used by `shomei-core`) is added only for RFC 4648 Base32,
   which authenticator apps require for the shared secret.
   Date: 2026-07-07
+  **Superseded 2026-07-10 (M1):** no `base32` package was added. `shomei-core` already
+  depends on `ram`, whose `Data.ByteArray.Encoding` provides RFC 4648 Base32 via
+  `convertToBase Base32` / `convertFromBase Base32`. See Surprises & Discoveries.
 
 - Decision: TOTP secrets are stored *encrypted* (AES-256-GCM), never hashed — and this
   plan supplies its own standalone key handling because no encryption-at-rest machinery
