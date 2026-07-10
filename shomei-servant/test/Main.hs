@@ -1415,6 +1415,23 @@ scenarioTokenExchange jwk gateClientId noGateClientId impToken staleImpToken por
   pwStatus @?= 403
   (pwBody >>= dig ["code"] >>= asText) @?= Just "impersonation_action_blocked"
 
+  -- Introspection (plan 42) reports the delegated token as active, with an `act` member naming the
+  -- operator — the observability surface agrees with the token's contents. Introspection
+  -- client-authenticates as the service account.
+  introActive <-
+    postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
+  introActiveDoc <- must "introspect (active) body" (bodyOf introActive)
+  dig ["active"] introActiveDoc @?= Just (Bool True)
+  assertBool "introspection reports the act member" (isJust (dig ["act", "sub"] introActiveDoc >>= asText))
+  -- DELETE /auth/impersonate remains the stop mechanism for an exchanged impersonation token; after
+  -- it, introspection flips to inactive — session revocation is observable.
+  (stopStatus, _) <- deleteAuth mgr port "/v1/auth/impersonate" (bearer impAccess)
+  stopStatus @?= 204
+  introInactive <-
+    postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
+  introInactiveDoc <- must "introspect (inactive) body" (bodyOf introInactive)
+  dig ["active"] introInactiveDoc @?= Just (Bool False)
+
   -- A stale operator token is one generic invalid_grant.
   staleR <-
     postForm

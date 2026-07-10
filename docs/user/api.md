@@ -162,7 +162,7 @@ Errors are RFC 6749 §5.2 objects, never problem documents:
 |---|---|---|
 | `invalid_client` | 401 | Unknown `client_id`, wrong secret, revoked account, inactive backing user, no credentials, or a malformed `Authorization` header. Carries `WWW-Authenticate: Basic realm="shomei"`. All of these are byte-identical: nothing discloses whether a `client_id` exists. |
 | `invalid_scope` | 400 | The requested scope is empty, or exceeds `allowed_scopes`. |
-| `invalid_grant` | 400 | (`authorization_code`/`refresh_token` grants) An invalid, expired, replayed, or wrong-client code or refresh token, or a PKCE mismatch. One indistinguishable answer for all of them. |
+| `invalid_grant` | 400 | An invalid, expired, replayed, or wrong-client code or refresh token, a PKCE mismatch (`authorization_code`/`refresh_token` grants), or a bad subject/actor token or refused impersonation (`token-exchange` grant). One indistinguishable answer for all of them. |
 | `invalid_request` | 400 | A required parameter is missing or malformed. |
 | `unsupported_grant_type` | 400 | A `grant_type` this deployment does not implement. |
 | `server_error` | 500 | An unexpected condition, still in the OAuth shape. |
@@ -176,6 +176,58 @@ Every successful `client_credentials` issuance writes a `service_token_issued` a
 
 Manage accounts with `shomei-admin service-accounts create|rotate-secret|revoke|list`. See
 [service-tokens.md](service-tokens.md) for the full guide.
+
+### Token exchange (RFC 8693)
+
+`POST /oauth/token` also accepts `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, which
+mints a **delegated token** (`sub` = the represented user, `act` = the acting party) in one of two
+modes. A successful response is the usual token response plus the required
+`issued_token_type` member, always `urn:ietf:params:oauth:token-type:access_token` — Shōmei's
+exchange issues access tokens only (no refresh tokens, no ID tokens). Errors use the RFC 6749 §5.2
+shape above (`invalid_grant` for a bad subject/actor token, `invalid_scope` for a narrowing
+violation, `invalid_request` for a malformed request, `invalid_client` for failed client auth). A
+`resource` parameter is rejected (`invalid_request`); an `audience` parameter is ignored.
+
+**Service on-behalf-of.** A service account (the same accounts the `client_credentials` grant uses)
+authenticates with its client credentials and presents a *user's* access token as the
+`subject_token`; it receives a narrowed token carrying the user's `sub` and the service's identity
+in `act`. The account must hold the dedicated `token-exchange:subject` scope in its `allowed_scopes`,
+which is never itself copied into an issued token. This is the paved road for propagating user
+identity across service hops. Full guide and narrowing rules:
+[service-tokens.md](service-tokens.md#acting-on-behalf-of-a-user).
+
+```bash
+curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$USER_ACCESS_TOKEN" \
+  -d 'subject_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  -d 'scope=kawa:ingest' \
+  http://localhost:8080/oauth/token
+```
+
+**Impersonation.** An operator holding the `impersonate:user` scope exchanges a bare user id — sent
+as the `subject_token` with the Shōmei-defined type
+`subject_token_type=urn:shomei:params:oauth:token-type:user-id` — plus their own access token as the
+`actor_token`, for a token whose `sub` is the target and `act` is the operator. This is the
+standards-based equivalent of the deprecated `POST /v1/auth/impersonate`; it enforces the same
+scope gate, freshness gate, and audit event (`impersonation_started`). The optional `reason` and
+`ticket_id` parameters feed the audit trail (`reason` defaults to `token_exchange`).
+`DELETE /v1/auth/impersonate` under the resulting token stops it, exactly as for the bespoke
+endpoint.
+
+```bash
+curl -s \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=user_01jz..." \
+  -d 'subject_token_type=urn:shomei:params:oauth:token-type:user-id' \
+  --data-urlencode "actor_token=$OPERATOR_ACCESS_TOKEN" \
+  -d 'actor_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  --data-urlencode 'reason=support ticket 4711' \
+  http://localhost:8080/oauth/token
+```
+
+Chained exchanges are refused: a token already carrying `act` cannot be presented as a `subject_token`
+or `actor_token`.
 
 ### OIDC provider endpoints
 
@@ -288,7 +340,15 @@ against delegated tokens; who-may-impersonate-whom policy and business-action ga
 embedding service, which reads `act`/`sub` from the verified token. See
 [security.md](security.md#impersonation--delegated-tokens).
 
-### `POST /v1/auth/impersonate` *(authenticated)*
+### `POST /v1/auth/impersonate` *(authenticated, deprecated)*
+
+> **Deprecated.** Use [`POST /oauth/token`](#token-exchange-rfc-8693) with
+> `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` in impersonation mode — the standard,
+> stock-tooling-consumable surface. Both paths share one workflow core, so behavior is identical: the
+> same scope gate, freshness gate, refresh-less delegated session, `impersonation_started` audit
+> event, and `denyUnderImpersonation` credential gating. This bespoke endpoint keeps working through a
+> deprecation window; removal is a candidate for the `/v1` major-version boundary.
+
 Body `{"userId","reason","ticketId"?}`. The caller must hold the `impersonate:user` scope and
 their own access token must have been issued within the freshness window (default 5 minutes). →
 `200` `{"accessToken","subjectUserId","actorUserId","expiresAt"}` — `accessToken` is the delegated
@@ -296,9 +356,25 @@ token (`sub`=customer, `act`=operator). `403 impersonation_forbidden` if the cal
 scope or is not fresh enough; `400 impersonation_target_invalid` if the target is missing, not
 active, or is the caller themselves.
 
+The equivalent token-exchange call:
+
+```bash
+curl -s \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$TARGET_USER_ID" \
+  -d 'subject_token_type=urn:shomei:params:oauth:token-type:user-id' \
+  --data-urlencode "actor_token=$OPERATOR_ACCESS_TOKEN" \
+  -d 'actor_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  --data-urlencode 'reason=support ticket 4711' \
+  http://localhost:8080/oauth/token
+```
+
 ### `DELETE /v1/auth/impersonate` *(authenticated)*
 Presented with a delegated token. → `204`. Revokes the delegated session named by the token.
 `400 impersonation_target_invalid` if the presented token is not a delegated token (no `act`).
+This remains the stop mechanism for **both** the bespoke endpoint and the token-exchange grant:
+an exchanged impersonation token is an ordinary delegated session, so revoking it here ends it
+(and `POST /oauth/revoke` under a service account revokes it too).
 
 Credential-changing endpoints (`POST /v1/auth/password/change`, `POST /v1/auth/passkeys/register/begin`,
 `POST /v1/auth/passkeys/register/complete`, `DELETE /v1/auth/passkeys/{passkeyId}`) **refuse** any request

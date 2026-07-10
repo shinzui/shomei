@@ -326,6 +326,21 @@ without shedding their own identity.
   live in the services that embed Shōmei. Only the token mint/verify layer can guarantee the
   two-identity invariant and refuse its own credential changes, so that is exactly what lives here.
 
+**Standards surface (RFC 8693).** The same delegated-token machinery is reachable as a standard OAuth
+2.0 token-exchange grant at `POST /oauth/token`
+(`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`), so stock tooling can drive it. In
+impersonation mode the operator sends the target as a bare user id
+(`subject_token_type=urn:shomei:params:oauth:token-type:user-id`) with their own access token as the
+`actor_token`; the grant enforces the *same* scope gate, freshness gate, refresh-less session, and
+`impersonation_started` audit event as `POST /v1/auth/impersonate`, because both share one workflow
+core (`mintDelegatedToken`) and cannot drift. The grant additionally offers a **service on-behalf-of**
+mode — a service account exchanges a user's access token for a narrowed token that acts for the user
+across service hops, gated by the dedicated `token-exchange:subject` scope (see
+[service-tokens.md](service-tokens.md#acting-on-behalf-of-a-user)). `POST /v1/auth/impersonate` is now
+deprecated in favor of the grant; it keeps working through a deprecation window, and
+`DELETE /v1/auth/impersonate` still stops an exchanged impersonation token. Chained exchanges are
+refused: a token already carrying `act` cannot be re-exchanged.
+
 ## Logging hygiene
 
 The structured request logger reads only the method, path, response status, duration, and peer
