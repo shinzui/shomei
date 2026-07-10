@@ -38,6 +38,9 @@ module Shomei.Domain.Event
     ServiceTokenIssuedData (..),
     RoleGrantedData (..),
     RoleRevokedData (..),
+    ServiceAccountCreatedData (..),
+    ServiceAccountSecretRotatedData (..),
+    ServiceAccountRevokedData (..),
   )
 where
 
@@ -314,6 +317,45 @@ data RoleRevokedData = RoleRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | A database-backed service account was created (EP-4). 'serviceAccountId' is the TypeID text,
+-- equal to 'clientId'; both are recorded so a reader need not know they coincide. The secret is
+-- never in the payload — only its SHA-256 digest is ever persisted, and not here.
+--
+-- 'userId' is the account's backing @shomei_users@ row, and becomes the audit row's @user_id@
+-- column, so @?user=@ filtering finds an account's whole lifecycle alongside the tokens it minted.
+data ServiceAccountCreatedData = ServiceAccountCreatedData
+  { serviceAccountId :: !Text,
+    clientId :: !Text,
+    userId :: !UserId,
+    displayName :: !Text,
+    allowedScopes :: !(Set Scope),
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A service account's secret was replaced. The previous secret stops working immediately:
+-- the model is single-secret, so an operator needing overlap creates a second account.
+data ServiceAccountSecretRotatedData = ServiceAccountSecretRotatedData
+  { serviceAccountId :: !Text,
+    clientId :: !Text,
+    userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A service account was revoked. Its row survives; every subsequent @client_credentials@
+-- request answers @invalid_client@, indistinguishable from a wrong secret.
+data ServiceAccountRevokedData = ServiceAccountRevokedData
+  { serviceAccountId :: !Text,
+    clientId :: !Text,
+    userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -343,5 +385,8 @@ data AuthEvent
   | ServiceTokenIssued ServiceTokenIssuedData
   | RoleGranted RoleGrantedData
   | RoleRevoked RoleRevokedData
+  | ServiceAccountCreated ServiceAccountCreatedData
+  | ServiceAccountSecretRotated ServiceAccountSecretRotatedData
+  | ServiceAccountRevoked ServiceAccountRevokedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

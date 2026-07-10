@@ -121,7 +121,15 @@ roundTrips =
     let d = ServiceTokenIssuedData uid sid (ServiceAccountId "connector:rei") (Set.singleton (Scope "kawa:ingest")) (Just uid2) t0 in check "service_token_issued" d (ServiceTokenIssued d),
     -- An HTTP grant records the acting admin; a CLI bootstrap grant / default role records none.
     let d = RoleGrantedData uid (Role "admin") (Just uid2) t0 in check "role_granted" d (RoleGranted d),
-    let d = RoleRevokedData uid (Role "admin") Nothing t0 in check "role_revoked" d (RoleRevoked d)
+    let d = RoleRevokedData uid (Role "admin") Nothing t0 in check "role_revoked" d (RoleRevoked d),
+    -- EP-4 service-account lifecycle. The payload never carries the secret, only the account's
+    -- public identifiers and its backing user.
+    let d = ServiceAccountCreatedData "svcacct_01" "svcacct_01" uid "rei connector" (Set.singleton (Scope "kawa:ingest")) t0
+     in check "service_account_created" d (ServiceAccountCreated d),
+    let d = ServiceAccountSecretRotatedData "svcacct_01" "svcacct_01" uid t0
+     in check "service_account_secret_rotated" d (ServiceAccountSecretRotated d),
+    let d = ServiceAccountRevokedData "svcacct_01" "svcacct_01" uid t0
+     in check "service_account_revoked" d (ServiceAccountRevoked d)
   ]
 
 -- | An unrecognized @event_type@ is a 'Left', never a crash.
@@ -132,10 +140,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 28).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 31).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 28 AuthEvent constructors" (length roundTrips @?= 28)
+  testCase "covers all 31 AuthEvent constructors" (length roundTrips @?= 31)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

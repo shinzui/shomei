@@ -60,6 +60,9 @@ reconstructAuthEvent etype payload = case etype of
   "service_token_issued" -> ServiceTokenIssued <$> parse payload
   "role_granted" -> RoleGranted <$> parse payload
   "role_revoked" -> RoleRevoked <$> parse payload
+  "service_account_created" -> ServiceAccountCreated <$> parse payload
+  "service_account_secret_rotated" -> ServiceAccountSecretRotated <$> parse payload
+  "service_account_revoked" -> ServiceAccountRevoked <$> parse payload
   other -> Left ("unknown event_type: " <> Text.unpack other)
   where
     parse :: (Aeson.FromJSON a) => Aeson.Value -> Either String a
@@ -140,3 +143,11 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.userId), Nothing, "role_granted", toJSON d, d.occurredAt)
   RoleRevoked d ->
     (Just (userIdToUUID d.userId), Nothing, "role_revoked", toJSON d, d.occurredAt)
+  -- The row's user_id is the account's BACKING user, so `?user=<backing user>` returns the
+  -- account's lifecycle and the tokens it minted together. There is no session.
+  ServiceAccountCreated d ->
+    (Just (userIdToUUID d.userId), Nothing, "service_account_created", toJSON d, d.occurredAt)
+  ServiceAccountSecretRotated d ->
+    (Just (userIdToUUID d.userId), Nothing, "service_account_secret_rotated", toJSON d, d.occurredAt)
+  ServiceAccountRevoked d ->
+    (Just (userIdToUUID d.userId), Nothing, "service_account_revoked", toJSON d, d.occurredAt)

@@ -37,7 +37,7 @@ import Shomei.Crypto
     verifyPasswordArgon2id,
     withHashingPermit,
   )
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -60,6 +60,7 @@ import Shomei.Domain.Passkey
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
 import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
+import Shomei.Domain.ServiceAccount (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
@@ -119,6 +120,14 @@ import Shomei.Effect.RoleStore
     listRolesForUser,
     revokeRole,
   )
+import Shomei.Effect.ServiceAccountStore
+  ( ServiceAccountStore,
+    createServiceAccount,
+    findServiceAccountByClientId,
+    listServiceAccounts,
+    revokeServiceAccount,
+    rotateServiceAccountSecret,
+  )
 import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, listSessionsForUser, revokeSession)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
 import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
@@ -144,7 +153,7 @@ import Shomei.Effect.VerificationTokenStore
   )
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
-import Shomei.Id (PasskeyId, genCeremonyId, genSessionId, genUserId, userIdToUUID)
+import Shomei.Id (PasskeyId, ServiceAccountDbId, genCeremonyId, genServiceAccountDbId, genSessionId, genUserId, idText, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
@@ -166,13 +175,12 @@ import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
+import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
 import Shomei.Workflow (login, refresh, signup)
-import Shomei.Workflow.Roles (grantRoleTo)
-import Shomei.Workflow.Session (buildEnrichedClaims)
 import Shomei.Workflow.Account
   ( ConfirmEmailVerification (..),
     ConfirmPasswordReset (..),
@@ -183,6 +191,8 @@ import Shomei.Workflow.Account
     requestEmailVerification,
     requestPasswordReset,
   )
+import Shomei.Workflow.Roles (grantRoleTo)
+import Shomei.Workflow.Session (buildEnrichedClaims)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -201,6 +211,7 @@ type AppEffects =
      LoginAttemptStore,
      PasskeyStore,
      PendingCeremonyStore,
+     ServiceAccountStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -242,6 +253,7 @@ runAppWithNotifications ref pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
       . runLoginAttemptStorePostgres
@@ -277,6 +289,7 @@ runAppAtTime t pool action = do
       . runWebAuthnCeremonyFake wref
       . runClaimsEnricherNull
       . runNotifierRef ref
+      . runServiceAccountStorePostgres
       . runPendingCeremonyStorePostgres
       . runPasskeyStorePostgres
       . runLoginAttemptStorePostgres
@@ -413,6 +426,7 @@ tests =
     testWorkflowLockout,
     testPasskeyCreateAndFind,
     testPasskeyUpdateCountDelete,
+    testServiceAccountRoundTrip,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
     testArgon2NewHashesArePhcFormatted,
@@ -1140,6 +1154,75 @@ newPasskey u t =
       label = Just "key",
       createdAt = t
     }
+
+-- | Field accessors for the EP-4 service-account record: 'DuplicateRecordFields' makes
+-- @value.field@ unreliable here, as it does for the passkey record above.
+saStatus :: ServiceAccount -> ServiceAccountStatus
+saStatus ServiceAccount {status} = status
+
+saSecretHash :: ServiceAccount -> Text
+saSecretHash ServiceAccount {secretHash} = secretHash
+
+saRotatedAt :: ServiceAccount -> Maybe UTCTime
+saRotatedAt ServiceAccount {rotatedAt} = rotatedAt
+
+saRevokedAt :: ServiceAccount -> Maybe UTCTime
+saRevokedAt ServiceAccount {revokedAt} = revokedAt
+
+saId :: ServiceAccount -> ServiceAccountDbId
+saId ServiceAccount {serviceAccountId} = serviceAccountId
+
+saAllowedScopes :: ServiceAccount -> Set.Set Scope
+saAllowedScopes ServiceAccount {allowedScopes} = allowedScopes
+
+-- | EP-4: the whole service-account lifecycle against real PostgreSQL — create, find by
+-- client id, rotate the secret, revoke — mirroring the in-memory
+-- 'Shomei.ServiceAccountStoreSpec'. Proves the jsonb @allowed_scopes@ round-trip, the
+-- @status@ text encoding, and that a revoked row survives so the grant workflow can still
+-- resolve (and refuse) it.
+testServiceAccountRoundTrip :: TestTree
+testServiceAccountRoundTrip =
+  testCase "service accounts: create + find by client id + rotate + revoke" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      said <- genServiceAccountDbId
+      let scopes = Set.fromList [Scope "kawa:ingest", Scope "signal:raise"]
+      created <-
+        createServiceAccount
+          NewServiceAccount
+            { serviceAccountId = said,
+              clientId = idText said,
+              userId = u.userId,
+              secretHash = "hash-one",
+              displayName = "rei connector",
+              allowedScopes = scopes,
+              createdAt = t
+            }
+      afterCreate <- findServiceAccountByClientId (idText said)
+      listed <- listServiceAccounts
+      rotateServiceAccountSecret said "hash-two" t
+      afterRotate <- findServiceAccountByClientId (idText said)
+      revokeServiceAccount said t
+      afterRevoke <- findServiceAccountByClientId (idText said)
+      pure (created, afterCreate, listed, afterRotate, afterRevoke, scopes)
+    (created, afterCreate, listed, afterRotate, afterRevoke, scopes) <- expectApp result
+    -- a fresh account is active with no rotation/revocation stamps
+    saStatus created @?= ServiceAccountActive
+    saRotatedAt created @?= Nothing
+    -- the lookup by client id resolves, and the jsonb scope set survived the round trip
+    fmap saId afterCreate @?= Just (saId created)
+    fmap saAllowedScopes afterCreate @?= Just scopes
+    map saId listed @?= [saId created]
+    -- rotation swaps the hash and stamps rotated_at, without revoking
+    fmap saSecretHash afterRotate @?= Just "hash-two"
+    assertBool "rotated_at is stamped" (maybe False (isJust . saRotatedAt) afterRotate)
+    fmap saStatus afterRotate @?= Just ServiceAccountActive
+    -- revocation flips status and stamps revoked_at; the ROW SURVIVES so the lookup still resolves
+    fmap saStatus afterRevoke @?= Just ServiceAccountRevoked
+    assertBool "revoked_at is stamped" (maybe False (isJust . saRevokedAt) afterRevoke)
+    n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_service_accounts"
+    n @?= 1
 
 testPasskeyCreateAndFind :: TestTree
 testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do

@@ -62,12 +62,13 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: `shomei_service_accounts` migration written and applied (`just migrate` shows it).
-- [ ] M1: `ServiceAccountDbId` TypeID and `ServiceAccount` domain record added to `shomei-core`.
-- [ ] M1: `ServiceAccountStore` effect port with smart constructors.
-- [ ] M1: In-memory interpreter (`Shomei.Effect.InMemory`) with new `World` field.
-- [ ] M1: Postgres interpreter `Shomei.Postgres.ServiceAccountStore` with round-trip test.
-- [ ] M1: Audit events `ServiceAccountCreated` / `ServiceAccountSecretRotated` / `ServiceAccountRevoked` in `Event.hs` + `EventCodec.hs` + codec spec.
+- [x] M1 (2026-07-10): `shomei_service_accounts` migration written and applied (postgres suite reports `[22 found]` pending migrations and the new round-trip passes).
+- [x] M1 (2026-07-10): `ServiceAccountDbId` TypeID and `ServiceAccount` domain record added to `shomei-core`.
+- [x] M1 (2026-07-10): `ServiceAccountStore` effect port with smart constructors.
+- [x] M1 (2026-07-10): In-memory interpreter (`Shomei.Effect.InMemory`) with new `World` field, plus `Shomei.ServiceAccountStoreSpec` (5 cases).
+- [x] M1 (2026-07-10): Postgres interpreter `Shomei.Postgres.ServiceAccountStore` with round-trip test (`testServiceAccountRoundTrip`).
+- [x] M1 (2026-07-10): Audit events `ServiceAccountCreated` / `ServiceAccountSecretRotated` / `ServiceAccountRevoked` in `Event.hs` + `EventCodec.hs` + codec spec (constructor count 28 → 31).
+- [x] M1 (2026-07-10): `ServiceAccountStore` registered in all four effect-stack declarations (`Seam.AppEffects`, `Server.App.AppEffects` + `runAppIO`, `InMemory.InMemoryPorts` + `runInMemoryWith`, and the private stack in `shomei-postgres/test/Main.hs`).
 - [ ] M2: `Shomei.Workflow.ClientCredentials` workflow with unit tests (happy path, bad secret, revoked account, scope violations, no refresh token).
 - [ ] M2: New `AuthError` constructors and their HTTP mappings.
 - [ ] M3: `http-api-data` + `base64` added to `shomei-servant.cabal`; `FormUrlEncoded` route compiles.
@@ -86,7 +87,49 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+**2026-07-10 (M1) — this plan's own `just new-migration` invocation was wrong.** Concrete Steps
+said `just new-migration name=shomei-service-accounts`, but the `Justfile` recipe takes the slug
+positionally and validates it against `^[a-z0-9][a-z0-9-]*$`, so `name=…` is rejected outright.
+The comment directly above the recipe says so:
+
+```text
+# The slug is positional: `just new-migration name=x` passes "name=x" AS the slug and is rejected.
+```
+
+The correct invocation, used here, is `just new-migration shomei-service-accounts`. Concrete Steps
+below has been corrected. **EP-7 and EP-9 both add migrations** and would have copied the same
+broken line.
+
+**2026-07-10 (M1) — `HEAD` is not `nix fmt`-clean, so `nix fmt` sweeps unrelated files into your
+diff.** Running `nix fmt` on a pristine checkout of `5aa2dfb` reformats 18 files nobody in this
+plan touched (`shomei-servant/src/Shomei/Servant/OpenApi.hs` alone moves ~103 lines, plus
+`Client.hs`, `DTO.hs`, `Handlers.hs`, `Boot.hs`, `test-openapi/Main.hs`, …):
+
+```text
+$ git stash push -u && nix fmt && git status --short
+formatted 27 files (18 changed) in 802ms
+ M shomei-client/src/Shomei/Client.hs
+ M shomei-servant/src/Shomei/Servant/OpenApi.hs
+ …16 more…
+```
+
+So the plan's final `nix fmt` step cannot be run blind: it silently mixes a large, unrelated
+reformatting into the last commit. The remedy used here is to run `nix fmt`, then
+`git checkout --` every file the milestone did not semantically change. **Every remaining
+milestone of every plan in this MasterPlan is affected.** Fixing the repo's formatting is out of
+scope for EP-4 and deserves its own commit.
+
+**2026-07-10 (M1) — the `shomei-postgres` test suite declares its OWN `AppEffects` stack.** It is
+a private copy in `shomei-postgres/test/Main.hs` (with a fake `TokenSigner` and no
+`AuthEventReader` ordering match), so a new port must be registered in *four* places, not the
+three the Plan of Work names. Omitting the fourth fails with an `effectful` "effect not in scope"
+type error only when the postgres suite compiles, long after `cabal build all` is green.
+
+**2026-07-10 (M1) — core test modules do not import `Shomei.Prelude`.** `liftIO` is therefore not
+in scope inside a `runInMemory` block in a spec, and `MonadIO` needs an explicit
+`import Control.Monad.IO.Class`. The house pattern (see `Shomei.PasskeyStoreSpec`) is to return
+values out of `runInMemory` and assert on them in `IO`, which sidesteps both. `ServiceAccountStoreSpec`
+follows it.
 
 
 ## Decision Log
@@ -166,6 +209,26 @@ Record every decision made while working on the plan.
   standards-based replacement must prove itself before removal. This plan adds deprecation
   notes and a concrete migration recipe to `docs/user/service-tokens.md`.
   Date: 2026-07-07
+
+- Decision (M1): The three service-account lifecycle events each carry the account's backing
+  `userId`, which becomes the audit row's `user_id` column. The plan specified only
+  `serviceAccountId`, `clientId`, and `occurredAt` for the rotated/revoked events.
+  Rationale: The MasterPlan's EP-2 discovery fixes the convention that an audit row's `user_id`
+  is the event's *subject*. A service account's subject is its backing user, and
+  `ServiceTokenIssued` already files its rows under that user. Without `userId` the lifecycle
+  events would land with a NULL `user_id` and `GET /v1/admin/audit/events?user=<backing user>`
+  would show the tokens an account minted but not the account's creation, rotation, or
+  revocation — the three rows an auditor most wants beside them. Cost is one `UserId` per
+  payload; the events are rare.
+  Date: 2026-07-10
+
+- Decision (M1): `ServiceAccountStore` sits between `PendingCeremonyStore` and `Notifier` in the
+  effect stack, rather than "right after `PasskeyStore`" as the plan suggested.
+  Rationale: It keeps the whole store block contiguous (`PasskeyStore`,
+  `PendingCeremonyStore`, `ServiceAccountStore`) before the non-store ports begin at `Notifier`.
+  The plan's phrasing was "for example"; the requirement is only that all four stack declarations
+  agree, which they do.
+  Date: 2026-07-10
 
 - Decision: The token endpoint accepts the raw `Form` type
   (`Web.FormUrlEncoded.Form` from `http-api-data`) rather than a typed request record.
@@ -314,8 +377,8 @@ events. At the end, a round-trip test proves a service account can be created, f
 client id, secret-rotated, and revoked, in both the in-memory and Postgres interpreters —
 no HTTP yet.
 
-Create the migration with `just new-migration name=shomei-service-accounts`, then fill the
-generated file (it already carries the `-- codd: in-txn` pragma and
+Create the migration with `just new-migration shomei-service-accounts` (the slug is positional —
+`name=…` is rejected), then fill the generated file (it already carries the `-- codd: in-txn` pragma and
 `SET search_path TO shomei, pg_catalog;` header):
 
 ```sql
@@ -423,11 +486,14 @@ event types `service_account_created`, `service_account_secret_rotated`,
 extend `shomei-core/test/Shomei/Domain/EventCodecSpec.hs` so the round-trip stays pinned.
 No new migration is needed for events — the audit table stores type text plus JSONB payload.
 
-Finally, register the new effect in all three stack declarations that must stay in the same
-order: `AppEffects` in `shomei-servant/src/Shomei/Servant/Seam.hs`, `AppEffects` plus the
-interpreter composition `runAppIO` in `shomei-server/src/Shomei/Server/App.hs`, and the
-inline stack in `runInMemory`. Place `ServiceAccountStore` adjacent to the other stores
-(for example right after `PasskeyStore`) identically in all three.
+Finally, register the new effect in all **four** stack declarations that must stay in the same
+order: `AppEffects` in `shomei-servant/src/Shomei/Servant/Seam.hs`; `AppEffects` plus the
+interpreter composition `runAppIO` in `shomei-server/src/Shomei/Server/App.hs`; `InMemoryPorts`
+plus `runInMemoryWith` in `shomei-core/src/Shomei/Effect/InMemory.hs`; and — easily missed —
+the *private* `AppEffects` copy plus its two interpreter chains in `shomei-postgres/test/Main.hs`.
+Place `ServiceAccountStore` adjacent to the other stores (this implementation put it after
+`PendingCeremonyStore`, just before `Notifier`) identically in all four. Missing the fourth
+still lets `cabal build all` succeed; only `cabal test shomei-postgres` catches it.
 
 Acceptance for M1: `cabal test shomei-core` passes including a new
 `ServiceAccountStoreSpec`; `cabal test shomei-postgres` passes including a Postgres
@@ -698,8 +764,12 @@ proceeding.
 M1: scaffold the migration, then implement the domain type, port, and interpreters:
 
 ```bash
-just new-migration name=shomei-service-accounts
+# The slug is POSITIONAL. `name=…` is passed as the slug and rejected by the recipe's
+# `^[a-z0-9][a-z0-9-]*$` check. See Surprises & Discoveries.
+just new-migration shomei-service-accounts
 # edit the generated shomei-migrations/sql-migrations/<ts>-shomei-service-accounts.sql
+# then append a line to the comment block above `embeddedFiles` in
+# shomei-migrations/src/Shomei/Migrations.hs, or the .sql is never re-embedded
 just create-database   # idempotent; applies the migration to the dev DB
 cabal test shomei-core shomei-postgres
 ```

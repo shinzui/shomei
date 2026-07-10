@@ -23,6 +23,7 @@ module Shomei.Id
     CredentialId,
     PasskeyId,
     CeremonyId,
+    ServiceAccountDbId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
@@ -31,6 +32,7 @@ module Shomei.Id
     genCredentialId,
     genPasskeyId,
     genCeremonyId,
+    genServiceAccountDbId,
     idText,
     parseId,
     userIdToUUID,
@@ -49,6 +51,8 @@ module Shomei.Id
     passkeyIdFromUUID,
     ceremonyIdToUUID,
     ceremonyIdFromUUID,
+    serviceAccountDbIdToUUID,
+    serviceAccountDbIdFromUUID,
   )
 where
 
@@ -76,6 +80,14 @@ type PasskeyId = KindID "passkey"
 
 type CeremonyId = KindID "webauthn_ceremony"
 
+-- | A database-backed service account (EP-4). The @Db@ suffix distinguishes it from the
+-- config-side 'Shomei.Config.ServiceAccountId', a newtype over 'Text' naming an account
+-- declared in static configuration; the two lifecycles coexist during the deprecation window.
+--
+-- Its TypeID text rendering is the OAuth2 @client_id@, so a @client_id@ is a public,
+-- copy-pasteable identifier and never a secret.
+type ServiceAccountDbId = KindID "svcacct"
+
 genUserId :: (MonadIO m) => m UserId
 genUserId = KindID.genKindID @"user"
 
@@ -99,6 +111,9 @@ genPasskeyId = KindID.genKindID @"passkey"
 
 genCeremonyId :: (MonadIO m) => m CeremonyId
 genCeremonyId = KindID.genKindID @"webauthn_ceremony"
+
+genServiceAccountDbId :: (MonadIO m) => m ServiceAccountDbId
+genServiceAccountDbId = KindID.genKindID @"svcacct"
 
 idText :: (ToPrefix p, ValidPrefix (PrefixSymbol p)) => KindID p -> Text
 idText = KindID.toText
@@ -155,6 +170,12 @@ ceremonyIdToUUID = getUUID
 
 ceremonyIdFromUUID :: UUID -> CeremonyId
 ceremonyIdFromUUID = decorateKindID
+
+serviceAccountDbIdToUUID :: ServiceAccountDbId -> UUID
+serviceAccountDbIdToUUID = getUUID
+
+serviceAccountDbIdFromUUID :: UUID -> ServiceAccountDbId
+serviceAccountDbIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
   parseUrlPiece = parseId

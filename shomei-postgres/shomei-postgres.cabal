@@ -54,6 +54,7 @@ library
     Shomei.Postgres.Pool
     Shomei.Postgres.RefreshTokenStore
     Shomei.Postgres.RoleStore
+    Shomei.Postgres.ServiceAccountStore
     Shomei.Postgres.SessionStore
     Shomei.Postgres.SigningKeyStore
     Shomei.Postgres.UserStore

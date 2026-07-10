@@ -42,6 +42,7 @@ import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
 import Shomei.Effect.RoleStore (RoleStore)
+import Shomei.Effect.ServiceAccountStore (ServiceAccountStore)
 import Shomei.Effect.SessionStore (SessionStore)
 import Shomei.Effect.SigningKeyStore (SigningKeyStore)
 import Shomei.Effect.TokenGen (TokenGen)
@@ -67,6 +68,7 @@ import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgr
 import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
 import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
+import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.SessionStore (runSessionStorePostgres)
 import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
@@ -92,6 +94,7 @@ type AppEffects =
      LoginAttemptStore,
      PasskeyStore,
      PendingCeremonyStore,
+     ServiceAccountStore,
      Notifier,
      ClaimsEnricher,
      WebAuthnCeremony,
@@ -163,6 +166,7 @@ runAppIO env action = do
     -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
     . runClaimsEnricherNull
     . runNotifierFromConfig env.envConfig
+    . runServiceAccountStorePostgres
     . runPendingCeremonyStorePostgres
     . runPasskeyStorePostgres
     . runLoginAttemptStorePostgres

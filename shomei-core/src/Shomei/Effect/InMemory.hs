@@ -35,6 +35,7 @@ module Shomei.Effect.InMemory
     runLoginAttemptStore,
     runPasskeyStore,
     runPendingCeremonyStore,
+    runServiceAccountStore,
     runNotifier,
     runClaimsEnricherNull,
     runPasswordHasher,
@@ -102,6 +103,11 @@ import Shomei.Domain.RefreshToken
     RefreshTokenHash (..),
     RefreshTokenStatus (..),
   )
+import Shomei.Domain.ServiceAccount
+  ( NewServiceAccount (..),
+    ServiceAccount (..),
+    ServiceAccountStatus (..),
+  )
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.Domain.Token (AccessToken (..))
@@ -128,6 +134,7 @@ import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore (..))
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore (..))
 import Shomei.Effect.RefreshTokenStore (RefreshTokenStore (..))
 import Shomei.Effect.RoleStore (RoleDefinition (..), RoleStore (..))
+import Shomei.Effect.ServiceAccountStore (ServiceAccountStore (..))
 import Shomei.Effect.SessionStore (SessionStore (..))
 import Shomei.Effect.SigningKeyStore (SigningKeyStore (..))
 import Shomei.Effect.TokenGen (TokenGen (..))
@@ -149,6 +156,7 @@ import Shomei.Id
     PasskeyId,
     PasswordResetTokenId,
     RefreshTokenId,
+    ServiceAccountDbId,
     SessionId,
     UserId,
     VerificationTokenId,
@@ -159,6 +167,7 @@ import Shomei.Id
     genSessionId,
     genUserId,
     genVerificationTokenId,
+    idText,
     sessionIdToUUID,
     userIdToUUID,
   )
@@ -189,6 +198,10 @@ data World = World
     accountLockouts :: !(Map AccountKey AccountLockout),
     passkeys :: !(Map PasskeyId PasskeyCredential),
     pendingCeremonies :: !(Map CeremonyId PendingCeremony),
+    -- | EP-4 database-backed service accounts, keyed by id. Unlike PostgreSQL this map
+    --     enforces no unique index on @clientId@; the id /is/ the client id's source, so a
+    --     collision is impossible by construction.
+    serviceAccounts :: !(Map ServiceAccountDbId ServiceAccount),
     -- | newest-first
     publishedEvents :: ![Event.AuthEvent],
     -- | newest-first
@@ -225,6 +238,7 @@ emptyWorld t =
       accountLockouts = Map.empty,
       passkeys = Map.empty,
       pendingCeremonies = Map.empty,
+      serviceAccounts = Map.empty,
       publishedEvents = [],
       sentNotifications = [],
       clock = t,
@@ -746,6 +760,56 @@ runPendingCeremonyStore ref = interpret_ \case
   DeleteExpiredCeremonies now' ->
     liftIO (modifyWorld ref (#pendingCeremonies %~ Map.filter (\pc -> pcExpiresAt pc > now')))
 
+-- | Field accessors for the EP-4 service-account records. Both 'ServiceAccount' and
+-- 'NewServiceAccount' share field names with several other domain records, so read them with
+-- plain record-pattern matching rather than @value.field@ (the same 'DuplicateRecordFields'
+-- caution the passkey accessors above document).
+saId :: ServiceAccount -> ServiceAccountDbId
+saId ServiceAccount {serviceAccountId} = serviceAccountId
+
+saClientId :: ServiceAccount -> Text
+saClientId ServiceAccount {clientId} = clientId
+
+saCreatedAt :: ServiceAccount -> UTCTime
+saCreatedAt ServiceAccount {createdAt} = createdAt
+
+-- | In-memory interpreter for the EP-4 service-account store.
+--
+-- 'RotateServiceAccountSecret' and 'RevokeServiceAccount' are silent no-ops on an unknown id,
+-- matching the PostgreSQL @UPDATE … WHERE service_account_id = $1@ that affects zero rows: the
+-- CLI resolves the account by client id before mutating, so an unknown id cannot arise from the
+-- tested path.
+runServiceAccountStore :: (IOE :> es) => IORef World -> Eff (ServiceAccountStore : es) a -> Eff es a
+runServiceAccountStore ref = interpret_ \case
+  CreateServiceAccount NewServiceAccount {serviceAccountId, clientId, userId, secretHash, displayName, allowedScopes, createdAt} -> do
+    let sa =
+          ServiceAccount
+            { serviceAccountId,
+              clientId,
+              userId,
+              secretHash,
+              displayName,
+              allowedScopes,
+              status = ServiceAccountActive,
+              createdAt,
+              rotatedAt = Nothing,
+              revokedAt = Nothing
+            }
+    liftIO (modifyWorld ref (#serviceAccounts %~ Map.insert serviceAccountId sa))
+    pure sa
+  FindServiceAccountByClientId cid ->
+    liftIO ((\w -> listToMaybe [sa | sa <- Map.elems w.serviceAccounts, saClientId sa == cid]) <$> readIORef ref)
+  ListServiceAccounts ->
+    liftIO (sortOn (Down . \sa -> (saCreatedAt sa, idText (saId sa))) . Map.elems . (.serviceAccounts) <$> readIORef ref)
+  RotateServiceAccountSecret sid h t ->
+    liftIO (modifyWorld ref (#serviceAccounts %~ Map.adjust (\sa -> sa & #secretHash .~ h & #rotatedAt .~ Just t) sid))
+  RevokeServiceAccount sid t ->
+    liftIO
+      ( modifyWorld
+          ref
+          (#serviceAccounts %~ Map.adjust (\sa -> sa & #status .~ ServiceAccountRevoked & #revokedAt .~ Just t) sid)
+      )
+
 runPasswordHasher :: IORef World -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasher _ref = interpret_ \case
   HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
@@ -959,6 +1023,7 @@ type InMemoryPorts =
     LoginAttemptStore,
     PasskeyStore,
     PendingCeremonyStore,
+    ServiceAccountStore,
     Notifier,
     ClaimsEnricher,
     WebAuthnCeremony,
@@ -989,6 +1054,7 @@ runInMemoryWith enrich ref =
     . runWebAuthnCeremonyFake ref
     . runClaimsEnricherPure enrich
     . runNotifier ref
+    . runServiceAccountStore ref
     . runPendingCeremonyStore ref
     . runPasskeyStore ref
     . runLoginAttemptStore ref

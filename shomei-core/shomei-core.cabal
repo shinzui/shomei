@@ -54,6 +54,7 @@ library
     Shomei.Domain.Password
     Shomei.Domain.PasswordResetToken
     Shomei.Domain.RefreshToken
+    Shomei.Domain.ServiceAccount
     Shomei.Domain.Session
     Shomei.Domain.SigningKey
     Shomei.Domain.Token
@@ -75,6 +76,7 @@ library
     Shomei.Effect.PendingCeremonyStore
     Shomei.Effect.RefreshTokenStore
     Shomei.Effect.RoleStore
+    Shomei.Effect.ServiceAccountStore
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
     Shomei.Effect.TokenGen
@@ -129,13 +131,14 @@ test-suite shomei-core-test
     Shomei.Domain.PasswordSpec
     Shomei.LockoutSpec
     Shomei.PasskeyStoreSpec
+    Shomei.ServiceAccountStoreSpec
     Shomei.WebAuthnCeremonySpec
+    Shomei.Workflow.AdminSpec
     Shomei.Workflow.ConcurrencySpec
     Shomei.Workflow.EmailVerificationSpec
     Shomei.Workflow.ImpersonationSpec
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
-    Shomei.Workflow.AdminSpec
     Shomei.Workflow.RolesSpec
     Shomei.Workflow.ServiceTokenSpec
     Shomei.Workflow.TimingSpec
