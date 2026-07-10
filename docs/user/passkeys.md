@@ -38,9 +38,11 @@ List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{pa
 
 1. POST `/v1/auth/login` with `{ "email", "password" }` as usual. If the account has a passkey
    (and `mfaRequired` is on), the response is **not** tokens — it is
-   `{ "status": "mfa_required", "ceremonyId": "...", "options": { ... } }`, where `options` is
-   the WebAuthn *authentication options* (a fresh challenge plus the allowed credentials).
-   An account *without* a passkey still gets `{ "status": "complete", "user", "token" }`.
+   `{ "status": "mfa_required", "ceremonyId": "...", "options": { ... }, "methods": [...] }`,
+   where `options` is the WebAuthn *authentication options* (a fresh challenge plus the allowed
+   credentials) and `methods` lists the factors that can complete the challenge — `"passkey"`
+   here, plus `"totp"` / `"recovery_code"` if the account also has those (see [mfa.md](mfa.md)).
+   An account *without* any enrolled factor still gets `{ "status": "complete", "user", "token" }`.
 2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`. The device
    signs the challenge with the passkey's private key.
 3. POST `/v1/auth/mfa/complete` with `{ "ceremonyId": "<from step 1>", "assertion": <the get()
@@ -82,7 +84,7 @@ wins). See [deployment.md](deployment.md) for the loader overview.
 | `attestation` | `webauthnAttestation` | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` | `none` \| `direct` |
 | `ceremonyTimeout` | `webauthnCeremonyTimeoutSeconds` | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` | `300` | browser ceremony timeout (seconds) |
 | `pendingCeremonyTTL` | `webauthnPendingCeremonyTtlSeconds` | `SHOMEI_WEBAUTHN_PENDING_TTL` | `300` | how long a begun ceremony stays valid server-side (seconds) |
-| `mfaRequired` | `webauthnMfaRequired` | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | `true` | require the second factor for accounts that have a passkey |
+| `mfaRequired` | `webauthnMfaRequired` | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | `true` | require the second factor for accounts that have **any** enrolled factor (passkey or confirmed TOTP) — see [mfa.md](mfa.md) |
 
 Dhall example (the keys are part of the schema in `config/shomei-types.dhall`; a full example is
 `config/shomei.example.dhall`):
@@ -141,8 +143,12 @@ The **password remains the first factor**. A user who loses their only passkey i
 of recovery: the existing password-reset flow (`POST /v1/auth/password-reset/request` →
 `…/confirm`) still works, because reset is gated on the password/email, not the passkey. After a
 reset, the user can remove the lost passkey (`DELETE /v1/auth/passkeys/{passkeyId}`) and enroll a new
-one. Backup/recovery codes are not part of this release (deferred); having **two** passkeys
-enrolled is the recommended hedge.
+one.
+
+As of MasterPlan 7, two in-MFA fallbacks also exist (see [mfa.md](mfa.md)): **recovery codes**
+(single-use codes generated at `POST /v1/auth/recovery-codes`, which complete an MFA challenge
+without the passkey) and **TOTP** (a second authenticator factor). Recovery codes back up
+passkey-only users too. Having **two** passkeys enrolled remains a good hedge.
 
 ## Browser glue and the demo
 

@@ -110,7 +110,7 @@ mode. The same gate applies to `POST /v1/auth/refresh` when the refresh token co
 Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `201 Created` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures. In cookie transport this response also sets the `shomei_session`/`shomei_refresh` cookies and omits the body token values (see [Token transport](#token-transport)).
 
 ### `POST /v1/auth/login`
-Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…}}` when the account has a passkey and `webauthnConfig.mfaRequired` is set — complete the WebAuthn assertion at `POST /v1/auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
+Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…},"methods":[…]}` when the account has any enrolled second factor and `webauthnConfig.mfaRequired` is set — `methods` names the factors that can complete it (`"passkey"`, `"totp"`, `"recovery_code"`), which the client completes at `POST /v1/auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3) and [mfa.md](mfa.md)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
 
 ### `POST /v1/auth/refresh`
 Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
@@ -321,13 +321,35 @@ Body `{"ceremonyId","credential","label"?}`. → `200` `{"passkeyId","label","tr
 → `204`. `404 passkey_not_found` if the passkey is not owned by the caller.
 
 ### `POST /v1/auth/mfa/complete`
-Completes a step-up after `POST /v1/auth/login` returned `mfa_required`. Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` if the assertion does not verify; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/v1/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response.)
+Completes a step-up after `POST /v1/auth/login` returned `mfa_required`. Body carries `ceremonyId` plus **exactly one** of `assertion` (passkey, the legacy shape), `totpCode`, or `recoveryCode`; sending zero or more than one is `400`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` / `401 totp_code_invalid` / `401 recovery_code_invalid` on a failed factor; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/v1/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response, whose `methods` list names the factors that can complete it.)
 
 ### `POST /v1/auth/login/passkey/begin`
 Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`.
 
 ### `POST /v1/auth/login/passkey/complete`
 Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport.
+
+## TOTP & recovery codes (MasterPlan 7, EP-7)
+
+The TOTP second factor (RFC 6238) and single-use recovery codes. Enabled by `totpEnabled`; the
+login `mfa_required` arm's `methods` list advertises `"totp"` / `"recovery_code"` when the account
+has them, and `POST /v1/auth/mfa/complete` (above) accepts `totpCode` / `recoveryCode`. See
+[mfa.md](mfa.md) for the full guide.
+
+### `POST /v1/auth/totp/enroll` *(authenticated)*
+Empty body. → `200` `{"secret","otpauthUri"}` — the Base32 secret and `otpauth://` URI, shown **once**. `403 totp_disabled` if TOTP is off; `409 totp_already_enrolled` if a confirmed credential exists (remove it first); `403 impersonation_action_blocked` under a delegated token.
+
+### `POST /v1/auth/totp/verify` *(authenticated)*
+Body `{"code"}`. Activates a pending enrollment with a first valid code. → `200`. `404 totp_enrollment_not_found` (no pending/unexpired enrollment); `401 totp_code_invalid`.
+
+### `DELETE /v1/auth/totp` *(authenticated)*
+Body carries **exactly one** of `code` (a current TOTP code) or `recoveryCode` — proof of possession. → `204`. `404 totp_enrollment_not_found`; `401 totp_code_invalid` / `401 recovery_code_invalid`; `403 impersonation_action_blocked` under a delegated token.
+
+### `POST /v1/auth/recovery-codes` *(authenticated)*
+Empty body. Generates ten single-use codes, shown **once**, replacing any previous set. → `200` `{"codes":[…10…]}`. Requires a freshly issued token (within `impersonationConfig.actorFreshnessWindow`), else `403 reauthentication_required`; `403 impersonation_action_blocked` under a delegated token.
+
+### `GET /v1/auth/recovery-codes` *(authenticated)*
+→ `200` `{"remaining":N}` — how many unused recovery codes remain.
 
 ## Impersonation / delegated tokens
 

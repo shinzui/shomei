@@ -50,7 +50,7 @@ import Network.HTTP.Client
   )
 import Network.HTTP.Types (Header, statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
-import Shomei.Config (OAuthConfig (..), ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Config (OAuthConfig (..), ShomeiConfig (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Domain.LoginId (mkLoginId)
@@ -72,10 +72,12 @@ import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
+import Shomei.Totp (base32ToSecret, totpCode, totpCounter)
 import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
@@ -92,7 +94,7 @@ tests =
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
@@ -101,7 +103,7 @@ tests =
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedServiceAccount pool
           testWithApplication (pure (application env)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
@@ -113,7 +115,7 @@ tests =
           -- OIDC needs an http(s) issuer (it doubles as the endpoint base URL) and the provider on.
           let baseCfg = defaultShomeiConfig (Issuer "http://localhost") (Audience "shomei-clients")
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedOAuthClient pool
           testWithApplication (pure (application env)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
@@ -124,7 +126,7 @@ tests =
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedExchangeServiceAccount pool
           -- The operator token must verify against the server's own key material, so it is signed
           -- with the active signing key (scope granting is host-side; here the host is the test).
@@ -147,8 +149,23 @@ tests =
                     extraClaims = mempty
                   }
           AccessToken opTok <- either (assertFailure . ("could not sign the operator token: " <>) . show) pure =<< signAccessToken keys.signingKey opClaims
-          testWithApplication (pure (application env)) (exchangeScenario pool clientId opTok)
+          testWithApplication (pure (application env)) (exchangeScenario pool clientId opTok),
+      testCase "EP-7: enroll TOTP → verify → login(mfa) → complete → recovery codes → audited" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 connStr
+          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+              cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+          testWithApplication (pure (application env)) (totpScenario pool)
     ]
+
+-- | A fixed 32-byte AES-256-GCM key for the E2E TOTP secrets. Its value is irrelevant to the
+-- test; it only has to round-trip encrypt→decrypt through 'Shomei.Postgres.TotpCredentialStore'.
+e2eTotpKey :: TotpEncryptionKey
+e2eTotpKey = either (error . Text.unpack) id (totpEncryptionKeyFromBytes (BS.replicate 32 9))
 
 -- | The secret the seeded OAuth client authenticates with; only its digest reaches the row.
 oidcClientSecret :: Text
@@ -507,6 +524,73 @@ jwksKids v = case dig ["keys"] v of
   Just (Array ks) -> [k | Object o <- toList ks, Just (String k) <- [KM.lookup "kid" o]]
   _ -> []
 
+-- | EP-7's Purpose transcript against real PostgreSQL and real ES256: enroll TOTP, activate it,
+-- log in and complete the challenge with a fresh code, then complete a second login with a
+-- recovery code and watch the count drop — with the whole flow recorded in the audit trail.
+--
+-- The wall clock is real here, so a confirmed code cannot be replayed at the same time-step
+-- counter. The completion presents the NEXT counter's code, which the ±1 acceptance window
+-- accepts whether or not the clock has ticked into the next step, and which is strictly greater
+-- than the confirming counter — so the test never has to wait 30 seconds.
+totpScenario :: Pool -> Int -> IO ()
+totpScenario pool port = do
+  mgr <- newManager defaultManagerSettings
+  let loginId = "totp-e2e-user" :: Text
+      pw = "correct horse battery staple totp" :: Text
+      login = postJSON mgr port "/v1/auth/login" (object ["loginId" .= loginId, "password" .= pw])
+
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= loginId, "password" .= pw, "displayName" .= ("" :: Text)])
+  sStatus @?= 201
+  access <- must "signup accessToken" (sBody >>= dig ["token", "accessToken"] >>= asText)
+
+  -- enroll: the secret is shown once.
+  (enStatus, enBody) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer access)
+  enStatus @?= 200
+  secretB32 <- must "enroll secret" (enBody >>= dig ["secret"] >>= asText)
+  secret <- either (assertFailure . ("bad base32 secret: " <>)) pure (base32ToSecret secretB32)
+
+  -- activate with the current code.
+  t <- getCurrentTime
+  let c = totpCounter t
+  (vStatus, _) <- postJSONAuth mgr port "/v1/auth/totp/verify" (bearer access) (object ["code" .= totpCode 6 secret c])
+  vStatus @?= 200
+
+  -- login now challenges for the TOTP factor; complete with the next counter's code.
+  (mStatus, mBody) <- login
+  mStatus @?= 200
+  (mBody >>= dig ["status"] >>= asText) @?= Just "mfa_required"
+  methods <- must "methods" (mBody >>= dig ["methods"] >>= asTextArray)
+  assertBool "totp advertised in methods" ("totp" `elem` methods)
+  cid <- must "ceremonyId" (mBody >>= dig ["ceremonyId"] >>= asText)
+  (cStatus, cBody) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= cid, "totpCode" .= totpCode 6 secret (c + 1)])
+  cStatus @?= 200
+  mfaAccess <- must "mfa accessToken" (cBody >>= dig ["accessToken"] >>= asText)
+  -- the MFA-issued token verifies against the running server's key material.
+  (meStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer mfaAccess)
+  meStatus @?= 200
+
+  -- generate recovery codes, complete another login with one, and watch the count drop to nine.
+  (gStatus, gBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer mfaAccess)
+  gStatus @?= 200
+  codes <- must "recovery codes" (gBody >>= dig ["codes"] >>= asTextArray)
+  length codes @?= 10
+  (m2Status, m2Body) <- login
+  m2Status @?= 200
+  cid2 <- must "cid2" (m2Body >>= dig ["ceremonyId"] >>= asText)
+  (rcStatus, rcBody) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= cid2, "recoveryCode" .= head codes])
+  rcStatus @?= 200
+  rcAccess <- must "recovery accessToken" (rcBody >>= dig ["accessToken"] >>= asText)
+  (cntStatus, cntBody) <- getJSON mgr port "/v1/auth/recovery-codes" (bearer rcAccess)
+  cntStatus @?= 200
+  (cntBody >>= dig ["remaining"] >>= asInt) @?= Just 9
+
+  -- the whole flow is recorded against real PostgreSQL, and the secret sits encrypted at rest.
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'totp_enrolled'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'recovery_codes_generated'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'recovery_code_used'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'mfa_succeeded'" >>= (@?= 2)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials WHERE confirmed_at IS NOT NULL" >>= (@?= 1)
+
 scenario :: Pool -> Int -> IO ()
 scenario pool port = do
   mgr <- newManager defaultManagerSettings
@@ -617,6 +701,27 @@ postNoBody mgr port path hdrs = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp))
 
+-- | POST a JSON body with a bearer token (EP-7 TOTP verify).
+postJSONAuth :: Manager -> Int -> String -> [Header] -> Value -> IO (Int, Maybe Value)
+postJSONAuth mgr port path hdrs body = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req =
+        req0
+          { method = "POST",
+            requestHeaders = ("Content-Type", "application/json") : hdrs,
+            requestBody = RequestBodyLBS (encode body)
+          }
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), decode (responseBody resp))
+
+-- | POST with a bearer token and no body, returning the response body (EP-7 enroll / generate).
+postAuthNoBody :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
+postAuthNoBody mgr port path hdrs = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
+  let req = req0 {method = "POST", requestHeaders = hdrs}
+  resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), decode (responseBody resp))
+
 getJSON :: Manager -> Int -> String -> [Header] -> IO (Int, Maybe Value)
 getJSON mgr port path hdrs = do
   req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
@@ -653,6 +758,14 @@ dig ks v0 = foldl (\mv k -> mv >>= field k) (Just v0) ks
 asText :: Value -> Maybe Text
 asText (String t) = Just t
 asText _ = Nothing
+
+asTextArray :: Value -> Maybe [Text]
+asTextArray (Array xs) = traverse asText (toList xs)
+asTextArray _ = Nothing
+
+asInt :: Value -> Maybe Int
+asInt (Aeson.Number n) = Just (round n)
+asInt _ = Nothing
 
 jwksHasKid :: Value -> Bool
 jwksHasKid v = case dig ["keys"] v of

@@ -55,6 +55,7 @@ import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Servant.DTO
   ( LoginRequest (..),
     LoginResponse (..),
@@ -70,6 +71,11 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 -- | Boot the auth service once, capture its real JWKS document and one valid access token,
 -- then run the whole suite against them. @defaultMain@ exits by throwing, which unwinds both
 -- brackets normally.
+-- | TOTP is not exercised by this suite; the store is unreachable, so a fixed dummy key keeps
+-- the 'Env' shape satisfied (EP-7 added 'envTotpKey').
+dummyTotpKey :: TotpEncryptionKey
+dummyTotpKey = either (const (error "bad dummy totp key")) id (totpEncryptionKeyFromBytes (BS8.replicate 32 '\0'))
+
 main :: IO ()
 main =
   withShomeiMigratedDatabase \connStr -> do
@@ -78,7 +84,7 @@ main =
     envMgr <- newManager defaultManagerSettings
     limiter <- newHashingLimiter 2
     let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-        env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+        env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
     testWithApplication (pure (application env)) \authPort -> do
       mgr <- newManager defaultManagerSettings
       let jwksUrl = "http://127.0.0.1:" <> show authPort <> "/.well-known/jwks.json"

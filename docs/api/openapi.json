@@ -221,6 +221,12 @@
                             "ceremonyId": {
                                 "type": "string"
                             },
+                            "methods": {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
                             "options": {
                                 "$ref": "#/components/schemas/AnyValue"
                             },
@@ -231,7 +237,8 @@
                         "required": [
                             "status",
                             "ceremonyId",
-                            "options"
+                            "options",
+                            "methods"
                         ],
                         "type": "object"
                     }
@@ -244,11 +251,16 @@
                     },
                     "ceremonyId": {
                         "type": "string"
+                    },
+                    "recoveryCode": {
+                        "type": "string"
+                    },
+                    "totpCode": {
+                        "type": "string"
                     }
                 },
                 "required": [
-                    "ceremonyId",
-                    "assertion"
+                    "ceremonyId"
                 ],
                 "type": "object"
             },
@@ -419,6 +431,33 @@
                     "status",
                     "database",
                     "signingKey"
+                ],
+                "type": "object"
+            },
+            "RecoveryCodesCountResponse": {
+                "properties": {
+                    "remaining": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "remaining"
+                ],
+                "type": "object"
+            },
+            "RecoveryCodesResponse": {
+                "properties": {
+                    "codes": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "codes"
                 ],
                 "type": "object"
             },
@@ -637,6 +676,43 @@
                     "token_type",
                     "expires_in",
                     "scope"
+                ],
+                "type": "object"
+            },
+            "TotpEnrollResponse": {
+                "properties": {
+                    "otpauthUri": {
+                        "type": "string"
+                    },
+                    "secret": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "secret",
+                    "otpauthUri"
+                ],
+                "type": "object"
+            },
+            "TotpRemoveRequest": {
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "recoveryCode": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "TotpVerifyRequest": {
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "code"
                 ],
                 "type": "object"
             },
@@ -3802,6 +3878,139 @@
                 ]
             }
         },
+        "/v1/auth/recovery-codes": {
+            "get": {
+                "operationId": "getAuthRecoveryCodes",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RecoveryCodesCountResponse"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            },
+            "post": {
+                "operationId": "createAuthRecoveryCodes",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RecoveryCodesResponse"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "reauthentication_required",
+                                                "impersonation_action_blocked"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: reauthentication_required, impersonation_action_blocked."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "user_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: user_not_found."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
         "/v1/auth/refresh": {
             "post": {
                 "operationId": "createAuthRefresh",
@@ -4200,6 +4409,351 @@
                         "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
                     }
                 }
+            }
+        },
+        "/v1/auth/totp": {
+            "delete": {
+                "operationId": "deleteAuthTotp",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TotpRemoveRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Success; no response body."
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid",
+                                                "totp_code_invalid",
+                                                "recovery_code_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, totp_code_invalid, recovery_code_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "impersonation_action_blocked"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: impersonation_action_blocked."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "totp_enrollment_not_found",
+                                                "user_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: totp_enrollment_not_found, user_not_found."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/v1/auth/totp/enroll": {
+            "post": {
+                "operationId": "createAuthTotpEnroll",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/TotpEnrollResponse"
+                                }
+                            }
+                        },
+                        "description": "Success."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "totp_disabled",
+                                                "impersonation_action_blocked"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: totp_disabled, impersonation_action_blocked."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "user_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: user_not_found."
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "totp_already_enrolled"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: totp_already_enrolled."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/v1/auth/totp/verify": {
+            "post": {
+                "operationId": "createAuthTotpVerify",
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/TotpVerifyRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Success."
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "body_parse_error"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error."
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "missing_token",
+                                                "token_invalid",
+                                                "totp_code_invalid"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, totp_code_invalid."
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "totp_disabled"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: totp_disabled."
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/Problem"
+                                        }
+                                    ],
+                                    "properties": {
+                                        "code": {
+                                            "enum": [
+                                                "totp_enrollment_not_found",
+                                                "user_not_found"
+                                            ],
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "description": "An RFC 7807 problem document. The `code` member is one of: totp_enrollment_not_found, user_not_found."
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
             }
         },
         "/v1/auth/verify-email/confirm": {

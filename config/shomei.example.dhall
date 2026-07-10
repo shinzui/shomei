@@ -38,6 +38,8 @@ in    { issuer = "shomei"
       , webauthnCeremonyTimeoutSeconds = 300
       , webauthnPendingCeremonyTtlSeconds = 300
       , webauthnMfaRequired = True
+      , totpEnabled = False
+      , totpEnrollmentTtlSeconds = 900
       -- Roles every new user receives at signup. Define them first with
       -- `shomei-admin roles define <name>`; the server refuses to start if a name here is not
       -- in the registry. The empty list (the default) grants nothing.

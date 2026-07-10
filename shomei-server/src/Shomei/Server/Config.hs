@@ -48,6 +48,7 @@ import Shomei.Config
     ShomeiConfig (..),
     SigningKeyConfig (..),
     TokenTransport (..),
+    TotpConfig (..),
     UserVerificationPolicy (..),
     WebAuthnConfig (..),
     defaultShomeiConfig,
@@ -210,6 +211,12 @@ data FileConfig = FileConfig
     webauthnCeremonyTimeoutSeconds :: !(Maybe Int),
     webauthnPendingCeremonyTtlSeconds :: !(Maybe Int),
     webauthnMfaRequired :: !(Maybe Bool),
+    -- | EP-7: enable the TOTP second factor (enrollment + login challenge). The AES-256-GCM
+    --     encryption key for stored secrets is NOT here — it is a secret, read from
+    --     @SHOMEI_TOTP_ENCRYPTION_KEY@; the server refuses to boot when TOTP is on and it is
+    --     absent or malformed.
+    totpEnabled :: !(Maybe Bool),
+    totpEnrollmentTtlSeconds :: !(Maybe Int),
     serviceToken :: !(Maybe FileServiceTokenConfig),
     -- | enable the OIDC provider surface (discovery, @\/oauth\/authorize@). Requires @issuer@
     --     to be the deployment's public @http(s)@ base URL; the server refuses to boot otherwise.
@@ -339,6 +346,7 @@ baseFromFile (Just fc) = do
                   gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                 },
             webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc,
+            totpConfig = mergeTotp cfg0.totpConfig fc,
             serviceTokenConfig = serviceTokenCfg,
             oauthConfig = mergeOAuth cfg0.oauthConfig fc,
             signingKeyConfig =
@@ -523,6 +531,7 @@ overlayCoreFromEnv base = do
   tr <- transportEnv
   sc <- sessionCheckEnv
   wa <- overlayWebAuthnFromEnv base.webauthnConfig
+  totpCfg <- overlayTotpFromEnv base.totpConfig
   serviceTokenCfg <- overlayServiceTokenFromEnv base.serviceTokenConfig
   oauthCfg <- overlayOAuthFromEnv base.oauthConfig
   pwMin <- intEnvMaybe "SHOMEI_PASSWORD_MIN_LENGTH"
@@ -565,6 +574,7 @@ overlayCoreFromEnv base = do
             },
         sessionCheckMode = fromMaybe base.sessionCheckMode sc,
         webauthnConfig = wa,
+        totpConfig = totpCfg,
         serviceTokenConfig = serviceTokenCfg,
         oauthConfig = oauthCfg,
         passwordPolicy =
@@ -590,6 +600,27 @@ mergeOAuth base fc =
       authorizationCodeTTL = maybe base.authorizationCodeTTL fromIntegral fc.oauthAuthorizationCodeTtlSeconds,
       idTokenTTL = maybe base.idTokenTTL fromIntegral fc.oauthIdTokenTtlSeconds
     }
+
+-- | Apply the optional @totp*@ fields of a decoded Dhall 'FileConfig' onto the 'TotpConfig'
+-- defaults. Constructed in full rather than record-updated, for the same @-Wambiguous-fields@
+-- reason as 'mergeSweep'.
+mergeTotp :: TotpConfig -> FileConfig -> TotpConfig
+mergeTotp base fc =
+  TotpConfig
+    { totpEnabled = fromMaybe base.totpEnabled fc.totpEnabled,
+      enrollmentTTL = maybe base.enrollmentTTL fromIntegral fc.totpEnrollmentTtlSeconds
+    }
+
+-- | Overlay the @SHOMEI_TOTP_*@ environment variables onto the TOTP policy.
+overlayTotpFromEnv :: TotpConfig -> IO TotpConfig
+overlayTotpFromEnv base = do
+  mEnabled <- boolEnv "SHOMEI_TOTP_ENABLED"
+  mTtl <- ttlEnv "SHOMEI_TOTP_ENROLLMENT_TTL"
+  pure
+    TotpConfig
+      { totpEnabled = fromMaybe base.totpEnabled mEnabled,
+        enrollmentTTL = fromMaybe base.enrollmentTTL mTtl
+      }
 
 overlayOAuthFromEnv :: OAuthConfig -> IO OAuthConfig
 overlayOAuthFromEnv base = do

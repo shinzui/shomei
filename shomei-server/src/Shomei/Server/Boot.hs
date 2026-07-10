@@ -23,10 +23,10 @@ where
 import Control.Concurrent (forkIO)
 import Data.Aeson ((.=))
 import Data.Aeson.Key qualified as Key
+import Data.ByteString qualified as BS
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
 import Data.Set qualified as Set
-import Data.ByteString qualified as BS
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
 import Effectful (Eff, inject, runEff)
@@ -42,7 +42,7 @@ import Servant
     serveWithContext,
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
+import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
 import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
 import Shomei.Domain.Claims (Issuer (..), Role (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
@@ -53,7 +53,7 @@ import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.RoleStore (runRoleStorePostgres)
-import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
@@ -73,6 +73,7 @@ import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddle
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
 import Shomei.Workflow.Roles (undefinedDefaultRoles)
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import System.Posix.Signals (installHandler, sigHUP, sigINT, sigTERM)
@@ -315,17 +316,29 @@ buildEnv cfg settings = do
         envTotpKey = totpKey
       }
 
--- | The AES-256-GCM key that encrypts stored TOTP secrets (EP-7).
+-- | The AES-256-GCM key that encrypts stored TOTP secrets (EP-7), loaded from
+-- @SHOMEI_TOTP_ENCRYPTION_KEY@ (base64 of exactly 32 bytes; generate one with
+-- @openssl rand -base64 32@).
 --
--- NOTE (EP-7 M2): this is a placeholder returning a dummy all-zero key. TOTP is disabled by
--- default and has no routes yet, so the store is unreachable. EP-7 M4 replaces this with real
--- loading from @SHOMEI_TOTP_ENCRYPTION_KEY@ (base64 of 32 bytes) plus a loud boot failure when
--- @totpConfig.totpEnabled@ is set and the key is absent or malformed.
+-- When TOTP is enabled and the variable is absent or malformed, the server refuses to boot with
+-- a loud message — an enabled factor whose secrets cannot be encrypted is a silent data-loss
+-- trap. When TOTP is disabled the store is unreachable (enrollment is refused), so a valid key is
+-- optional; a dummy all-zero key keeps the interpreter-stack shape fixed. A key supplied while
+-- disabled is still validated, so a typo is caught before it is switched on.
 loadTotpKeyFromEnv :: ShomeiConfig -> IO TotpEncryptionKey
-loadTotpKeyFromEnv _cfg =
-  case totpEncryptionKeyFromBytes (BS.replicate 32 0) of
-    Right k -> pure k
-    Left err -> hPutStrLn stderr ("[shomei] " <> Text.unpack err) >> exitFailure
+loadTotpKeyFromEnv cfg = do
+  raw <- lookupEnv "SHOMEI_TOTP_ENCRYPTION_KEY"
+  let enabled = cfg.totpConfig.totpEnabled
+  case fmap Text.pack raw of
+    Just t | not (Text.null (Text.strip t)) ->
+      case totpEncryptionKeyFromBase64 t of
+        Right k -> pure k
+        Left err -> die ("SHOMEI_TOTP_ENCRYPTION_KEY " <> Text.unpack err)
+    _
+      | enabled -> die "SHOMEI_TOTP_ENCRYPTION_KEY is required when totpEnabled is set (generate one with: openssl rand -base64 32)"
+      | otherwise -> either (die . Text.unpack) pure (totpEncryptionKeyFromBytes (BS.replicate 32 0))
+  where
+    die msg = hPutStrLn stderr ("[shomei] " <> msg) >> exitFailure
 
 -- | Milliseconds to a 'DiffTime', exactly (a 'DiffTime' counts picoseconds, so this loses
 -- nothing). Used for the pool's acquisition timeout, which config carries as an integer count

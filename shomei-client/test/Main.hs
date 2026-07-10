@@ -4,19 +4,22 @@
 -- server agree on the wire format end-to-end, including the Bearer-authenticated @me@ route.
 module Main (main) where
 
+import Data.ByteString qualified as BS
 import Data.IORef (newIORef)
 import Data.Text (Text)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.Wai.Handler.Warp (testWithApplication)
 import Network.HTTP.Types (statusCode)
+import Network.Wai.Handler.Warp (testWithApplication)
 import Servant.Client (ClientError (FailureResponse), responseStatusCode)
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
+import Shomei.Id (parseId)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Servant.DTO
   ( LoginRequest (..),
     LoginResponse (..),
@@ -28,10 +31,14 @@ import Shomei.Servant.DTO
   )
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
-import Shomei.Id (parseId)
 import Shomei.Server.Keys (bootstrapKeys)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+
+-- | TOTP is not exercised by this suite; the store is unreachable, so a fixed dummy key keeps
+-- the 'Env' shape satisfied (EP-7 added 'envTotpKey').
+dummyTotpKey :: TotpEncryptionKey
+dummyTotpKey = either (const (error "bad dummy totp key")) id (totpEncryptionKeyFromBytes (BS.replicate 32 0))
 
 main :: IO ()
 main = defaultMain tests
@@ -47,7 +54,7 @@ tests =
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (application env)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 

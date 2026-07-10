@@ -57,9 +57,9 @@ This section must always reflect the actual current state of the work.
 - [x] M3 (2026-07-10): Enrollment/verify/removal workflows + routes (`Shomei.Workflow.Totp`); recovery-code generate/count workflows + routes; `denyUnderImpersonation` on enroll/remove/regenerate; `requireFreshAuth` gate on regenerate.
 - [x] M3 (2026-07-10): Login generalization (challenge if any factor enrolled); `LoginResponse` `methods` field (DTO hand-written JSON + OpenAPI oneOf + Arbitrary); `MfaCompleteRequest` union (passkey/totp/recovery_code, exactly-one FromJSON); `MfaCompletion` dispatch in `completeMfa`; replay defense via `last_used_counter`.
 - [x] M3 (2026-07-10): Audit events (TotpEnrolled/TotpRemoved/RecoveryCodesGenerated/RecoveryCodeUsed) + codec + spec (39 constructors); `TokenGen.GenerateRandomBytes`; 5 new `AuthError`s + problem specs; in-process HTTP scenario covering enroll→verify→mfa_required(methods)→complete, replay 401, recovery gen/use/count, arity 400, impersonation 403, remove, freshness 403. Also did the OpenAPI schema/path-count/routeErrors work here (planned for M4) to keep every commit's `cabal test shomei-servant` green. `cabal test shomei-core` = 232, `shomei-servant` = 30 + 56, `shomei-postgres` = 53, all green.
-- [ ] M4: Server config wiring (Dhall/env incl. `SHOMEI_TOTP_ENCRYPTION_KEY`); OpenAPI path count bumped (+4) and spec regenerated; `docs/user/mfa.md` written, `docs/user/passkeys.md` recovery section updated.
-- [ ] M4: Postgres E2E transcript automated.
-- [ ] Final: `nix fmt`, `cabal build all`, `cabal test all` green; Outcomes & Retrospective written.
+- [x] M4 (2026-07-10): Server config wiring — `TotpConfig` merged through `FileConfig`/Dhall (`totpEnabled`, `totpEnrollmentTtlSeconds`) and env (`SHOMEI_TOTP_ENABLED`, `SHOMEI_TOTP_ENROLLMENT_TTL`); `Boot.loadTotpKeyFromEnv` loads `SHOMEI_TOTP_ENCRYPTION_KEY` and fails the boot loudly when TOTP is on and the key is absent/malformed; Dhall types + example updated (type-checks via `dhall-to-json`). `docs/api/openapi.json` regenerated (+557 lines; the +4 path count landed in M3). `docs/user/mfa.md` written; `docs/user/passkeys.md` + `docs/user/api.md` updated.
+- [x] M4 (2026-07-10): Postgres E2E transcript automated (`E2ESpec` "EP-7"): signup → enroll → verify → login(mfa)→complete → me(200) → recovery gen → login→complete(recovery) → count 9, real-clock (present the next counter's code), with audit-row and encrypted-at-rest assertions.
+- [x] Final (2026-07-10): `cabal build all` OK; `TASTY_NUM_THREADS=1 cabal test all` — all 12 suites PASS. `nix fmt` run; its reformats of files this milestone did not semantically change were reverted per the EP-4 precedent. Outcomes & Retrospective written.
 
 
 ## Surprises & Discoveries
@@ -279,7 +279,35 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Delivered (2026-07-10).** Every item in the Purpose exists and is proven end-to-end. TOTP
+(RFC 6238) is a first-class second factor: enroll at `POST /v1/auth/totp/enroll` (secret shown
+once as Base32 + `otpauth://` URI), activate at `POST /v1/auth/totp/verify`, and complete a login
+challenge at `POST /v1/auth/mfa/complete` with a `totpCode`. Ten single-use recovery codes back
+it (and passkey-only users) as the lockout escape hatch. The `mfa_required` login arm extended
+purely additively — a `methods` list was added; every field passkey-only clients parse keeps its
+shape — and the MFA-required policy generalized from "has a passkey" to "has any confirmed
+factor". Secrets are AES-256-GCM-encrypted at rest under a key held outside the database
+(`SHOMEI_TOTP_ENCRYPTION_KEY`); recovery codes are stored SHA-256-hashed; replay is defended by a
+persisted `last_used_counter`. The full transcript reproduces in the automated Postgres E2E.
+
+**Against the original purpose:** the observable outcome the Purpose named — enroll, compute a
+code, log in, receive `mfa_required` advertising `totp`, complete, then complete a second login
+with a recovery code and watch the count drop, then watch a replayed code get rejected — is
+exactly what `shomei-servant`'s in-process HTTP scenario and `shomei-server`'s real-Postgres E2E
+assert.
+
+**Scope deltas from the plan, all recorded in the Decision Log / Surprises:** (a) the `base32`
+package was unnecessary — `ram`'s `Data.ByteArray.Encoding` already provides RFC 4648 Base32; (b)
+`TotpEnrolled` fires on confirmation, not on enroll start; (c) the OpenAPI schema work (planned
+for M4) landed in M3 to keep every commit's conformance suite green; (d) `MfaCompleteRequest` /
+`TotpRemoveRequest` use a generic all-optional `ToSchema` rather than a hand-written `oneOf`
+(the exactly-one rule lives in `FromJSON`).
+
+**Lessons for later plans (EP-9 especially).** The effect stack is five-plus sites and
+`App.Env` grew a field; the login round-trip budget guard trips on any mint-path read (8 → 9
+here); crypton's `aeadSimpleEncrypt` returns `(tag, ciphertext)`; and the servant test harness's
+jose-real-clock vs. World-clock split forces token-minting steps to sit in the past. All are in
+Surprises & Discoveries.
 
 
 ## Context and Orientation

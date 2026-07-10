@@ -4,6 +4,7 @@
 -- @\/v1\/auth\/login@ route (obtained through the real typed @shomei-client@).
 module Main (main) where
 
+import Data.ByteString qualified as BS
 import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Text.Encoding qualified as Text
@@ -26,6 +27,7 @@ import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Servant.DTO
   ( LoginRequest (..),
     LoginResponse (..),
@@ -36,6 +38,11 @@ import Shomei.Server.App (Env (..))
 import Shomei.Server.Keys (bootstrapKeys)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+
+-- | TOTP is not exercised by this suite; the store is unreachable, so a fixed dummy key keeps
+-- the 'Env' shape satisfied (EP-7 added 'envTotpKey').
+dummyTotpKey :: TotpEncryptionKey
+dummyTotpKey = either (const (error "bad dummy totp key")) id (totpEncryptionKeyFromBytes (BS.replicate 32 0))
 
 main :: IO ()
 main = defaultMain tests
@@ -51,7 +58,7 @@ tests =
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (embeddedApplication env)) \port -> do
             mgr <- newManager defaultManagerSettings
 

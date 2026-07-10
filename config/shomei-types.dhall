@@ -39,7 +39,12 @@
 , webauthnAttestation : Text                 -- "none" | "direct"
 , webauthnCeremonyTimeoutSeconds : Natural   -- browser ceremony timeout
 , webauthnPendingCeremonyTtlSeconds : Natural -- how long a begun ceremony stays valid server-side
-, webauthnMfaRequired : Bool                 -- require the second factor for accounts that have a passkey
+, webauthnMfaRequired : Bool                 -- require the second factor for accounts with any enrolled factor
+-- TOTP second factor (MasterPlan 7 EP-7). Disabled by default. When enabled, the environment
+-- variable SHOMEI_TOTP_ENCRYPTION_KEY (base64 of 32 bytes) MUST be set — it is a secret and so is
+-- never in this file — or the server refuses to start. Generate one with: openssl rand -base64 32.
+, totpEnabled : Bool
+, totpEnrollmentTtlSeconds : Natural          -- how long an unconfirmed enrollment stays activatable
 -- OIDC provider surface (MasterPlan 7 EP-5). Disabled by default. When enabled, `issuer` above
 -- MUST be this deployment's public http(s) base URL: every endpoint in the published discovery
 -- document is derived from it, and the server refuses to start otherwise.
