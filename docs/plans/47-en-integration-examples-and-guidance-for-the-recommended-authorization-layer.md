@@ -93,12 +93,12 @@ Milestone 2 — The embedded example app and its transcript: **DONE 2026-07-10.*
 - [x] README transcript recorded from a real run: signup 201 → login → GET 403 → PUT 403 → grant `editor` → PUT 200 → GET 200 (editor implies view) → no-token 401 → a *different* project still 403 (per-object).
 - [x] Consistency shown honestly in the README: the grant response returns en's consistency token; the notes explain why `MinimizeLatency` observes the write here (single trivial `IORef` revision) and when to reach for `AtLeastAsFresh`.
 
-Milestone 3 — The microservice recipe:
+Milestone 3 — The microservice recipe: **DONE 2026-07-10.**
 
-- [ ] `examples/microservice-auth-stack/README.md` created (the stack has none today; its runbook lives in comments atop `process-compose.yaml` — lift those into the README first).
-- [ ] "Adding en to the downstream service" recipe section: JWKS-verified `AuthClaims` → subject via `idText claims.subject` → `en-client` `check` against `en-server`; full code snippets, no compiled dependency (Decision Log).
-- [ ] Prominent security note: en-server has no caller authentication today (en plan 33, unimplemented; names Shōmei-JWT verification as the intended fix); stated posture: private network / service mesh mTLS; never expose en-server publicly.
-- [ ] The recipe's environment/topology sketch (shomei-server :8080, downstream :8090, en-server :8081 with `EN_DATABASE_URL` pointing at en's **own** database).
+- [x] `examples/microservice-auth-stack/README.md` created; the runbook is lifted out of the `process-compose.yaml` header comments into a "Running the base stack" section.
+- [x] "Adding en for fine-grained authorization" recipe section: JWKS-verified `AuthClaims` → subject via `idText claims.subject` → `en-client` `check` against `en-server`; full code snippets, no compiled dependency (Decision Log). Snippets are written against the actual en wire types (`CheckRequestWire`, `CheckResponseWire`, `SubjectWire`, `ConsistencyWire`, `EnResult`, verified in en source at the pinned commit) but are **not** compiler-checked: the embedded example pins only `en-core`, not `en-client`, so there is no scratch module to paste them into. This is the honest cost of the en-core-only decision.
+- [x] Prominent security note (a blockquote the reader cannot miss): en-server has no caller authentication today (en plan 33, unimplemented; names Shōmei-JWT verification as the intended fix); stated posture: private network / service mesh mTLS; never expose en-server publicly.
+- [x] The recipe's environment/topology sketch (shomei-server :8080, downstream :8090, en-server :8081 with `EN_DATABASE_URL` pointing at en's **own** database).
 
 Milestone 4 — The authorization docs page:
 
