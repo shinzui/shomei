@@ -100,12 +100,12 @@ Milestone 3 — The microservice recipe: **DONE 2026-07-10.**
 - [x] Prominent security note (a blockquote the reader cannot miss): en-server has no caller authentication today (en plan 33, unimplemented; names Shōmei-JWT verification as the intended fix); stated posture: private network / service mesh mTLS; never expose en-server publicly.
 - [x] The recipe's environment/topology sketch (shomei-server :8080, downstream :8090, en-server :8081 with `EN_DATABASE_URL` pointing at en's **own** database).
 
-Milestone 4 — The authorization docs page:
+Milestone 4 — The authorization docs page: **DONE 2026-07-10.**
 
-- [ ] `docs/user/authorization.md` written: two-tier story; identity-mapping conventions (users, service accounts, impersonation); consistency guidance; database topology; the bootstrap-circularity note (Shōmei's own role grants stay in Shōmei).
-- [ ] Linked from `README.md`'s Documentation list and `docs/user/index.md`'s Feature Guides; cross-links added from `docs/user/security.md`'s roles section (if plan 38's rewrite has landed) and `docs/user/client-and-examples.md` (both examples).
-- [ ] External Companion Work section of this plan reviewed against the en repo one final time (paths still accurate) and mirrored as a short "current en-side gaps" admonition in the docs page.
-- [ ] CHANGELOG entry; MasterPlan 7 registry row updated.
+- [x] `docs/user/authorization.md` written: two-tier story; graduation boundary; identity-mapping conventions (users, service accounts, impersonation) with the convention table; consistency guidance; one-database-per-system topology; the bootstrap-circularity note (Shōmei's own role grants stay in Shōmei).
+- [x] Linked from `README.md`'s Documentation list and `docs/user/index.md`'s Feature Guides; cross-links added from `docs/user/security.md`'s roles section (its two-tier text landed via EP-1/EP-9, so the pointer replaces the "will live at …" placeholder) and `docs/user/client-and-examples.md` (a new "Embedded with en" section + the intro count 2→3).
+- [x] "Current en-side gaps" admonition mirrored in the docs page (no en-server caller auth; no pooled embedding runner; `subjectFromUserId` not exported), pointing at this plan's External Companion Work.
+- [x] CHANGELOG entry added (Unreleased, EP-10); MasterPlan 7 registry row + Progress updated.
 
 
 ## Surprises & Discoveries
@@ -345,7 +345,31 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Completed 2026-07-10.** All four milestones landed. Against the original purpose:
+
+- **The paved road exists in executable form.** `examples/embedded-with-en` builds and runs; a
+  developer goes from `cabal run` to a working "Shōmei login gates an en-checked route" demo in
+  minutes, with a real, reproduced `403 → grant → 200` transcript. The microservice recipe and
+  `docs/user/authorization.md` answer every cross-project question the integration raises (subject
+  mapping, consistency, topology, service accounts, impersonation, en-server exposure).
+- **The single largest deviation was consuming `en-core` only, not `en-servant`+`en-core`.**
+  en-servant's library acquired `openapi-hs`/`biscuit`/`en-postgres` dependencies since planning,
+  and shomei already pins `openapi-hs` at a conflicting commit; en-core has no such deps. The
+  example reproduces en-servant's ~20-line `requirePermission` locally. Net effect: strictly
+  simpler build (zero new external pins), faster, and more focused on the actual lesson. Recorded
+  in the Decision Log and Surprises.
+- **Two planning assumptions were overtaken by en's evolution** (both harmless): Kikan's
+  in-memory store now *supports* writes (en plan 45), but its per-run state still forced the
+  bespoke `IORef` store for cross-request persistence; and en-servant's `Env` grew far past the
+  five fields the plan sketched — moot, since the example does not use it.
+- **The cabal `import:` mechanism failed** exactly as the spike anticipated (cabal 3.16 resolves
+  imported relative `packages:` against the importing file); the documented fallback project file
+  is what shipped.
+- **Gaps left open, all on the en side** (External Companion Work, unchanged): en-server caller
+  auth (en plan 33), a pooled en-postgres runner, and exporting `subjectFromUserId`. None blocked
+  this plan; all are mirrored honestly in the docs page's "current en-side gaps".
+- **Root workspace stayed en-free** and no shipped shomei package changed — the whole plan is
+  additive (one example, one README, one docs page, link edits, CHANGELOG).
 
 
 ## Context and Orientation

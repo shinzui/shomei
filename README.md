@@ -75,6 +75,7 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 - [docs/user/passkeys.md](docs/user/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
 - [docs/user/service-tokens.md](docs/user/service-tokens.md) — scoped machine-token issuance for connectors and agents.
 - [docs/user/security.md](docs/user/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
+- [docs/user/authorization.md](docs/user/authorization.md) — the two-tier authorization story, and the conventions for composing Shōmei authentication with **en** (ReBAC) authorization.
 - [docs/user/notifications.md](docs/user/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.
 - [docs/user/deployment.md](docs/user/deployment.md) — configuration reference, the local `process-compose` stack, the production container image, and the operator runbook.
 - [docs/user/client-and-examples.md](docs/user/client-and-examples.md) — typed Haskell client and runnable example applications.

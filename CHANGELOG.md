@@ -7,6 +7,26 @@ tagged release.
 
 ## Unreleased
 
+### Added — MasterPlan 7 (Interop Wave), EP-10: en authorization integration (examples and guidance)
+
+Documentation and runnable examples for the **two-tier authorization** story: Shōmei for
+authentication, and **en** (the sibling Zanzibar-style ReBAC toolkit) for fine-grained
+authorization. No shipped-package code changes — the root workspace stays en-free.
+
+- **`examples/embedded-with-en`.** One Servant process that mounts the whole Shōmei auth API and
+  adds `GET/PUT /projects/:id` routes guarded by en, with a demo grant route and a real
+  `403 → grant editor → 200` transcript. Consumes `en-core` as a pinned git source dependency
+  (of the example only; not the root `cabal.project`) and reproduces en's fail-closed
+  `requirePermission` guard over `En.Check.check`.
+- **`examples/microservice-auth-stack/README.md`.** The base-stack runbook plus a recipe for
+  adding a live `en-server` check to a downstream service that already verifies Shōmei JWTs
+  offline — subject derivation, fail-closed transport handling, and the prominent "en-server has
+  no caller authentication yet" security note.
+- **`docs/user/authorization.md`.** The two-tier story, the identity-mapping conventions (the
+  `user:<TypeID text>`, never-the-bare-UUID rule), consistency guidance, and one-database-per-
+  system topology. Linked from the README, the docs index, the security model, and the examples
+  guide.
+
 ### Added — MasterPlan 7 (Interop Wave), EP-9: role permissions and time-bound grants
 
 Shōmei's built-in (tier-1) authorization grows two classic RBAC mechanics, so deployments that do

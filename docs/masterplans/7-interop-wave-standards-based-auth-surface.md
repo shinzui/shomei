@@ -114,7 +114,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Complete |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Complete |
 | 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Complete |
-| 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | In Progress |
+| 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -309,11 +309,28 @@ the other.
 - [x] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
 - [x] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
 - [x] EP-9: Time-bound grants (`expires_at`), expiry-filtered at mint, CLI flags, sweeper integration
-- [ ] EP-10: `examples/embedded-with-en` — shomei auth + embedded en authorization, end-to-end transcript
-- [ ] EP-10: Microservice recipe (JWKS verify → subject mapping → en-client check) and `docs/user/authorization.md` two-tier guide
+- [x] EP-10: `examples/embedded-with-en` — shomei auth + embedded en authorization, end-to-end transcript
+- [x] EP-10: Microservice recipe (JWKS verify → subject mapping → en-client check) and `docs/user/authorization.md` two-tier guide
 
 
 ## Surprises & Discoveries
+
+**2026-07-10 (EP-10) — completed; this closes MasterPlan 7. The example consumes `en-core`
+only, not `en-servant`, because en-servant's LIBRARY grew openapi/biscuit/postgres deps that
+collide with shomei's openapi-hs pin.** en-servant's library now depends on `openapi-hs`,
+`servant-openapi-hs`, `en-postgres`, and `en-biscuit`; shomei pins `openapi-hs` at a different
+commit, and two git source pins for one repo cannot coexist in a cabal plan. en-core has no such
+deps (only effectful/containers/text/time/template-haskell — all already in shomei's plan), so it
+drops in with zero new external pins, and the ~20-line `En.Servant.Authorize.requirePermission`
+guard is reproduced locally over `En.Check.check` (EP-10 Decision Log). Other EP-10 findings: the
+planned `import: ../../cabal.project` fails under cabal 3.16 (relative `packages:` resolved against
+the importing file) → the committed project file is the documented explicit fallback; Kikan's
+in-memory tuple store now *supports* writes (en plan 45) but resets per-run, so cross-request
+persistence still needs the bespoke `IORef` store; and OverloadedRecordDot fails on en-core's
+`NoFieldSelectors` records under `DuplicateRecordFields`/`Foldable` consumers, so the interpreter
+pattern-matches the en records exactly as Kikan does internally. The whole plan is additive: one
+example (not in the root `cabal.project`), one README, one docs page, link edits, CHANGELOG — the
+root workspace stays en-free (0 en packages in its plan) and no shipped shomei package changed.
 
 **2026-07-11 (EP-9) — completed; the pre-warned mint round-trip and stale-count notes landed
 exactly as forecast, and the plan-34 sweeper integration is live.** EP-9 shipped role→permission
@@ -721,7 +738,45 @@ confirm.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+**Completed 2026-07-10. All ten Exec-Plans landed (EP-1 through EP-10); none was cancelled.**
+
+Against the Vision: Shōmei is now a standards-consumable auth provider. Roles/scopes have a
+persistent source of truth with granting paths and genuinely-enforcing combinators (EP-1), grown
+with role→permission indirection and time-bound grants (EP-9); a deployed instance is
+administrable over HTTP (EP-2); the API lives under `/v1` with one problem-details envelope
+(EP-3); service-to-service auth is OAuth2 `client_credentials` against database-backed service
+accounts (EP-4); the OIDC provider subset (discovery, auth-code+PKCE, introspection, revocation,
+userinfo) auto-configures stock middleware (EP-5); RFC 8693 token exchange generalizes
+impersonation (EP-6); TOTP + recovery codes join passkeys (EP-7); SMTP-relay and webhook
+`Notifier` interpreters deliver lifecycle email (EP-8); and the two-tier authorization story is
+documented and demonstrated with the **en** integration (EP-10).
+
+Phase discipline held: Phase 1 (EP-1/2/3/9) made the surface trustworthy and versioned before
+Phase 2 (EP-4/5/6) added protocol surface, and Phase 3 (EP-7/8/10) shipped user-facing
+completeness. The `/v1`-first decision (EP-3 in Phase 1) paid off — every later route was born
+under `/v1` with the new envelope, and no consumer faced a second migration.
+
+Cross-cutting lessons that recurred and are worth carrying forward:
+
+- **The effect stack is declared in five places** (two of them private test copies); every
+  port-adding plan (EP-4/5/6/7/9) hit all five, and a miss compiles fine but fails one suite.
+- **The round-trip budget guards** (`testLoginRoundTripBudget`/`testRefreshRoundTripBudget`) pin
+  the exact DB cost of login/refresh; every plan adding work to the shared mint path tripped them,
+  which is the intended tripwire — raise the constant only after justifying the new read.
+- **A route's path is written in four non-Servant places** (throttle list, cookie scope, metrics
+  table, emailed links); EP-3's conformance suite became the workspace's best bug detector.
+- **The OpenAPI generator actively fights the RFC 6749 `/oauth/*` error shape**; every protocol
+  route had to join the path-keyed exemption list or be documented with the wrong envelope.
+- **`nix fmt` is not clean on `HEAD`**, so tree-formatting is its own commit, never a plan's.
+- **`TASTY_NUM_THREADS=1 cabal test all`** is the reliable green signal (ephemeral-PostgreSQL
+  contention makes parallel runs flaky, not the code).
+
+EP-10 is the one plan that touched no shipped package code — it is examples and documentation for
+the deliberate two-tier authorization posture — and it recorded the largest single course
+correction of the wave (consume `en-core`, not `en-servant`, once en-servant's library grew a
+dependency web that collides with shomei's openapi pin). The out-of-scope list in Vision & Scope
+(multi-tenancy, SAML/LDAP/SCIM, hosted UI, JS sandboxes, device grant, SMS/email OTP, quotas)
+held for the entire wave; nothing was pulled back in.
 
 ---
 

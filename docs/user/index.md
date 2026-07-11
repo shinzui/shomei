@@ -25,6 +25,9 @@ Haskell service, and integrating client applications.
 - [Security Model](security.md) summarizes password hashing, token handling, session revocation,
   key rotation, signing-key encryption at rest, cookie transport and CSRF defenses,
   lockout/rate limits, audit logging, impersonation, passkeys, and service tokens.
+- [Authorization](authorization.md) covers the two-tier authorization story — Shōmei's built-in
+  RBAC and, for fine-grained access, the **en** (ReBAC) integration — with the identity-mapping,
+  consistency, and database-topology conventions for composing the two.
 - [Client & Examples](client-and-examples.md) shows the typed Haskell client and the two runnable
   example applications.
 - [Generating API Clients](openapi-client-generation.md) explains the committed OpenAPI 3.1 schema

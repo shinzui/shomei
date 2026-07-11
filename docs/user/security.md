@@ -382,9 +382,10 @@ principal an administrator? a support agent? a paying member? may it write ticke
 this project**?* — resource-scoped permissions, access derived from relationships, revocation
 that takes effect immediately, conditional access. Shōmei deliberately does **not** grow into
 this, because a JWT claim is the wrong transport for it (see [Staleness](#staleness-role-changes-apply-at-the-next-mint)).
-The recommended graduation path is **en**, the sibling Zanzibar-style ReBAC toolkit. Its
-integration guide will live at `docs/user/authorization.md`; until it lands, the design is in
-[plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
+The recommended graduation path is **en**, the sibling Zanzibar-style ReBAC toolkit. See
+[Authorization](authorization.md) for the two-tier story, the identity-mapping conventions, and
+the runnable [`embedded-with-en`](../../examples/embedded-with-en/README.md) example and
+[microservice recipe](../../examples/microservice-auth-stack/README.md).
 
 Within tier 1, permission indirection (so services never hard-code role names) and time-bound
 grants are **shipped** ([Permissions](#permissions-re-wireable-capabilities),

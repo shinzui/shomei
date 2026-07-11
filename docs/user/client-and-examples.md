@@ -1,6 +1,6 @@
 # Client & Examples
 
-Shōmei ships a typed Haskell client and two runnable example applications.
+Shōmei ships a typed Haskell client and three runnable example applications.
 
 ## Typed Haskell Client
 
@@ -53,6 +53,16 @@ PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
 
 Open <http://localhost:8080/index.html> to exercise login, passkey enrollment, and MFA step-up in
 a real browser.
+
+## Embedded with en (authentication + authorization)
+
+`examples/embedded-with-en` extends the embedded model with **fine-grained authorization**: it
+mounts the whole Shōmei auth API and adds `GET/PUT /projects/:id` routes guarded by **en**, the
+sibling Zanzibar-style ReBAC toolkit. Shōmei answers *who is calling*; en answers *what they may
+do* (a relationship check against a small `project` schema). Its README walks a copy-pasteable
+`403 → grant an editor tuple → 200` transcript. Start with
+[Authorization](authorization.md) for the two-tier story and the identity-mapping conventions
+this example pins.
 
 ## Microservice Auth Stack
 
