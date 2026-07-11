@@ -7,10 +7,10 @@ import Data.IORef (newIORef, readIORef)
 import Data.Set qualified as Set
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
-import Data.Time (UTCTime (..), fromGregorian)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Effectful (Eff, IOE, (:>))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.Event qualified as Event
@@ -21,7 +21,7 @@ import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.ClaimsEnricher (ClaimsDelta (..), emptyClaimsDelta)
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory, runInMemoryWith)
-import Shomei.Effect.RoleStore (defineRole)
+import Shomei.Effect.RoleStore (allowPermission, defineRole)
 import Shomei.Id (genSessionId)
 import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), login, refresh, signup)
@@ -40,7 +40,10 @@ tests =
       testEnricherCannotForgeReservedClaims,
       testEnricherAddsRolesAndScopes,
       testDefaultRolesLandOnTheFirstToken,
-      testUndefinedDefaultRolesAreReported
+      testUndefinedDefaultRolesAreReported,
+      testPermissionUnionReachesTheToken,
+      testExpiredGrantDropsRoleAndPermissions,
+      testEnricherRoleContributesPermissions
     ]
 
 fixedTime :: UTCTime
@@ -49,10 +52,12 @@ fixedTime = UTCTime (fromGregorian 2026 1 1) 0
 baseCfg :: ShomeiConfig
 baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
 
-adminRole, memberRole, betaRole :: Role
+adminRole, memberRole, betaRole, supportRole, billingRole :: Role
 adminRole = Role "admin"
 memberRole = Role "member"
 betaRole = Role "beta-tester"
+supportRole = Role "support"
+billingRole = Role "billing"
 
 strongPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
@@ -149,6 +154,7 @@ testEnricherCannotForgeReservedClaims =
             [ ("sub", toJSON ("attacker" :: Text)),
               ("roles", toJSON ["admin" :: Text]),
               ("scopes", toJSON ["impersonate:user" :: Text]),
+              ("permissions", toJSON ["billing:write" :: Text]),
               ("iss", toJSON ("evil" :: Text)),
               ("act", toJSON ("operator" :: Text)),
               ("tenant", toJSON ("acme" :: Text))
@@ -167,6 +173,7 @@ testEnricherCannotForgeReservedClaims =
     claims.issuer @?= baseCfg.issuer
     claims.roles @?= Set.empty
     claims.scopes @?= Set.empty
+    claims.permissions @?= Set.empty
     claims.actor @?= Nothing
 
 -- | The hook's roles are unioned with the stored ones; its scopes are the only source of scopes.
@@ -205,6 +212,69 @@ testDefaultRolesLandOnTheFirstToken =
     map (.role) grants @?= [memberRole]
     -- The bootstrap/system actor: no acting admin, exactly like a CLI grant.
     map (.grantedBy) grants @?= [Nothing]
+
+-- | The @permissions@ claim (EP-9) is the deduplicated union of the granted roles' catalog
+-- permissions — the whole point of the indirection: a consumer checks @tickets:read@ regardless
+-- of which of the user's roles supplies it.
+testPermissionUnionReachesTheToken :: TestTree
+testPermissionUnionReachesTheToken =
+  testCase "the permissions claim is the deduplicated union of the granted roles' permissions" do
+    ref <- newIORef (emptyWorld fixedTime)
+    access <- runInMemory ref do
+      (user, _) <- orFail =<< signup baseCfg signupCmd
+      _ <- defineRole supportRole (Just "support staff") fixedTime
+      _ <- defineRole billingRole (Just "billing staff") fixedTime
+      _ <- allowPermission supportRole (Permission "tickets:write") fixedTime
+      _ <- allowPermission supportRole (Permission "tickets:read") fixedTime
+      _ <- allowPermission billingRole (Permission "tickets:read") fixedTime -- overlaps support
+      _ <- allowPermission billingRole (Permission "invoices:read") fixedTime
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId supportRole
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId billingRole
+      completeLogin =<< orFail =<< login baseCfg ctx loginCmd
+    claims <- decodeAccess access
+    claims.roles @?= Set.fromList [supportRole, billingRole]
+    claims.permissions
+      @?= Set.fromList [Permission "invoices:read", Permission "tickets:read", Permission "tickets:write"]
+
+-- | Grant expiry is passive and read-time: a grant whose expiry has passed contributes neither its
+-- role nor its permissions to a token minted after the expiry instant, while one minted before it
+-- carries both — from the same grant, with nothing fired in between.
+testExpiredGrantDropsRoleAndPermissions :: TestTree
+testExpiredGrantDropsRoleAndPermissions =
+  testCase "an expired grant contributes neither its role nor its permissions at mint" do
+    ref <- newIORef (emptyWorld fixedTime)
+    let expiry = addUTCTime 3600 fixedTime
+        afterExpiry = addUTCTime 7200 fixedTime
+    (live, expired) <- runInMemory ref do
+      (user, _) <- orFail =<< signup baseCfg signupCmd
+      _ <- defineRole supportRole (Just "support staff") fixedTime
+      _ <- allowPermission supportRole (Permission "tickets:write") fixedTime
+      _ <- orFail =<< grantRoleTo Nothing (Just expiry) user.userId supportRole
+      sid1 <- genSessionId
+      live <- buildEnrichedClaims baseCfg user.userId sid1 fixedTime -- before expiry
+      sid2 <- genSessionId
+      expired <- buildEnrichedClaims baseCfg user.userId sid2 afterExpiry -- after expiry
+      pure (live, expired)
+    live.roles @?= Set.singleton supportRole
+    live.permissions @?= Set.singleton (Permission "tickets:write")
+    expired.roles @?= Set.empty
+    expired.permissions @?= Set.empty
+
+-- | Permissions are resolved from the /effective/ role set (Decision Log): a role a host injects
+-- through its 'ClaimsEnricher' brings its catalog permissions exactly as a granted role would.
+testEnricherRoleContributesPermissions :: TestTree
+testEnricherRoleContributesPermissions =
+  testCase "an enricher-added role brings its catalog permissions into the token" do
+    ref <- newIORef (emptyWorld fixedTime)
+    let hook _ _ = emptyClaimsDelta {extraRoles = Set.singleton betaRole}
+    claims <- runInMemoryWith hook ref do
+      (user, _) <- orFail =<< signup baseCfg signupCmd
+      _ <- defineRole betaRole (Just "beta cohort") fixedTime
+      _ <- allowPermission betaRole (Permission "beta:features") fixedTime
+      sid <- genSessionId
+      buildEnrichedClaims baseCfg user.userId sid fixedTime
+    claims.roles @?= Set.singleton betaRole
+    claims.permissions @?= Set.singleton (Permission "beta:features")
 
 -- | The boot-time guard: a configured default role missing from the registry is reported.
 testUndefinedDefaultRolesAreReported :: TestTree

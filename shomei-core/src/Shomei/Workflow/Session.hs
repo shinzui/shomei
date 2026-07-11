@@ -37,7 +37,7 @@ import Shomei.Domain.Token (TokenPair (..))
 import Shomei.Domain.User (User (..))
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork, NewSessionToken (..), persistNewSession)
 import Shomei.Effect.ClaimsEnricher (ClaimsDelta (..), ClaimsEnricher, enrichClaims)
-import Shomei.Effect.RoleStore (RoleStore, listRolesForUser)
+import Shomei.Effect.RoleStore (RoleStore, listRolesForUser, permissionsForRoles)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Error (AuthError (EmailNotVerified))
@@ -75,6 +75,7 @@ buildClaims cfg uid sid ts =
       expiresAt = addUTCTime cfg.accessTokenTTL ts,
       scopes = Set.empty,
       roles = Set.empty,
+      permissions = Set.empty,
       actor = Nothing,
       extraClaims = noExtraClaims
     }
@@ -97,7 +98,10 @@ buildClaimsWith cfg extra uid sid ts =
 --
 -- The delta's extra claims run through 'mkExtraClaims', so the hook cannot forge a reserved
 -- claim. Roles are the union of stored and hook-supplied ones; scopes come only from the hook
--- (Shōmei persists no scopes).
+-- (Shōmei persists no scopes). Permissions (EP-9) are the union of the /effective/ role set's
+-- catalog permissions — an enricher-added role brings its permissions with it — and cannot be
+-- forged through @extraClaims@ ('permissions' is reserved). The stored roles are read as of the
+-- mint instant, so an expired grant contributes neither its role nor its permissions.
 buildEnrichedClaims ::
   (RoleStore :> es, ClaimsEnricher :> es) =>
   ShomeiConfig ->
@@ -108,10 +112,13 @@ buildEnrichedClaims ::
 buildEnrichedClaims cfg uid sid ts = do
   storeRoles <- listRolesForUser uid ts
   delta <- enrichClaims uid storeRoles
+  let effectiveRoles = storeRoles <> delta.extraRoles
+  perms <- permissionsForRoles effectiveRoles
   pure
     (buildClaims cfg uid sid ts)
-      { roles = storeRoles <> delta.extraRoles,
+      { roles = effectiveRoles,
         scopes = delta.extraScopes,
+        permissions = perms,
         extraClaims = mkExtraClaims delta.extraClaims
       }
 

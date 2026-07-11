@@ -670,6 +670,7 @@ signWith jwk = do
             expiresAt = addUTCTime 900 t,
             scopes = Set.empty,
             roles = Set.empty,
+            permissions = Set.empty,
             actor = Nothing,
             extraClaims = mempty
           }

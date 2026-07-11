@@ -157,6 +157,9 @@ mintDelegatedToken cfg ts mint = do
             expiresAt = expires,
             scopes = mint.scopes,
             roles = Set.empty,
+            -- A delegated token carries negotiated scopes, not role-derived permissions (EP-9):
+            -- it does not go through claims enrichment, so its permissions set is always empty.
+            permissions = Set.empty,
             actor = Just mint.actorUserId,
             extraClaims = noExtraClaims
           }

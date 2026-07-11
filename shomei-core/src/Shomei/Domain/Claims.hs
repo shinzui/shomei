@@ -52,6 +52,12 @@ data AuthClaims = AuthClaims
     expiresAt :: !UTCTime,
     scopes :: !(Set Scope),
     roles :: !(Set Role),
+    -- | the capabilities the subject's roles imply (EP-9), resolved at mint time from the
+    --     @shomei_role_permissions@ catalog and carried in the @permissions@ claim. Empty for
+    --     tokens minted before EP-9 (and for the service-token / impersonation paths, which do
+    --     not go through role enrichment); a token with no @permissions@ claim verifies to the
+    --     empty set, exactly as @roles@ does.
+    permissions :: !(Set Permission),
     -- | when this token is a delegated (impersonation) token, the real operator
     -- acting on behalf of 'subject'; serialised as the @act@ JWT claim. 'Nothing'
     -- for every ordinary login token.
@@ -70,7 +76,7 @@ data AuthClaims = AuthClaims
 -- 'mkExtraClaims' so a service (or attacker-influenced input) can never forge a
 -- standard claim through the extension bag.
 reservedClaimKeys :: [Text]
-reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "sid", "scopes", "roles", "act"]
+reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "sid", "scopes", "roles", "permissions", "act"]
 
 -- | Build an extra-claims object, dropping any reserved key (see 'reservedClaimKeys').
 mkExtraClaims :: Object -> Object

@@ -53,7 +53,7 @@ import Servant.Server.Experimental.Auth
     mkAuthHandler,
   )
 import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Role, Scope)
+import Shomei.Domain.Claims (AuthClaims (..), Permission, Role, Scope)
 import Shomei.Error (TokenError)
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
@@ -68,6 +68,7 @@ data AuthUser = AuthUser
     authSessionId :: !SessionId,
     authRoles :: !(Set Role),
     authScopes :: !(Set Scope),
+    authPermissions :: !(Set Permission),
     authClaims :: !AuthClaims
   }
   deriving stock (Generic)
@@ -109,6 +110,7 @@ authUserFromClaims claims =
       authSessionId = claims.sessionId,
       authRoles = claims.roles,
       authScopes = claims.scopes,
+      authPermissions = claims.permissions,
       authClaims = claims
     }
 

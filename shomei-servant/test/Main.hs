@@ -267,6 +267,7 @@ mkAdminToken jwk cfg = do
             expiresAt = addUTCTime 900 t,
             scopes = Set.empty,
             roles = Set.fromList [Role "admin"],
+            permissions = Set.empty,
             actor = Nothing,
             extraClaims = mempty
           }
@@ -295,6 +296,7 @@ mkTokenFor jwk cfg uid roles scopes actor = do
             expiresAt = addUTCTime 900 t,
             scopes = scopes,
             roles = roles,
+            permissions = Set.empty,
             actor = actor,
             extraClaims = mempty
           }
@@ -317,6 +319,7 @@ mkImpersonatorToken jwk cfg t = do
             expiresAt = addUTCTime 900 t,
             scopes = Set.fromList [cfg.impersonationConfig.impersonateScope],
             roles = Set.empty,
+            permissions = Set.empty,
             actor = Nothing,
             extraClaims = mempty
           }
@@ -2785,6 +2788,7 @@ scenarioTotp r jwk cfg port = do
               expiresAt = addUTCTime 900 start,
               scopes = Set.empty,
               roles = Set.empty,
+              permissions = Set.empty,
               actor = Just opUid,
               extraClaims = mempty
             }

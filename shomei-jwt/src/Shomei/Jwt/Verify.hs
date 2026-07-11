@@ -135,10 +135,11 @@ claimsToAuth cs = do
   expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
   let scs = Set.fromList (map Domain.Scope (lookupStringList "scopes"))
       rls = Set.fromList (map Domain.Role (lookupStringList "roles"))
+      perms = Set.fromList (map Domain.Permission (lookupStringList "permissions"))
       -- The custom claims Shōmei manages itself; everything else in the
       -- unregistered map is the consuming service's extra bag, returned verbatim.
       -- (The registered iss/sub/aud/iat/exp claims are never in this map.)
-      managed = ["sid", "scopes", "roles", "act"]
+      managed = ["sid", "scopes", "roles", "permissions", "act"]
       extra =
         KeyMap.fromList
           [ (Key.fromText k, v)
@@ -160,6 +161,7 @@ claimsToAuth cs = do
         expiresAt = expiresAt',
         scopes = scs,
         roles = rls,
+        permissions = perms,
         actor = actor',
         extraClaims = extra
       }

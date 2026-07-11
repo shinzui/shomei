@@ -130,6 +130,7 @@ claimsFor uid =
       expiresAt = addUTCTime 900 t0,
       scopes = Set.empty,
       roles = Set.empty,
+      permissions = Set.empty,
       actor = Nothing,
       extraClaims = mempty
     }

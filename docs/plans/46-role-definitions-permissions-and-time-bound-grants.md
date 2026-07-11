@@ -95,15 +95,15 @@ Milestone 1 — Schema and port (permissions table, expiring grants, interpreter
 - [x] In-memory interpreter (`shomei-core/src/Shomei/Effect/InMemory.hs`) extended: `rolePermissions` map, expiry-aware `roleGrants` (value now `Map Role (Maybe UTCTime)`).
 - [x] Postgres interpreter tests: `testRolePermissions` (allow/dup-allow/list/union/disallow), `testRolePermissionForeignKey` (allow on undefined role → FK), `testExpiringGrants` (as-of filter + upsert reports change only when expiry moves). `cabal test shomei-core-test shomei-postgres-test` green (234 + 56).
 
-Milestone 2 — The `permissions` claim at every mint:
+Milestone 2 — The `permissions` claim at every mint: **COMPLETE (2026-07-11)**
 
-- [ ] `"permissions"` added to `reservedClaimKeys` (`shomei-core/src/Shomei/Domain/Claims.hs` line ~64).
-- [ ] `AuthClaims` gains `permissions :: Set Permission`; `buildClaims` sets it empty.
-- [ ] `shomei-jwt` sign path: `addClaim "permissions"` in `claimsFromAuth` (`shomei-jwt/src/Shomei/Jwt/Sign.hs`, with the existing `sid`/`scopes`/`roles` block, line ~99-101).
-- [ ] `shomei-jwt` verify path: read `permissions` via `lookupStringList` and add `"permissions"` to the `managed` filter list (`shomei-jwt/src/Shomei/Jwt/Verify.hs` lines ~136-141).
-- [ ] `buildEnrichedClaims` (`shomei-core/src/Shomei/Workflow/Session.hs`) resolves permissions from the effective role set via `permissionsForRoles` and filters expired grants via the as-of `listRolesForUser`.
-- [ ] `AuthUser` (`shomei-servant/src/Shomei/Servant/Auth.hs` line ~46) gains `authPermissions :: Set Permission`.
-- [ ] Tests: permission union across two roles; expired grant absent from fresh mint; enricher-added extra role contributes its permissions; extraClaims cannot smuggle a `"permissions"` key; sign→verify round-trip preserves the claim.
+- [x] `"permissions"` added to `reservedClaimKeys` (`shomei-core/src/Shomei/Domain/Claims.hs`).
+- [x] `AuthClaims` gains `permissions :: Set Permission`; `buildClaims` sets it empty. (Every other `AuthClaims` literal — Impersonation/TokenExchange mint paths and ~10 test sites — got `permissions = Set.empty`; the compiler flagged all via `-Wmissing-fields`-as-error in the test stanzas.)
+- [x] `shomei-jwt` sign path: `addClaim "permissions"` in `claimsFromAuth` (after `roles`).
+- [x] `shomei-jwt` verify path: reads `permissions` via `lookupStringList` and `"permissions"` joins the `managed` filter list.
+- [x] `buildEnrichedClaims` resolves permissions from the effective role set via `permissionsForRoles` and reads expiry-filtered roles via the as-of `listRolesForUser`.
+- [x] `AuthUser` gains `authPermissions :: Set Permission`, populated in `authUserFromClaims`.
+- [x] Tests: `testPermissionUnionReachesTheToken`, `testExpiredGrantDropsRoleAndPermissions`, `testEnricherRoleContributesPermissions`, forgery test extended with a `"permissions"` key, jwt "round-trips and never leaks into the extra bag" + `coreFields` now compares `permissions`. core/jwt/servant suites green (237/46/30). Servant HTTP-login end-to-end assertion folded into M4's `RequirePermission` route test.
 
 Milestone 3 — CLI: permission wiring and expiring grants:
 

@@ -148,6 +148,7 @@ tests =
                     expiresAt = addUTCTime 900 t,
                     scopes = Set.singleton (Scope "impersonate:user"),
                     roles = Set.empty,
+                    permissions = Set.empty,
                     actor = Nothing,
                     extraClaims = mempty
                   }

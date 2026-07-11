@@ -24,7 +24,7 @@ import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Jwt.TestSupport (coreFields, mkClaims, mkClaimsWith, publicJwks, testAudience, testConfig, testIssuer)
 import Shomei.Jwt.Verify (verifyToken)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -144,6 +144,20 @@ tests =
         res <- verifyToken (publicJwks jwk []) testConfig wire
         case res of
           Right ac' -> idText ac'.subject @?= idText base.subject
+          Left e -> assertFailure ("verify failed: " <> show e),
+      -- The @permissions@ claim (EP-9) is managed like @roles@/@scopes@: the verify side reads it
+      -- into the typed field and MUST strip it from the extra bag, or a consumer reading
+      -- @extraClaims@ would see a duplicate it could mistake for a host claim.
+      testCase "the permissions claim round-trips and never leaks into the extra bag" $ do
+        jwk <- generateSigningKey
+        t <- getCurrentTime
+        ac <- mkClaims testConfig t
+        wire <- signOrFail jwk ac
+        res <- verifyToken (publicJwks jwk []) testConfig wire
+        case res of
+          Right ac' -> do
+            ac'.permissions @?= ac.permissions
+            assertBool "permissions must not appear in extraClaims" (KeyMap.lookup "permissions" ac'.extraClaims == Nothing)
           Left e -> assertFailure ("verify failed: " <> show e)
     ]
 

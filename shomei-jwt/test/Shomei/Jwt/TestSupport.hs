@@ -16,7 +16,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime, addUTCTime)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Id (genSessionId, genUserId, idText)
 import Shomei.Jwt.Jwks (KeySet (..), keySetPublicJwks)
 
@@ -48,6 +48,7 @@ mkClaimsWith cfg iat expd = do
         expiresAt = expd,
         scopes = Set.fromList [Scope "read", Scope "write"],
         roles = Set.fromList [Role "user"],
+        permissions = Set.fromList [Permission "projects:write", Permission "billing:read"],
         actor = Nothing,
         extraClaims = mempty
       }
@@ -59,12 +60,13 @@ publicJwks active others = keySetPublicJwks (KeySet active others)
 -- | The claim fields that must survive a sign/verify round trip (timestamps are
 -- excluded because JWT numeric dates are truncated to whole seconds). Identifiers
 -- are compared by their rendered text form.
-coreFields :: AuthClaims -> (Text, Text, Issuer, Audience, Set Scope, Set Role)
+coreFields :: AuthClaims -> (Text, Text, Issuer, Audience, Set Scope, Set Role, Set Permission)
 coreFields ac =
   ( idText ac.subject,
     idText ac.sessionId,
     ac.issuer,
     ac.audience,
     ac.scopes,
-    ac.roles
+    ac.roles,
+    ac.permissions
   )

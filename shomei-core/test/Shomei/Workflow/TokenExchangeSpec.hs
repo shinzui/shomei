@@ -86,6 +86,7 @@ claimsFor uid sid scs act iat =
       expiresAt = addUTCTime 900 iat,
       scopes = scs,
       roles = Set.empty,
+      permissions = Set.empty,
       actor = act,
       extraClaims = mempty
     }
