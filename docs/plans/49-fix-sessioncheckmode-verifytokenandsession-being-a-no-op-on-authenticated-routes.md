@@ -164,10 +164,10 @@ This section must always reflect the actual current state of the work.
 
 **Wrap-up.**
 
-- [ ] `nix develop --command cabal build all` green.
-- [ ] `nix develop --command cabal test all` green (see Validation for the `-j2` caveat on the
-      PostgreSQL-backed suites).
-- [ ] Fill in Outcomes & Retrospective.
+- [x] `nix develop --command cabal build all` green. — 2026-07-11
+- [x] `nix develop --command cabal test all` green; the PostgreSQL-backed suites completed at the
+      default test concurrency, so the `-j2` recovery path was not needed. — 2026-07-11
+- [x] Fill in Outcomes & Retrospective. — 2026-07-11
 
 
 ## Surprises & Discoveries
@@ -304,6 +304,13 @@ Both statements became false when M2 removed that field, so the comments now des
 current source or user-documentation claim that the Shōmei auth handler is session-blind. The
 OpenAPI conformance suite passed all 56 examples after adding `session_expired` and
 `session_revoked` to every secured operation.
+
+**Discovery K — the complete workspace remained green at normal concurrency.** The final
+validation ran `nix develop --command cabal build all` and then
+`nix develop --command cabal test all --test-show-details=direct`. Both exited successfully,
+including the PostgreSQL-backed suites, so the reduced-concurrency recovery command documented in
+Validation was unnecessary. This confirms the new session lookup path did not regress packages
+outside the targeted Servant, core, and OpenAPI suites.
 
 
 ## Decision Log
@@ -506,18 +513,33 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-**Plan-validation outcome (2026-07-11).** The claimed bug is confirmed. No production or test
-source was edited during validation. A clean baseline build passed, static call-site analysis
-showed the workflow that reads `sessionCheckMode` has no production caller, and the live
-reproduction observed `(direct workflow = SessionRevoked, protected HTTP route = 200)` after
-revoking the session behind a still-unexpired token. The unmodified Servant suite passed all 31
-existing tests, confirming the reproduction did not depend on an already-failing baseline.
-Implementation remains pending from M1 onward.
+**Completion outcome (2026-07-11).** The confirmed security bug is fixed. The committed-shape
+acceptance test first reproduced the failure in isolation: after out-of-band revocation under
+`VerifyTokenAndSession`, a still-unexpired token received `200` from `/v1/auth/me` while the direct
+workflow returned `SessionRevoked`. With the production wiring changed, the same request now
+receives `401 session_revoked`.
 
-The validation also improved the proposed fix. Removing only `Seam.Env.verifier` was insufficient
-while `authHandler` still accepted an arbitrary verifier argument; the revised plan makes the
-authentication entry points accept `Env` directly. It also corrected the configuration name,
-admin HTTP method, nonexistent CLI example, and brittle exact test-count expectations.
+The implementation removed the redundant, session-blind `Seam.Env.verifier` field. Shōmei's
+`authHandler` and `resolveAuthUser` now accept `Env`, and `verifyRequestToken` runs the existing
+`Shomei.Workflow.verifyToken` through `Env.runPorts`. This makes `config.sessionCheckMode` govern
+the HTTP authentication boundary and prevents embedders from accidentally configuring Shōmei's
+handler with the old pure-JWT verifier. This is an intentional compile-time API break; the
+CHANGELOG contains the two-line migration.
+
+Coverage proves the behavior across `Authenticated`, `RequireRole`, `RequireScope`, and
+`RequirePermission`, plus the separately wired OAuth authorize path. Authorization refuses a
+revoked session as `login_required` without minting a code. The `VerifyTokenOnly` control still
+accepts the revoked session's unexpired token, preserving the default behavior and double-logout
+idempotence. Under the opt-in mode, authentication rejects a second logout before the handler,
+which is documented as a deliberate consequence.
+
+Documentation and OpenAPI now expose `session_expired` and `session_revoked`, and stale comments
+were corrected. No schema migration or new dependency was required. Final validation passed both
+`nix develop --command cabal build all` and
+`nix develop --command cabal test all --test-show-details=direct`; targeted evidence included 34
+Servant cases, 237 core tests, and 56 OpenAPI examples. The rank-polymorphic `runPorts` field had
+to be called with ordinary record-selector syntax rather than record-dot syntax, a compiler detail
+now captured in Discovery G.
 
 The mori registry identifies `shinzui/shomei-docs` at
 `/Users/shinzui/Keikaku/bokuno/shomei-docs`. The eight user-facing content pages found by the
@@ -534,8 +556,8 @@ the embedding API migration:
 - `content/docs/shomei/reference/core-config.mdx`
 - `content/docs/shomei/walkthrough/api-and-client/10-oauth2-and-oidc-provider.mdx`
 
-Keep this section current during implementation, including whether the separate `shomei-docs`
-follow-up was opened. This plan deliberately does not edit that repository.
+No separate `shomei-docs` follow-up was opened during this implementation. This plan deliberately
+did not edit that repository.
 
 
 ## Context and Orientation
@@ -1676,3 +1698,12 @@ Corrected `SHOMEI_SESSION_CHECK`, the admin session-revocation method, the unsup
 example, and exact test-count assertions throughout the plan. These changes were made because the
 reported behavior is a confirmed security bug, but the first draft's proposed public API and
 operational examples were not yet safe or accurate enough to implement verbatim.
+
+## Revision Note — 2026-07-11 (Implementation)
+
+Completed M1 through M4 and the wrap-up. Captured the acceptance test's red/green proof, replaced
+the session-blind Servant verifier with the existing workflow through `Seam.Env`, extended the
+regression coverage to every authenticated surface and OAuth authorize, and updated OpenAPI,
+CHANGELOG, security guidance, and assembly comments. Recorded the intentional embedding API break,
+the opt-in logout consequence, and the record-selector compiler adjustment. Final full-workspace
+build and test commands passed without needing reduced PostgreSQL test concurrency.
