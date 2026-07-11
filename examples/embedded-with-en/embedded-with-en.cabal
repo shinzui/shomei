@@ -1,0 +1,65 @@
+cabal-version: 3.0
+name:          embedded-with-en
+version:       0.1.0.0
+synopsis:      Demo: Shōmei authentication + en (ReBAC) authorization in one Servant process
+license:       MIT
+author:        Nadeem Bitar
+maintainer:    nadeem@gmail.com
+category:      Web, Security
+
+-- NOTE: This package is deliberately NOT listed in the root cabal.project. It adds the
+-- `en` toolkit as a git source dependency, and the root `cabal build all` must stay
+-- en-free (shomei must build for people who will never use en). Build it from THIS
+-- directory, which carries its own cabal.project. See README.md.
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+common shared
+  default-language:   GHC2024
+  default-extensions:
+    BlockArguments
+    DataKinds
+    DeriveAnyClass
+    DuplicateRecordFields
+    LambdaCase
+    OverloadedRecordDot
+    OverloadedStrings
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+
+library
+  import:          warnings, shared
+  hs-source-dirs:  src
+  exposed-modules:
+    EmbeddedEn.App
+    EmbeddedEn.Authz
+
+  build-depends:
+    , aeson
+    , base            >=4.18 && <5
+    , containers
+    , effectful
+    , effectful-core
+    , en-core
+    , servant
+    , servant-server
+    , shomei-core
+    , shomei-servant
+    , shomei-server
+    , text
+    , wai
+
+executable embedded-with-en
+  import:         warnings, shared
+  hs-source-dirs: app
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , embedded-with-en
+    , shomei-server
+    , warp

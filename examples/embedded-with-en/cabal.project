@@ -1,0 +1,95 @@
+-- This example is NOT part of the root workspace: it adds the `en` toolkit as a git
+-- source dependency, and the root `cabal build all` must stay en-free. Build it FROM
+-- THIS DIRECTORY (`cd examples/embedded-with-en && cabal build`). See README.md for the
+-- local co-development override.
+--
+-- FALLBACK PROJECT FILE (see docs/plans/47 Surprises, 2026-07-10). The obvious form —
+-- `import: ../../cabal.project` — does NOT work under cabal 3.16.1.0: it resolves the
+-- imported `packages:` entries (`shomei-core`, …) relative to THIS file, not the root, so
+-- they are looked for at `examples/embedded-with-en/shomei-core` and the build fails with
+-- "The package location 'shomei-core' does not exist." So this file instead lists the
+-- shomei packages with `../..`-relative paths and copies the root's
+-- `source-repository-package` pins verbatim. THE ROOT `cabal.project` IS THE SOURCE OF
+-- TRUTH for those pins; if a root pin changes, mirror it here.
+
+packages:
+  .
+  ../../shomei-core
+  ../../shomei-jwt
+  ../../shomei-webauthn
+  ../../shomei-postgres
+  ../../shomei-migrations
+  ../../shomei-servant
+  ../../shomei-server
+  ../../shomei-client
+
+-- `en` is consumed as a git source dependency of THIS example only. We pin `en-core`
+-- alone (subdir), NOT `en-servant`: en-servant's library depends on openapi-hs,
+-- servant-openapi-hs, en-postgres and en-biscuit (biscuit-haskell), and shomei already
+-- pins openapi-hs at a DIFFERENT commit — two source pins for the same repo cannot
+-- coexist in one plan. en-core has no en-package deps and no openapi/biscuit/hasql
+-- deps (only effectful/containers/text/time/template-haskell), so it drops cleanly into
+-- shomei's existing build plan with zero new external pins. This example reproduces the
+-- ~20-line `En.Servant.Authorize.requirePermission` guard locally over `En.Check.check`;
+-- see EmbeddedEn.Authz and docs/plans/47's Decision Log for the full rationale.
+--
+-- The tag is en's origin/master HEAD at implementation time (2026-07-10). Bump
+-- deliberately, recording the bump in docs/plans/47's Decision Log.
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/en.git
+  tag: d3209cba1f039fd03f270e4344924d2aac6fedd9
+  subdir: en-core
+
+-- ============================================================
+-- Mirrored from the root cabal.project (the source of truth). These pins are what the
+-- shomei packages above need to solve; keep them in sync with the root file.
+-- ============================================================
+
+-- codd + ephemeral-pg are not on Hackage; pin them by commit (root lines ~22-34).
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/ephemeral-pg.git
+  tag: 304c160f25570ea5e225baf5024778c93f434b56
+
+source-repository-package
+  type: git
+  location: https://github.com/mzabani/codd.git
+  tag: c32d365b56a7da482647410e68ed763e73fe4442
+
+package codd
+  tests: False
+  benchmarks: False
+
+allow-newer:
+  haxl:time
+
+-- jose pinned to PR #137 (jose 0.13; crypton + ram) via the sumo/hs-jose fork.
+source-repository-package
+  type: git
+  location: https://github.com/sumo/hs-jose.git
+  tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
+
+-- the shinzui/webauthn fork builds the library against crypton >= 1.1.0 + jose 0.13.
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/webauthn.git
+  tag: c274e23a5e31aac8932bac6398b65e8bca584a99
+
+package webauthn
+  tests: False
+  benchmarks: False
+
+allow-newer:
+  webauthn:*
+
+-- servant-openapi (3.1 line) + its openapi-hs fork (both git-only).
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/servant-openapi.git
+  tag: 558b7b9ee3aaf3bff70a4cf1d6c8e2ed4eaccbde
+
+source-repository-package
+  type: git
+  location: https://github.com/shinzui/openapi-hs.git
+  tag: 89e9ed07e0dd3e1eaa9b3efea28b3c722f8c60c8

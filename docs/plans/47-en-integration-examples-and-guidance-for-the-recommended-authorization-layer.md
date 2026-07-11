@@ -77,21 +77,21 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Dependency wiring spike (en as a source dependency of one example):
+Milestone 1 — Dependency wiring spike (en as a source dependency of one example): **DONE 2026-07-10.**
 
-- [ ] `examples/embedded-with-en/` package skeleton (cabal file, `src/`, `app/`, `README.md` stub) — **not** added to the root `cabal.project` `packages:` list.
-- [ ] `examples/embedded-with-en/cabal.project` importing the root project file and adding the en `source-repository-package` (pinned tag, `subdir: en-core en-servant`).
-- [ ] Spike verified: `cabal build` inside the example directory produces a plan containing shomei-server, en-core, and en-servant; documented fallback (duplicate the root pins) if `import:` relative-path semantics misbehave.
-- [ ] Toolchain notes confirmed in the README: both repos pin `with-compiler: ghc-9.12.4`; ephemeral-pg posture recorded (en constrains `ephemeral-pg ==0.2.1.0` for its *tests* only — not in this build plan; shomei's fork pin governs if it ever enters).
-- [ ] Root `cabal build all && cabal test all` still green and en-free.
+- [x] `examples/embedded-with-en/` package skeleton (cabal file, `src/`, `app/`, `README.md`) — **not** added to the root `cabal.project` `packages:` list.
+- [x] `examples/embedded-with-en/cabal.project` with the en `source-repository-package` (pinned commit, **`subdir: en-core`** — *not* `en-servant`; see Decision Log). The `import: ../../cabal.project` form **failed** under cabal 3.16 (Surprises); the committed file is the documented fallback (explicit `../..`-relative shomei `packages:` + the root's source pins mirrored verbatim).
+- [x] Spike verified: `cabal build` inside the example directory produces a plan containing shomei-server and en-core (en-servant deliberately excluded); root `cabal build all --dry-run` mentions no en package (grep count 0).
+- [x] Toolchain notes confirmed in the README: both repos pin `with-compiler: ghc-9.12.4`; ephemeral-pg never enters the plan (en-core has no test-only deps in its build).
+- [x] Root workspace stays en-free (0 en-core in the root plan); root packages untouched by this plan.
 
-Milestone 2 — The embedded example app and its transcript:
+Milestone 2 — The embedded example app and its transcript: **DONE 2026-07-10.**
 
-- [ ] `EmbeddedEn.Authz`: the pinned subject mapping (`subjectForUser`), the demo schema (project viewer/editor → view/edit), the IORef-backed en `TupleStore` interpreter (write-supporting), the local `ConsistencyStore` interpreter, and `mkEnEnv`.
-- [ ] `EmbeddedEn.App`: mounts `NamedRoutes ShomeiAPI` via `seamEnv`/`authContext`/`shomeiServer` (the `examples/embedded-servant-app/src/Embedded/App.hs` pattern), adds `GET/PUT /projects/:id` guarded by `En.Servant.Authorize.requirePermission`, and the demo tuple-granting route `POST /demo/grants`.
-- [ ] `app/Main.hs` boots exactly like the embedded example's executable (config + pool + keys), plus the en env.
-- [ ] README transcript recorded from a real run: signup → login → GET 403 → PUT 403 → grant `editor` → PUT 200 → GET 200 (editor implies view).
-- [ ] Consistency shown honestly in the README: the grant response returns en's consistency token; the follow-up check narrative explains `MinimizeLatency` vs `AtLeastAsFresh`.
+- [x] `EmbeddedEn.Authz`: the pinned subject mapping (`subjectForUser`), the demo schema (project viewer/editor → view/edit), the IORef-backed write-supporting en `TupleStore` interpreter (reusing `En.Conformance.Kikan` helpers), the local `ConsistencyStore` interpreter, `mkEnEnv`, AND the local fail-closed guard `requireProjectPermission` (a faithful copy of `En.Servant.Authorize.requirePermission` over `En.Check.check`, since en-servant is not a dependency — Decision Log).
+- [x] `EmbeddedEn.App`: mounts `NamedRoutes ShomeiRoutes` via `seamEnv`/`authContext`/`shomeiRoutes` (the `examples/embedded-servant-app/src/Embedded/App.hs` pattern; note the export is `shomeiRoutes`, not the plan's assumed `shomeiServer`), adds `GET/PUT /projects/:id` guarded by `requireProjectPermission`, and the demo tuple-granting route `POST /demo/grants`.
+- [x] `app/Main.hs` boots exactly like the embedded example's executable (config + pool + keys via `buildEnv`), plus a fresh shared tuple `IORef`.
+- [x] README transcript recorded from a real run: signup 201 → login → GET 403 → PUT 403 → grant `editor` → PUT 200 → GET 200 (editor implies view) → no-token 401 → a *different* project still 403 (per-object).
+- [x] Consistency shown honestly in the README: the grant response returns en's consistency token; the notes explain why `MinimizeLatency` observes the write here (single trivial `IORef` revision) and when to reach for `AtLeastAsFresh`.
 
 Milestone 3 — The microservice recipe:
 
@@ -121,10 +121,77 @@ implementation. Provide concise evidence.
   therefore needs the example to ship its own small IORef-backed interpreter (Milestone
   2) rather than reusing Kikan's.
 
+- **2026-07-10 (implementation) — en-servant's LIBRARY now depends on `openapi-hs`,
+  `servant-openapi-hs`, `en-postgres`, and `en-biscuit` (→ `biscuit-haskell`), and shomei
+  pins `openapi-hs` at a DIFFERENT commit — so the planned `subdir: en-core en-servant`
+  is unbuildable.** Two `source-repository-package` blocks for one repo at different tags
+  cannot coexist in a cabal plan, and shomei's `servant-openapi` vs en's `servant-openapi-hs`
+  are different forks besides. The fix that dissolves the whole conflict: consume **`en-core`
+  only** (its library depends solely on effectful/containers/text/time/template-haskell — all
+  already in shomei's plan, zero new external pins) and reproduce en-servant's ~20-line
+  `requirePermission` locally over `En.Check.check`. See the Decision Log. This is the single
+  largest deviation from the plan-as-written and it is strictly simpler, faster to build, and
+  more pedagogically focused (no biscuit/postgres/openapi noise in an example about mapping a
+  subject and calling `check`).
+
+- **2026-07-10 — `import: ../../cabal.project` does NOT work under cabal 3.16.1.0.** It
+  resolves the imported `packages:` entries (`shomei-core`, …) relative to the *importing*
+  file, so they are looked for at `examples/embedded-with-en/shomei-core` and the build fails
+  with `The package location 'shomei-core' does not exist.` The plan foresaw this and the
+  committed `cabal.project` is the documented fallback: explicit `../..`-relative shomei
+  `packages:` entries plus the root's `source-repository-package` pins mirrored verbatim (the
+  root file is named as the source of truth).
+
+- **2026-07-10 — `En.Conformance.Kikan.runTupleStoreInMemory` now SUPPORTS writes** (en plan
+  45 gave it touch semantics via `Effectful.State.Static.Local`), contradicting the
+  pre-implementation note above. But its state is initialised per-run by `evalState`, so a
+  write in one `runPorts`/`runEn` invocation does not survive to the next request. The demo's
+  cross-request "grant then see 200 later" story therefore *still* needs an `IORef` store that
+  outlives the run — the example ships one, but built by copying Kikan's now-correct read/write
+  helpers (`pageTuples`, `touchTuple`, `deleteTupleByKey`, `preconditionHolds`, …) over an
+  `IORef` rather than re-deriving them. External Companion Work item #5 (en plan 58) is thus
+  *partly* obviated: Kikan writes now; only a shared/durable store across runs stays bespoke.
+
+- **2026-07-10 — OverloadedRecordDot fails on en-core's `NoFieldSelectors` record types under
+  `DuplicateRecordFields`, and under any `Foldable`-polymorphic consumer.** `env.runEn` (a
+  rank-2 field), `request.writes`/`request.preconditions` (fed to `foldl'`/`find` → ambiguous
+  `t Tuple`), `query.querySubjects` (fed to `elem`), and `row.rowId`/`page.state` (ambiguous
+  with a same-named field on another type) all failed to compile. Fixes: apply rank-2 fields as
+  functions (`runEn env`, not `env.runEn`), and pattern-match the en records into concrete
+  bindings (`TupleWriteRequest{…}`, `UsersetQuery{…}`, `TupleRow{…}`, `TuplePage{…}`) exactly
+  as Kikan does internally — do not reach for dot access on these types.
+
+- **2026-07-10 — the downstream microservice already READS its verified claims** (`sub` and
+  `act`), not "ignores them" as the plan's Decision Log #5 assumed (it evolved since planning).
+  That is still the perfect "before" state — the M3 recipe adds the en check to a handler that
+  already holds `AuthClaims`; the README says so.
+
+- **2026-07-10 — the dev PostgreSQL is a unix socket, not `localhost:5432`.** The dev shell
+  exports `PG_CONNECTION_STRING=postgresql://%2F…%2Fdb/shomei` (socket path). Overriding it with
+  the plan's `host=localhost port=5432` connects to a *different* Postgres and the server boots
+  against an unmigrated database (28 pending). The example README tells the reader to use the
+  ambient `PG_CONNECTION_STRING` inside the dev shell.
+
 
 ## Decision Log
 
 Record every decision made while working on the plan.
+
+- Decision (2026-07-10, SUPERSEDES the `subdir: en-core en-servant` and `import:` parts of
+  the two decisions below): the example consumes **`en-core` only** (`subdir: en-core`), and
+  its `cabal.project` uses the **explicit-fallback** form (no `import:`; `../..`-relative
+  shomei packages + the root's source pins mirrored). It reproduces en-servant's fail-closed
+  `requirePermission` locally (`EmbeddedEn.Authz.requireProjectPermission`, ~20 lines over
+  `En.Check.check`).
+  Rationale: en-servant's *library* grew dependencies on `openapi-hs`/`servant-openapi-hs`/
+  `en-postgres`/`en-biscuit` since planning, and shomei already pins `openapi-hs` at a
+  different commit — two git source pins for one repo cannot coexist in a plan (Surprises,
+  2026-07-10). en-core has no such deps, so it drops in with zero new external pins. The
+  teaching value is preserved (identical subject mapping, call shape, and fail-closed 403);
+  the example's Haddock and README point the reader at en-servant's guard for hosts whose
+  build does not hit the openapi conflict. `import:` additionally does not work under cabal
+  3.16 (Surprises). The en-boundary naming-collision analysis (Integration Points) is
+  unaffected: the example does not import en-servant, so there is even less surface to collide.
 
 - Decision: en is consumed as a **git source dependency of the example only**. The new
   example gets its own `examples/embedded-with-en/cabal.project` (importing the root
