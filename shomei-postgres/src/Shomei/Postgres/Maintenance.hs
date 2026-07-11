@@ -108,6 +108,10 @@ data SweepReport = SweepReport
     authorizationCodesDeleted :: !Int,
     lockoutsDeleted :: !Int,
     loginAttemptsDeleted :: !Int,
+    -- | EP-9 time-bound role grants whose expiry has passed (past a grace period). Purely
+    -- hygiene: an expired grant is already inert at the next token mint (the mint filters on
+    -- @expires_at@), and the @role_granted@ audit payload records the window regardless.
+    roleGrantsDeleted :: !Int,
     authEventsDeleted :: !Int
   }
   deriving stock (Show, Eq, Generic)
@@ -124,6 +128,7 @@ emptySweepReport =
       authorizationCodesDeleted = 0,
       lockoutsDeleted = 0,
       loginAttemptsDeleted = 0,
+      roleGrantsDeleted = 0,
       authEventsDeleted = 0
     }
 
@@ -140,6 +145,7 @@ sweepReportCounts r =
     ("authorization_codes", r.authorizationCodesDeleted),
     ("lockouts", r.lockoutsDeleted),
     ("login_attempts", r.loginAttemptsDeleted),
+    ("role_grants", r.roleGrantsDeleted),
     ("auth_events", r.authEventsDeleted)
   ]
 
@@ -169,6 +175,10 @@ sweepOnce pool cfg now = runExceptT do
   authorizationCodesDeleted <- drain expiredAuthorizationCodesStmt ceremonyCutoff
   lockoutsDeleted <- drain elapsedLockoutsStmt oneTimeTokenCutoff
   loginAttemptsDeleted <- drain oldLoginAttemptsStmt loginAttemptCutoff
+  -- EP-9 time-bound grants past expiry. They reuse the one-time-token grace: an expired grant is
+  -- already inert (the mint filters it), so the grace is pure forensic slack, like a spent
+  -- verification token.
+  roleGrantsDeleted <- drain expiredRoleGrantsStmt oneTimeTokenCutoff
   -- Retaining the audit trail forever is the default; deleting it is opt-in.
   authEventsDeleted <- case cfg.authEventRetentionDays of
     Nothing -> pure 0
@@ -328,6 +338,20 @@ elapsedLockoutsStmt =
     WHERE ctid IN (
       SELECT ctid FROM shomei.shomei_account_lockouts
       WHERE locked_until IS NOT NULL AND locked_until <= $1
+      LIMIT $2)
+    """
+
+-- | EP-9 role grants whose @expires_at@ has passed the cutoff. Forever grants (@expires_at IS
+-- NULL@) and grants still within the grace window are spared; the partial index
+-- @shomei_role_grants_expires_at_idx@ keeps the scan cheap.
+expiredRoleGrantsStmt :: Statement (UTCTime, Int64) Int64
+expiredRoleGrantsStmt =
+  batchedDelete
+    """
+    DELETE FROM shomei.shomei_role_grants
+    WHERE ctid IN (
+      SELECT ctid FROM shomei.shomei_role_grants
+      WHERE expires_at IS NOT NULL AND expires_at <= $1
       LIMIT $2)
     """
 

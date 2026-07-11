@@ -22,7 +22,7 @@ logs. The minimum-length / policy check runs before hashing.
 - **Custom claims.** A service embedding Shōmei as a library can attach arbitrary top-level JSON
   claims to every token via `AuthClaims.extraClaims` (e.g. `buildClaimsWith`). They serialize
   alongside the standard claims and are returned on verification. Reserved standard claims (`iss`,
-  `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, `act`) **cannot be forged** through the
+  `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, `permissions`, `act`) **cannot be forged** through the
   bag: `mkExtraClaims` drops them at construction, the signer always writes Shōmei's own value
   last, and `jose` filters the registered claims from the custom map on both sign and verify.
 - **Refresh tokens** and the single-use **email-verification** / **password-reset** tokens are
@@ -370,9 +370,13 @@ can read the log of a server running with it can take over any account mid-reset
 Shōmei has a **two-tier authorization story**, and it matters which tier you are in.
 
 **Tier 1 — Shōmei's built-in roles.** Flat, `(user, role)` grants stored in Shōmei's own
-database and copied into the `roles` claim of every access token it mints. They need no extra
-infrastructure, they are what gates Shōmei's own `/admin` surface, and they are the right tool
-for coarse questions: *is this principal an administrator? a support agent? a paying member?*
+database and copied into the `roles` claim of every access token it mints. Each role can also
+imply a set of **permissions** — verb-noun capability strings minted into a parallel
+`permissions` claim — so downstream services check a stable capability rather than an org-chart
+name (see [Permissions](#permissions-re-wireable-capabilities)). Grants may be **time-bound**
+(see [Time-bound grants](#time-bound-grants)). They need no extra infrastructure, they are what
+gates Shōmei's own `/admin` surface, and they are the right tool for coarse questions: *is this
+principal an administrator? a support agent? a paying member? may it write tickets?*
 
 **Tier 2 — fine-grained authorization.** Questions of the form *is this user an editor **of
 this project**?* — resource-scoped permissions, access derived from relationships, revocation
@@ -383,9 +387,10 @@ integration guide will live at `docs/user/authorization.md`; until it lands, the
 [plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
 
 Within tier 1, permission indirection (so services never hard-code role names) and time-bound
-grants are planned in
-[plan 46](../plans/46-role-definitions-permissions-and-time-bound-grants.md). The built-in tier
-grows; it is not deprecated in favor of en.
+grants are **shipped** ([Permissions](#permissions-re-wireable-capabilities),
+[Time-bound grants](#time-bound-grants)). The built-in tier grows; it is not deprecated in favor
+of en. Knowing exactly [where tier 1 stops](#the-graduation-boundary-when-to-reach-for-en) is the
+most important thing on this page.
 
 The two tiers compose rather than compete. Even a deployment that adopts en keeps Shōmei's flat
 roles: en's server authenticates its callers by verifying Shōmei JWTs, so *something* outside en
@@ -476,22 +481,106 @@ shomei-server: defaultRoles names undefined roles: nosuchrole
 define them first: shomei-admin roles define nosuchrole
 ```
 
-### Enforcing a role or scope on a route
+### Permissions: re-wireable capabilities
 
-`RequireRole` and `RequireScope` are Servant combinators that authenticate the caller and check
-the claim before the handler runs:
+A role can **imply permissions** — flat `resource:verb` capability strings like `projects:write`
+or `billing:read`. At every token mint Shōmei resolves the subject's roles to the **union of
+their permissions** and mints it as a `permissions` claim alongside `roles`:
 
-```haskell
-type AdminAPI = RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [User]
+```text
+$ shomei-admin roles allow support tickets:write
+allowed tickets:write for role support
+$ shomei-admin roles allow support tickets:read
+allowed tickets:read for role support
+$ shomei-admin roles show support
+support — Customer support staff
+  tickets:read
+  tickets:write
+$ shomei-admin roles disallow support tickets:read
+disallowed tickets:read for role support
 ```
 
-No token → `401`. Token without the role → `403`. The handler receives the `AuthUser` and needs
-no authorization code of its own — which is the point: a guard you can forget to call is a
+**Why permissions and not just roles.** A downstream service that gates a request on the `roles`
+claim containing `"support"` has hard-coded an org-chart name into an authorization check:
+renaming the role, splitting it, or letting a second role do the same job means redeploying every
+consumer. Have services check **permissions** instead, and the role→permission wiring becomes
+centrally re-wireable — grant `tickets:write` to a new `tier2` role and its holders can write
+tickets at their next mint, with **zero consumer redeploys**.
+
+Conventions and limits:
+
+- The `resource:verb` shape is a **documented convention, not enforced grammar**. The CLI rejects
+  only blank or whitespace-containing strings; a typo like `tikets:write` is caught by your tests,
+  not the database.
+- Permissions attach to **roles**, never directly to users — a user's permissions are exactly the
+  union across the roles it holds. This keeps `shomei-admin roles show` the single, complete
+  explanation of where a permission comes from.
+- There is **no wildcard or hierarchy** syntax (`projects:*`), and **no permission catalog**: the
+  meaningful set of permission strings is defined by what your services check, so a database
+  catalog could not be authoritative. Wildcards and hierarchies are the first step onto the
+  policy-language slope that belongs to [tier 2](#the-graduation-boundary-when-to-reach-for-en).
+- **Token size.** The `permissions` claim is bounded by the union of the user's roles' permission
+  sets, with no hard cap. Keep permission sets small — tens, not hundreds: a JWT rides in an
+  `Authorization` header or a cookie (which caps around 4 KiB). A permission list growing without
+  bound is a sign you are expressing resource-scoped authorization in the wrong tier; read
+  [the graduation boundary](#the-graduation-boundary-when-to-reach-for-en).
+
+Wiring is catalog metadata, so `roles allow`/`disallow` publish **no audit event** (the current
+wiring is always inspectable via `roles show`). Like role changes, a re-wiring takes effect at the
+next mint, never on an outstanding token (see [Staleness](#staleness-role-changes-apply-at-the-next-mint)).
+
+### Time-bound grants
+
+A grant can carry an **expiry**, for temporary elevation — the single most common "we need this
+yesterday" request — without depending on anyone remembering to revoke it:
+
+```text
+$ shomei-admin roles grant --user user_01ABC… --role incident-commander --expires-in 4h
+granted incident-commander to user_01ABC… (expires 2026-07-11T21:00:00Z)
+```
+
+`--expires-in` takes `<n>(s|m|h|d)`; `--expires-at` takes an ISO 8601 UTC instant; they are
+mutually exclusive. A grant with no expiry flag never expires (the previous behavior). Re-granting
+an already-held role with a different window **updates** the expiry.
+
+Expiry is **passive**, and this is worth understanding:
+
+- Nothing fires at the expiry instant. There is no `role_grant_expired` audit event and no
+  background job that flips a status. The expiry is checked **when roles are read at mint time**:
+  an expired grant simply stops appearing in `roles` (and stops contributing its permissions) on
+  the next login or refresh. The same [staleness](#staleness-role-changes-apply-at-the-next-mint)
+  rule as revocation applies — an outstanding access token is unaffected until it expires.
+- The audit trail still tells the whole story, because the original `role_granted` event carries
+  the `expiresAt` it was granted with. You can answer "who had incident-commander, and until
+  when" from the grant events alone.
+- The now-inert row is eventually deleted by the maintenance sweeper as hygiene (`shomei-admin
+  sweep` reports a `role_grants` line; rows are swept a grace period past `expires_at`); the
+  mint-path result is already correct the instant the expiry passes, sweeper or no sweeper.
+
+### Enforcing a role, scope, or permission on a route
+
+`RequireRole`, `RequireScope`, and `RequirePermission` are Servant combinators that authenticate
+the caller and check the claim before the handler runs:
+
+```haskell
+type AdminAPI    = RequireRole "admin"           :> "admin" :> "users"    :> Get '[JSON] [User]
+type ProjectsAPI = RequirePermission "projects:write" :> "projects"       :> Post '[JSON] Project
+```
+
+No token → `401`. Token without the role/scope/permission → `403` (`missing_role`,
+`missing_scope`, `missing_permission` respectively). The handler receives the `AuthUser` and
+needs no authorization code of its own — which is the point: a guard you can forget to call is a
 route that silently ships unprotected.
 
-`RequireRole` **replaces** `Authenticated`; do not write both. For a condition a single symbol
+These combinators **replace** `Authenticated`; do not write both. For a condition a single symbol
 cannot express (role `admin` *or* scope `shomei:admin`), the handler guards `requireRole` and
 `requireScope` remain available.
+
+`RequirePermission` is for **host** routes and downstream services — Shōmei's own `/admin`
+surface stays gated on the `admin` **role** so a fresh database needs no `roles allow` before it
+can be administered. It checks a static claim minted at login; it is not the same as en's
+term-level `requirePermission` live check (see
+[the graduation boundary](#the-graduation-boundary-when-to-reach-for-en)).
 
 ### Staleness: role changes apply at the next mint
 
@@ -521,11 +610,43 @@ runClaimsEnricherPure \userId rolesFromStore ->
 
 The hook returns a *delta* — extra roles, extra scopes, an extra-claims object — which Shōmei
 merges into the standard claims. It cannot rewrite them: the object is filtered through
-`mkExtraClaims`, so `iss`, `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, and `act` can
-never be forged through it. The standalone server uses `runClaimsEnricherNull` and adds nothing.
+`mkExtraClaims`, so `iss`, `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, `permissions`,
+and `act` can never be forged through it. The standalone server uses `runClaimsEnricherNull` and
+adds nothing.
+
+A role the hook adds is treated exactly like a granted role, so it brings its catalog
+**permissions** with it — permissions are resolved from the *effective* role set (stored ∪
+hook-supplied). A host that wants bespoke permissions therefore defines a role that carries them
+rather than injecting a `permissions` claim, which keeps every permission explainable from
+`roles show`.
 
 Use it for coarse, slow-moving facts: tenant ids, plan tiers, extra scopes. **Do not** use it to
 mirror per-resource permissions from a live authorization system — see the staleness note above.
+
+### The graduation boundary: when to reach for en
+
+Shōmei's built-in tier answers "what may this **user** do, coarsely, cheaply, with no extra
+infrastructure". Stop growing permission strings and reach for **en** — the recommended
+authorization layer — the moment you need any of these four things:
+
+- **Resource-scoped permissions** — "editor of project *X*". You feel this coming as permission
+  strings start sprouting ids: `projects:42:write`. That is a relation, not a capability.
+- **Relationship-derived access** — access that follows from membership, ownership, or hierarchy
+  ("a member of the org that owns this document may read it") rather than from a role grant.
+- **Revocation faster than a token TTL** — access that must end the instant you say so, not at the
+  next mint. Shōmei's claims are deliberately stale-until-mint (that is what makes verification
+  free); a live check is a different tier.
+- **Conditional access (caveats)** — time windows, IP ranges, attribute predicates attached to a
+  grant.
+
+Shōmei's built-in tier deliberately **will not grow those four**; adding them would drag a
+policy engine into an authentication service. en (`/Users/shinzui/Keikaku/bokuno/en`, a
+Zanzibar-style ReBAC toolkit) is built for them, and the paved road is "**shomei for
+authentication, en for authorization**": en's server authenticates its callers by verifying
+Shōmei JWTs, so the built-in tier remains the bootstrap that says who the administrator is even
+in an en deployment. The integration guide and examples will live at `docs/user/authorization.md`;
+until then the design is in
+[plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
 
 ## Reading the audit trail (EP-7)
 

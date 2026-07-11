@@ -119,13 +119,47 @@ Milestone 4 — The `RequirePermission` combinator: **COMPLETE (2026-07-11)**
 - [x] `HasOpenApi` instance (bearer scheme) in `Shomei.Servant.OpenApi`; `HasClient` delegation instance in `shomei-client`. OpenAPI regeneration is a no-op diff (Decision Log: no `ShomeiAPI` route uses the combinator); openapi conformance suite green.
 - [x] Servant end-to-end `scenarioRequirePermission`: a `RequirePermission "projects:write"` host route returns 401 (no token), 403 (no permission), 200 (after grant+allow+login), 403 again after disallow, and 200 again after re-wiring to a second role the user holds — proving the indirection with zero route/handler changes. `shomei-servant-test` green (31).
 
-Milestone 5 — Live proof, docs, graduation boundary:
+Milestone 5 — Live proof, docs, graduation boundary: **COMPLETE (2026-07-11)**
 
-- [ ] Live transcript (define → allow → grant --expires-in → login shows `permissions` → expiry + refresh drops it) recorded below.
-- [ ] `docs/user/security.md` roles section extended: permissions model, verb-noun naming convention, token-size guidance, expiring grants, passive-expiry semantics.
-- [ ] The docs gain an explicit **graduation boundary** paragraph: resource-scoped permissions, relationship-derived access, live revocation, caveats/conditions → use en (link `docs/user/authorization.md` / plan 47); Shōmei's built-in tier will not grow those.
-- [ ] Plan 34 coordination: `shomei_role_grants` added to the sweeper's table list if plan 34 has landed; otherwise a note left in plan 34's plan document.
-- [ ] OpenAPI spec regenerated; CHANGELOG entry; MasterPlan 7 registry row updated.
+- [x] Live transcript (define → allow → grant --expires-in → login shows `permissions` → expiry drops it) recorded below.
+- [x] `docs/user/security.md` roles section extended: permissions model (`### Permissions: re-wireable capabilities`), verb-noun convention, token-size guidance, time-bound grants (`### Time-bound grants`), passive-expiry semantics; reserved-claims list and enrichment-hook filter list gain `permissions`; enforcement section adds `RequirePermission`.
+- [x] Graduation boundary is an explicit named subsection (`### The graduation boundary: when to reach for en`) the two-tier intro links to: resource-scoped permissions, relationship-derived access, revocation faster than a token TTL, caveats → use en (plan 47); the built-in tier will not grow those four.
+- [x] Plan 34 coordination: plan 34 has landed, so `shomei_role_grants` was added to the sweeper (`Shomei.Postgres.Maintenance`: `roleGrantsDeleted`/`expiredRoleGrantsStmt`, `role_grants` in `sweepReportCounts`), with fixture rows + assertions in `testSweepDeletesExpiredRows`.
+- [x] OpenAPI spec regenerated (no-op diff); CHANGELOG entry added (EP-9 under Unreleased); MasterPlan 7 registry row updated. Round-trip budget guards raised (login 9→10, refresh 4→5) for the one `permissionsForRoles` read, with justification in their haddock.
+
+### Live transcript (2026-07-11)
+
+Against a dev server on `:8091` (port 8080 was held by an unrelated SSH tunnel), after
+`shomei-admin roles define support`:
+
+```text
+$ shomei-admin roles allow support tickets:write
+allowed tickets:write for role support
+$ shomei-admin roles show support
+support — Customer support staff
+  tickets:write
+$ shomei-admin users create --email temp-ep9b@example.com --password 'Str0ng-Pass-123!'
+created user user_01kx7bc5ane2yr3hm9npgymsb1
+
+# A temporary grant, then a login while it is live: the token carries the role AND its permission.
+$ shomei-admin roles grant --user user_01kx7bc5ane2yr3hm9npgymsb1 --role support --expires-in 25s
+granted support to user_01kx7bc5ane2yr3hm9npgymsb1 (expires 2026-07-11T01:09:40.22707Z)
+$ curl -s localhost:8091/v1/auth/login -d '{"email":"temp-ep9b@example.com","password":"Str0ng-Pass-123!"}' \
+    | jq -r .token.accessToken | <decode JWT payload> | jq -c '{roles, permissions}'
+{"roles":["support"],"permissions":["tickets:write"]}
+
+# After the expiry, the next mint carries neither — passively, with nothing fired in between.
+$ curl -s localhost:8091/v1/auth/login -d '{"email":"temp-ep9b@example.com","password":"Str0ng-Pass-123!"}' \
+    | jq -r .token.accessToken | <decode JWT payload> | jq -c '{roles, permissions}'
+{"roles":[],"permissions":[]}
+
+# The audit trail recorded the window at grant time; there is no expiry event by design.
+$ psql -tAc "SELECT payload->>'role', payload->>'expiresAt' FROM shomei.shomei_auth_events
+             WHERE event_type='role_granted' AND payload->>'role'='support' ORDER BY created_at DESC LIMIT 1"
+support|2026-07-11T01:09:40.22707Z
+$ psql -tAc "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='role_grant_expired'"
+0
+```
 
 
 ## Surprises & Discoveries
@@ -133,7 +167,28 @@ Milestone 5 — Live proof, docs, graduation boundary:
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet.)
+- **The round-trip budget guards tripped exactly as the MasterPlan predicted.**
+  `permissionsForRoles` is one new `role = ANY(...)` read in `buildEnrichedClaims`, so
+  `shomei-postgres`'s `testLoginRoundTripBudget` went 9→10 and `testRefreshRoundTripBudget` went
+  4→5. Both constants were raised with the new step documented in their haddock (the same
+  discipline EP-1/EP-5/EP-7 followed). It is the single shared-mint read this plan adds.
+
+- **Constructor/field counts in the plan text were stale.** The plan said "constructor count stays
+  27"; EP-4..EP-8 had since grown `AuthEvent` to 40. Adding `expiresAt` to `RoleGrantedData` is a
+  field, not a constructor, so `testConstructorCount` stayed 40 — the intent held, only the number
+  was old.
+
+- **`-Wmissing-fields` is an error in the test stanzas, which made adding `AuthClaims.permissions`
+  self-checking.** GHC treats a record construction missing a field as a warning by default (it
+  fills ⊥), but the test suites compile with it as an error, so the compiler enumerated all ~12
+  `AuthClaims` literal sites (two production mint paths + the test fixtures) that needed
+  `permissions = Set.empty`. No silent bottoms slipped through.
+
+- **The dev database was several migration waves stale, so the live transcript needed a manual
+  `cabal run shomei-migrate` first.** `process-compose`'s `create_schema` step had not re-applied
+  migrations since before EP-7, and port 8080 was held by an unrelated SSH tunnel — so the server
+  had to run on `:8091`. Neither is an EP-9 defect; both are dev-environment state. Once migrated,
+  the end-to-end loop passed exactly as designed.
 
 
 ## Decision Log
@@ -259,7 +314,26 @@ Record every decision made while working on the plan.
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Delivered in full (2026-07-11).** Both capabilities the Purpose named are shipped and proven
+end-to-end. Role→permission definitions: an operator attaches `resource:verb` permissions to
+roles (`roles allow`), every token mint resolves the subject's effective roles to the deduplicated
+permission union in a reserved, unforgeable `permissions` claim, downstream services check
+capabilities instead of role names, and `RequirePermission` makes that a route-type annotation
+that a servant test proves re-wireable (403→200 by moving a permission to a second role the user
+holds, with zero route changes). Time-bound grants: `roles grant --expires-in/--expires-at`
+records an expiry that is filtered at mint time and swept later as hygiene, with the window
+captured in the `role_granted` audit payload and no synthetic expiry event — passive expiry,
+exactly as designed.
+
+Backward compatibility held throughout: pre-EP-9 tokens verify with an empty `permissions` set,
+pre-EP-9 `role_granted` rows decode with `expiresAt = Nothing`, the migration is additive, and the
+built-in tier's `/admin`-gating `admin` role is untouched. The two-tier boundary is now documented
+as a named, linked subsection so the graduation path to en is explicit.
+
+Every milestone was committed on green with both trailers; the only surprises were the ones the
+MasterPlan had pre-warned about (the mint-path round-trip). No scope was cut; the servant
+HTTP-login permission assertion the plan listed under M2 was delivered as part of M4's richer
+`RequirePermission` end-to-end test rather than duplicated.
 
 
 ## Context and Orientation

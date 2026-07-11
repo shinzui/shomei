@@ -1211,7 +1211,7 @@ countingDatabase counter = interpose \_env op -> do
     RunSession sess -> send (RunSession sess)
     RunTransaction t -> send (RunTransaction t)
 
--- | A successful password login costs exactly nine database round-trips:
+-- | A successful password login costs exactly ten database round-trips:
 --
 --   1. @countRecentFailuresByIp@   (per-IP throttle)
 --   2. @getAccountLockout@         (lockout gate)
@@ -1222,6 +1222,7 @@ countingDatabase counter = interpose \_env op -> do
 --   7. @findTotpByUser@            (MFA gate: confirmed-TOTP factor — EP-7)
 --   8. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
 --   9. @listRolesForUser@          (the roles claim, via @buildEnrichedClaims@)
+--  10. @permissionsForRoles@       (the permissions claim, via @buildEnrichedClaims@ — EP-9)
 --
 -- There is deliberately no @clearAccountLockout@: the lockout read at step 2 found nothing.
 -- Password verification and access-token signing are CPU-only and cost no round-trip.
@@ -1235,37 +1236,43 @@ countingDatabase counter = interpose \_env op -> do
 -- table once. It is a single-row indexed lookup on the primary key prefix, and it buys the
 -- alternative — re-reading roles on every /verification/ — never happening.
 --
+-- Step 10 was added by EP-9's @permissions@ claim: @buildEnrichedClaims@ resolves the effective
+-- role set to its permission union with a single @role = ANY(...)@ query. It runs once per mint,
+-- on the same principle as step 9 (resolve at mint, never at verification).
+--
 -- If this number drifts, something added a round-trip to the login path. Find it before
 -- changing the constant.
 testLoginRoundTripBudget :: TestTree
-testLoginRoundTripBudget = testCase "a successful login costs exactly 9 database round-trips" $ withDb \pool -> do
+testLoginRoundTripBudget = testCase "a successful login costs exactly 10 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
   loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
   _ <- expectApp loginRes >>= expectRight
-  readIORef counter >>= (@?= 9)
+  readIORef counter >>= (@?= 10)
 
--- | A token refresh costs exactly four database round-trips:
+-- | A token refresh costs exactly five database round-trips:
 --
 --   1. @findRefreshTokenByHash@
 --   2. @findSessionById@
---   3. @rotateRefreshToken@  (ONE transaction: mark-used CAS + child insert + rotation event)
---   4. @listRolesForUser@    (the roles claim, via @buildEnrichedClaims@)
+--   3. @rotateRefreshToken@     (ONE transaction: mark-used CAS + child insert + rotation event)
+--   4. @listRolesForUser@       (the roles claim, via @buildEnrichedClaims@)
+--   5. @permissionsForRoles@    (the permissions claim, via @buildEnrichedClaims@ — EP-9)
 --
 -- The user row is not read because @emailVerificationRequired@ is off in 'cfg'; turning it on
--- adds a fifth round-trip by design.
+-- adds a further round-trip by design.
 --
--- Step 4 is what makes a role change take effect on refresh rather than only at the next login.
+-- Step 4 is what makes a role change take effect on refresh rather than only at the next login;
+-- step 5 (EP-9) does the same for a permission re-wiring or a grant expiry.
 testRefreshRoundTripBudget :: TestTree
-testRefreshRoundTripBudget = testCase "a token refresh costs exactly 4 database round-trips" $ withDb \pool -> do
+testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   (_, pair) <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   refreshRes <- runApp pool (countingDatabase counter (refresh cfg (RefreshCommand pair.refreshToken)))
   _ <- expectApp refreshRes >>= expectRight
-  readIORef counter >>= (@?= 4)
+  readIORef counter >>= (@?= 5)
 
 testWorkflowRefreshRotation :: TestTree
 testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + inserts child" $ withDb \pool -> do
@@ -1996,6 +2003,16 @@ seedSweepFixture pool =
     INSERT INTO shomei.shomei_auth_events (event_id, user_id, session_id, event_type, payload, created_at) VALUES
       ('88888888-0000-0000-0000-000000000001', NULL, NULL, 'login_succeeded', '{}'::jsonb, now() - interval '400 days'),
       ('88888888-0000-0000-0000-000000000002', NULL, NULL, 'login_succeeded', '{}'::jsonb, now());
+
+    -- EP-9 time-bound role grants: one expired past the 7-day grace (swept), one expired inside
+    -- it (kept), and one forever grant with a NULL expiry (never swept). 'admin' is seeded by the
+    -- migration; a second role is defined here so both live grants can hang off one user.
+    INSERT INTO shomei.shomei_roles (role, description, created_at) VALUES
+      ('auditor', 'sweep fixture role', now()) ON CONFLICT (role) DO NOTHING;
+    INSERT INTO shomei.shomei_role_grants (user_id, role, granted_by, granted_at, expires_at) VALUES
+      ('11111111-1111-1111-1111-111111111111', 'admin',   NULL, now() - interval '60 days', now() - interval '10 days'),
+      ('22222222-2222-2222-2222-222222222222', 'admin',   NULL, now() - interval '60 days', now() - interval '1 day'),
+      ('11111111-1111-1111-1111-111111111111', 'auditor', NULL, now() - interval '60 days', NULL);
     """
 
 testSweepDeletesExpiredRows :: TestTree
@@ -2018,6 +2035,9 @@ testSweepDeletesExpiredRows =
           authorizationCodesDeleted = 2,
           lockoutsDeleted = 1,
           loginAttemptsDeleted = 1,
+          -- the one grant expired past the 7-day grace; the recently-expired and the forever
+          -- (NULL expiry) grants stay
+          roleGrantsDeleted = 1,
           -- retention disabled by default
           authEventsDeleted = 0
         }
@@ -2031,6 +2051,8 @@ testSweepDeletesExpiredRows =
     scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts" >>= (@?= 2)
     scalarInt pool "SELECT count(*) FROM shomei.shomei_login_attempts" >>= (@?= 1)
     scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events" >>= (@?= 2)
+    -- The two live grants survive (recently expired, still in grace; and the forever grant).
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants" >>= (@?= 2)
     -- Users are never swept.
     scalarInt pool "SELECT count(*) FROM shomei.shomei_users" >>= (@?= 2)
     -- The live session kept its whole token chain, parent link intact.

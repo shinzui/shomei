@@ -113,7 +113,7 @@ migration for every consumer who adopts the Phase 2 endpoints early.
 | 6 | RFC 8693 Token Exchange Endpoint | docs/plans/43-rfc-8693-token-exchange-endpoint.md | EP-4 | EP-5 | Complete |
 | 7 | TOTP Second Factor and Recovery Codes | docs/plans/44-totp-second-factor-and-recovery-codes.md | None | EP-3 | Complete |
 | 8 | SMTP and Webhook Notifier Interpreters | docs/plans/45-smtp-and-webhook-notifier-interpreters.md | None | None | Complete |
-| 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | In Progress |
+| 9 | Role Definitions, Permissions, and Time-Bound Grants | docs/plans/46-role-definitions-permissions-and-time-bound-grants.md | EP-1 | EP-2 | Complete |
 | 10 | En Integration: Examples and Guidance for the Recommended Authorization Layer | docs/plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md | None | EP-1, EP-4 | Not Started |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
@@ -307,13 +307,32 @@ the other.
 - [x] EP-7: Hashed one-time recovery codes with generation and consumption flows
 - [x] EP-8: SMTP `Notifier` interpreter (provider relay) with implicit-TLS/STARTTLS/plaintext-lab and PLAIN/LOGIN auth, configured via Dhall/env
 - [x] EP-8: Webhook `Notifier` interpreter (signed JSON POST); docs position it as the eventing hook
-- [ ] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
-- [ ] EP-9: Time-bound grants (`expires_at`), expiry-filtered at mint, CLI flags, sweeper integration
+- [x] EP-9: Role→permission definitions (`shomei_role_permissions`) with a `permissions` claim and `RequirePermission` combinator
+- [x] EP-9: Time-bound grants (`expires_at`), expiry-filtered at mint, CLI flags, sweeper integration
 - [ ] EP-10: `examples/embedded-with-en` — shomei auth + embedded en authorization, end-to-end transcript
 - [ ] EP-10: Microservice recipe (JWKS verify → subject mapping → en-client check) and `docs/user/authorization.md` two-tier guide
 
 
 ## Surprises & Discoveries
+
+**2026-07-11 (EP-9) — completed; the pre-warned mint round-trip and stale-count notes landed
+exactly as forecast, and the plan-34 sweeper integration is live.** EP-9 shipped role→permission
+definitions (a reserved, unforgeable `permissions` claim minted from the effective role set via
+`permissionsForRoles`), the enforcing `RequirePermission` combinator (403 `missing_permission`,
+proven re-wireable end-to-end in the servant suite), time-bound grants (`roles grant
+--expires-in/--expires-at`, passive expiry filtered at mint, window carried in the `role_granted`
+payload), and CLI `roles allow/disallow/show`. The `permissions` claim added **one** shared-mint
+read, so `shomei-postgres`'s round-trip guards went login 9→10 and refresh 4→5 (raised with
+justification, exactly as EP-1/EP-5/EP-7's notes warned). The `MultilineString`-drops-trailing-
+newline and `crypton`/`ram` cautions did not bite (EP-9 built SQL but no `RETURNING`-plus-columns
+concatenation and no new digests). **Plan 34's sweeper has landed, so `shomei_role_grants` was
+added to `Shomei.Postgres.Maintenance`** (`roleGrantsDeleted` + `expiredRoleGrantsStmt`, a
+`role_grants` line in `sweepReportCounts`, swept a grace period past `expires_at`); the cross-
+MasterPlan integration the Dependency Graph named is closed. `AuthEvent` constructor count stayed
+40 (`RoleGrantedData` gained a field, not a constructor). Full `cabal test all` green (12 suites);
+the committed OpenAPI is a byte-identical no-op (no `ShomeiAPI` route uses `RequirePermission`, per
+the Decision Log). **This completes Phase 1** — only EP-10 (En integration, dependency-free)
+remains in the whole MasterPlan.
 
 **2026-07-10 (EP-8) — `smtp-mail` needs a `>=0.5` bound to get the maintained crypton build, and
 the HMAC hex must convert through `ram`, not `memory`.** Unbounded, cabal defaults `smtp-mail` to

@@ -7,6 +7,33 @@ tagged release.
 
 ## Unreleased
 
+### Added — MasterPlan 7 (Interop Wave), EP-9: role permissions and time-bound grants
+
+Shōmei's built-in (tier-1) authorization grows two classic RBAC mechanics, so deployments that do
+not adopt a dedicated authorization system get complete, safe roles from Shōmei alone.
+
+- **Role → permission definitions.** A role can imply flat `resource:verb` capability strings
+  (e.g. `projects:write`). Every token mint resolves the subject's roles to the **union of their
+  permissions** and mints a new `permissions` claim alongside `roles`. Downstream services check a
+  stable capability, so the role→permission wiring is re-wireable centrally without redeploying
+  any consumer. Manage it with `shomei-admin roles allow|disallow|show`. The `permissions` claim
+  is reserved and unforgeable through `extraClaims`, exactly like `roles`/`scopes`.
+- **`RequirePermission` combinator.** `RequirePermission "projects:write" :> …` enforces the claim
+  at the route type with no handler code (401 without a token, 403 `missing_permission` without
+  the permission) — the type-level twin of the re-wireable check, for host routes and downstream
+  services. Shōmei's own `/admin` surface stays gated on the `admin` role.
+- **Time-bound grants.** `shomei-admin roles grant … --expires-in <n>(s|m|h|d)` /
+  `--expires-at <ISO8601>` records an expiry on the grant. Expiry is **passive**: an expired grant
+  simply stops appearing in tokens at the next mint (no event fires, no status flips); the
+  `role_granted` audit payload carries the window it was granted with. The maintenance sweeper
+  (`shomei-admin sweep`) deletes long-expired grant rows as hygiene (a new `role_grants` line).
+
+Additive and backward-compatible: pre-EP-9 tokens verify with an empty `permissions` set, and
+pre-EP-9 `role_granted` audit rows decode with no expiry. See
+[docs/user/security.md](docs/user/security.md#permissions-re-wireable-capabilities) for the model,
+token-size guidance, and the graduation boundary to the **en** toolkit for fine-grained
+authorization.
+
 ### Added — MasterPlan 7 (Interop Wave), EP-4: OAuth2 client credentials
 
 Shōmei now mints machine tokens through the standard OAuth2 token endpoint, backed by service
