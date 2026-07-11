@@ -452,6 +452,14 @@ main = do
         let c = oidcCfg {oauthConfig = oidcCfg.oauthConfig {loginUrl}}
         (confId, pubId) <- seedOAuthClients r jwk jwkset c t0
         pure (r, confId, pubId, mkEnvWith c r)
+      -- The authorize path authenticates through 'resolveAuthUser', not the Servant combinator.
+      -- Give it its own token-and-session world so revocation coverage proves that path is wired
+      -- to the same derived verifier.
+      freshSessionAuthorizeEnv = do
+        r <- newIORef (emptyWorld t0)
+        let c = sessionCheckCfg {oauthConfig = sessionCheckCfg.oauthConfig {oidcEnabled = True}}
+        (confId, pubId) <- seedOAuthClients r jwk jwkset c t0
+        pure (r, confId, pubId, mkEnvWith c r)
       -- EP-2's admin scenarios need the World ref (to grant the admin role in the store) and
       -- the signing key (to mint scoped/delegated tokens by hand).
       freshAdminEnv = do
@@ -475,7 +483,7 @@ main = do
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1271,8 +1279,27 @@ scenarioSessionCheckMode ref port = do
   after <- getRaw mgr port "/v1/auth/me" (bearer access)
   assertProblem "a revoked session on an authenticated route" 401 "session_revoked" after
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
+  -- The authorization combinators run the same AuthHandler before inspecting roles, scopes, or
+  -- permissions. Revocation therefore stops each request with 401 before its 403 predicate.
+  roleR <- getRaw mgr port "/admin/users" (bearer access)
+  assertProblem "a revoked session on a RequireRole route" 401 "session_revoked" roleR
+  scopeR <- getRaw mgr port "/ingest" (bearer access)
+  assertProblem "a revoked session on a RequireScope route" 401 "session_revoked" scopeR
+  permR <- getRaw mgr port "/host/projects" (bearer access)
+  assertProblem "a revoked session on a RequirePermission route" 401 "session_revoked" permR
+
+-- | The default mode remains stateless. Revoking the backing session does not invalidate a
+-- still-unexpired access token unless the deployment opts into 'VerifyTokenAndSession'.
+scenarioDefaultModeIgnoresSessionStore :: IORef World -> Int -> IO ()
+scenarioDefaultModeIgnoresSessionStore ref port = do
+  mgr <- newManager defaultManagerSettings
+  (access, uid) <- signupTokenAndId mgr port "default-session-check"
+  revokeAllSessionsOf ref uid
+  (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
+  afterStatus @?= 200
+
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1287,6 +1314,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "sessionCheckMode=VerifyTokenAndSession: a revoked session is refused on an authenticated route" $ do
         (r, e) <- freshSessionCheckEnv
         testWithApplication (pure (app e)) (scenarioSessionCheckMode r),
+      testCase "sessionCheckMode=VerifyTokenOnly: a revoked session does not add a stateful check" $ do
+        (r, e) <- freshAdminEnv
+        testWithApplication (pure (app e)) (scenarioDefaultModeIgnoresSessionStore r),
       testCase "admin API: the gate is role OR scope; no token 401, ordinary token 403" $ do
         (r, e) <- freshAdminEnv
         testWithApplication (pure (app e)) (scenarioAdminAuthzMatrix r jwk cfg),
@@ -1336,6 +1366,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "GET /oauth/authorize: an authenticated request yields a code; parameter errors redirect with the state" $ do
         (r, confId, pubId, e) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app e)) (scenarioAuthorizeIssuesCode r confId pubId),
+      testCase "GET /oauth/authorize: token-and-session mode treats a revoked session as unauthenticated" $ do
+        (r, confId, _, e) <- freshSessionAuthorizeEnv
+        testWithApplication (pure (app e)) (scenarioAuthorizeRejectsRevokedSession r confId),
       testCase "GET /oauth/authorize: unauthenticated bounces to the host login page, or 401s when none is configured" $ do
         (_, confId, _, withLogin) <- freshAuthorizeEnv (Just "https://host.test/login")
         testWithApplication (pure (app withLogin)) (scenarioAuthorizeLoginRedirect confId)
@@ -1880,6 +1913,40 @@ scenarioAuthorizeNoLoginUrl confId port = do
       []
   assertOAuthError "unauthenticated with no loginUrl" 401 "login_required" r
   headerValue "Location" (headersOf r) @?= Nothing
+
+-- | @\/oauth\/authorize@ authenticates outside Servant's 'Authenticated' combinator, through
+-- 'resolveAuthUser'. In token-and-session mode it must treat a revoked session as anonymous and
+-- must not mint another authorization code.
+scenarioAuthorizeRejectsRevokedSession :: IORef World -> Text -> Int -> IO ()
+scenarioAuthorizeRejectsRevokedSession ref confId port = do
+  mgr <- newManager defaultManagerSettings
+  (token, uid) <- signupTokenAndId mgr port "authorize-revoked-session"
+  let params =
+        [ ("client_id", confId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid"),
+          ("state", "session-check"),
+          ("code_challenge", testCodeChallenge),
+          ("code_challenge_method", "S256")
+        ]
+      bearer' = bearer token
+
+  live <- getNoRedirect mgr port (authorizeUrl params) bearer'
+  let (liveStatus, _, _) = live
+  liveStatus @?= 302
+  (_, liveParams) <- locationOf "live session authorize" live
+  assertBool "a live session receives a code" (isJust (lookup "code" liveParams))
+  before <- Map.size . oauthCodes <$> readIORef ref
+  before @?= 1
+
+  revokeAllSessionsOf ref uid
+
+  revoked <- getNoRedirect mgr port (authorizeUrl params) bearer'
+  assertOAuthError "revoked session authorize" 401 "login_required" revoked
+  headerValue "Location" (headersOf revoked) @?= Nothing
+  after <- Map.size . oauthCodes <$> readIORef ref
+  after @?= before
 
 -- | EP-5 M3: the whole authorization-code exchange, over the real Servant tree with the real
 -- ES256 signer.

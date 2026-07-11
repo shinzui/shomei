@@ -121,20 +121,22 @@ This section must always reflect the actual current state of the work.
 
 **M3 — Extend coverage and guard the default.**
 
-- [ ] Extend `scenarioSessionCheckMode` to assert a `RequireRole` route also refuses the revoked
-      token with `401 session_revoked`.
-- [ ] Extend it to assert a `RequireScope` route does the same.
-- [ ] Extend it to assert a `RequirePermission` route does the same.
-- [ ] Extend it to assert `GET /oauth/authorize` (the `resolveAuthUser` path) treats the revoked
-      token as *unauthenticated* rather than as authenticated.
-- [ ] Add `scenarioDefaultModeIgnoresSessionStore`: under the **default** `VerifyTokenOnly`, a
+- [x] Extend `scenarioSessionCheckMode` to assert a `RequireRole` route also refuses the revoked
+      token with `401 session_revoked`. — 2026-07-11
+- [x] Extend it to assert a `RequireScope` route does the same. — 2026-07-11
+- [x] Extend it to assert a `RequirePermission` route does the same. — 2026-07-11
+- [x] Extend it to assert `GET /oauth/authorize` (the `resolveAuthUser` path) treats the revoked
+      token as *unauthenticated* rather than as authenticated. — 2026-07-11
+- [x] Add `scenarioDefaultModeIgnoresSessionStore`: under the **default** `VerifyTokenOnly`, a
       revoked session's access token still returns `200` on `GET /v1/auth/me`. This is the
-      regression guard against silently imposing a per-request database read on everyone.
-- [ ] Confirm the pre-existing `scenarioStatusCodes` (double logout → 204/204) still passes
-      unchanged — it depends on default-mode semantics.
-- [ ] `nix develop --command cabal test shomei-servant-test` fully green.
-- [ ] `nix develop --command cabal test shomei-core-test` fully green.
-- [ ] `nix develop --command cabal test shomei-servant-openapi-test` fully green.
+      regression guard against silently imposing a per-request database read on everyone. —
+      2026-07-11
+- [x] Confirm the pre-existing `scenarioStatusCodes` (double logout → 204/204) still passes
+      unchanged — it depends on default-mode semantics. — 2026-07-11
+- [x] `nix develop --command cabal test shomei-servant-test` fully green (34 tests). — 2026-07-11
+- [x] `nix develop --command cabal test shomei-core-test` fully green (237 tests). — 2026-07-11
+- [x] `nix develop --command cabal test shomei-servant-openapi-test` fully green (56 examples). —
+      2026-07-11
 
 **M4 — Documentation, OpenAPI, and the truth-in-comments sweep.**
 
@@ -283,6 +285,15 @@ All 32 tests passed
 The pair with Discovery F is the red/green proof: only the production authentication wiring
 changed between the observed `200` failure and the `401 session_revoked` success. The unchanged
 double-logout result also confirms `VerifyTokenOnly` remains the default.
+
+**Discovery I — every protected surface shares the fixed verifier, including the authorize
+exception.** The M3 suite passed all 34 HTTP cases. The revoked token produced
+`401 session_revoked` through `Authenticated`, `RequireRole`, `RequireScope`, and
+`RequirePermission`. The separately wired `/oauth/authorize` path returned OAuth
+`401 login_required`, and the in-memory authorization-code count stayed unchanged after that
+refusal. The default-mode control accepted the revoked session's still-unexpired token with
+`200`, while double logout remained `204` / `204`. The supporting suites also passed: 237 core
+tests and 56 OpenAPI examples.
 
 
 ## Decision Log
