@@ -25,8 +25,9 @@
 --
 -- These are Shōmei's built-in, flat, tier-1 authorization primitives: they read static claims
 -- from an already-minted JWT. They are deliberately not resource-scoped
--- (@RequireRole \"editor\"@ cannot mean "editor /of this project/") and cannot revoke access
--- before the token expires. See @docs\/user\/security.md@ for where that boundary lies.
+-- (@RequireRole \"editor\"@ cannot mean "editor /of this project/"). Claim changes remain stale
+-- until the token expires, but a deployment using @VerifyTokenAndSession@ can reject an expired or
+-- revoked backing session immediately. See @docs\/user\/security.md@ for where that boundary lies.
 module Shomei.Servant.Authz
   ( RequireRole,
     RequireScope,

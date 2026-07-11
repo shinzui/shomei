@@ -784,9 +784,10 @@ introspectRefresh env presented = do
 -- | @POST \/oauth\/revoke@ (RFC 7009): revoke what we recognize, and always answer @200@.
 --
 -- A refresh token revokes its whole family and its session; an access token revokes its session
--- and that session's refresh tokens (documented caveat: a stateless verifier keeps accepting the
--- JWT until @exp@). An unknown token is not an error — RFC 7009 §2.2 forbids that, to stop probing
--- — so this only ever raises on a failed client authentication.
+-- and that session's refresh tokens. Under the default @VerifyTokenOnly@ the stateless auth path
+-- keeps accepting that JWT until @exp@; under @VerifyTokenAndSession@ its next use is refused with
+-- @401 session_revoked@. An unknown token is not an error — RFC 7009 §2.2 forbids that, to stop
+-- probing — so this only ever raises on a failed client authentication.
 oauthRevokeH :: Env -> Maybe Text -> Form -> Handler NoContent
 oauthRevokeH env mAuthHeader form = do
   authenticateOAuthCaller env mAuthHeader form

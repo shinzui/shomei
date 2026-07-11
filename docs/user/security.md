@@ -274,7 +274,11 @@ the access token on the next request. But under the default `sessionCheckMode = 
 already-issued **access token is a stateless JWT** and keeps being accepted until its `exp` — access
 tokens are short-lived (15 minutes by default) precisely to bound this window. This is the honest
 semantics of a stateless-JWT provider; it is documented rather than hidden. Deployments that need
-immediate access-token rejection set `VerifyTokenAndSession` and pay a session read per request.
+immediate access-token rejection set `VerifyTokenAndSession` and pay one session read per
+authenticated request. Shōmei's HTTP auth handler performs that lookup through
+`Shomei.Workflow.verifyToken`: an expired session returns `401 session_expired`, a revoked session
+returns `401 session_revoked`, and a token whose session id resolves to no row fails closed as
+`401 token_invalid`.
 
 ## Passkeys & MFA (MasterPlan 3)
 

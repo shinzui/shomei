@@ -47,9 +47,12 @@ import Shomei.Prelude
 
 -- | Suspend an active user and kill their sessions.
 --
--- Their outstanding /access/ tokens still ride out their short TTL unless the deployment sets
--- @sessionCheckMode = VerifyTokenAndSession@, which re-reads the session on every request. The
--- refresh path is closed immediately either way, so the blast radius is one access-token
+-- Their outstanding /access/ tokens still ride out their short TTL under the default
+-- @sessionCheckMode = VerifyTokenOnly@. A deployment that cannot tolerate that window sets
+-- @VerifyTokenAndSession@: the HTTP auth handler then re-reads the session on every request
+-- through 'Shomei.Workflow.verifyToken', and the next request is refused with
+-- @401 session_revoked@, at the cost of one session lookup per authenticated request. The refresh
+-- path is closed immediately either way, so under the default the blast radius is one access-token
 -- lifetime.
 suspendUser ::
   (UserStore :> es, SessionStore :> es, AuthEventPublisher :> es, Clock :> es) =>

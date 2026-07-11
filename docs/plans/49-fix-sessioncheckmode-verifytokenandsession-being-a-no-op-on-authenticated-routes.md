@@ -140,23 +140,24 @@ This section must always reflect the actual current state of the work.
 
 **M4 — Documentation, OpenAPI, and the truth-in-comments sweep.**
 
-- [ ] Add `pcSessionExpired` and `pcSessionRevoked` to `baselineSpecs` in
+- [x] Add `pcSessionExpired` and `pcSessionRevoked` to `baselineSpecs` in
       `shomei-servant/src/Shomei/Servant/OpenApi.hs` so every secured operation documents the two
-      new `401`s it can now emit.
-- [ ] Re-run `nix develop --command cabal test shomei-servant-openapi-test` (the conformance
-      suite checks documented `(status, code)` pairs against the catalog).
-- [ ] Add the CHANGELOG entry under `## Unreleased`: a **Fixed (security)** note and a
-      **Breaking** note for `Seam.Env`, with the embedder migration snippet.
-- [ ] Update the Haddock at `shomei-core/src/Shomei/Workflow/Admin.hs` line ~51 so it names the
-      enforcement site and the `401` codes the caller now sees.
-- [ ] Update the `/oauth/revoke` caveat comment at
-      `shomei-servant/src/Shomei/Servant/Handlers.hs` line ~787.
-- [ ] Update the Haddock at `shomei-servant/src/Shomei/Servant/Auth.hs` lines 14–16 (it still
-      describes the old `TokenError` verifier shape) and the `Seam.Env` module header.
-- [ ] Update `docs/user/security.md` where it describes the revocation-latency boundary.
-- [ ] Run the truth-sweep grep (Concrete Steps step 4.6) and fix any remaining comment that
+      new `401`s it can now emit. — 2026-07-11
+- [x] Re-run `nix develop --command cabal test shomei-servant-openapi-test` (the conformance
+      suite checks documented `(status, code)` pairs against the catalog). — 2026-07-11
+- [x] Add the CHANGELOG entry under `## Unreleased`: a **Fixed (security)** note and a
+      **Breaking** note for `Seam.Env`, with the embedder migration snippet. — 2026-07-11
+- [x] Update the Haddock at `shomei-core/src/Shomei/Workflow/Admin.hs` line ~51 so it names the
+      enforcement site and the `401` codes the caller now sees. — 2026-07-11
+- [x] Update the `/oauth/revoke` caveat comment at
+      `shomei-servant/src/Shomei/Servant/Handlers.hs` line ~787. — 2026-07-11
+- [x] Update the Haddock at `shomei-servant/src/Shomei/Servant/Auth.hs` lines 14–16 and the
+      `Seam.Env` module header; also update the stale standalone assembly comments. — 2026-07-11
+- [x] Update `docs/user/security.md` where it describes the revocation-latency boundary. —
+      2026-07-11
+- [x] Run the truth-sweep grep (Concrete Steps step 4.6) and fix any remaining comment that
       describes `sessionCheckMode` as unimplemented or describes the auth handler as
-      session-blind.
+      session-blind. — 2026-07-11
 - [x] Record in Outcomes & Retrospective the eight `shomei-docs` content pages that mention
       `sessionCheckMode` / `VerifyTokenAndSession` (that separate repository was read through its
       mori registry entry but not edited). — 2026-07-11
@@ -294,6 +295,15 @@ exception.** The M3 suite passed all 34 HTTP cases. The revoked token produced
 refusal. The default-mode control accepted the revoked session's still-unexpired token with
 `200`, while double logout remained `204` / `204`. The supporting suites also passed: 237 core
 tests and 56 OpenAPI examples.
+
+**Discovery J — the documentation sweep found one extra stale assembly comment.** In addition to
+the files named in M4, `shomei-server/src/Shomei/Server/Boot.hs` still said the Servant context's
+verifier closed directly over the JWK set and that the context was built from `Seam.Env.verifier`.
+Both statements became false when M2 removed that field, so the comments now describe the derived
+`Env`-based verifier and its `sessionCheckMode` behavior. The final scoped sweep found no remaining
+current source or user-documentation claim that the Shōmei auth handler is session-blind. The
+OpenAPI conformance suite passed all 56 examples after adding `session_expired` and
+`session_revoked` to every secured operation.
 
 
 ## Decision Log

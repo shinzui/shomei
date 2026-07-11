@@ -118,6 +118,7 @@ import Shomei.Servant.Error
     pcServiceTokenScopeDenied,
     pcSessionExpired,
     pcSessionNotFound,
+    pcSessionRevoked,
     pcTokenInvalidAuth,
     pcTokenReuse,
     pcTooManyRequests,
@@ -529,13 +530,14 @@ routeErrors =
 
 -- | What an operation can fail with by virtue of its /shape/, independent of the table.
 --
--- An operation that requires a bearer token can always answer @401@ with no credential or a bad
--- one; an operation that takes a request body can always fail Servant's body parser. Both are
--- read off the generated document rather than restated per route, so a new authenticated route
--- documents its 401s the day it is added.
+-- An operation that requires a bearer token can always answer @401@ with no credential, a bad
+-- token, or — when configured for session checks — an expired or revoked session. An operation
+-- that takes a request body can always fail Servant's body parser. Both are read off the generated
+-- document rather than restated per route, so a new authenticated route documents its 401s the
+-- day it is added.
 baselineSpecs :: O.Operation -> [ProblemSpec]
 baselineSpecs op =
-  [spec | not (null (op ^. O.security)), spec <- [pcMissingToken, pcTokenInvalidAuth]]
+  [spec | not (null (op ^. O.security)), spec <- [pcMissingToken, pcTokenInvalidAuth, pcSessionExpired, pcSessionRevoked]]
     <> [pcBodyParseError | has (O.requestBody . _Just) op]
 
 -- | The paths exempt from the problem-details envelope: they answer RFC 6749 §5.2 error objects,

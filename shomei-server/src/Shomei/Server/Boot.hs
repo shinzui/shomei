@@ -346,8 +346,8 @@ millisToDiffTime :: Int -> DiffTime
 millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 
 -- | Build the WAI 'Application': EP-5's server with the @AuthProtect "shomei-jwt"@
--- 'Context', whose verifier closes over this 'Env's JWKSet and config so verification
--- uses exactly the keys the server signs with.
+-- 'Context'. Authentication is derived from the seam env's port runner and config, so it uses
+-- the current verification keys and honors @sessionCheckMode@.
 --
 -- The served tree is 'shomeiRoutesAPI' (EP-3): application routes under @\/v1@, JWKS and the
 -- probes at unversioned root paths.
@@ -361,7 +361,7 @@ application env = problemMiddleware (serveWithContext shomeiRoutesAPI (authConte
     senv = seamEnv env
 
 -- | The Servant 'Context' carrying the @AuthProtect "shomei-jwt"@ 'AuthHandler' (built from the
--- seam env's verifier) and the 'ErrorFormatters' that render Servant's own body-parse,
+-- seam env itself) and the 'ErrorFormatters' that render Servant's own body-parse,
 -- url-parse, header-parse, and not-found failures as RFC 7807 problem documents. A host app
 -- embedding 'ShomeiAPI' serves with this same context.
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]

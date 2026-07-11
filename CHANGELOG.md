@@ -7,6 +7,54 @@ tagged release.
 
 ## Unreleased
 
+### Fixed — security: `sessionCheckMode = VerifyTokenAndSession` was a no-op on authenticated routes
+
+`sessionCheckMode = VerifyTokenAndSession` is documented to re-read the session on every request,
+so that revoking a session or suspending a user takes effect immediately rather than when the
+outstanding access token expires. It did not: `Shomei.Workflow.verifyToken`, the only function
+that reads the setting, had no production caller. Every assembly wired the HTTP auth handler to
+the pure, session-blind verifier from `Shomei.Jwt.Verify`, so the setting changed no behavior on
+routes guarded by `Authenticated`, `RequireRole`, `RequireScope`, or `RequirePermission`, nor on
+`GET /oauth/authorize`.
+
+The HTTP layer now verifies through `Shomei.Workflow.verifyToken`. With the setting enabled, a
+request bearing an access token whose session has been revoked or expired is refused with
+`401 session_revoked` or `401 session_expired`; an unresolvable session id remains the
+undifferentiated `401 token_invalid`.
+
+The bug affected outstanding access tokens on protected routes for at most one access-token TTL
+(15 minutes by default). It did not affect refresh, which has always enforced session status and
+expiry, or `POST /oauth/introspect`, which has always consulted the session store.
+`VerifyTokenOnly` remains the default and still performs no session lookup.
+
+Deployments enabling `VerifyTokenAndSession` should account for one session `SELECT` per
+authenticated request. Under that mode HTTP logout is no longer idempotent: a second
+`POST /v1/auth/logout` with the same access token is refused with `401 session_revoked` by the
+auth handler. Under the default `VerifyTokenOnly`, logout remains idempotent.
+
+### Changed (breaking) — `Shomei.Servant.Seam.Env.verifier` removed
+
+The `verifier` field is gone. `Env.runPorts` already interprets `TokenVerifier`, `SessionStore`,
+and `Clock`, so HTTP verification is now derived through:
+
+```haskell
+Shomei.Servant.Seam.verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
+```
+
+`Shomei.Servant.Auth.authHandler` and `Shomei.Servant.Auth.resolveAuthUser` now take `Seam.Env`
+directly, preventing an embedding host from accidentally wiring Shōmei's own auth handler to a
+session-blind verifier.
+
+Embedding hosts delete the `verifier = …` field from their `Seam.Env` construction and pass the
+environment directly when building the Servant context:
+
+```haskell
+-- before
+authHandler (cookiePolicyFromConfig env.config) env.verifier
+-- after
+authHandler env
+```
+
 ### Added — MasterPlan 7 (Interop Wave), EP-10: en authorization integration (examples and guidance)
 
 Documentation and runnable examples for the **two-tier authorization** story: Shōmei for
