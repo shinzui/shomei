@@ -9,11 +9,12 @@
 -- cookie-borne credentials.
 --
 -- Authentication uses Servant's /generalized auth/: the route type carries
--- @AuthProtect "shomei-jwt"@ (aliased here as 'Authenticated'), and the server side
--- is driven by an 'AuthHandler' registered in the 'Servant.Context'. The handler is
--- built with 'authHandler', which is parameterized over a token verifier of shape
--- @Text -> IO (Either TokenError AuthClaims)@ (at assembly time this is EP-4's
--- @\\t -> verifyToken jwks config t@); this module therefore never touches @jose@.
+-- @AuthProtect "shomei-jwt"@ (aliased here as 'Authenticated'), and the server side is driven by
+-- an 'AuthHandler' registered in the 'Servant.Context'. The handler is built with 'authHandler'
+-- from the seam 'Env'; verification is derived from its port runner and configuration through
+-- 'Shomei.Servant.Seam.verifyRequestToken'. This makes
+-- @sessionCheckMode = VerifyTokenAndSession@ apply consistently without this module touching
+-- @jose@ directly.
 --
 -- __Why the CSRF gate exists.__ A browser attaches cookies to a request automatically, even
 -- when the request was triggered by a page on someone else's site. So a malicious page can
@@ -54,10 +55,11 @@ import Servant.Server.Experimental.Auth
   )
 import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..), transportUsesCookies)
 import Shomei.Domain.Claims (AuthClaims (..), Permission, Role, Scope)
-import Shomei.Error (TokenError)
+import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Servant.Error (pcCsrfRejected, pcMissingToken, pcTokenInvalidAuth, toProblemError)
+import Shomei.Servant.Error (pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
+import Shomei.Servant.Seam (Env (..), verifyRequestToken)
 import Web.Cookie (parseCookies)
 
 -- | Shōmei's principal: the value the 'AuthHandler' hands to every authenticated
@@ -115,22 +117,37 @@ authUserFromClaims claims =
     }
 
 -- | Build the auth handler. A missing token is a @401@; a failed verification is also a
--- @401@ (we do not distinguish, to avoid leaking why). A cookie-authenticated mutating
+-- @401@. Revoked and expired sessions carry their actionable problem codes; other failures stay
+-- the undifferentiated @token_invalid@. A cookie-authenticated mutating
 -- request from an origin that is not allow-listed is a @403 csrf_rejected@ — refused before
 -- the token is even verified, because the credential itself is not admissible here.
-authHandler :: CookiePolicy -> (Text -> IO (Either TokenError AuthClaims)) -> AuthHandler Request AuthUser
-authHandler policy verify = mkAuthHandler handle
+authHandler :: Env -> AuthHandler Request AuthUser
+authHandler env = mkAuthHandler handle
   where
+    policy = cookiePolicyFromConfig env.config
+
     handle :: Request -> Handler AuthUser
     handle req = do
       (source, tok) <-
         maybe (throwError (toProblemError pcMissingToken Nothing)) pure (extractToken policy.transport req)
       when (source == FromCookie && not (isSafeMethod req) && not (originAllowed policy.allowedOrigins req)) $
         throwError csrfRejected
-      res <- liftIO (verify tok)
+      res <- liftIO (verifyRequestToken env tok)
       case res of
-        Left _ -> throwError (toProblemError pcTokenInvalidAuth Nothing)
+        Left e -> throwError (authFailure e)
         Right claims -> pure (authUserFromClaims claims)
+
+-- | How an authentication failure becomes an HTTP response.
+--
+-- Deliberately not 'Shomei.Servant.Error.authErrorToServerError': that handler-layer mapping
+-- turns 'SessionNotFound' into a 404, which would make a protected route look nonexistent.
+-- Revocation and expiry are actionable to a caller already holding the token. Everything else,
+-- including an unresolvable session id, fails closed as @401 token_invalid@.
+authFailure :: AuthError -> ServerError
+authFailure = \case
+  SessionExpired -> toProblemError pcSessionExpired Nothing
+  SessionRevoked -> toProblemError pcSessionRevoked Nothing
+  _ -> toProblemError pcTokenInvalidAuth Nothing
 
 -- | Extract the presented token and record where it came from.
 --
@@ -171,17 +188,18 @@ extractTokenFromHeaders transport mAuthorization mCookie =
 -- No CSRF gate: the only caller that is not the 'AuthHandler' is a @GET@, and 'isSafeMethod' would
 -- exempt it anyway. A caller that /can/ mutate must go through 'authHandler'.
 resolveAuthUser ::
-  CookiePolicy ->
-  (Text -> IO (Either TokenError AuthClaims)) ->
+  Env ->
   -- | the @Authorization@ header
   Maybe Text ->
   -- | the @Cookie@ header
   Maybe Text ->
   IO (Maybe AuthUser)
-resolveAuthUser policy verify mAuthorization mCookie =
+resolveAuthUser env mAuthorization mCookie =
   case extractTokenFromHeaders policy.transport mAuthorization mCookie of
     Nothing -> pure Nothing
-    Just (_source, tok) -> either (const Nothing) (Just . authUserFromClaims) <$> verify tok
+    Just (_source, tok) -> either (const Nothing) (Just . authUserFromClaims) <$> verifyRequestToken env tok
+  where
+    policy = cookiePolicyFromConfig env.config
 
 -- | Methods that cannot change state, and so need no CSRF protection.
 isSafeMethod :: Request -> Bool

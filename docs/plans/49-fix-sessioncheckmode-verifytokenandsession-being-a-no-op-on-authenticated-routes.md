@@ -4,6 +4,7 @@ slug: fix-sessioncheckmode-verifytokenandsession-being-a-no-op-on-authenticated-
 title: "Fix sessionCheckMode VerifyTokenAndSession being a no-op on authenticated routes"
 kind: exec-plan
 created_at: 2026-07-11T18:18:43Z
+intention: intention_01kx9bhj7zeheva31eswpn4grt
 ---
 
 # Fix sessionCheckMode VerifyTokenAndSession being a no-op on authenticated routes
@@ -28,20 +29,20 @@ eight pages of the `shomei-docs` documentation site — is that Shōmei will the
 session row from the database on **every** request, so that suspending a user or revoking a
 session takes effect **immediately** rather than up to 15 minutes later.
 
-**That promise is not kept. The knob does nothing.** Setting `sessionCheckMode =
+**That promise is not kept. The knob does nothing on protected HTTP routes.** Setting `sessionCheckMode =
 VerifyTokenAndSession` changes no observable behavior on any authenticated route, because the one
 function that reads the knob is never called by the server. An access token belonging to a
 revoked, suspended, or deleted user's session keeps working on every protected route for its full
 remaining lifetime, exactly as if the knob were left at its default. The mitigation that Shōmei
 tells operators to reach for in an incident does not exist.
 
-After this change, an operator who sets `SHOMEI_SESSION_CHECK_MODE=token-and-session` gets what
+After this change, an operator who sets `SHOMEI_SESSION_CHECK=token-and-session` gets what
 the documentation already promises. Concretely, here is the behavior you will be able to see, and
 which does not happen today:
 
 1. A user logs in and receives an access token. It is valid for 15 minutes.
-2. An administrator revokes that user's session (via `POST /v1/admin/users/{id}/sessions`, or
-   `shomei-admin`, or by suspending the account).
+2. An administrator revokes that user's sessions (via
+   `DELETE /v1/admin/users/{id}/sessions`, or by suspending the account through the admin API).
 3. The user's *very next* request to a protected route — for example `GET /v1/auth/me`, carrying
    the same still-unexpired access token — is refused with `401` and a problem document whose
    `code` is `session_revoked`, instead of the `200 OK` it returns today.
@@ -50,7 +51,8 @@ The heart of this plan is a test that performs exactly those three steps. It **f
 current code (the third step returns `200`) and **passes** after the fix (the third step returns
 `401 session_revoked`). Everything else in the plan exists to make that test pass honestly, to
 extend the same guarantee to the other protected-route combinators, and to guarantee we did not
-accidentally impose a database read on the *default* mode, which every existing deployment uses.
+accidentally impose a database read on the *default* mode, which deployments inherit unless they
+explicitly override it.
 
 
 ## Progress
@@ -61,49 +63,61 @@ This section must always reflect the actual current state of the work.
 
 **M0 — Orient and reproduce (read-only).**
 
-- [ ] Read `shomei-core/src/Shomei/Workflow.hs` lines 450–469 and confirm `verifyToken` is the
+- [x] Read `shomei-core/src/Shomei/Workflow.hs` lines 450–469 and confirm `verifyToken` is the
       only function that branches on `cfg.sessionCheckMode`.
-- [ ] Run the "no callers" grep from Concrete Steps step 0.2 and confirm
+- [x] Run the "no callers" grep from Concrete Steps step 0.2 and confirm
       `Shomei.Workflow.verifyToken` has zero call sites under any `src/` directory.
-- [ ] Read `shomei-server/src/Shomei/Server/Boot.hs` lines 377–389 and confirm `Seam.verifier` is
+- [x] Read `shomei-server/src/Shomei/Server/Boot.hs` lines 377–389 and confirm `Seam.verifier` is
       built from `Shomei.Jwt.Verify.verifyToken` (the pure, session-blind JWT verifier).
-- [ ] Confirm the environment works: `nix develop --command cabal build all` succeeds before any
-      edit.
+- [x] Confirm the environment works: `nix develop --command cabal build all` succeeded before any
+      edit. — 2026-07-11
+- [x] Run the unmodified `shomei-servant-test` baseline; all 31 existing tests passed. —
+      2026-07-11
+- [x] Reproduce the bug without editing the tree by loading the existing `shomei-servant-test`
+      harness in GHCi: after out-of-band revocation, the workflow returned `SessionRevoked` while
+      `GET /v1/auth/me` returned `200`. — 2026-07-11
+- [x] Audit the proposed public API and revise it so Shōmei's exported `authHandler` receives the
+      whole seam `Env`, rather than continuing to accept an arbitrary verifier that an embedder
+      could make session-blind. — 2026-07-11
 
 **M1 — The failing test (the proof).**
 
-- [ ] Add `SessionCheckMode (..)` to the `Shomei.Config` import list in
-      `shomei-servant/test/Main.hs`.
-- [ ] Add `revokeAllUserSessions` to the `Shomei.Effect.SessionStore` imports in
-      `shomei-servant/test/Main.hs`.
-- [ ] Add the `revokeAllSessionsOf` helper to `shomei-servant/test/Main.hs`.
-- [ ] Add `sessionCheckCfg` and `freshSessionCheckEnv` to `main` in `shomei-servant/test/Main.hs`.
-- [ ] Add the `scenarioSessionCheckMode` scenario to `shomei-servant/test/Main.hs`.
-- [ ] Extend the `tests` function's positional signature and its call site in `main` with the new
-      `freshSessionCheckEnv` parameter, and register the new `testCase`.
-- [ ] Run `nix develop --command cabal test shomei-servant-test` and observe the new case
+- [x] Add `SessionCheckMode (..)` to the `Shomei.Config` import list in
+      `shomei-servant/test/Main.hs`. — 2026-07-11
+- [x] Add `revokeAllUserSessions` to the `Shomei.Effect.SessionStore` imports in
+      `shomei-servant/test/Main.hs`. — 2026-07-11
+- [x] Add the `revokeAllSessionsOf` helper to `shomei-servant/test/Main.hs`. — 2026-07-11
+- [x] Add `sessionCheckCfg` and `freshSessionCheckEnv` to `main` in `shomei-servant/test/Main.hs`.
+      — 2026-07-11
+- [x] Add the `scenarioSessionCheckMode` scenario to `shomei-servant/test/Main.hs`. — 2026-07-11
+- [x] Extend the `tests` function's positional signature and its call site in `main` with the new
+      `freshSessionCheckEnv` parameter, and register the new `testCase`. — 2026-07-11
+- [x] Run `nix develop --command cabal test shomei-servant-test` and observe the new case
       **FAIL** with `expected: 401 / but got: 200`. Paste the transcript into
-      Surprises & Discoveries.
+      Surprises & Discoveries. — 2026-07-11
 
 **M2 — The fix.**
 
-- [ ] Add `verifyRequestToken` to `shomei-servant/src/Shomei/Servant/Seam.hs` and export it.
-- [ ] Delete the `verifier` field from `Shomei.Servant.Seam.Env` (and drop the now-unused
-      `TokenError` import).
-- [ ] Change `authHandler` in `shomei-servant/src/Shomei/Servant/Auth.hs` to accept
-      `Text -> IO (Either AuthError AuthClaims)` and map `SessionExpired` / `SessionRevoked` to
-      their own 401 problem documents.
-- [ ] Change `resolveAuthUser` in `shomei-servant/src/Shomei/Servant/Auth.hs` to the same
-      verifier shape.
-- [ ] Update the `resolveAuthUser` call site at `shomei-servant/src/Shomei/Servant/Handlers.hs`
-      line ~396 to pass `Seam.verifyRequestToken env`.
-- [ ] Update `authContext` and `seamEnv` in `shomei-server/src/Shomei/Server/Boot.hs`; remove the
-      now-dead `Shomei.Jwt.Verify (verifyToken)` import if nothing else in the module uses it.
-- [ ] Update the test harness `app` and `mkEnvWith` in `shomei-servant/test/Main.hs` for the
-      removed `verifier` field.
-- [ ] `nix develop --command cabal build all` is green.
-- [ ] Re-run `nix develop --command cabal test shomei-servant-test`; the M1 case now **PASSES**.
-      Paste the transcript into Surprises & Discoveries.
+- [x] Add `verifyRequestToken` to `shomei-servant/src/Shomei/Servant/Seam.hs` and export it. —
+      2026-07-11
+- [x] Delete the `verifier` field from `Shomei.Servant.Seam.Env` (and drop the now-unused
+      `TokenError` import). — 2026-07-11
+- [x] Change `authHandler` in `shomei-servant/src/Shomei/Servant/Auth.hs` to accept the seam
+      `Env`, derive both the cookie policy and verifier from that environment, and map
+      `SessionExpired` / `SessionRevoked` to their own 401 problem documents. — 2026-07-11
+- [x] Change `resolveAuthUser` in `shomei-servant/src/Shomei/Servant/Auth.hs` to accept the same
+      seam `Env`, so `/oauth/authorize` cannot inject a separate session-blind verifier either. —
+      2026-07-11
+- [x] Update the `resolveAuthUser` call site at `shomei-servant/src/Shomei/Servant/Handlers.hs`
+      line ~396 to pass `env`. — 2026-07-11
+- [x] Update `authContext` and `seamEnv` in `shomei-server/src/Shomei/Server/Boot.hs`; remove the
+      now-dead `Shomei.Jwt.Verify (verifyToken)` import if nothing else in the module uses it. —
+      2026-07-11
+- [x] Update the test harness `app` and `mkEnvWith` in `shomei-servant/test/Main.hs` for the
+      removed `verifier` field. — 2026-07-11
+- [x] `nix develop --command cabal build all` is green. — 2026-07-11
+- [x] Re-run `nix develop --command cabal test shomei-servant-test`; the M1 case now **PASSES**.
+      Paste the transcript into Surprises & Discoveries. — 2026-07-11
 
 **M3 — Extend coverage and guard the default.**
 
@@ -141,8 +155,9 @@ This section must always reflect the actual current state of the work.
 - [ ] Run the truth-sweep grep (Concrete Steps step 4.6) and fix any remaining comment that
       describes `sessionCheckMode` as unimplemented or describes the auth handler as
       session-blind.
-- [ ] Record in Outcomes & Retrospective the list of `shomei-docs` pages that must be updated in
-      that separate repository (this plan does **not** edit them; it only names them).
+- [x] Record in Outcomes & Retrospective the eight `shomei-docs` content pages that mention
+      `sessionCheckMode` / `VerifyTokenAndSession` (that separate repository was read through its
+      mori registry entry but not edited). — 2026-07-11
 
 **Wrap-up.**
 
@@ -191,13 +206,92 @@ arguably the correct behavior (the credential genuinely is dead), and it **must*
 the CHANGELOG. Do not "fix" it by special-casing logout: a session check that exempts the routes
 it finds inconvenient is not a session check.
 
+**Discovery C — the bug was reproduced against the current HTTP test assembly, and the workflow
+and HTTP layer disagreed on the same token.** On 2026-07-11, before editing production or test
+source, the existing `shomei-servant-test` module was loaded in GHCi. The validation action built
+an `Env` with `sessionCheckMode = VerifyTokenAndSession`, signed up a user over HTTP, revoked that
+user's session through the in-memory `SessionStore`, then sent the same unexpired token to
+`GET /v1/auth/me`. The direct workflow call correctly rejected the token while HTTP accepted it:
+
+```text
+(signup status, direct Shomei.Workflow.verifyToken result, /v1/auth/me status, problem code)
+(201,"SessionRevoked",200,Nothing)
+```
+
+This isolates the fault to the HTTP wiring: token generation, signature verification, session
+revocation, and `Shomei.Workflow.verifyToken` all worked in the same process and against the same
+world. The baseline `nix develop --command cabal build all` also completed successfully, and the
+unmodified `shomei-servant-test` suite passed all 31 existing tests.
+
+**Discovery D — the originally proposed API did not make the bug class structurally impossible.**
+The first draft removed `Seam.Env.verifier` but kept
+`authHandler :: CookiePolicy -> (Text -> IO (Either AuthError AuthClaims)) -> ...`. An embedding
+host could still pass a session-blind verifier of that type, so the draft's claim that a caller
+"cannot supply a verifier at all" was false. The plan now makes both `authHandler` and
+`resolveAuthUser` accept `Seam.Env` directly. They derive the policy and call
+`verifyRequestToken` internally. A host can always replace Shōmei's exported auth handler with
+entirely custom code, but it can no longer accidentally configure Shōmei's own handler through a
+session-blind verifier argument. `Shomei.Servant.Seam` does not import `Shomei.Servant.Auth`, so
+having `Auth` import `Seam` introduces no module cycle.
+
+**Discovery E — two operational details in the first draft were inaccurate.** The standalone
+server reads `SHOMEI_SESSION_CHECK`, not `SHOMEI_SESSION_CHECK_MODE`; and revoking every session
+for a user is `DELETE /v1/admin/users/{userId}/sessions`, not `POST`. The current
+`shomei-admin users` command only exposes `create`, so the manual validation must use the admin
+HTTP API rather than a nonexistent `shomei-admin users suspend` command.
+
+**Discovery F — the committed-shape acceptance test independently reproduced the validated bug.**
+After adding only the M1 test changes, `nix develop --command cabal test shomei-servant-test
+--test-show-details=direct` produced exactly one failure, while every pre-existing case stayed
+green:
+
+```text
+sessionCheckMode=VerifyTokenAndSession: a revoked session is refused on an authenticated route: FAIL
+  test/Main.hs:1175:
+  expected: 401
+   but got: 200
+
+1 out of 32 tests failed
+```
+
+This is the red half of the red/green security regression proof. No production source had been
+changed when this output was captured.
+
+**Discovery G — record-dot cannot select the rank-polymorphic `runPorts` field at this call
+site.** The first M2 build rejected the plan's pseudocode form
+`env.runPorts (Wf.verifyToken env.config ...)` because GHC could not instantiate the effect stack:
+
+```text
+No instance for HasField "runPorts" Env
+Ambiguous type variable ‘es0’ arising from a use of ‘Wf.verifyToken’
+```
+
+The ordinary record selector preserves the field's rank-polymorphic application and fixes the
+type at `AppEffects`: `runPorts env (Wf.verifyToken (config env) ...)`. This is a syntax-level
+adjustment only; the interface and behavior in D1 are unchanged.
+
+**Discovery H — the M2 wiring turns the same acceptance test green without moving the default.**
+After deriving authentication from `Env.runPorts` and `Env.config`, the same suite reported:
+
+```text
+status codes: signup 201, lifecycle requests still 202, logout idempotent (204/204): OK
+sessionCheckMode=VerifyTokenAndSession: a revoked session is refused on an authenticated route: OK
+
+All 32 tests passed
+```
+
+The pair with Discovery F is the red/green proof: only the production authentication wiring
+changed between the observed `200` failure and the `401 session_revoked` success. The unchanged
+double-logout result also confirms `VerifyTokenOnly` remains the default.
+
 
 ## Decision Log
 
 Record every decision made while working on the plan.
 
-- **D1. The fix removes `Shomei.Servant.Seam.Env.verifier` entirely and derives verification from
-  `runPorts` + `config`, rather than changing the field's type or adding a second field.**
+- **D1. The fix removes `Shomei.Servant.Seam.Env.verifier`, derives verification from
+  `runPorts` + `config`, and makes Shōmei's `authHandler` / `resolveAuthUser` accept `Env`
+  directly.**
 
   Rationale: three options were weighed.
 
@@ -214,26 +308,34 @@ Record every decision made while working on the plan.
   and an embedder who passes `\_ -> pure (Right ())` for `sessionCheck` has reproduced the bug
   with no compiler complaint. It makes the invariant *more* implicit, not less.
 
-  *Option C (chosen) — delete the field.* `Env.runPorts` already interprets `TokenVerifier`,
-  `SessionStore`, and `Clock` (they are in `AppEffects`), which is precisely what
-  `Shomei.Workflow.verifyToken` needs. So the seam gains one derived function,
+  *Option C (chosen) — delete the field and pass `Env` to the authentication entry points.*
+  `Env.runPorts` already interprets `TokenVerifier`, `SessionStore`, and `Clock` (they are in
+  `AppEffects`), which is precisely what `Shomei.Workflow.verifyToken` needs. So the seam gains
+  one derived function,
 
   ```haskell
   verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
-  verifyRequestToken env raw = env.runPorts (Wf.verifyToken env.config (AccessToken raw))
+  verifyRequestToken env raw = runPorts env (Wf.verifyToken (config env) (AccessToken raw))
   ```
 
-  and there is exactly **one** way to verify a token in the HTTP layer. The bug class becomes
-  structurally impossible: you cannot supply a session-blind verifier, because you cannot supply a
-  verifier at all. It also *deletes* code — `Boot.seamEnv`'s hand-rolled `readIORef` +
+  and `authHandler :: Env -> AuthHandler Request AuthUser` plus
+  `resolveAuthUser :: Env -> Maybe Text -> Maybe Text -> IO (Maybe AuthUser)` call it internally.
+  There is exactly **one** verification path inside Shōmei's HTTP layer. An embedding host using
+  Shōmei's exported handler cannot inject a session-blind verifier argument because that argument
+  no longer exists. A host can, of course, replace the Shōmei handler with custom authentication
+  code; no library API can prevent a consumer from bypassing it deliberately. The chosen design
+  prevents accidental misassembly while making the supported path safe by construction.
+
+  It also *deletes* code — `Boot.seamEnv`'s hand-rolled `readIORef` +
   `Jwt.Verify.verifyToken` lambda goes away, because `runPorts` (via `runAppIO`) already re-reads
   the swappable key material on every invocation (`shomei-server/src/Shomei/Server/App.hs` lines
   167–177), so key rotation keeps working with no special handling.
 
   The breakage is loud and trivially fixable: an embedder who wrote `Seam.Env { …, verifier = …
-  }` gets a compile error naming a field that no longer exists, and the fix is to delete that
-  line. A loud break that cannot be ignored is exactly what a security fix wants; a silent one
-  that type-checks is exactly what it does not.
+  }` gets a compile error naming a field that no longer exists, and a call such as
+  `authHandler policy verifier` gets an arity/type error. The migration is to delete the field and
+  call `authHandler env`. A loud break that cannot be ignored is exactly what a security fix
+  wants; a silent one that type-checks is exactly what it does not.
 
   Date: 2026-07-11
 
@@ -296,8 +398,8 @@ Record every decision made while working on the plan.
   would remain vulnerable — which is the same class of mistake as the original bug. Because the
   verifier is *derived* from `Env.runPorts` inside `Shomei.Servant.Seam` (D1), an embedding host
   gets correct behavior with **no action at all beyond deleting its now-nonexistent `verifier`
-  field** and building its Servant context with `authHandler (cookiePolicyFromConfig env.config)
-  (verifyRequestToken env)`. The one obligation on an embedder is the one they already have: their
+  field** and building its Servant context with `authHandler env`. The one obligation on an
+  embedder is the one they already have: their
   `runPorts` must interpret the full `AppEffects` stack, including `SessionStore` and `Clock`
   against the *same* store the login/refresh workflows write to. An embedder who interprets
   `SessionStore` against a throwaway in-memory world while writing sessions to PostgreSQL would
@@ -309,7 +411,7 @@ Record every decision made while working on the plan.
 - **D5. `VerifyTokenOnly` remains the default. We do not change it.**
 
   Rationale: `Shomei.Config.defaultShomeiConfig` sets `sessionCheckMode = VerifyTokenOnly`
-  (`shomei-core/src/Shomei/Config.hs` line 507) and every existing deployment inherits it.
+  (`shomei-core/src/Shomei/Config.hs` line 507) and deployments inherit it unless they opt in.
   Flipping the default as part of a bug fix would silently add a database read to every
   authenticated request in every deployment that upgrades — a performance and capacity change
   delivered under the banner of a security patch, which is precisely the kind of surprise that
@@ -331,10 +433,10 @@ Record every decision made while working on the plan.
   then applies its role/scope/permission predicate. So fixing the auth handler fixes all three
   combinators with no further edits. Likewise `/oauth/authorize` cannot use the `Authenticated`
   combinator (it must *redirect* an unauthenticated browser rather than answer `401`, so it never
-  sees a WAI `Request`), and instead calls `Shomei.Servant.Auth.resolveAuthUser` — which is
-  parameterized over the same verifier function, so pointing it at `verifyRequestToken` fixes that
-  path too. M3 nonetheless adds explicit tests for all four, because "it follows by construction"
-  is a claim that should be checked, not trusted.
+  sees a WAI `Request`), and instead calls `Shomei.Servant.Auth.resolveAuthUser`. After this plan,
+  that function accepts the same `Env` and calls `verifyRequestToken` internally, so it cannot
+  drift onto a separately supplied verifier. M3 nonetheless adds explicit tests for all four,
+  because "it follows by construction" is a claim that should be checked, not trusted.
 
   Date: 2026-07-11
 
@@ -363,17 +465,56 @@ Record every decision made while working on the plan.
 
   Date: 2026-07-11
 
+- **D9. Treat the reported behavior as a confirmed security bug, not a documentation-only
+  mismatch.**
+
+  Rationale: the setting is wired from configuration and explicitly documented as an immediate
+  revocation control, but the production HTTP verifier does not call the only workflow that reads
+  it. More importantly, the read-only GHCi reproduction exercised the existing real-HTTP / real-JWT
+  test assembly and observed the direct workflow return `SessionRevoked` while the protected route
+  returned `200` for the same token after the same revocation. The impact is bounded to an
+  outstanding access token's remaining TTL because refresh and introspection are already
+  session-aware, but a bounded bypass of an explicitly selected immediate-revocation control is
+  still a security bug.
+
+  Date: 2026-07-11
+
 
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
 Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+**Plan-validation outcome (2026-07-11).** The claimed bug is confirmed. No production or test
+source was edited during validation. A clean baseline build passed, static call-site analysis
+showed the workflow that reads `sessionCheckMode` has no production caller, and the live
+reproduction observed `(direct workflow = SessionRevoked, protected HTTP route = 200)` after
+revoking the session behind a still-unexpired token. The unmodified Servant suite passed all 31
+existing tests, confirming the reproduction did not depend on an already-failing baseline.
+Implementation remains pending from M1 onward.
 
-When you fill this in, make sure it records the list of `shomei-docs` pages (a **separate
-repository**, not this one) that repeat the false promise and now need updating — see M4. This
-plan deliberately does not edit that repository, but the next contributor needs the list.
+The validation also improved the proposed fix. Removing only `Seam.Env.verifier` was insufficient
+while `authHandler` still accepted an arbitrary verifier argument; the revised plan makes the
+authentication entry points accept `Env` directly. It also corrected the configuration name,
+admin HTTP method, nonexistent CLI example, and brittle exact test-count expectations.
+
+The mori registry identifies `shinzui/shomei-docs` at
+`/Users/shinzui/Keikaku/bokuno/shomei-docs`. The eight user-facing content pages found by the
+validated search are listed below. They are outside this plan's edit scope; after the fix lands,
+the follow-up is to review each for the new error codes, the now-real per-request `SELECT`, and
+the embedding API migration:
+
+- `content/docs/shomei/explanation/admin-http-api.mdx`
+- `content/docs/shomei/explanation/security-model.mdx`
+- `content/docs/shomei/reference/oidc-endpoints.mdx`
+- `content/docs/shomei/explanation/jwt-jwks-and-local-verification.mdx`
+- `content/docs/shomei/walkthrough/tokens-and-operations/02-token-verification-and-claim-recovery.mdx`
+- `content/docs/shomei/reference/workflows.mdx`
+- `content/docs/shomei/reference/core-config.mdx`
+- `content/docs/shomei/walkthrough/api-and-client/10-oauth2-and-oidc-provider.mdx`
+
+Keep this section current during implementation, including whether the separate `shomei-docs`
+follow-up was opened. This plan deliberately does not edit that repository.
 
 
 ## Context and Orientation
@@ -426,7 +567,7 @@ data SessionCheckMode = VerifyTokenOnly | VerifyTokenAndSession
 ```
 
 It is a field of `ShomeiConfig` (line 436) and defaults to `VerifyTokenOnly` (line 507). The
-standalone server reads it from the environment variable `SHOMEI_SESSION_CHECK_MODE`, accepting
+standalone server reads it from the environment variable `SHOMEI_SESSION_CHECK`, accepting
 the strings `token-only` and `token-and-session`
 (`shomei-server/src/Shomei/Server/Config.hs` lines 1227–1234).
 
@@ -543,7 +684,7 @@ promised they can buy — but it is not "revocation does not work at all".
 |---|---|---|
 | The workflow that reads the knob (reuse as-is) | `shomei-core/src/Shomei/Workflow.hs` | 450–469 |
 | The seam `Env` (delete `verifier`, add `verifyRequestToken`) | `shomei-servant/src/Shomei/Servant/Seam.hs` | 62–110 |
-| The auth handler (new verifier shape + error mapping) | `shomei-servant/src/Shomei/Servant/Auth.hs` | 117–133, 173–184 |
+| The auth handler (take `Env` + error mapping) | `shomei-servant/src/Shomei/Servant/Auth.hs` | 117–133, 173–184 |
 | The problem-details catalog (`session_revoked` etc. already exist) | `shomei-servant/src/Shomei/Servant/Error.hs` | 250–253 |
 | The OpenAPI baseline for secured routes | `shomei-servant/src/Shomei/Servant/OpenApi.hs` | 536–538 |
 | The `/oauth/authorize` `resolveAuthUser` call | `shomei-servant/src/Shomei/Servant/Handlers.hs` | ~396 |
@@ -567,8 +708,9 @@ Nothing is edited. At the end of this milestone you will have personally seen th
 green `cabal build all`, which is your baseline: if it is red before you start, stop and fix the
 environment first, because you will not be able to tell your breakage from pre-existing breakage.
 
-Acceptance: the grep in Concrete Steps step 0.2 prints only the test file and the definition
-itself; `nix develop --command cabal build all` succeeds.
+Acceptance: the source search in Concrete Steps step 0.2 prints only comments, definitions, and
+unrelated same-named helpers — no call to `Shomei.Workflow.verifyToken`; `nix develop --command
+cabal build all` succeeds.
 
 ### M1 — The failing test
 
@@ -608,7 +750,7 @@ derived verifier and loses the `verifier` field:
 
 ```haskell
 verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
-verifyRequestToken env raw = env.runPorts (Wf.verifyToken env.config (AccessToken raw))
+verifyRequestToken env raw = runPorts env (Wf.verifyToken (config env) (AccessToken raw))
 ```
 
 This is the entire mechanism. `env.runPorts` interprets `AppEffects`, which already contains
@@ -620,15 +762,17 @@ signing keys (`runAppIO` re-reads them from an `IORef` on every invocation,
 untouched and we delete the hand-rolled `readIORef` in `Boot.seamEnv` that used to duplicate it.
 
 Second, `shomei-servant/src/Shomei/Servant/Auth.hs`'s `authHandler` and `resolveAuthUser` change
-their verifier parameter from `Text -> IO (Either TokenError AuthClaims)` to
-`Text -> IO (Either AuthError AuthClaims)`, and `authHandler` gains a small total mapping from
-`AuthError` to the right problem document (D2, D7): `SessionExpired → 401 session_expired`,
-`SessionRevoked → 401 session_revoked`, everything else → `401 token_invalid`. It must *not* call
-`authErrorToServerError`, which would turn `SessionNotFound` into a `404` and make a protected
-route look nonexistent.
+from accepting a caller-supplied verifier to accepting `Shomei.Servant.Seam.Env`. Each derives the
+`CookiePolicy` from `env.config` and calls `verifyRequestToken env` internally. This closes the
+assembly hole discovered during plan validation: merely changing the verifier result from
+`TokenError` to `AuthError` would still let an embedder inject a session-blind verifier.
+`authHandler` also gains a small total mapping from `AuthError` to the right problem document
+(D2, D7): `SessionExpired → 401 session_expired`, `SessionRevoked → 401 session_revoked`,
+everything else → `401 token_invalid`. It must *not* call `authErrorToServerError`, which would
+turn `SessionNotFound` into a `404` and make a protected route look nonexistent.
 
-Third, the three assemblies are updated to stop passing a `verifier` and start passing
-`verifyRequestToken env`: `shomei-server/src/Shomei/Server/Boot.hs` (`authContext`, `seamEnv`),
+Third, the three assemblies are updated to stop passing a `verifier` and pass their existing
+`Env` directly: `shomei-server/src/Shomei/Server/Boot.hs` (`authContext`, `seamEnv`),
 `shomei-servant/src/Shomei/Servant/Handlers.hs` (the `resolveAuthUser` call at ~line 396), and
 `shomei-servant/test/Main.hs` (`app` and `mkEnvWith`).
 
@@ -702,9 +846,8 @@ the grep in step 4.6 and fix whatever else it turns up.
 
 Finally, `docs/user/security.md` in *this* repository describes the revocation-latency boundary and
 must be brought in line. The **`shomei-docs` repository is separate and out of scope for this
-plan** — but roughly eight of its pages repeat the promise that was false until now, and they will
-need updating once this lands. Enumerate them in Outcomes & Retrospective so the next contributor
-has the list rather than having to rediscover it.
+plan** — eight of its user-facing pages mention the mode and will need review once this lands.
+Their validated paths are already recorded in Outcomes & Retrospective.
 
 Acceptance: all suites green; `git grep` for the stale phrasing returns nothing; the CHANGELOG
 entry exists and names the breaking change.
@@ -729,13 +872,13 @@ nix develop --command cabal build all
 Expect it to end with a series of `Up to date` / successful compilation lines and no errors. If
 this fails, stop; fix the environment before proceeding.
 
-**0.2** Prove `Shomei.Workflow.verifyToken` has no production callers. Note the `-w` (whole word)
-and the exclusion of `dist-newstyle`:
+**0.2** Prove `Shomei.Workflow.verifyToken` has no production callers. Scope `rg` to source
+directories so build artifacts are never considered:
 
 ```bash
 cd /Users/shinzui/Keikaku/bokuno/shomei
-grep -rn "verifyToken" --include="*.hs" \
-  shomei-core/src shomei-servant/src shomei-server/src shomei-client/src
+rg -n '\bverifyToken\b' shomei-core/src shomei-servant/src shomei-server/src shomei-client/src \
+  --glob '*.hs'
 ```
 
 Expected output — note that every hit is either a *comment*, the *definition itself*, or
@@ -765,7 +908,7 @@ workflow.
 
 ```bash
 cd /Users/shinzui/Keikaku/bokuno/shomei
-grep -rn "sessionCheckMode" --include="*.hs" shomei-core/src shomei-servant/src shomei-server/src
+rg -n 'sessionCheckMode' shomei-core/src shomei-servant/src shomei-server/src --glob '*.hs'
 ```
 
 Expected: the field's *declaration* and *default* in `Shomei/Config.hs`, the `case` in
@@ -896,7 +1039,7 @@ HTTP end-to-end (in-memory interpreters + in-test ES256 key)
     expected: 401
      but got: 200
 
-1 out of 42 tests failed (0.61s)
+The new test failed; all pre-existing tests passed.
 ```
 
 If instead it *passes*, stop: either the knob was not actually applied to the env you built (check
@@ -932,13 +1075,38 @@ in the module uses it (the compiler's `-Wunused-imports` will tell you).
 -- there was, and every assembly filled it with the session-blind JWT verifier, which is why the
 -- knob was a no-op on every authenticated route.
 verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
-verifyRequestToken env raw = env.runPorts (Wf.verifyToken env.config (AccessToken raw))
+verifyRequestToken env raw = runPorts env (Wf.verifyToken (config env) (AccessToken raw))
 ```
 
-**2.2** `shomei-servant/src/Shomei/Servant/Auth.hs`. Change the verifier parameter of `authHandler`
-and `resolveAuthUser` from `Text -> IO (Either TokenError AuthClaims)` to
-`Text -> IO (Either AuthError AuthClaims)` (swap the `Shomei.Error (TokenError)` import for
-`Shomei.Error (AuthError (..))`), import `pcSessionExpired` and `pcSessionRevoked` from
+**2.2** `shomei-servant/src/Shomei/Servant/Auth.hs`. Import
+`Shomei.Servant.Seam (Env (..), verifyRequestToken)` and change both authentication entry points
+to receive that environment directly:
+
+```haskell
+authHandler :: Env -> AuthHandler Request AuthUser
+authHandler env = mkAuthHandler handle
+  where
+    policy = cookiePolicyFromConfig env.config
+    verify = verifyRequestToken env
+    -- existing handle body, with the Left branch changed below
+
+resolveAuthUser ::
+  Env ->
+  Maybe Text ->   -- Authorization header
+  Maybe Text ->   -- Cookie header
+  IO (Maybe AuthUser)
+resolveAuthUser env mAuthorization mCookie =
+  case extractTokenFromHeaders policy.transport mAuthorization mCookie of
+    Nothing -> pure Nothing
+    Just (_source, tok) ->
+      either (const Nothing) (Just . authUserFromClaims) <$> verifyRequestToken env tok
+  where
+    policy = cookiePolicyFromConfig env.config
+```
+
+This module direction is acyclic: `Shomei.Servant.Seam` imports `Shomei.Servant.Error`, but it
+does not import `Shomei.Servant.Auth`. Drop the now-unused `TokenError` import, import
+`AuthError (..)` instead, import `pcSessionExpired` and `pcSessionRevoked` from
 `Shomei.Servant.Error`, and give the handler its own error mapping:
 
 ```haskell
@@ -961,42 +1129,45 @@ authFailure = \case
   _ -> toProblemError pcTokenInvalidAuth Nothing
 ```
 
-and in `authHandler`'s `handle`, replace `Left _ -> throwError (toProblemError pcTokenInvalidAuth Nothing)`
-with `Left e -> throwError (authFailure e)`.
+In `authHandler`'s `handle`, replace
+`Left _ -> throwError (toProblemError pcTokenInvalidAuth Nothing)` with
+`Left e -> throwError (authFailure e)`.
 
-`resolveAuthUser`'s body needs no change at all beyond its type — it already discards the `Left`
-(`either (const Nothing) (Just . authUserFromClaims) <$> verify tok`), which is the correct
-behavior for `/oauth/authorize`: a revoked session means "not logged in", so the browser gets
-redirected to the login page rather than an error.
+`resolveAuthUser` still discards the `Left`, which is the correct behavior for
+`/oauth/authorize`: a revoked session means "not logged in", so the browser gets redirected to
+the login page rather than an error. The important change is that it no longer receives a
+caller-selected policy or verifier.
 
-**2.3** `shomei-servant/src/Shomei/Servant/Handlers.hs`, line ~396. Replace `env.verifier` with the
-derived verifier:
+**2.3** `shomei-servant/src/Shomei/Servant/Handlers.hs`, line ~396. Pass the environment directly:
 
 ```haskell
-  mUser <- liftIO (resolveAuthUser (cookiePolicyFromConfig env.config) (Seam.verifyRequestToken env) mAuthHeader mCookie)
+  mUser <- liftIO (resolveAuthUser env mAuthHeader mCookie)
 ```
 
-(The module already imports the seam; check how it is qualified and match it.)
+Remove `cookiePolicyFromConfig` from this module's `Shomei.Servant.Auth` import; this is its only
+use. No qualified seam import is needed here.
 
 **2.4** `shomei-server/src/Shomei/Server/Boot.hs`. In `authContext` (line ~370):
 
 ```haskell
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
 authContext senv =
-  authHandler (cookiePolicyFromConfig senv.config) (Seam.verifyRequestToken senv)
+  authHandler senv
     :. shomeiErrorFormatters
     :. EmptyContext
 ```
 
 In `seamEnv` (line ~384), delete the whole `Seam.verifier = …` field, including its `readIORef`.
 Then delete `import Shomei.Jwt.Verify (verifyToken)` at line 50 **if** nothing else in the module
-uses it (the compiler will warn). Note that `jwksJson` keeps its `readIORef` — that one is still
-needed, and key rotation for *verification* is now handled by `runPorts`/`runAppIO`, which
-re-reads `envKeys` on every invocation.
+uses it (the compiler will warn), and remove `cookiePolicyFromConfig` from the
+`Shomei.Servant.Auth` import. Note that `jwksJson` keeps its `readIORef` — that one is still needed,
+and key rotation for *verification* is now handled by `runPorts`/`runAppIO`, which re-reads
+`envKeys` on every invocation.
 
 **2.5** `shomei-servant/test/Main.hs`. In `mkEnvWith` (line ~375) delete the
-`verifier = verifyToken jwkset cfg',` line, and in `app` (line ~194) replace `env.verifier` with
-`verifyRequestToken env`. Import `verifyRequestToken` from `Shomei.Servant.Seam`. The
+`verifier = verifyToken jwkset cfg',` line, and in `app` (line ~194) replace the two-argument
+`authHandler` call with `authHandler env`. Remove `cookiePolicyFromConfig` from the Auth import.
+The
 `import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)` at line 126 keeps
 `runTokenVerifierJwt` (the hybrid runner still needs it) but can drop `verifyToken`.
 
@@ -1017,7 +1188,7 @@ HTTP end-to-end (in-memory interpreters + in-test ES256 key)
   ...
   sessionCheckMode=VerifyTokenAndSession: a revoked session is refused on an authenticated route: OK
 
-All 42 tests passed (0.68s)
+All tests passed
 ```
 
 Note that `logout idempotent (204/204)` must still be `OK`. It runs under the default mode, which
@@ -1173,17 +1344,18 @@ through a code path that could not see the session store. Verification is now *d
 Shomei.Servant.Seam.verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
 ```
 
-`Shomei.Servant.Auth.authHandler` and `Shomei.Servant.Auth.resolveAuthUser` correspondingly take a
-`Text -> IO (Either AuthError AuthClaims)` instead of a `Text -> IO (Either TokenError AuthClaims)`.
+`Shomei.Servant.Auth.authHandler` and `Shomei.Servant.Auth.resolveAuthUser` now take `Seam.Env`
+directly and invoke the derived verifier internally. This prevents an embedding host from
+accidentally wiring Shōmei's own auth handler to a session-blind verifier.
 
 **Migration for embedding hosts.** Delete the `verifier = …` line from your `Seam.Env`
-construction, and build your Servant context with the derived verifier:
+construction, and pass the environment directly when building your Servant context:
 
 ```haskell
 -- before
 authHandler (cookiePolicyFromConfig env.config) env.verifier
 -- after
-authHandler (cookiePolicyFromConfig env.config) (verifyRequestToken env)
+authHandler env
 ```
 
 No other change is required: because the verifier is derived from your `runPorts`, an embedded host
@@ -1224,9 +1396,9 @@ unimplemented:
 
 ```bash
 cd /Users/shinzui/Keikaku/bokuno/shomei
-grep -rni "sessionCheckMode\|stateless verifier\|cannot revoke access before the token expires" \
-  --include="*.hs" --include="*.md" \
-  shomei-core shomei-servant shomei-server shomei-client docs README.md CHANGELOG.md
+rg -ni 'sessionCheckMode|stateless verifier|cannot revoke access before the token expires' \
+  shomei-core shomei-servant shomei-server shomei-client docs README.md CHANGELOG.md \
+  --glob '*.hs' --glob '*.md'
 ```
 
 Read every hit and make it true. Pay particular attention to `docs/user/security.md` (the
@@ -1235,9 +1407,10 @@ which say the combinators "cannot revoke access before the token expires" — tr
 default, but now qualifiable.
 
 **4.7** The `shomei-docs` repository (a *separate* checkout; **do not edit it from this plan**)
-carries roughly eight pages that repeat the promise that was false until now. Enumerate them —
-searching that repository for `sessionCheckMode` and `VerifyTokenAndSession` will find them — and
-write the list into Outcomes & Retrospective so the follow-up is a task and not a rediscovery.
+carries eight user-facing pages that mention `sessionCheckMode` or `VerifyTokenAndSession`. Plan
+validation located it through `mori registry show shinzui/shomei-docs --full` and recorded the
+eight paths in Outcomes & Retrospective. Re-run the scoped search when implementing in case that
+repository has changed, then leave the actual edits for its own follow-up plan.
 
 ### Step 5 — Wrap up
 
@@ -1324,7 +1497,7 @@ Beyond the tests, the change is observable on the real server. Start the standal
 knob on, sign up, revoke, and watch the same token flip from `200` to `401`:
 
 ```bash
-export SHOMEI_SESSION_CHECK_MODE=token-and-session
+export SHOMEI_SESSION_CHECK=token-and-session
 # ...plus the usual SHOMEI_DATABASE_URL / key configuration; see docs/user/configuration.md
 nix develop --command cabal run shomei-server
 ```
@@ -1340,8 +1513,11 @@ curl -s -X POST localhost:8080/v1/auth/signup \
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/v1/auth/me -H "Authorization: Bearer $ACCESS"
 # -> 200
 
-# 3. Revoke the session (shomei-admin, or the admin API, or suspend the user).
-nix develop --command cabal run shomei-admin -- users suspend "$USER_ID"
+# 3. Revoke every session for the user with an already-provisioned administrator token.
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE \
+  "localhost:8080/v1/admin/users/$USER_ID/sessions" \
+  -H "Authorization: Bearer $ADMIN_ACCESS"
+# -> 204
 
 # 4. The SAME, still-unexpired token, immediately:
 curl -s localhost:8080/v1/auth/me -H "Authorization: Bearer $ACCESS"
@@ -1350,7 +1526,7 @@ curl -s localhost:8080/v1/auth/me -H "Authorization: Bearer $ACCESS"
 #   {"type":"...","title":"Session revoked","status":401,"code":"session_revoked"}
 ```
 
-Then unset `SHOMEI_SESSION_CHECK_MODE` (returning to the default `token-only`), repeat, and observe
+Then unset `SHOMEI_SESSION_CHECK` (returning to the default `token-only`), repeat, and observe
 that step 4 answers `200` — the default is unchanged, stateless, and costs no database read. That
 contrast, seen by hand, is the whole feature.
 
@@ -1370,7 +1546,7 @@ comments. The only state involved is the build cache.
 - **If M2 leaves the tree not compiling**, the most likely cause is a missed `verifier` reference:
   the field was read in four places (`Boot.hs` `authContext`, `Boot.hs` `seamEnv`, `Handlers.hs`
   `resolveAuthUser`, `test/Main.hs` `app` + `mkEnvWith`). Find any survivors with
-  `grep -rn "\.verifier\|verifier =" --include="*.hs" shomei-servant shomei-server examples`,
+  `rg -n '\.verifier|verifier =' shomei-servant shomei-server examples --glob '*.hs'`,
   ignoring the many unrelated hits for PKCE's `code_verifier`.
 - **If the build cache misbehaves** (stale interface files after a record-field removal),
   `nix develop --command cabal clean` followed by `nix develop --command cabal build all` resets
@@ -1425,12 +1601,11 @@ data Env = Env
     accountKeyOf :: !(Text -> AccountKey)
   }
 
--- shomei-servant/src/Shomei/Servant/Auth.hs (CHANGED — TokenError becomes AuthError)
-authHandler :: CookiePolicy -> (Text -> IO (Either AuthError AuthClaims)) -> AuthHandler Request AuthUser
+-- shomei-servant/src/Shomei/Servant/Auth.hs (CHANGED — derives policy and verification from Env)
+authHandler :: Env -> AuthHandler Request AuthUser
 
 resolveAuthUser ::
-  CookiePolicy ->
-  (Text -> IO (Either AuthError AuthClaims)) ->
+  Env ->
   Maybe Text ->   -- the Authorization header
   Maybe Text ->   -- the Cookie header
   IO (Maybe AuthUser)
@@ -1442,7 +1617,8 @@ authFailure :: AuthError -> ServerError
 `Shomei.Servant.Seam` gains imports of `Shomei.Domain.Token (AccessToken (..))` and
 `Shomei.Workflow qualified as Wf`. There is no import cycle: `Shomei.Workflow` lives in
 `shomei-core`, which `shomei-servant` already depends on (`Shomei.Servant.Handlers` imports it at
-line 168), and `Shomei.Servant.Auth` does not import `Shomei.Servant.Seam`.
+line 168). `Shomei.Servant.Auth` now imports `Shomei.Servant.Seam`, but the seam does not import
+Auth (it imports only `Shomei.Servant.Error` from the HTTP package), so that direction is acyclic.
 
 ### Interfaces that must exist at the end of M4
 
@@ -1456,12 +1632,26 @@ baselineSpecs :: O.Operation -> [ProblemSpec]
 ### Downstream consumers this plan breaks (deliberately, and loudly)
 
 Any code constructing a `Shomei.Servant.Seam.Env` or calling
-`Shomei.Servant.Auth.authHandler` / `resolveAuthUser`. Inside this repository that is exactly four
-sites: `shomei-server/src/Shomei/Server/Boot.hs` (twice),
-`shomei-servant/src/Shomei/Servant/Handlers.hs` (once), and `shomei-servant/test/Main.hs` (twice).
+`Shomei.Servant.Auth.authHandler` / `resolveAuthUser`. Inside this repository the affected
+references are `shomei-server/src/Shomei/Server/Boot.hs` (`authContext` and `seamEnv`),
+`shomei-servant/src/Shomei/Servant/Handlers.hs` (`resolveAuthUser`), and
+`shomei-servant/test/Main.hs` (`app` and `mkEnvWith`).
 The two applications under `examples/` do not construct a `Seam.Env` and are unaffected — verify
 this with the grep in Idempotence and Recovery rather than taking it on faith.
 
 Outside this repository, embedding hosts break at compile time with an error naming a field that no
 longer exists. That is the intended design (D1): a security fix that an embedder can accidentally
 *not* adopt is not a fix. The migration is two lines and is in the CHANGELOG.
+
+
+## Revision Note — 2026-07-11
+
+Validated the bug against the current working tree rather than relying on the plan's static
+argument. Recorded the successful baseline build and a read-only GHCi reproduction in which
+`Shomei.Workflow.verifyToken` returned `SessionRevoked` while `GET /v1/auth/me` returned `200` for
+the same revoked session. Revised the fix so `authHandler` and `resolveAuthUser` accept `Seam.Env`
+directly, closing the embedder misassembly hole left by the original arbitrary-verifier signature.
+Corrected `SHOMEI_SESSION_CHECK`, the admin session-revocation method, the unsupported admin-CLI
+example, and exact test-count assertions throughout the plan. These changes were made because the
+reported behavior is a confirmed security bug, but the first draft's proposed public API and
+operational examples were not yet safe or accurate enough to implement verbatim.

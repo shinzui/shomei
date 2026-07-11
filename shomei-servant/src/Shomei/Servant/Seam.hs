@@ -4,13 +4,16 @@
 -- 'AppEffects' is the canonical Shōmei port stack: the fixed, ordered effect list that
 -- every interpreter assembly (the in-memory test stack here, the PostgreSQL + JWT stack
 -- in EP-6) must provide a runner for. 'Env' carries that runner ('runPorts'), the
--- 'ShomeiConfig', the token verifier the 'Shomei.Servant.Auth.authHandler' uses, and the
--- precomputed public JWKS document for the @jwks@ route. 'runAuth' runs a workflow that
+-- 'ShomeiConfig' and the precomputed public JWKS document for the @jwks@ route.
+-- 'verifyRequestToken' derives HTTP authentication from that runner and configuration, so
+-- @sessionCheckMode = VerifyTokenAndSession@ cannot be bypassed by assembly wiring. 'runAuth'
+-- runs a workflow that
 -- already yields @Either AuthError@ and maps a 'Left' to the matching 'ServerError';
 -- 'runPort' runs a plain port action whose result the handler branches on itself.
 module Shomei.Servant.Seam
   ( AppEffects,
     Env (..),
+    verifyRequestToken,
     runAuth,
     runPort,
     runPortChecked,
@@ -24,6 +27,7 @@ import Servant (Handler, throwError)
 import Shomei.Config (ShomeiConfig)
 import Shomei.Domain.Claims (AuthClaims)
 import Shomei.Domain.LoginAttempt (AccountKey)
+import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthEventReader (AuthEventReader)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
@@ -52,9 +56,10 @@ import Shomei.Effect.TotpCredentialStore (TotpCredentialStore)
 import Shomei.Effect.UserStore (UserStore)
 import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
-import Shomei.Error (AuthError, TokenError)
+import Shomei.Error (AuthError)
 import Shomei.Prelude
 import Shomei.Servant.Error (authErrorToServerError)
+import Shomei.Workflow qualified as Wf
 
 -- | The canonical, ordered Shōmei port stack. Its order matches EP-2's
 -- @Shomei.Effect.InMemory.runInMemory@ so the same workflows run unchanged over the
@@ -96,8 +101,6 @@ data Env = Env
   { -- | the port-interpreter runner (in-memory in tests; postgres+jwt in EP-6)
     runPorts :: !(forall a. Eff AppEffects a -> IO a),
     config :: !ShomeiConfig,
-    -- | the token verifier the 'Shomei.Servant.Auth.authHandler' is built from
-    verifier :: !(Text -> IO (Either TokenError AuthClaims)),
     -- | the precomputed public JWKS document served at @\/.well-known\/jwks.json@. An
     --     'IO' getter rather than a 'Value' because the standalone server swaps its key
     --     material on rotation (a 'readIORef'); tests pass @pure@ of a static document.
@@ -108,6 +111,19 @@ data Env = Env
     --     The server supplies a SHA-256 hash; tests may supply a trivial mapping.
     accountKeyOf :: !(Text -> AccountKey)
   }
+
+-- | Verify a presented access token the way the seam's configuration says to.
+--
+-- This is the only way Shōmei's HTTP layer verifies a token, and it is derived rather than
+-- supplied: 'runPorts' already interprets 'TokenVerifier', 'SessionStore' and 'Clock', which is
+-- exactly what 'Shomei.Workflow.verifyToken' needs. The session check requested by
+-- @sessionCheckMode = VerifyTokenAndSession@ therefore runs against the same stores the login and
+-- refresh workflows write to.
+--
+-- Under the default @VerifyTokenOnly@ the workflow returns after the JWT check and issues no
+-- query. Under @VerifyTokenAndSession@ it performs one session lookup per authenticated request.
+verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
+verifyRequestToken env raw = runPorts env (Wf.verifyToken (config env) (AccessToken raw))
 
 -- | Run a workflow that yields @Either AuthError a@: a 'Right' flows through; a
 -- 'Left' becomes the matching 'ServerError'.

@@ -67,7 +67,7 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
+import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
 import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
@@ -119,14 +119,15 @@ import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (createOAuthClient)
 import Shomei.Effect.RoleStore (allowPermission, defineRole, disallowPermission)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
+import Shomei.Effect.SessionStore (revokeAllUserSessions)
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.Jwt.Key (generateSigningKey)
 import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
-import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
+import Shomei.Jwt.Verify (runTokenVerifierJwt)
 import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiRoutes)
-import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
+import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Error (shomeiErrorFormatters)
@@ -191,7 +192,7 @@ app env = problemMiddleware (serveWithContext (Proxy @TestAPI) ctx (testServer e
   where
     ctx :: Context '[AuthHandler Request AuthUser, ErrorFormatters]
     ctx =
-      authHandler (cookiePolicyFromConfig env.config) env.verifier
+      authHandler env
         :. shomeiErrorFormatters
         :. EmptyContext
 
@@ -254,6 +255,17 @@ revokeAdminFrom ref userIdText = do
 parseUserId :: Text -> IO UserId
 parseUserId t =
   either (\e -> assertFailure ("bad user id " <> show t <> ": " <> show e)) pure (parseId t)
+
+-- | Revoke every session of a user straight against the in-memory world the server is running on,
+-- without going through HTTP. This is what an administrator's suspend does
+-- ('Shomei.Workflow.Admin.suspendUser' calls the very same port operation), so a scenario that
+-- uses it is reproducing the real incident, not an artificial one.
+revokeAllSessionsOf :: IORef World -> Text -> IO ()
+revokeAllSessionsOf ref userIdText = do
+  uid <- parseUserId userIdText
+  runInMemory ref do
+    ts <- now
+    revokeAllUserSessions uid ts
 
 -- | EP-9 host helpers over the in-memory world: define a role, wire a permission on or off it,
 -- and grant a role to a user through the audited workflow — the operator moves a token check
@@ -376,7 +388,6 @@ main = do
         Env
           { runPorts = runHybrid r jwk jwkset cfg',
             config = cfg',
-            verifier = verifyToken jwkset cfg',
             jwksJson = pure (fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))),
             accountKeyOf = AccountKey
           }
@@ -392,6 +403,12 @@ main = do
       freshPermissionEnv = do
         r <- newIORef (emptyWorld t0)
         pure (r, mkEnv r)
+      -- The session-check knob turned ON, over its own World. The World ref comes back so the
+      -- scenario can revoke the session out of band, exactly as an administrator would.
+      sessionCheckCfg = cfg {sessionCheckMode = VerifyTokenAndSession}
+      freshSessionCheckEnv = do
+        r <- newIORef (emptyWorld t0)
+        pure (r, mkEnvWith sessionCheckCfg r)
       gatedCfg = cfg {notifierConfig = cfg.notifierConfig {emailVerificationRequired = True}}
       -- One env per transport, each over its own World (tasty runs cases in parallel).
       cookieCfg = cfg {tokenTransport = HttpOnlyCookie}
@@ -458,7 +475,7 @@ main = do
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1220,8 +1237,42 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
+-- | The session-check knob, end to end.
+--
+-- With @sessionCheckMode = VerifyTokenAndSession@, an access token whose session has been revoked
+-- must be refused on an authenticated route -- immediately, not when the token expires. This is
+-- the whole promise of the knob, and before plan 49 it did not hold: the auth handler verified
+-- the JWT statelessly and never looked at the session store.
+--
+-- The token here is deliberately still well within its 15-minute lifetime; the ONLY thing that
+-- changed is the session row.
+scenarioSessionCheckMode :: IORef World -> Int -> IO ()
+scenarioSessionCheckMode ref port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "sessioncheck@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+
+  -- Sign up: we get a user id and a fresh, valid access token.
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  sStatus @?= 201
+  sresp <- must "signup body" sBody
+  uid <- must "signup userId" (dig ["user", "userId"] sresp >>= asText)
+  access <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
+
+  -- The token works, as it must.
+  (beforeStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
+  beforeStatus @?= 200
+
+  -- An administrator revokes the session out of band. The access token is untouched and still
+  -- unexpired.
+  revokeAllSessionsOf ref uid
+
+  -- THE ASSERTION. Before plan 49 this returns 200: the knob was a no-op.
+  after <- getRaw mgr port "/v1/auth/me" (bearer access)
+  assertProblem "a revoked session on an authenticated route" 401 "session_revoked" after
+
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1233,6 +1284,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshCookieEnv freshBoth
       testCase "status codes: signup 201, lifecycle requests still 202, logout idempotent (204/204)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioStatusCodes,
+      testCase "sessionCheckMode=VerifyTokenAndSession: a revoked session is refused on an authenticated route" $ do
+        (r, e) <- freshSessionCheckEnv
+        testWithApplication (pure (app e)) (scenarioSessionCheckMode r),
       testCase "admin API: the gate is role OR scope; no token 401, ordinary token 403" $ do
         (r, e) <- freshAdminEnv
         testWithApplication (pure (app e)) (scenarioAdminAuthzMatrix r jwk cfg),

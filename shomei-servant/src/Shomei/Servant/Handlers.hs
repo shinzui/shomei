@@ -97,7 +97,7 @@ import Shomei.Error
 import Shomei.Id (PasskeyId, SessionId, UserId, idText, parseId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
-import Shomei.Servant.Auth (AuthUser (..), cookiePolicyFromConfig, csrfRejected, originHeaderAllowed, resolveAuthUser)
+import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed, resolveAuthUser)
 import Shomei.Servant.Authz (requireAdmin)
 import Shomei.Servant.Cookie (WithCookies, applyCookies, clearedCookies, refreshTokenFromCookie, tokenCookies)
 import Shomei.Servant.DTO
@@ -393,7 +393,7 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
   -- (3) Authenticate before running the workflow, so a request that is going to bounce to the
   -- login page never mints a code. The parameter errors in (2) are still reported first when they
   -- apply to an authenticated caller, because the workflow raises them.
-  mUser <- liftIO (resolveAuthUser (cookiePolicyFromConfig env.config) env.verifier mAuthHeader mCookie)
+  mUser <- liftIO (resolveAuthUser env mAuthHeader mCookie)
   case mUser of
     Nothing -> case env.config.oauthConfig.loginUrl of
       Just loginUrl -> redirectTo (loginUrl `withQuery` [("return_to", TE.encodeUtf8 (reconstructedAuthorizeUrl params clientId))])

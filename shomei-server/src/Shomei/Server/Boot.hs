@@ -47,7 +47,6 @@ import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHa
 import Shomei.Domain.Claims (Issuer (..), Role (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..))
 import Shomei.Error (AuthError)
-import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
 import Shomei.Postgres.Database (runDatabasePool)
 import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
@@ -58,7 +57,7 @@ import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKey
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.API (shomeiRoutesAPI)
-import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
+import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
@@ -367,7 +366,7 @@ application env = problemMiddleware (serveWithContext shomeiRoutesAPI (authConte
 -- embedding 'ShomeiAPI' serves with this same context.
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
 authContext senv =
-  authHandler (cookiePolicyFromConfig senv.config) senv.verifier
+  authHandler senv
     :. shomeiErrorFormatters
     :. EmptyContext
 
@@ -379,11 +378,9 @@ seamEnv env =
   Seam.Env
     { Seam.runPorts = runPorts,
       Seam.config = env.envConfig,
-      -- Both read the swappable key material, so a rotation applied by 'reloadKeys' takes
-      -- effect on the next request without rebuilding the WAI application.
-      Seam.verifier = \tok -> do
-        keys <- readIORef env.envKeys
-        verifyToken keys.verifierJwks env.envConfig tok,
+      -- The JWKS getter reads swappable key material, so a rotation applied by 'reloadKeys'
+      -- takes effect on the next request without rebuilding the WAI application. Token
+      -- verification now goes through 'Seam.runPorts'; 'runAppIO' also re-reads these keys.
       Seam.jwksJson = (.jwksBody) <$> readIORef env.envKeys,
       Seam.accountKeyOf = AccountKey . sha256Hex
     }
