@@ -1,6 +1,6 @@
 -- jose 0.13 deprecates addClaim/unregisteredClaims in favour of payload
--- subtypes; Shōmei deliberately reads sid/scopes/roles as custom claims, so we
--- silence that one deprecation here (see the EP-4 Decision Log).
+-- subtypes; Shōmei deliberately reads sid/scopes/roles/permissions as custom
+-- claims, so we silence that one deprecation here (see the EP-4 Decision Log).
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Verifying a compact JWT back into Shōmei's 'AuthClaims', the @effectful@

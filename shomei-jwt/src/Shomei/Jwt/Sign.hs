@@ -1,15 +1,16 @@
 -- jose 0.13 deprecates addClaim/unregisteredClaims in favour of payload
--- subtypes; Shōmei deliberately carries sid/scopes/roles as custom claims, so we
--- silence that one deprecation here (see the EP-4 Decision Log).
+-- subtypes; Shōmei deliberately carries sid/scopes/roles/permissions as custom
+-- claims, so we silence that one deprecation here (see the EP-4 Decision Log).
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Building a @jose@ 'ClaimsSet' from Shōmei's 'AuthClaims', signing it into an
 -- 'AccessToken', and the @effectful@ 'TokenSigner' interpreter.
 --
 -- The standard claims map directly (@iss@, @sub@, @aud@, @iat@, @exp@); the session
--- id, scopes, and roles travel as the custom claims @sid@, @scopes@, @roles@. The
--- protected JWS header's @alg@ is chosen from the key material ('algForKey') and the
--- signing key's @kid@ is copied in by hand so a verifier can tell which key to use.
+-- id, scopes, roles, and permissions travel as the custom claims @sid@, @scopes@,
+-- @roles@, @permissions@. The protected JWS header's @alg@ is chosen from the key
+-- material ('algForKey') and the signing key's @kid@ is copied in by hand so a
+-- verifier can tell which key to use.
 module Shomei.Jwt.Sign
   ( claimsFromAuth,
     claimsFromIdToken,
@@ -78,16 +79,16 @@ sou :: Text -> StringOrURI
 sou = fromString . Text.unpack
 
 -- | Build a @jose@ 'ClaimsSet' from Shōmei's 'AuthClaims'. Standard claims map
--- directly; session id, scopes, and roles travel as the custom claims @sid@,
--- @scopes@, @roles@.
+-- directly; session id, scopes, roles, and permissions travel as the custom claims
+-- @sid@, @scopes@, @roles@, @permissions@.
 claimsFromAuth :: AuthClaims -> ClaimsSet
 claimsFromAuth ac =
   withActor $
     -- 'addExtra' seeds the custom claims into the base FIRST, then the standard
     -- registered claims (iss/sub/aud/iat/exp via typed slots) and the managed
-    -- custom claims (sid/scopes/roles below, act in 'withActor') are applied on
-    -- top, so a same-named custom key is always overwritten by Shōmei's value.
-    -- Combined with 'mkExtraClaims' dropping reserved keys at construction, a
+    -- custom claims (sid/scopes/roles/permissions below, act in 'withActor') are
+    -- applied on top, so a same-named custom key is always overwritten by Shōmei's
+    -- value. Combined with 'mkExtraClaims' dropping reserved keys at construction, a
     -- service (or attacker-influenced input) can never forge a standard claim.
     addExtra ac.extraClaims emptyClaimsSet
       & claimIss
@@ -143,8 +144,9 @@ signAccessToken jwk ac = do
 -- | Build a @jose@ 'ClaimsSet' for an OIDC ID token (OIDC Core §2), mirroring 'claimsFromAuth'.
 --
 -- Deliberately narrow. @aud@ is the @client_id@, not the API audience, so the token cannot be
--- replayed at a resource server; and there is no @sid@, no @scopes@, and no @roles@, because an ID
--- token is a statement about an authentication, not a bearer credential.
+-- replayed at a resource server; and there is no @sid@, no @scopes@, no @roles@, and no
+-- @permissions@, because an ID token is a statement about an authentication, not a bearer
+-- credential.
 --
 -- @auth_time@ is a JSON /number/ of Unix seconds, as OIDC Core requires — not an RFC 3339 string,
 -- which is what @toJSON \@UTCTime@ would produce and what a relying party would reject.

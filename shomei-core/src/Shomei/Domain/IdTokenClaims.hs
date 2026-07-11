@@ -3,8 +3,8 @@
 -- An ID token is __not__ an access token. It is a statement /to the client/ that a particular user
 -- authenticated at a particular time, and its @aud@ is the @client_id@ — not the API audience.
 -- Presenting one as a bearer credential must never work, which is why it carries no @sid@, no
--- scopes, and no roles, and why 'Shomei.Effect.TokenVerifier' will refuse it (its @aud@ does not
--- match the configured audience).
+-- scopes, no roles, and no permissions, and why 'Shomei.Effect.TokenVerifier' will refuse it (its
+-- @aud@ does not match the configured audience).
 module Shomei.Domain.IdTokenClaims
   ( IdTokenClaims (..),
     IdToken (..),

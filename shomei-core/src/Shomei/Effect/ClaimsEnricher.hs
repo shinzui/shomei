@@ -13,8 +13,9 @@
 -- The delta's extra-claims object is filtered through 'Shomei.Domain.Claims.mkExtraClaims'
 -- before it reaches the token, so a host — or a compromised host code path — can never
 -- override a reserved claim (@iss@, @sub@, @aud@, @iat@, @exp@, @sid@, @scopes@, @roles@,
--- @act@). Returning a /delta/ rather than letting the hook rewrite the whole
--- 'Shomei.Domain.Claims.AuthClaims' keeps the standard claims tamper-proof by construction.
+-- @permissions@, @act@ — the full list is 'Shomei.Domain.Claims.reservedClaimKeys'). Returning a
+-- /delta/ rather than letting the hook rewrite the whole 'Shomei.Domain.Claims.AuthClaims' keeps
+-- the standard claims tamper-proof by construction.
 --
 -- __Do not mirror live authorization decisions into JWT claims through this hook.__ Claims are
 -- minted once and are then static for the token's lifetime; a decision copied from a live
