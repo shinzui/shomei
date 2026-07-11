@@ -40,7 +40,7 @@ import Shomei.Crypto
     withHashingPermit,
   )
 import Shomei.Domain.AuthorizationCode (AuthorizationCode (..), NewAuthorizationCode (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Email (Email, mkEmail)
@@ -144,10 +144,14 @@ import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, f
 import Shomei.Effect.RoleStore
   ( RoleDefinition (..),
     RoleStore,
+    allowPermission,
     defineRole,
+    disallowPermission,
     grantRole,
     listDefinedRoles,
+    listPermissionsForRole,
     listRolesForUser,
+    permissionsForRoles,
     revokeRole,
   )
 import Shomei.Effect.ServiceAccountStore
@@ -541,7 +545,10 @@ tests =
     testRoleRegistry,
     testRoleGrants,
     testRoleGrantForeignKeys,
-    testGrantedRoleReachesEnrichedClaims
+    testGrantedRoleReachesEnrichedClaims,
+    testRolePermissions,
+    testRolePermissionForeignKey,
+    testExpiringGrants
   ]
 
 -- | The registry: seeded with @admin@ by the migration, idempotent definition, sorted listing.
@@ -571,13 +578,13 @@ testRoleGrants =
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       ts <- now
       _ <- defineRole (Role "auditor") Nothing ts
-      firstGrant <- grantRole u.userId (Role "admin") Nothing ts
-      secondGrant <- grantRole u.userId (Role "admin") Nothing ts
-      _ <- grantRole u.userId (Role "auditor") (Just u.userId) ts
-      granted <- listRolesForUser u.userId
+      firstGrant <- grantRole u.userId (Role "admin") Nothing Nothing ts
+      secondGrant <- grantRole u.userId (Role "admin") Nothing Nothing ts
+      _ <- grantRole u.userId (Role "auditor") (Just u.userId) Nothing ts
+      granted <- listRolesForUser u.userId ts
       firstRevoke <- revokeRole u.userId (Role "admin")
       secondRevoke <- revokeRole u.userId (Role "admin")
-      remaining <- listRolesForUser u.userId
+      remaining <- listRolesForUser u.userId ts
       pure (firstGrant, secondGrant, granted, firstRevoke, secondRevoke, remaining)
     (firstGrant, secondGrant, granted, firstRevoke, secondRevoke, remaining) <- expectApp result
     firstGrant @?= True
@@ -601,27 +608,27 @@ testRoleGrantForeignKeys =
     -- Raw port, undefined role: the shomei_role_grants.role FK fires.
     rawUndefinedRole <- runApp pool do
       ts <- now
-      grantRole uid (Role "nosuchrole") Nothing ts
+      grantRole uid (Role "nosuchrole") Nothing Nothing ts
     expectInternalError "grant of an undefined role" rawUndefinedRole
 
     -- Raw port, unknown user: the shomei_role_grants.user_id FK fires.
     ghost <- genUserId
     rawUnknownUser <- runApp pool do
       ts <- now
-      grantRole ghost (Role "admin") Nothing ts
+      grantRole ghost (Role "admin") Nothing Nothing ts
     expectInternalError "grant to a nonexistent user" rawUnknownUser
 
     -- The workflow refuses both BEFORE touching the table, with typed errors.
-    workflowUndefinedRole <- runApp pool (grantRoleTo Nothing uid (Role "nosuchrole"))
+    workflowUndefinedRole <- runApp pool (grantRoleTo Nothing Nothing uid (Role "nosuchrole"))
     expectApp workflowUndefinedRole >>= \r -> r @?= Left (RoleNotDefined (Role "nosuchrole"))
 
-    workflowUnknownUser <- runApp pool (grantRoleTo Nothing ghost (Role "admin"))
+    workflowUnknownUser <- runApp pool (grantRoleTo Nothing Nothing ghost (Role "admin"))
     expectApp workflowUnknownUser >>= \r -> r @?= Left UserNotFound
 
     -- And the happy path still lands a row plus exactly one role_granted audit event.
-    ok <- runApp pool (grantRoleTo Nothing uid (Role "admin"))
+    ok <- runApp pool (grantRoleTo Nothing Nothing uid (Role "admin"))
     expectApp ok >>= \r -> r @?= Right True
-    again <- runApp pool (grantRoleTo Nothing uid (Role "admin"))
+    again <- runApp pool (grantRoleTo Nothing Nothing uid (Role "admin"))
     expectApp again >>= \r -> r @?= Right False
     grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
     grants @?= 1
@@ -643,7 +650,7 @@ testGrantedRoleReachesEnrichedClaims =
       sid <- genSessionId
       ts <- now
       before <- buildEnrichedClaims cfg u.userId sid ts
-      _ <- grantRoleTo Nothing u.userId (Role "admin")
+      _ <- grantRoleTo Nothing Nothing u.userId (Role "admin")
       after' <- buildEnrichedClaims cfg u.userId sid ts
       pure (before, after')
     (before, after') <- expectApp result
@@ -651,6 +658,76 @@ testGrantedRoleReachesEnrichedClaims =
     after'.roles @?= Set.singleton (Role "admin")
     -- Shōmei persists no scopes; the null enricher adds none.
     after'.scopes @?= Set.empty
+
+-- | Role→permission wiring (EP-9): idempotent allow, single-role listing, deduplicated union
+-- across a role set, and disallow with its "nothing to detach" report.
+testRolePermissions :: TestTree
+testRolePermissions =
+  testCase "role permissions: allow/list/union/disallow round-trip" $ withDb \pool -> do
+    result <- runApp pool do
+      ts <- now
+      _ <- defineRole (Role "support") (Just "support staff") ts
+      _ <- defineRole (Role "billing") (Just "billing staff") ts
+      firstAllow <- allowPermission (Role "support") (Permission "tickets:write") ts
+      dupAllow <- allowPermission (Role "support") (Permission "tickets:write") ts
+      _ <- allowPermission (Role "support") (Permission "tickets:read") ts
+      -- Overlapping permission on a second role, to prove the union deduplicates.
+      _ <- allowPermission (Role "billing") (Permission "tickets:read") ts
+      _ <- allowPermission (Role "billing") (Permission "invoices:read") ts
+      supportPerms <- listPermissionsForRole (Role "support")
+      union <- permissionsForRoles (Set.fromList [Role "support", Role "billing"])
+      firstDisallow <- disallowPermission (Role "support") (Permission "tickets:write")
+      secondDisallow <- disallowPermission (Role "support") (Permission "tickets:write")
+      afterDisallow <- listPermissionsForRole (Role "support")
+      pure (firstAllow, dupAllow, supportPerms, union, firstDisallow, secondDisallow, afterDisallow)
+    (firstAllow, dupAllow, supportPerms, union, firstDisallow, secondDisallow, afterDisallow) <- expectApp result
+    firstAllow @?= True
+    dupAllow @?= False
+    supportPerms @?= Set.fromList [Permission "tickets:read", Permission "tickets:write"]
+    union @?= Set.fromList [Permission "invoices:read", Permission "tickets:read", Permission "tickets:write"]
+    firstDisallow @?= True
+    secondDisallow @?= False
+    afterDisallow @?= Set.singleton (Permission "tickets:read")
+
+-- | The @shomei_role_permissions.role@ FK rejects attaching a permission to an undefined role,
+-- exactly as the grants FK rejects granting one. The raw port surfaces it as 'InternalAuthError'.
+testRolePermissionForeignKey :: TestTree
+testRolePermissionForeignKey =
+  testCase "role permissions: allow on an undefined role hits the FK" $ withDb \pool -> do
+    res <- runApp pool do
+      ts <- now
+      allowPermission (Role "nosuchrole") (Permission "tickets:write") ts
+    case res of
+      Left (InternalAuthError _) -> pure ()
+      Left e -> assertFailure ("expected InternalAuthError, got " <> show e)
+      Right _ -> assertFailure "expected the FK to reject a permission on an undefined role"
+
+-- | Time-bound grants (EP-9): a grant with an expiry drops out of 'listRolesForUser' as of an
+-- instant past it, but is present as of an instant before it; re-granting with a different expiry
+-- reports a change and the new window wins, while an identical re-grant reports none.
+testExpiringGrants :: TestTree
+testExpiringGrants =
+  testCase "expiring grants: as-of filter, and upsert reports change only when expiry moves" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      ts <- now
+      let expiry = addUTCTime 3600 ts -- one hour out
+      _ <- grantRole u.userId (Role "admin") Nothing (Just expiry) ts
+      liveNow <- listRolesForUser u.userId ts -- before expiry: present
+      liveAfter <- listRolesForUser u.userId (addUTCTime 7200 ts) -- after expiry: gone
+      -- Identical re-grant: no change.
+      sameAgain <- grantRole u.userId (Role "admin") Nothing (Just expiry) ts
+      -- Re-grant moving the expiry further out: a change, and the new window applies.
+      let expiry2 = addUTCTime 10800 ts
+      moved <- grantRole u.userId (Role "admin") Nothing (Just expiry2) ts
+      liveAtOldExpiry <- listRolesForUser u.userId (addUTCTime 7200 ts) -- now inside the new window
+      pure (liveNow, liveAfter, sameAgain, moved, liveAtOldExpiry)
+    (liveNow, liveAfter, sameAgain, moved, liveAtOldExpiry) <- expectApp result
+    liveNow @?= Set.singleton (Role "admin")
+    liveAfter @?= Set.empty
+    sameAgain @?= False
+    moved @?= True
+    liveAtOldExpiry @?= Set.singleton (Role "admin")
 
 -- | The description the @shomei-role-grants@ migration seeds onto the @admin@ role.
 adminSeedDescription :: Text

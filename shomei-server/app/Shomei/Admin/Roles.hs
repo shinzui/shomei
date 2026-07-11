@@ -99,7 +99,7 @@ runRoles env = \case
   RolesGrant rawUser rawRole -> do
     uid <- parseUserRef rawUser
     role <- parseRole rawRole
-    outcome <- runOrDie env.pool (grantRoleTo Nothing uid role)
+    outcome <- runOrDie env.pool (grantRoleTo Nothing Nothing uid role)
     case outcome of
       Left e -> dieAuthError e
       Right True -> putStrLn ("granted " <> roleString role <> " to " <> Text.unpack (idText uid))

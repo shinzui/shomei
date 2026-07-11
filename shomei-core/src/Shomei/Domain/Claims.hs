@@ -5,6 +5,7 @@ module Shomei.Domain.Claims
     Audience (..),
     Scope (..),
     Role (..),
+    Permission (..),
     AuthClaims (..),
     reservedClaimKeys,
     mkExtraClaims,
@@ -32,6 +33,13 @@ newtype Scope = Scope Text
   deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
 
 newtype Role = Role Text
+  deriving stock (Generic)
+  deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
+
+-- | A capability string carried in the @permissions@ claim, resolved at mint time from the
+-- subject's roles (the @shomei_role_permissions@ table). Convention: @resource:verb@, e.g.
+-- @projects:write@ — a documented convention, not enforced grammar.
+newtype Permission = Permission Text
   deriving stock (Generic)
   deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
 

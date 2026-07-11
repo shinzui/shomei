@@ -101,7 +101,7 @@ testGrantedRoleReachesTheNextToken =
     ref <- newIORef (emptyWorld fixedTime)
     (before, after, storedRoles) <- runInMemory ref do
       (user, firstPair) <- orFail =<< signup baseCfg signupCmd
-      _ <- orFail =<< grantRoleTo Nothing user.userId adminRole
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId adminRole
       after <- completeLogin =<< orFail =<< login baseCfg ctx loginCmd
       roles <- orFail =<< rolesOf user.userId
       pure (firstPair.accessToken, after, roles)
@@ -118,7 +118,7 @@ testRefreshPicksUpAGrant =
     ref <- newIORef (emptyWorld fixedTime)
     refreshed <- runInMemory ref do
       (user, pair) <- orFail =<< signup baseCfg signupCmd
-      _ <- orFail =<< grantRoleTo Nothing user.userId adminRole
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId adminRole
       newPair <- orFail =<< refresh baseCfg RefreshCommand {refreshToken = pair.refreshToken}
       pure newPair.accessToken
     claims <- decodeAccess refreshed
@@ -131,7 +131,7 @@ testRevocationDropsTheRoleOnRefresh =
     ref <- newIORef (emptyWorld fixedTime)
     refreshed <- runInMemory ref do
       (user, pair) <- orFail =<< signup baseCfg signupCmd
-      _ <- orFail =<< grantRoleTo Nothing user.userId adminRole
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId adminRole
       _ <- orFail =<< revokeRoleFrom Nothing user.userId adminRole
       newPair <- orFail =<< refresh baseCfg RefreshCommand {refreshToken = pair.refreshToken}
       pure newPair.accessToken
@@ -181,7 +181,7 @@ testEnricherAddsRolesAndScopes =
             }
     access <- runInMemoryWith hook ref do
       (user, _) <- orFail =<< signup baseCfg signupCmd
-      _ <- orFail =<< grantRoleTo Nothing user.userId adminRole
+      _ <- orFail =<< grantRoleTo Nothing Nothing user.userId adminRole
       completeLogin =<< orFail =<< login baseCfg ctx loginCmd
     claims <- decodeAccess access
     claims.roles @?= Set.fromList [adminRole, betaRole]

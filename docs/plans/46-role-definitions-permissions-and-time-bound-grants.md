@@ -84,16 +84,16 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-Milestone 1 — Schema and port (permissions table, expiring grants, interpreters):
+Milestone 1 — Schema and port (permissions table, expiring grants, interpreters): **COMPLETE (2026-07-11)**
 
-- [ ] Migration `shomei-migrations/sql-migrations/<ts>-shomei-role-permissions.sql` (via `just new-migration name=shomei-role-permissions`): `shomei_role_permissions` table, `expires_at` column on `shomei_role_grants`, partial index on `expires_at`.
-- [ ] `Permission` newtype in `shomei-core/src/Shomei/Domain/Claims.hs` (next to `Role`, line ~34).
-- [ ] `RoleStore` effect extended: `AllowPermission`/`DisallowPermission`/`ListPermissionsForRole`/`PermissionsForRoles`; `GrantRole` gains a `Maybe UTCTime` expiry; `ListRolesForUser` gains an as-of `UTCTime`.
-- [ ] `Shomei.Workflow.Roles.grantRoleTo` gains the expiry parameter; upsert semantics (re-grant updates expiry) implemented and tested.
-- [ ] `RoleGrantedData` gains `expiresAt :: Maybe UTCTime`; EventCodec round-trip extended; decode-old-payload (missing field) test added; constructor count stays 27.
-- [ ] PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/RoleStore.hs`) extended with the four permission statements and the expiry-aware grant/list statements.
-- [ ] In-memory interpreter (`shomei-core/src/Shomei/Effect/InMemory.hs`) extended: `rolePermissions` map, expiry-aware `roleGrants` (value becomes `Map Role (Maybe UTCTime)`).
-- [ ] Postgres interpreter tests: allow/duplicate-allow/list/disallow; allow on undefined role → FK failure; grant with expiry, list filters as-of; re-grant updates expiry.
+- [x] Migration `shomei-migrations/sql-migrations/2026-07-11-00-15-02-shomei-role-permissions.sql`: `shomei_role_permissions` table, `expires_at` column on `shomei_role_grants`, partial index on `expires_at`. (Comment line also appended to `Migrations.hs` per the EP-1 TH re-splice caveat.)
+- [x] `Permission` newtype in `shomei-core/src/Shomei/Domain/Claims.hs` (next to `Role`).
+- [x] `RoleStore` effect extended: `AllowPermission`/`DisallowPermission`/`ListPermissionsForRole`/`PermissionsForRoles`; `GrantRole` gains a `Maybe UTCTime` expiry; `ListRolesForUser` gains an as-of `UTCTime`.
+- [x] `Shomei.Workflow.Roles.grantRoleTo` gains the expiry parameter (order: actor, expiry, subject, role); upsert semantics implemented and tested. `rolesOf` gained a `Clock` constraint (filters as of now).
+- [x] `RoleGrantedData` gains `expiresAt :: Maybe UTCTime`; EventCodec round-trip carries `Just` expiry; `testOldRoleGrantedDecodes` (missing field → `Nothing`) added; constructor count stays 40 (the plan's "27" predated EP-4..EP-8).
+- [x] PostgreSQL interpreter (`shomei-postgres/src/Shomei/Postgres/RoleStore.hs`) extended with the four permission statements and the expiry-aware grant (upsert, `IS DISTINCT FROM`) / list (`expires_at > $2`) statements.
+- [x] In-memory interpreter (`shomei-core/src/Shomei/Effect/InMemory.hs`) extended: `rolePermissions` map, expiry-aware `roleGrants` (value now `Map Role (Maybe UTCTime)`).
+- [x] Postgres interpreter tests: `testRolePermissions` (allow/dup-allow/list/union/disallow), `testRolePermissionForeignKey` (allow on undefined role → FK), `testExpiringGrants` (as-of filter + upsert reports change only when expiry moves). `cabal test shomei-core-test shomei-postgres-test` green (234 + 56).
 
 Milestone 2 — The `permissions` claim at every mint:
 

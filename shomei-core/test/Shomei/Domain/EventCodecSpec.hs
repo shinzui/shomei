@@ -86,7 +86,8 @@ tests =
     [ testGroup "round-trips every constructor" roundTrips,
       testUnknownType,
       testConstructorCount,
-      testOldSessionRevokedDecodes
+      testOldSessionRevokedDecodes,
+      testOldRoleGrantedDecodes
     ]
 
 -- | One assertion per 'AuthEvent' constructor. The @event_type@ strings here MUST match
@@ -127,7 +128,9 @@ roundTrips =
     -- EP-6 on-behalf-of: subject (the user) is uid; actor (the service's backing user) is uid2.
     let d = ServiceOnBehalfIssuedData "svcacct_01" uid2 uid sid (Set.singleton (Scope "kawa:ingest")) t0 in check "service_on_behalf_issued" d (ServiceOnBehalfIssued d),
     -- An HTTP grant records the acting admin; a CLI bootstrap grant / default role records none.
-    let d = RoleGrantedData uid (Role "admin") (Just uid2) t0 in check "role_granted" d (RoleGranted d),
+    -- EP-9 widened this with @expiresAt@; a time-bound grant round-trips it (a forever grant is
+    -- 'Nothing', pinned by 'testOldRoleGrantedDecodes').
+    let d = RoleGrantedData uid (Role "admin") (Just uid2) (Just t1) t0 in check "role_granted" d (RoleGranted d),
     let d = RoleRevokedData uid (Role "admin") Nothing t0 in check "role_revoked" d (RoleRevoked d),
     -- EP-4 service-account lifecycle. The payload never carries the secret, only the account's
     -- public identifiers and its backing user.
@@ -181,3 +184,21 @@ testOldSessionRevokedDecodes =
           "occurredAt" Aeson..= t0
         ]
     expected = SessionRevokedData sid Nothing t0
+
+-- | EP-9 widened 'RoleGrantedData' with @expiresAt@. Every @role_granted@ row written before EP-9
+-- (CLI bootstrap grants, default-role grants at signup, EP-2 admin grants) carries no such key,
+-- and must still decode — to 'Nothing', a grant that does not expire. Same compatibility rule as
+-- 'testOldSessionRevokedDecodes': widen only with 'Maybe' fields.
+testOldRoleGrantedDecodes :: TestTree
+testOldRoleGrantedDecodes =
+  testCase "a pre-EP-9 role_granted payload decodes with expiresAt = Nothing" $
+    reconstructAuthEvent "role_granted" oldPayload @?= Right (RoleGranted expected)
+  where
+    oldPayload =
+      Aeson.object
+        [ "userId" Aeson..= uid,
+          "role" Aeson..= Role "admin",
+          "grantedBy" Aeson..= (Nothing :: Maybe UserId),
+          "occurredAt" Aeson..= t0
+        ]
+    expected = RoleGrantedData uid (Role "admin") Nothing Nothing t0

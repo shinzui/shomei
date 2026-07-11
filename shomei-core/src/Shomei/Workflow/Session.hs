@@ -106,7 +106,7 @@ buildEnrichedClaims ::
   UTCTime ->
   Eff es AuthClaims
 buildEnrichedClaims cfg uid sid ts = do
-  storeRoles <- listRolesForUser uid
+  storeRoles <- listRolesForUser uid ts
   delta <- enrichClaims uid storeRoles
   pure
     (buildClaims cfg uid sid ts)

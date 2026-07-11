@@ -81,7 +81,7 @@ import Shomei.Domain.AuthorizationCode
   ( AuthorizationCode (..),
     NewAuthorizationCode (..),
   )
-import Shomei.Domain.Claims (AuthClaims, Issuer (..), Role (..))
+import Shomei.Domain.Claims (AuthClaims, Issuer (..), Permission (..), Role (..))
 import Shomei.Domain.Credential (Credential (..))
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (projectAuthEvent)
@@ -217,11 +217,15 @@ data World = World
     -- | the role registry, pre-seeded with @admin@ to mirror the migration's seed row so a
     --     fresh in-memory world and a freshly migrated database agree
     definedRoles :: !(Map Role RoleDefinition),
-    -- | durable @(user, role)@ grants. Unlike PostgreSQL, this map enforces no foreign key
+    -- | durable @(user, role)@ grants, each with an optional expiry (@Nothing@ = forever), mirroring
+    --     @shomei_role_grants.expires_at@ (EP-9). Unlike PostgreSQL, this map enforces no foreign key
     --     into 'definedRoles': the registry check lives in 'Shomei.Workflow.Roles.grantRoleTo',
     --     which is the tested path. The database FK is defense in depth for code that bypasses
     --     the workflow, and has no in-memory analogue.
-    roleGrants :: !(Map UserId (Set Role)),
+    roleGrants :: !(Map UserId (Map Role (Maybe UTCTime))),
+    -- | role→permission definitions (@shomei_role_permissions@, EP-9), resolved to a union at mint.
+    --     As with 'roleGrants', no FK into 'definedRoles' is enforced here.
+    rolePermissions :: !(Map Role (Set Permission)),
     -- | newest-first append-only attempt log (EP-2 brute-force protection)
     loginAttempts :: ![LoginAttempt],
     accountLockouts :: !(Map AccountKey AccountLockout),
@@ -275,6 +279,7 @@ emptyWorld t =
       signingKeys = Map.empty,
       definedRoles = Map.singleton adminRole (RoleDefinition adminRole (Just adminRoleDescription) t),
       roleGrants = Map.empty,
+      rolePermissions = Map.empty,
       loginAttempts = [],
       accountLockouts = Map.empty,
       passkeys = Map.empty,
@@ -515,11 +520,14 @@ mkPersisted rid nrt =
       revokedAt = Nothing
     }
 
--- | In-memory interpreter for the role registry and grant table.
+-- | In-memory interpreter for the role registry, grant table, and permission definitions.
 --
--- @DefineRole@ and @GrantRole@ are idempotent and report whether they changed anything, so a
--- caller publishes an audit event only on a real state change. Re-defining an existing role
--- does not overwrite its description, matching the PostgreSQL @ON CONFLICT DO NOTHING@.
+-- @DefineRole@, @GrantRole@, @AllowPermission@, and @DisallowPermission@ report whether they
+-- changed anything, so a caller publishes an audit event only on a real state change. Re-defining
+-- an existing role does not overwrite its description, matching the PostgreSQL @ON CONFLICT DO
+-- NOTHING@; re-granting a role whose expiry differs updates the window (upsert) and reports a
+-- change, matching the PostgreSQL @… IS DISTINCT FROM …@ guard; @ListRolesForUser@ filters
+-- expired grants as of the supplied instant, exactly as the SQL @expires_at > $2@ does.
 runRoleStore :: (IOE :> es) => IORef World -> Eff (RoleStore : es) a -> Eff es a
 runRoleStore ref = interpret_ \case
   DefineRole r desc ts ->
@@ -531,22 +539,47 @@ runRoleStore ref = interpret_ \case
       )
   ListDefinedRoles ->
     liftIO (Map.elems . (.definedRoles) <$> readIORef ref)
-  GrantRole uid r _by _ts ->
+  GrantRole uid r _by expiry _ts ->
     liftIO
       ( casWorld ref \w ->
-          if r `Set.member` Map.findWithDefault Set.empty uid w.roleGrants
-            then Nothing
-            else Just (w & #roleGrants %~ Map.insertWith Set.union uid (Set.singleton r))
+          let held = Map.findWithDefault Map.empty uid w.roleGrants
+           in -- Upsert: unchanged only when the role is already held with an identical expiry.
+              -- 'insertWith Map.union' is left-biased toward the new singleton, so a differing
+              -- expiry overwrites the old one — the in-memory analogue of the SQL upsert.
+              if Map.lookup r held == Just expiry
+                then Nothing
+                else Just (w & #roleGrants %~ Map.insertWith Map.union uid (Map.singleton r expiry))
       )
   RevokeRole uid r ->
     liftIO
       ( casWorld ref \w ->
-          if r `Set.member` Map.findWithDefault Set.empty uid w.roleGrants
-            then Just (w & #roleGrants %~ Map.adjust (Set.delete r) uid)
+          if r `Map.member` Map.findWithDefault Map.empty uid w.roleGrants
+            then Just (w & #roleGrants %~ Map.adjust (Map.delete r) uid)
             else Nothing
       )
-  ListRolesForUser uid ->
-    liftIO (Map.findWithDefault Set.empty uid . (.roleGrants) <$> readIORef ref)
+  ListRolesForUser uid asOf ->
+    liftIO (unexpired asOf . Map.findWithDefault Map.empty uid . (.roleGrants) <$> readIORef ref)
+  AllowPermission r p _ts ->
+    liftIO
+      ( casWorld ref \w ->
+          if p `Set.member` Map.findWithDefault Set.empty r w.rolePermissions
+            then Nothing
+            else Just (w & #rolePermissions %~ Map.insertWith Set.union r (Set.singleton p))
+      )
+  DisallowPermission r p ->
+    liftIO
+      ( casWorld ref \w ->
+          if p `Set.member` Map.findWithDefault Set.empty r w.rolePermissions
+            then Just (w & #rolePermissions %~ Map.adjust (Set.delete p) r)
+            else Nothing
+      )
+  ListPermissionsForRole r ->
+    liftIO (Map.findWithDefault Set.empty r . (.rolePermissions) <$> readIORef ref)
+  PermissionsForRoles roles ->
+    liftIO ((\w -> foldMap (\r -> Map.findWithDefault Set.empty r w.rolePermissions) (Set.toList roles)) <$> readIORef ref)
+  where
+    -- Keep the roles whose grant has not expired as of the instant (Nothing = forever).
+    unexpired asOf = Map.keysSet . Map.filter (maybe True (> asOf))
 
 -- | In-memory interpreter for the transactional unit-of-work port.
 --

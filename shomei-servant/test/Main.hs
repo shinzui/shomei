@@ -229,7 +229,7 @@ runHybrid ref jwk jwkset cfg =
 grantAdminTo :: IORef World -> Text -> IO ()
 grantAdminTo ref userIdText = do
   uid <- parseUserId userIdText
-  outcome <- runInMemory ref (grantRoleTo Nothing uid (Role "admin"))
+  outcome <- runInMemory ref (grantRoleTo Nothing Nothing uid (Role "admin"))
   case outcome of
     Right True -> pure ()
     Right False -> assertFailure "expected the admin grant to be new"

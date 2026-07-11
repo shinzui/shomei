@@ -44,9 +44,13 @@ import Shomei.Prelude
 -- change (so re-running a grant does not spam the audit trail).
 --
 -- The first argument is the granting actor: 'Nothing' for a CLI bootstrap grant, where no
--- authenticated admin principal exists yet.
+-- authenticated admin principal exists yet. The second is an optional expiry (EP-9): 'Nothing'
+-- grants the role indefinitely, @Just t@ makes the grant stop appearing in tokens minted at or
+-- after @t@. Re-granting an already-held role whose expiry /differs/ updates the window (upsert)
+-- and reports @True@; an identical re-grant reports @False@ and stays audit-silent.
 --
--- @Right True@ = newly granted; @Right False@ = the user already had the role.
+-- @Right True@ = state changed (newly granted, or expiry updated); @Right False@ = the user
+-- already held the role with the same expiry.
 grantRoleTo ::
   ( UserStore :> es,
     RoleStore :> es,
@@ -54,10 +58,11 @@ grantRoleTo ::
     Clock :> es
   ) =>
   Maybe UserId ->
+  Maybe UTCTime ->
   UserId ->
   Role ->
   Eff es (Either AuthError Bool)
-grantRoleTo actor subject role = do
+grantRoleTo actor expiry subject role = do
   mUser <- findUserById subject
   case mUser of
     Nothing -> pure (Left UserNotFound)
@@ -67,9 +72,9 @@ grantRoleTo actor subject role = do
         then pure (Left (RoleNotDefined role))
         else do
           ts <- now
-          changed <- grantRole subject role actor ts
+          changed <- grantRole subject role actor expiry ts
           when changed do
-            publishAuthEvent (Event.RoleGranted (Event.RoleGrantedData subject role actor ts))
+            publishAuthEvent (Event.RoleGranted (Event.RoleGrantedData subject role actor expiry ts))
           pure (Right changed)
 
 -- | Revoke a role from a user. No registry check: revoking an existing grant must always work,
@@ -97,16 +102,18 @@ revokeRoleFrom actor subject role = do
         publishAuthEvent (Event.RoleRevoked (Event.RoleRevokedData subject role actor ts))
       pure (Right changed)
 
--- | The roles currently granted to a user.
+-- | The roles currently granted to a user (as of now: expired grants are excluded).
 rolesOf ::
-  (UserStore :> es, RoleStore :> es) =>
+  (UserStore :> es, RoleStore :> es, Clock :> es) =>
   UserId ->
   Eff es (Either AuthError (Set Role))
 rolesOf subject = do
   mUser <- findUserById subject
   case mUser of
     Nothing -> pure (Left UserNotFound)
-    Just _ -> Right <$> listRolesForUser subject
+    Just _ -> do
+      ts <- now
+      Right <$> listRolesForUser subject ts
 
 -- | Grant every configured default role to a freshly created user. Called by
 -- @Shomei.Workflow.signup@ immediately after @createUser@, so the first access token the new
@@ -124,9 +131,9 @@ applyDefaultRoles ::
   Eff es ()
 applyDefaultRoles cfg subject ts =
   forM_ (Set.toList cfg.defaultRoles) \role -> do
-    changed <- grantRole subject role Nothing ts
+    changed <- grantRole subject role Nothing Nothing ts
     when changed do
-      publishAuthEvent (Event.RoleGranted (Event.RoleGrantedData subject role Nothing ts))
+      publishAuthEvent (Event.RoleGranted (Event.RoleGrantedData subject role Nothing Nothing ts))
 
 -- | The configured 'defaultRoles' missing from the registry. A nonempty result means the config
 -- names roles nothing will ever check, and the process should refuse to serve.

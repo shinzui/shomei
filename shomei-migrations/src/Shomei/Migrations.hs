@@ -64,6 +64,9 @@ shomeiMigrations = traverse parseEmbeddedMigration embeddedFiles
 -- MasterPlan-7 EP-5, requiring another recompile of this splice.
 -- TOTP credentials and recovery codes (shomei_totp_credentials, shomei_recovery_codes) were
 -- added on 2026-07-10 by MasterPlan-7 EP-7, requiring another recompile of this splice.
+-- Role→permission definitions (shomei_role_permissions) and the nullable expiry on grants
+-- (shomei_role_grants.expires_at) were added on 2026-07-11 by MasterPlan-7 EP-9, requiring
+-- another recompile of this splice.
 --
 -- NB: touching the .cabal file (as the @migrate@ recipe does) does NOT force this rebuild —
 -- cabal detects changes by content hash, not mtime. Editing THIS module is what does; that is

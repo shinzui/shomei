@@ -359,14 +359,18 @@ data ServiceTokenIssuedData = ServiceTokenIssuedData
   deriving anyclass (FromJSON, ToJSON)
 
 -- | A role was granted to a user. 'grantedBy' is the acting admin, or 'Nothing' for a CLI
--- bootstrap grant and for a default role applied at signup (the "system" actor).
+-- bootstrap grant and for a default role applied at signup (the "system" actor). 'expiresAt'
+-- (EP-9) is the grant's expiry, 'Nothing' for a grant that does not expire; expiry is passive
+-- (no @role_grant_expired@ event fires), so this payload is the audit trail's whole record of
+-- the window. A historical row without the key decodes as 'Nothing' (a forever grant).
 --
--- Role /definitions/ are not audit events: they are rare, low-sensitivity catalog metadata.
--- Grants and revocations — the security-relevant facts — are.
+-- Role /definitions/ and permission wiring are not audit events: they are rare, low-sensitivity
+-- catalog metadata. Grants and revocations — the security-relevant facts — are.
 data RoleGrantedData = RoleGrantedData
   { userId :: !UserId,
     role :: !Role,
     grantedBy :: !(Maybe UserId),
+    expiresAt :: !(Maybe UTCTime),
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)

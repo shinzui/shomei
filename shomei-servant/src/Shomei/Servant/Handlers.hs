@@ -1361,7 +1361,8 @@ adminGrantRoleH env user target rawRole = do
   requireAdmin user
   denyUnderImpersonation env "admin_grant_role" user
   role <- parseRole rawRole
-  _ <- runAuth env (Roles.grantRoleTo (Just user.authUserId) target role)
+  -- Expiry over HTTP is EP-9's plan-39 admin-route work; this EP-2 route grants indefinitely.
+  _ <- runAuth env (Roles.grantRoleTo (Just user.authUserId) Nothing target role)
   pure NoContent
 
 -- | @DELETE \/v1\/admin\/users\/{userId}\/roles\/{role}@. @404@ when the user did not hold the
