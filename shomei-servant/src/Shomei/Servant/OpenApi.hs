@@ -46,7 +46,7 @@ import Servant.OpenApi (HasOpenApi (..))
 import Servant.Server (ServerError (errHTTPCode))
 import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Servant.API (ShomeiRoutes)
-import Shomei.Servant.Authz (RequireRole, RequireScope)
+import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.DTO
   ( AdminUserResponse,
     AdminUsersPage,
@@ -386,6 +386,9 @@ instance (HasOpenApi sub) => HasOpenApi (RequireRole (r :: Symbol) :> sub) where
   toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
 instance (HasOpenApi sub) => HasOpenApi (RequireScope (s :: Symbol) :> sub) where
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+
+instance (HasOpenApi sub) => HasOpenApi (RequirePermission (p :: Symbol) :> sub) where
   toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
 -- | Register the bearer-JWT security scheme and require it on every operation of @sub@.

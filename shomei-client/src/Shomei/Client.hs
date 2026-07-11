@@ -92,7 +92,7 @@ import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI, ShomeiRoutes)
 import Shomei.Servant.API qualified as API
-import Shomei.Servant.Authz (RequireRole, RequireScope)
+import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.DTO
   ( AdminUserResponse,
     AdminUsersPage,
@@ -137,6 +137,11 @@ instance (HasClient m api) => HasClient m (RequireRole r :> api) where
 
 instance (HasClient m api) => HasClient m (RequireScope s :> api) where
   type Client m (RequireScope s :> api) = Client m (AuthProtect "shomei-jwt" :> api)
+  clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+  hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+
+instance (HasClient m api) => HasClient m (RequirePermission p :> api) where
+  type Client m (RequirePermission p :> api) = Client m (AuthProtect "shomei-jwt" :> api)
   clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
   hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
 

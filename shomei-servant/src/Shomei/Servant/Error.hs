@@ -94,6 +94,7 @@ module Shomei.Servant.Error
     pcTokenInvalidAuth,
     pcMissingRole,
     pcMissingScope,
+    pcMissingPermission,
     pcCsrfRejected,
     pcBadRequest,
     pcBodyParseError,
@@ -322,9 +323,13 @@ pcMissingToken = ProblemSpec "missing_token" err401 "Authentication required"
 pcTokenInvalidAuth :: ProblemSpec
 pcTokenInvalidAuth = ProblemSpec "token_invalid" err401 "Token is invalid"
 
-pcMissingRole, pcMissingScope, pcCsrfRejected :: ProblemSpec
+pcMissingRole, pcMissingScope, pcMissingPermission, pcCsrfRejected :: ProblemSpec
 pcMissingRole = ProblemSpec "missing_role" err403 "Missing required role"
 pcMissingScope = ProblemSpec "missing_scope" err403 "Missing required scope"
+-- | EP-9: the @RequirePermission@ combinator's 403 — the token's @permissions@ claim does not
+-- contain the required capability. Distinct code from @missing_role@ so a client can tell a
+-- role-gated route from a permission-gated one.
+pcMissingPermission = ProblemSpec "missing_permission" err403 "Missing required permission"
 pcCsrfRejected = ProblemSpec "csrf_rejected" err403 "Origin not allowed for cookie-authenticated request"
 
 -- | A malformed or incomplete request the handler rejected; the @detail@ says what.
@@ -402,6 +407,7 @@ problemCatalog =
     pcTokenInvalidAuth,
     pcMissingRole,
     pcMissingScope,
+    pcMissingPermission,
     pcCsrfRejected,
     pcBadRequest,
     pcBodyParseError,

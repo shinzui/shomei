@@ -70,7 +70,7 @@ import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
 import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..))
@@ -115,7 +115,9 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
+import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (createOAuthClient)
+import Shomei.Effect.RoleStore (allowPermission, defineRole, disallowPermission)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
@@ -125,7 +127,7 @@ import Shomei.Jwt.Verify (runTokenVerifierJwt, verifyToken)
 import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler, cookiePolicyFromConfig)
-import Shomei.Servant.Authz (RequireRole, RequireScope)
+import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiRoutes)
@@ -169,14 +171,18 @@ type TestAPI =
   NamedRoutes ShomeiRoutes
     :<|> RequireRole "admin" :> "admin" :> "users" :> Get '[JSON] [UserResponse]
     :<|> RequireScope "kawa:ingest" :> "ingest" :> Get '[JSON] [UserResponse]
+    :<|> RequirePermission "projects:write" :> "host" :> "projects" :> Get '[JSON] [UserResponse]
 
 testServer :: Env -> Server TestAPI
-testServer env = shomeiRoutes env :<|> adminUsersH :<|> ingestH
+testServer env = shomeiRoutes env :<|> adminUsersH :<|> ingestH :<|> projectsH
   where
     adminUsersH :: AuthUser -> Handler [UserResponse]
     adminUsersH _user = pure []
     ingestH :: AuthUser -> Handler [UserResponse]
     ingestH _user = pure []
+    -- No authorization code of its own: the RequirePermission combinator alone gates it.
+    projectsH :: AuthUser -> Handler [UserResponse]
+    projectsH _user = pure []
 
 -- | The test app wraps the Servant application in 'problemMiddleware', exactly as
 -- 'Shomei.Server.Boot.application' does, so the 405 assertions exercise the real stack.
@@ -248,6 +254,35 @@ revokeAdminFrom ref userIdText = do
 parseUserId :: Text -> IO UserId
 parseUserId t =
   either (\e -> assertFailure ("bad user id " <> show t <> ": " <> show e)) pure (parseId t)
+
+-- | EP-9 host helpers over the in-memory world: define a role, wire a permission on or off it,
+-- and grant a role to a user through the audited workflow — the operator moves a token check
+-- into the store, exactly as @shomei-admin roles@ would on a real box.
+defineRoleIn :: IORef World -> Role -> IO ()
+defineRoleIn ref role =
+  runInMemory ref do
+    ts <- now
+    _ <- defineRole role Nothing ts
+    pure ()
+
+allowPermissionIn :: IORef World -> Role -> Permission -> IO ()
+allowPermissionIn ref role perm =
+  runInMemory ref do
+    ts <- now
+    _ <- allowPermission role perm ts
+    pure ()
+
+disallowPermissionIn :: IORef World -> Role -> Permission -> IO ()
+disallowPermissionIn ref role perm =
+  runInMemory ref do
+    _ <- disallowPermission role perm
+    pure ()
+
+grantRoleIn :: IORef World -> Text -> Role -> IO ()
+grantRoleIn ref userIdText role = do
+  uid <- parseUserId userIdText
+  outcome <- runInMemory ref (grantRoleTo Nothing Nothing uid role)
+  either (\e -> assertFailure ("granting " <> show role <> " failed: " <> show e)) (const (pure ())) outcome
 
 -- | Mint an access token carrying the @admin@ role by signing claims directly with the in-test
 -- key. Kept alongside the real grant path in (g): it isolates the combinator's claim check from
@@ -352,6 +387,11 @@ main = do
       freshGatedEnv = do
         r <- newIORef (emptyWorld t0)
         pure (r, mkEnvWith gatedCfg r)
+      -- The World ref comes back so the RequirePermission scenario can wire roles/permissions
+      -- and grant them, exactly as an operator would through the admin CLI.
+      freshPermissionEnv = do
+        r <- newIORef (emptyWorld t0)
+        pure (r, mkEnv r)
       gatedCfg = cfg {notifierConfig = cfg.notifierConfig {emailVerificationRequired = True}}
       -- One env per transport, each over its own World (tasty runs cases in parallel).
       cookieCfg = cfg {tokenTransport = HttpOnlyCookie}
@@ -418,7 +458,7 @@ main = do
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -619,6 +659,74 @@ scenarioOAuthScopeIsolation port = do
   -- and it is a problem document, because /ingest is an ordinary route, not an /oauth/* one
   problem <- must "ingest 403 body" ingestBody
   (dig ["code"] problem >>= asText) @?= Just "missing_scope"
+
+-- | EP-9 end-to-end: the @RequirePermission "projects:write"@ combinator on a host route enforces
+-- with no handler code, and the check is /re-wireable/ from the role→permission catalog without
+-- touching the route.
+--
+--   * no token → 401 (the combinator authenticates before it authorizes);
+--   * a login token whose principal has the permission on none of its roles → 403;
+--   * after granting a role that has the permission allowed, a fresh login token → 200;
+--   * the re-wiring proof: disallow the permission from that role and it is 403 again at the next
+--     mint; allow it to a /different/ role the user also holds and it is 200 again — the consumer
+--     (this route) never changed.
+scenarioRequirePermission :: IORef World -> Int -> IO ()
+scenarioRequirePermission ref port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "perms@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+      loginBody = object ["email" .= email, "password" .= pw]
+      projects tok = fst <$> getJSON mgr port "/host/projects" (bearer tok)
+      loginAccess = do
+        (st, body) <- postJSON mgr port "/v1/auth/login" loginBody
+        st @?= 200
+        resp <- must "login body" body
+        must "login accessToken" (dig ["token", "accessToken"] resp >>= asText)
+      supportRole = Role "support"
+      staffRole = Role "staff"
+      writePerm = Permission "projects:write"
+
+  -- Sign up and capture the user id (for the grants) and the first token (no roles yet).
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("P" :: Text)])
+  sStatus @?= 201
+  doc <- must "signup body" sBody
+  uid <- must "signup user id" (dig ["user", "userId"] doc >>= asText)
+  token0 <- must "signup access token" (dig ["token", "accessToken"] doc >>= asText)
+
+  -- No token → 401; a token without the permission → 403.
+  noTok <- projects ""
+  -- An empty bearer is no usable credential, so the auth handler answers 401.
+  (noHeaderStatus, _) <- getJSON mgr port "/host/projects" []
+  noHeaderStatus @?= 401
+  noTok @?= 401 -- "Bearer " with an empty token is still no valid token
+  forbidden <- projects token0
+  forbidden @?= 403
+
+  -- Wire support → projects:write and grant support; a fresh login now opens the route.
+  defineRoleIn ref supportRole
+  allowPermissionIn ref supportRole writePerm
+  grantRoleIn ref uid supportRole
+  token1 <- loginAccess
+  ok1 <- projects token1
+  ok1 @?= 200
+  -- The pre-grant token is unchanged (staleness contract): still 403.
+  stale <- projects token0
+  stale @?= 403
+
+  -- Re-wiring proof, part 1: disallow the permission from support. The next mint loses it.
+  disallowPermissionIn ref supportRole writePerm
+  token2 <- loginAccess
+  afterDisallow <- projects token2
+  afterDisallow @?= 403
+
+  -- Re-wiring proof, part 2: grant the user a SECOND role and allow the permission to it instead.
+  -- The user reaches the same route again — with zero changes to the route or its handler.
+  defineRoleIn ref staffRole
+  grantRoleIn ref uid staffRole
+  allowPermissionIn ref staffRole writePerm
+  token3 <- loginAccess
+  rewired <- projects token3
+  rewired @?= 200
 
 -- | Every failure, from every layer, is an RFC 7807 problem document.
 --
@@ -1112,8 +1220,8 @@ postRawBytes mgr port path raw = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1191,6 +1299,9 @@ tests ref env freshEnv freshGatedEnv freshCookieEnv freshBothEnv freshServiceEnv
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
+      testCase "RequirePermission: 401 no token, 403 without the permission, 200 with it, and re-wiring proves the indirection" $ do
+        (r, e) <- freshPermissionEnv
+        testWithApplication (pure (app e)) (scenarioRequirePermission r),
       testCase "emailVerificationRequired blocks login with 403 until the email is verified" $ do
         (r, e) <- freshGatedEnv
         testWithApplication (pure (app e)) (scenarioEmailVerificationRequired r),

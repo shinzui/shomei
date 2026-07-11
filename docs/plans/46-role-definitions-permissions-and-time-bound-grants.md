@@ -112,12 +112,12 @@ Milestone 3 — CLI: permission wiring and expiring grants: **COMPLETE (2026-07-
 - [x] `roles allow`/`disallow`/`show` on an undefined role exit 1 with `role not defined: …`; blank/whitespace-containing permission rejected at the boundary (`parsePermission`).
 - [x] Admin CLI tests: `testRolesPermissionWiring` (allow → show → disallow, no audit event, allow-on-undefined exits nonzero), `testRolesGrantWithExpiry` (grant row `expires_at` ~1h out + `role_granted` payload carries `expiresAt`), `testRolesGrantBothExpiryFlagsFailsToParse` (parser-level mutual exclusion). Existing `RolesGrant` sites updated to the 3-arg form. `shomei-admin-test` green (28).
 
-Milestone 4 — The `RequirePermission` combinator:
+Milestone 4 — The `RequirePermission` combinator: **COMPLETE (2026-07-11)**
 
-- [ ] `RequirePermission :: Symbol -> Type` in `shomei-servant/src/Shomei/Servant/Authz.hs` with an enforcing `HasServer` instance (same pattern as plan 38's `RequireRole`), checking `authPermissions`, 403 `missing_permission`.
-- [ ] Haddock distinguishing this static-claim check from en's live relationship check (`En.Servant.Authorize.requirePermission`); no code collision — different packages, no import relationship.
-- [ ] `HasOpenApi` instance (bearer security scheme, mirroring `RequireRole`'s) in `shomei-servant/src/Shomei/Servant/OpenApi.hs`; `HasClient` delegation instance in `shomei-client`.
-- [ ] Servant end-to-end test: a `RequirePermission "projects:write"`-gated test route returns 401 (no token), 403 (role without the permission), 200 (role with it), and 200 again after the permission is re-wired to a different role the user holds.
+- [x] `RequirePermission :: Symbol -> Type` in `Shomei.Servant.Authz` with an enforcing `HasServer` instance (cloned from `RequireRole`), checking `authPermissions`, 403 `missing_permission` (`pcMissingPermission` added to the `problemCatalog` and export list).
+- [x] Haddock distinguishing this static-claim check from en's `En.Servant.Authorize.requirePermission` live relationship check; no code collision (type in shomei-servant vs. term in a package shomei does not depend on).
+- [x] `HasOpenApi` instance (bearer scheme) in `Shomei.Servant.OpenApi`; `HasClient` delegation instance in `shomei-client`. OpenAPI regeneration is a no-op diff (Decision Log: no `ShomeiAPI` route uses the combinator); openapi conformance suite green.
+- [x] Servant end-to-end `scenarioRequirePermission`: a `RequirePermission "projects:write"` host route returns 401 (no token), 403 (no permission), 200 (after grant+allow+login), 403 again after disallow, and 200 again after re-wiring to a second role the user holds — proving the indirection with zero route/handler changes. `shomei-servant-test` green (31).
 
 Milestone 5 — Live proof, docs, graduation boundary:
 

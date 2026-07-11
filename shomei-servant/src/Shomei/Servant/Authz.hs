@@ -30,6 +30,7 @@
 module Shomei.Servant.Authz
   ( RequireRole,
     RequireScope,
+    RequirePermission,
     requireRole,
     requireScope,
     requireAdmin,
@@ -61,11 +62,11 @@ import Servant.Server.Internal
     runHandler,
     withRequest,
   )
-import Shomei.Domain.Claims (Role (..), Scope (..))
+import Shomei.Domain.Claims (Permission (..), Role (..), Scope (..))
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))
-import Shomei.Servant.Error (pcMissingRole, pcMissingScope, toProblemError)
+import Shomei.Servant.Error (pcMissingPermission, pcMissingRole, pcMissingScope, toProblemError)
 
 -- | Enforcing combinator: the route demands the named role. (The type parameter is named @r@,
 -- not @role@: under GHC2024 @RoleAnnotations@ is on, so @role@ is a context-sensitive keyword
@@ -76,6 +77,20 @@ data RequireRole r
 -- | Enforcing combinator: the route demands the named scope.
 type RequireScope :: Symbol -> Type
 data RequireScope s
+
+-- | Enforcing combinator: the route demands the named __permission__ (EP-9) — i.e. @p@ must be a
+-- member of the token's @permissions@ claim, else @403 missing_permission@. The handler still
+-- receives the 'AuthUser', exactly as under 'RequireRole'.
+--
+-- This checks a __static claim__ minted at login\/refresh from the role → permission catalog:
+-- rewiring which roles imply @p@, or a grant expiring, applies at the /next/ mint, not to an
+-- outstanding token (see @docs\/user\/security.md@; @revokeAllUserSessions@ is the immediate
+-- lever). It is __not__ a live authorization check. For relationship-based, instantly-revocable
+-- decisions use the __en__ toolkit's term-level @En.Servant.Authorize.requirePermission@ guard (a
+-- separate project Shōmei does not depend on); it shares this name because it expresses the same
+-- /intent/ at a different freshness tier. See @docs\/user\/authorization.md@ for the boundary.
+type RequirePermission :: Symbol -> Type
+data RequirePermission p
 
 -- | Guard: fail with @403@ unless the principal carries the role. Use this only for a condition
 -- the type-level combinator cannot express; a plain "this route needs role X" belongs in the
@@ -93,9 +108,10 @@ requireScope scope u
 
 -- | The two 403 problem documents these combinators and guards raise. Shared so the type-level
 -- and handler-level paths cannot answer differently.
-missingRole, missingScope :: ServerError
+missingRole, missingScope, missingPermission :: ServerError
 missingRole = toProblemError pcMissingRole Nothing
 missingScope = toProblemError pcMissingScope Nothing
+missingPermission = toProblemError pcMissingPermission Nothing
 
 -- | The @admin@ role, granted through the 'Shomei.Effect.RoleStore' (a human administrator).
 adminRole :: Role
@@ -177,3 +193,23 @@ instance
       check user
         | needed `Set.member` user.authScopes = Right user
         | otherwise = Left missingScope
+
+instance
+  ( HasServer api ctx,
+    HasContextEntry ctx (AuthHandler Request AuthUser),
+    KnownSymbol p
+  ) =>
+  HasServer (RequirePermission p :> api) ctx
+  where
+  type ServerT (RequirePermission p :> api) m = AuthUser -> ServerT api m
+
+  hoistServerWithContext _ pc nt srv =
+    hoistServerWithContext (Proxy :: Proxy api) pc nt . srv
+
+  route _ ctx subserver =
+    route (Proxy :: Proxy api) ctx (subserver `addAuthCheck` withRequest (authorizedCheck ctx check))
+    where
+      needed = Permission (Text.pack (symbolVal (Proxy :: Proxy p)))
+      check user
+        | needed `Set.member` user.authPermissions = Right user
+        | otherwise = Left missingPermission
