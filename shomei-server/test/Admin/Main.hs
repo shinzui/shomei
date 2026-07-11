@@ -28,6 +28,7 @@ import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
+import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import Shomei.Admin.Audit (runAuditReader)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
@@ -41,7 +42,7 @@ import Shomei.Admin.Keys
     listPublishableSigningKeys,
   )
 import Shomei.Admin.OAuthClients qualified as OAuthClients
-import Shomei.Admin.Roles (RolesCommand (..), runRoles)
+import Shomei.Admin.Roles (GrantExpiry (..), RolesCommand (..), rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (createAction, listAction, revokeAction, rotateSecretAction)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
@@ -156,6 +157,9 @@ main =
           testRolesLifecycle,
           testRolesGrantOfUndefinedRoleFails,
           testRolesGrantToUnknownUserFails,
+          testRolesPermissionWiring,
+          testRolesGrantWithExpiry,
+          testRolesGrantBothExpiryFlagsFailsToParse,
           testUserCreateAppliesDefaultRoles,
           testUserCreateRefusesUndefinedDefaultRoles,
           testServiceAccountsLifecycle,
@@ -469,14 +473,14 @@ testRolesLifecycle =
     desc @?= "read the audit trail"
 
     -- The CLI accepts a bare UUID as well as the typed id.
-    runRoles env (RolesGrant uid "auditor")
+    runRoles env (RolesGrant uid "auditor" Nothing)
     granted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants WHERE role = 'auditor'"
     granted @?= 1
     -- A CLI grant records no acting admin.
     noActor <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants WHERE granted_by IS NULL"
     noActor @?= 1
     -- Re-granting changes nothing and publishes nothing.
-    runRoles env (RolesGrant uid "auditor")
+    runRoles env (RolesGrant uid "auditor" Nothing)
     stillOne <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
     stillOne @?= 1
 
@@ -544,7 +548,7 @@ testRolesGrantOfUndefinedRoleFails =
     let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
     createUserAction env "alice@example.com" "correct horse battery staple" Nothing
     uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
-    expectExitFailure "grant of an undefined role" (runRoles env (RolesGrant uid "adminn"))
+    expectExitFailure "grant of an undefined role" (runRoles env (RolesGrant uid "adminn" Nothing))
     grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
     grants @?= 0
 
@@ -555,9 +559,75 @@ testRolesGrantToUnknownUserFails =
     let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
     expectExitFailure
       "grant to an unknown user"
-      (runRoles env (RolesGrant "11111111-1111-1111-1111-111111111111" "admin"))
+      (runRoles env (RolesGrant "11111111-1111-1111-1111-111111111111" "admin" Nothing))
     grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
     grants @?= 0
+
+-- | EP-9 permission wiring over the CLI: allow attaches a row, show renders (smoke), disallow
+-- removes it, and allow on an undefined role exits nonzero without writing.
+testRolesPermissionWiring :: TestTree
+testRolesPermissionWiring =
+  testCase "roles allow/show/disallow round-trip; allow on an undefined role exits nonzero" $ withDb \pool connStr -> do
+    let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    runRoles env (RolesDefine "support" (Just "support staff"))
+    runRoles env (RolesAllow "support" "tickets:write")
+    afterAllow <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_permissions WHERE role = 'support' AND permission = 'tickets:write'"
+    afterAllow @?= 1
+    -- Idempotent: a second allow adds no row.
+    runRoles env (RolesAllow "support" "tickets:write")
+    stillOne <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_permissions WHERE role = 'support'"
+    stillOne @?= 1
+    -- show is a read; assert it runs without error (its output goes to stdout).
+    runRoles env (RolesShow "support")
+    runRoles env (RolesDisallow "support" "tickets:write")
+    afterDisallow <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_permissions WHERE role = 'support'"
+    afterDisallow @?= 0
+    -- Wiring publishes no audit event.
+    permEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type IN ('permission_allowed','permission_disallowed')"
+    permEvents @?= 0
+    -- Allow on an undefined role is a loud failure that writes nothing.
+    expectExitFailure "allow on an undefined role" (runRoles env (RolesAllow "nosuchrole" "x:y"))
+    none <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_permissions WHERE role = 'nosuchrole'"
+    none @?= 0
+
+-- | @roles grant --expires-in 1h@ lands a grant whose @expires_at@ is about an hour out, and the
+-- @role_granted@ audit payload carries that same expiry (passive expiry: the audit trail is the
+-- only record of the window).
+testRolesGrantWithExpiry :: TestTree
+testRolesGrantWithExpiry =
+  testCase "roles grant --expires-in stamps the grant row and the audit payload with the window" $ withDb \pool connStr -> do
+    let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+    runRoles env (RolesDefine "support" (Just "support staff"))
+    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
+    runRoles env (RolesGrant uid "support" (Just (ExpiresIn 3600)))
+    -- The grant row's expiry is ~1h out (allow a wide window for clock/setup slack).
+    secs <- scalarInt pool "SELECT EXTRACT(EPOCH FROM (expires_at - now()))::bigint FROM shomei.shomei_role_grants WHERE role = 'support'"
+    assertBool ("expected ~3600s out, got " <> show secs) (secs > 3000 && secs <= 3600)
+    -- The audit payload carries an expiresAt (non-null); pre-EP-9 grants carried none.
+    withExpiry <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_granted' AND payload ? 'expiresAt' AND payload->>'expiresAt' IS NOT NULL"
+    withExpiry @?= 1
+
+-- | Parser-level: @--expires-in@ and @--expires-at@ are mutually exclusive, so supplying both is a
+-- parse failure rather than a silently-ignored flag.
+testRolesGrantBothExpiryFlagsFailsToParse :: TestTree
+testRolesGrantBothExpiryFlagsFailsToParse =
+  testCase "roles grant with both --expires-in and --expires-at fails to parse" $
+    case execParserPure defaultPrefs (info rolesParser mempty) argv of
+      Success _ -> assertFailure "expected supplying both expiry flags to fail parsing"
+      _ -> pure ()
+  where
+    argv =
+      [ "grant",
+        "--user",
+        "user_01ABC",
+        "--role",
+        "support",
+        "--expires-in",
+        "4h",
+        "--expires-at",
+        "2026-07-11T21:00:00Z"
+      ]
 
 testAuditQuery :: TestTree
 testAuditQuery = testCase "audit reader returns published events; type filter + count work" $ withDb \pool _ -> do

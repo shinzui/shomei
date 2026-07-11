@@ -105,12 +105,12 @@ Milestone 2 — The `permissions` claim at every mint: **COMPLETE (2026-07-11)**
 - [x] `AuthUser` gains `authPermissions :: Set Permission`, populated in `authUserFromClaims`.
 - [x] Tests: `testPermissionUnionReachesTheToken`, `testExpiredGrantDropsRoleAndPermissions`, `testEnricherRoleContributesPermissions`, forgery test extended with a `"permissions"` key, jwt "round-trips and never leaks into the extra bag" + `coreFields` now compares `permissions`. core/jwt/servant suites green (237/46/30). Servant HTTP-login end-to-end assertion folded into M4's `RequirePermission` route test.
 
-Milestone 3 — CLI: permission wiring and expiring grants:
+Milestone 3 — CLI: permission wiring and expiring grants: **COMPLETE (2026-07-11)**
 
-- [ ] `shomei-server/app/Shomei/Admin/Roles.hs` gains `roles allow <role> <permission>`, `roles disallow <role> <permission>`, `roles show <role>`.
-- [ ] `roles grant` gains `--expires-in <dur>` / `--expires-at <ISO8601>` (mutually exclusive).
-- [ ] `roles allow` on an undefined role exits 1 with `role not defined: …`; blank/whitespace permission rejected at the boundary.
-- [ ] Admin CLI test: allow → show lists it → disallow → show empty; grant with `--expires-in` lands an audit payload carrying the expiry.
+- [x] `Shomei.Admin.Roles` gains `roles allow <role> <permission>`, `roles disallow <role> <permission>`, `roles show <role>` (all direct RoleStore-port, no audit event).
+- [x] `roles grant` gains `--expires-in <n>(s|m|h|d)` / `--expires-at <ISO8601>` (a `GrantExpiry` alternative, resolved to an absolute instant via the CLI clock; both flags → optparse parse error).
+- [x] `roles allow`/`disallow`/`show` on an undefined role exit 1 with `role not defined: …`; blank/whitespace-containing permission rejected at the boundary (`parsePermission`).
+- [x] Admin CLI tests: `testRolesPermissionWiring` (allow → show → disallow, no audit event, allow-on-undefined exits nonzero), `testRolesGrantWithExpiry` (grant row `expires_at` ~1h out + `role_granted` payload carries `expiresAt`), `testRolesGrantBothExpiryFlagsFailsToParse` (parser-level mutual exclusion). Existing `RolesGrant` sites updated to the 3-arg form. `shomei-admin-test` green (28).
 
 Milestone 4 — The `RequirePermission` combinator:
 
