@@ -24,12 +24,12 @@ packages:
   ../../shomei-client
 
 -- `en` is consumed as a git source dependency of THIS example only. We pin `en-core`
--- alone (subdir), NOT `en-servant`: en-servant's library depends on openapi-hs,
--- servant-openapi-hs, en-postgres and en-biscuit (biscuit-haskell), and shomei already
--- pins openapi-hs at a DIFFERENT commit — two source pins for the same repo cannot
--- coexist in one plan. en-core has no en-package deps and no openapi/biscuit/hasql
--- deps (only effectful/containers/text/time/template-haskell), so it drops cleanly into
--- shomei's existing build plan with zero new external pins. This example reproduces the
+-- alone (subdir), NOT `en-servant`: en-servant's library drags in en-postgres and
+-- en-biscuit (biscuit-haskell) plus their transitive pins. (The openapi-hs conflict that
+-- originally motivated this split is gone — openapi-hs and servant-openapi-hs are on
+-- Hackage now — but the en-postgres/biscuit weight remains.) en-core has no en-package
+-- deps and no biscuit/hasql deps (only effectful/containers/text/time/template-haskell),
+-- so it drops cleanly into shomei's build plan. This example reproduces the
 -- ~20-line `En.Servant.Authorize.requirePermission` guard locally over `En.Check.check`;
 -- see EmbeddedEn.Authz and docs/plans/47's Decision Log for the full rationale.
 --
@@ -83,13 +83,4 @@ package webauthn
 allow-newer:
   webauthn:*
 
--- servant-openapi (3.1 line) + its openapi-hs fork (both git-only).
-source-repository-package
-  type: git
-  location: https://github.com/shinzui/servant-openapi.git
-  tag: 558b7b9ee3aaf3bff70a4cf1d6c8e2ed4eaccbde
-
-source-repository-package
-  type: git
-  location: https://github.com/shinzui/openapi-hs.git
-  tag: 89e9ed07e0dd3e1eaa9b3efea28b3c722f8c60c8
+-- openapi-hs / servant-openapi-hs need no pins: both are on Hackage as of 5.0.0.

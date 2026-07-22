@@ -55,6 +55,29 @@ authHandler (cookiePolicyFromConfig env.config) env.verifier
 authHandler env
 ```
 
+### Changed — OpenAPI dependencies move to Hackage: `openapi-hs` 5, `servant-openapi-hs` 5
+
+`openapi-hs` and `servant-openapi-hs` were git-only when the OpenAPI document landed, and
+`cabal.project` pinned both by commit. Both are published on Hackage now, so the
+`source-repository-package` pins are gone and `shomei-servant` depends on `openapi-hs >=5.0 && <6`
+and `servant-openapi-hs >=5.0 && <6` like any other Hackage package. The upstream package
+`servant-openapi` was renamed to `servant-openapi-hs`; update the name in any project that
+copied Shōmei's pins.
+
+Consequences for a project that builds its own OpenAPI document over Shōmei's Servant types:
+
+- `openapi-hs` 5 vendors the insertion-ordered containers it used to take from
+  `insert-ordered-containers`. Import `Data.HashMap.Strict.InsOrd.Compat` (and
+  `Data.HashSet.InsOrd.Compat`) instead, and drop the `insert-ordered-containers` dependency.
+- `openapi-hs` 5 removes `Data.OpenApi.Optics`. Use the `lens` accessors in `Data.OpenApi.Lens`,
+  re-exported from `Data.OpenApi`. Shōmei already used those.
+- `openapi-hs` 4.1 made `HttpStatusCode` a data type (`StatusCode Int | StatusRange …`) rather
+  than a synonym for `Int`, so that a `Responses` map can hold OpenAPI 3.1 range keys. Integer
+  literals still work through its `Num` instance, but code that passes a computed `Int` as a
+  response key needs `StatusCode`, and `show` on a key now renders the constructor.
+
+The generated `docs/api/openapi.json` is unchanged by the upgrade.
+
 ### Added — MasterPlan 7 (Interop Wave), EP-10: en authorization integration (examples and guidance)
 
 Documentation and runnable examples for the **two-tier authorization** story: Shōmei for

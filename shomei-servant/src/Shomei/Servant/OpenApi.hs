@@ -2,17 +2,9 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
--- | All instances here are orphans by design: 'ToSchema'/'ToParamSchema' and
--- 'HasOpenApi' belong to @openapi-hs@/@servant-openapi@, while the DTOs and the
--- custom combinators belong to Shōmei. Concentrating them in one module (rather
--- than scattering them across 'Shomei.Servant.DTO', 'Shomei.Servant.Auth', and
--- 'Shomei.Servant.Authz') keeps the OpenAPI dependency contained and the spec
--- assembly easy to find. The orphans are only ever resolved at the 'toOpenApi'
--- call site inside this module (and its executable/test), so there is no
--- incoherence risk. See EP-27 Decision Log.
 {-# OPTIONS_GHC -Wno-orphans #-}
 
--- | The OpenAPI 3.1 description of 'Shomei.Servant.API.ShomeiRoutes', derived
+-- \| The OpenAPI 3.1 description of 'Shomei.Servant.API.ShomeiRoutes', derived
 -- directly from the Servant types (EP-27).
 --
 -- 'shomeiOpenApi' is the complete, enriched document; the @shomei-openapi@
@@ -21,6 +13,15 @@
 -- a 'ToSchema' per DTO, a free-form 'ToSchema' for aeson 'Value', a hand-written
 -- 'ToSchema' for the tagged-union 'LoginResponse', a 'ToParamSchema' for the
 -- 'PasskeyId' capture, and 'HasOpenApi' instances for the custom combinators.
+
+-- | All instances here are orphans by design: 'ToSchema'/'ToParamSchema' and
+-- 'HasOpenApi' belong to @openapi-hs@/@servant-openapi-hs@, while the DTOs and the
+-- custom combinators belong to Shōmei. Concentrating them in one module (rather
+-- than scattering them across 'Shomei.Servant.DTO', 'Shomei.Servant.Auth', and
+-- 'Shomei.Servant.Authz') keeps the OpenAPI dependency contained and the spec
+-- assembly easy to find. The orphans are only ever resolved at the 'toOpenApi'
+-- call site inside this module (and its executable/test), so there is no
+-- incoherence risk. See EP-27 Decision Log.
 module Shomei.Servant.OpenApi
   ( shomeiOpenApi,
     openApiValue,
@@ -30,7 +31,9 @@ where
 import Control.Lens
 import Data.Aeson (Value (String), toJSON)
 import Data.Char (isAlphaNum, toUpper)
-import Data.HashMap.Strict.InsOrd qualified as IOHM
+-- openapi-hs 5 vendors the insertion-ordered map it used to take from
+-- insert-ordered-containers; the OpenAPI record fields are keyed by this type.
+import Data.HashMap.Strict.InsOrd.Compat qualified as IOHM
 import Data.List (nub, sortOn)
 import Data.List.NonEmpty qualified as NE
 import Data.Maybe (isNothing)
@@ -367,7 +370,7 @@ instance ToParamSchema SessionId where
   toParamSchema _ = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
 
 -- ---------------------------------------------------------------------------
--- HasOpenApi for the custom combinators (none ship in servant-openapi)
+-- HasOpenApi for the custom combinators (none ship in servant-openapi-hs)
 -- ---------------------------------------------------------------------------
 
 -- | @Authenticated = AuthProtect "shomei-jwt"@: register an HTTP bearer-JWT
@@ -550,7 +553,7 @@ baselineSpecs op =
 --
 -- Note @\/oauth\/userinfo@ is deliberately absent: it is guarded by the ordinary 'Authenticated'
 -- combinator and its @401@s are the ordinary problem documents, not OAuth error objects.
-oauthErrorResponsesByPath :: [(FilePath, [(Int, [T.Text])])]
+oauthErrorResponsesByPath :: [(FilePath, [(O.HttpStatusCode, [T.Text])])]
 oauthErrorResponsesByPath =
   [ -- @401@ is @invalid_client@ alone (and carries @WWW-Authenticate: Basic@); @400@ covers the
     -- request-shape and scope failures. @500@ is documented because a database outage must still
@@ -644,8 +647,10 @@ withErrorResponses doc =
     addStatus op specs =
       op & at (statusOf (NE.head specs)) ?~ O.Inline (problemResponse (NE.toList specs))
 
-    statusOf :: ProblemSpec -> Int
-    statusOf = errHTTPCode . problemStatus
+    -- Response maps are keyed by 'O.HttpStatusCode' (openapi-hs >= 4.1), which can also
+    -- hold @1XX@..@5XX@ range keys; every Shōmei problem response is an explicit code.
+    statusOf :: ProblemSpec -> O.HttpStatusCode
+    statusOf = O.StatusCode . errHTTPCode . problemStatus
 
     -- One response per status; a status shared by several codes lists them all.
     byStatus :: [ProblemSpec] -> [NE.NonEmpty ProblemSpec]
@@ -676,16 +681,16 @@ problemResponse specs =
           .~ IOHM.singleton "code" (O.Inline (stringSchema & O.enum_ ?~ map String codes))
 
 -- ---------------------------------------------------------------------------
--- Spec hygiene: the bits servant-openapi cannot know
+-- Spec hygiene: the bits servant-openapi-hs cannot know
 -- ---------------------------------------------------------------------------
 
--- | Three corrections servant-openapi's generic derivation cannot make on its own.
+-- | Three corrections servant-openapi-hs's generic derivation cannot make on its own.
 --
 -- (a) A @204@, and a @200@\/@202@ whose body is servant's 'NoContent', is generated with a
 -- @content@ map holding one media type and no schema. On a @204@ that is /invalid/ OpenAPI;
 -- everywhere else it is noise that makes a generated client expect a body. Both are dropped.
 --
--- (b) @description@ is REQUIRED on a response object, and servant-openapi leaves it @""@ for
+-- (b) @description@ is REQUIRED on a response object, and servant-openapi-hs leaves it @""@ for
 -- every success response. Filled from the status.
 --
 -- (c) Every Shōmei request body is mandatory, but @requestBody.required@ defaults to @false@,
@@ -706,12 +711,22 @@ withSpecHygiene =
       | T.null (resp ^. O.description) = resp & O.description .~ describeStatus code
       | otherwise = resp
 
+    -- The catch-all renders the WIRE form of the key: 'O.HttpStatusCode' is a data type as of
+    -- openapi-hs 4.1, so its 'show' would emit @StatusCode 500@ rather than @500@.
     describeStatus = \case
       200 -> "Success."
       201 -> "Created."
       202 -> "Accepted: the request was validated; delivery happens out of band."
       204 -> "Success; no response body."
-      n -> "Response " <> T.pack (show n) <> "."
+      O.StatusCode n -> "Response " <> T.pack (show n) <> "."
+      O.StatusRange r -> "Responses in the " <> rangeKey r <> " class."
+
+    rangeKey = \case
+      O.R1XX -> "1XX"
+      O.R2XX -> "2XX"
+      O.R3XX -> "3XX"
+      O.R4XX -> "4XX"
+      O.R5XX -> "5XX"
 
 -- ---------------------------------------------------------------------------
 -- The assembled, enriched document
@@ -743,7 +758,7 @@ openApiValue = toJSON shomeiOpenApi
 -- | Assign a stable @operationId@ to every operation, derived from its HTTP
 -- method and path (e.g. @GET \/v1\/auth\/me@ → @getAuthMe@). Operations clients
 -- generate from these get readable method names. Mirrors the helper in
--- @servant-openapi@'s reference generator.
+-- @servant-openapi-hs@'s reference generator.
 withOperationIds :: O.OpenApi -> O.OpenApi
 withOperationIds = O.paths %~ imap setForPath
   where

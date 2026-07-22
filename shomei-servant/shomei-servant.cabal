@@ -50,7 +50,7 @@ library
 
   build-depends:
     , aeson
-    , base                       >=4.18   && <5
+    , base                >=4.18   && <5
     , base64
     , bytestring
     , containers
@@ -59,13 +59,12 @@ library
     , effectful-core
     , http-api-data
     , http-types
-    , insert-ordered-containers
     , lens
     , network
-    , openapi-hs
-    , servant                    >=0.20.2
-    , servant-openapi
-    , servant-server             >=0.20
+    , openapi-hs          >=5.0    && <6
+    , servant             >=0.20.2
+    , servant-openapi-hs  >=5.0    && <6
+    , servant-server      >=0.20
     , shomei-core
     , text
     , time
@@ -112,7 +111,7 @@ test-suite shomei-servant-openapi-test
     , QuickCheck
     , quickcheck-instances
     , servant
-    , servant-openapi
+    , servant-openapi-hs
     , servant-server
     , shomei-servant
     , text
