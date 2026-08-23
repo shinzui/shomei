@@ -72,8 +72,8 @@ refreshCookieName = "shomei_refresh"
 -- | The refresh cookie's @Path@ scope: the browser sends it to exactly one endpoint, so an
 -- XSS anywhere else in the origin cannot read or replay it.
 --
--- This must track the served path of 'Shomei.Servant.API.ShomeiAPI'\'s @refresh@ route, which
--- 'Shomei.Servant.API.ShomeiRoutes' mounts under @\/v1@. A host that mounts @ShomeiAPI@ at a
+-- This must track the served path of 'Shomei.Servant.Api.ShomeiAPI'\'s @refresh@ route, which
+-- 'Shomei.Servant.Api.ShomeiRoutes' mounts under @\/v1@. A host that mounts @ShomeiAPI@ at a
 -- different prefix breaks the match and with it cookie-mode refresh.
 refreshCookiePath :: ByteString
 refreshCookiePath = "/v1/auth/refresh"

@@ -32,6 +32,7 @@ module Shomei.Servant.Authz
   ( RequireRole,
     RequireScope,
     RequirePermission,
+    RequireAdmin,
     requireRole,
     requireScope,
     requireAdmin,
@@ -92,6 +93,11 @@ data RequireScope s
 -- /intent/ at a different freshness tier. See @docs\/user\/authorization.md@ for the boundary.
 type RequirePermission :: Symbol -> Type
 data RequirePermission p
+
+-- | Enforcing combinator for Shōmei administration: the principal must carry either the
+-- @admin@ role or the @shomei:admin@ scope.
+type RequireAdmin :: Type
+data RequireAdmin
 
 -- | Guard: fail with @403@ unless the principal carries the role. Use this only for a condition
 -- the type-level combinator cannot express; a plain "this route needs role X" belongs in the
@@ -214,3 +220,22 @@ instance
       check user
         | needed `Set.member` user.authPermissions = Right user
         | otherwise = Left missingPermission
+
+instance
+  ( HasServer api ctx,
+    HasContextEntry ctx (AuthHandler Request AuthUser)
+  ) =>
+  HasServer (RequireAdmin :> api) ctx
+  where
+  type ServerT (RequireAdmin :> api) m = AuthUser -> ServerT api m
+
+  hoistServerWithContext _ pc nt srv =
+    hoistServerWithContext (Proxy :: Proxy api) pc nt . srv
+
+  route _ ctx subserver =
+    route (Proxy :: Proxy api) ctx (subserver `addAuthCheck` withRequest (authorizedCheck ctx check))
+    where
+      check user
+        | adminRole `Set.member` user.authRoles = Right user
+        | adminScope `Set.member` user.authScopes = Right user
+        | otherwise = Left missingRole

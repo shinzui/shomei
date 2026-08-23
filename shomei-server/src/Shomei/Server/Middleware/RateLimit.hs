@@ -158,7 +158,7 @@ rateLimitMiddleware rl app req respond
 -- a bearer token) are intentionally excluded.
 --
 -- The paths are matched literally, so they carry the @v1@ segment
--- 'Shomei.Servant.API.ShomeiRoutes' mounts the application routes under. A mismatch here does
+-- 'Shomei.Servant.Api.ShomeiRoutes' mounts the application routes under. A mismatch here does
 -- not fail loudly — it silently lets every login attempt through — so any route move must
 -- update this list.
 throttledPath :: Request -> Bool

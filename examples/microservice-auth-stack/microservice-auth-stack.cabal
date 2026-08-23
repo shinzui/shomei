@@ -59,6 +59,7 @@ executable example-project-service
     , base
     , http-client
     , microservice-auth-stack
+    , servant-health
     , shomei-core
     , text
     , warp
@@ -75,6 +76,7 @@ test-suite microservice-auth-stack-test
     , http-client
     , http-types
     , microservice-auth-stack
+    , servant-health
     , shomei-client
     , shomei-core
     , shomei-jwt

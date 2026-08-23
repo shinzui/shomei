@@ -182,7 +182,7 @@ ensureActiveKey kek alg = do
 -- | Reload key material and swap it in. On failure keep the last good material and log to
 -- stderr: an operator mistake mid-rotation (say, retiring the only active key) must not
 -- take the server down — it can still verify everything it issued and still sign with the
--- stale key, which downstreams still trust. The @\/ready@ probe fails meanwhile, so
+-- stale key, which downstreams still trust. The @\/health\/ready@ probe fails meanwhile, so
 -- orchestration notices.
 --
 -- Safe from any thread: a plain 'writeIORef' of an immutable record, so a concurrent

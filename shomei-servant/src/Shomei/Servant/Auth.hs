@@ -1,16 +1,13 @@
--- The @AuthServerData@ instance below is an unavoidable orphan: both the type family
--- (@AuthServerData@) and the type it is indexed by (@AuthProtect "shomei-jwt"@) belong
--- to servant, while 'AuthUser' belongs here. This is the standard servant generalized-auth
--- pattern, so we silence the orphan warning for this module.
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE EmptyDataDecls #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | The 'Authenticated' combinator (custom 'AuthProtect' + 'AuthHandler') and the
 -- 'AuthUser' principal it produces (MasterPlan IP-6), plus the CSRF gate that guards
 -- cookie-borne credentials.
 --
--- Authentication uses Servant's /generalized auth/: the route type carries
--- @AuthProtect "shomei-jwt"@ (aliased here as 'Authenticated'), and the server side is driven by
--- an 'AuthHandler' registered in the 'Servant.Context'. The handler is built with 'authHandler'
+-- Authentication uses an enforcing custom combinator driven by an 'AuthHandler' registered in
+-- the 'Servant.Context'. The handler is built with 'authHandler'
 -- from the seam 'Env'; verification is derived from its port runner and configuration through
 -- 'Shomei.Servant.Seam.verifyRequestToken'. This makes
 -- @sessionCheckMode = VerifyTokenAndSession@ apply consistently without this module touching
@@ -42,16 +39,30 @@ module Shomei.Servant.Auth
 where
 
 import Data.ByteString qualified as BS
+import Data.Kind (Type)
 import Data.Set (Set)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Network.Wai (Request, requestHeaders, requestMethod)
-import Servant (Handler, ServerError, throwError)
-import Servant.API.Experimental.Auth (AuthProtect)
+import Servant
+  ( Handler,
+    ServerError,
+    throwError,
+    type (:>),
+  )
 import Servant.Server.Experimental.Auth
   ( AuthHandler,
-    AuthServerData,
     mkAuthHandler,
+    unAuthHandler,
+  )
+import Servant.Server.Internal
+  ( HasContextEntry,
+    HasServer (..),
+    addAuthCheck,
+    delayedFailFatal,
+    getContextEntry,
+    runHandler,
+    withRequest,
   )
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Permission, Role, Scope)
 import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..), transportUsesCookies)
@@ -75,12 +86,28 @@ data AuthUser = AuthUser
   }
   deriving stock (Generic)
 
--- | Register 'AuthUser' as the server-side payload of @AuthProtect "shomei-jwt"@.
-type instance AuthServerData (AuthProtect "shomei-jwt") = AuthUser
-
 -- | Put this before a route (or a 'NamedRoutes' record) to make its handler
 -- receive a leading 'AuthUser'.
-type Authenticated = AuthProtect "shomei-jwt"
+type Authenticated :: Type
+data Authenticated
+
+instance
+  ( HasServer api ctx,
+    HasContextEntry ctx (AuthHandler Request AuthUser)
+  ) =>
+  HasServer (Authenticated :> api) ctx
+  where
+  type ServerT (Authenticated :> api) m = AuthUser -> ServerT api m
+
+  hoistServerWithContext _ pc nt srv =
+    hoistServerWithContext (Proxy :: Proxy api) pc nt . srv
+
+  route _ ctx subserver =
+    route (Proxy :: Proxy api) ctx (subserver `addAuthCheck` withRequest authenticate)
+    where
+      authenticate req = do
+        outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
+        either delayedFailFatal pure outcome
 
 -- | Where a presented credential came from. Cookie-sourced credentials are subject to the
 -- CSRF origin gate; bearer credentials never are.

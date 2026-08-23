@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
--- \| The OpenAPI 3.1 description of 'Shomei.Servant.API.ShomeiRoutes', derived
+-- \| The OpenAPI 3.1 description of 'Shomei.Servant.Api.ShomeiRoutes', derived
 -- directly from the Servant types (EP-27).
 --
 -- 'shomeiOpenApi' is the complete, enriched document; the @shomei-openapi@
@@ -17,7 +17,7 @@
 -- | All instances here are orphans by design: 'ToSchema'/'ToParamSchema' and
 -- 'HasOpenApi' belong to @openapi-hs@/@servant-openapi-hs@, while the DTOs and the
 -- custom combinators belong to Shōmei. Concentrating them in one module (rather
--- than scattering them across 'Shomei.Servant.DTO', 'Shomei.Servant.Auth', and
+-- than scattering them across concept DTO modules, 'Shomei.Servant.Auth', and
 -- 'Shomei.Servant.Authz') keeps the OpenAPI dependency contained and the spec
 -- assembly easy to find. The orphans are only ever resolved at the 'toOpenApi'
 -- call site inside this module (and its executable/test), so there is no
@@ -47,42 +47,44 @@ import Servant.OpenApi (HasOpenApi (..))
 -- The status of a 'ProblemSpec' is carried as the Servant base error it renders from; only
 -- 'errHTTPCode' is read here.
 import Servant.Server (ServerError (errHTTPCode))
-import Shomei.Id (PasskeyId, SessionId, UserId)
-import Shomei.Servant.API (ShomeiRoutes)
-import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.DTO
-  ( AdminUserResponse,
-    AdminUsersPage,
-    AuditEventResponse,
-    AuditEventsPage,
-    ChangePasswordRequest,
+import Shomei.Account.Dto
+  ( ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
-    HealthResponse,
-    LoginRequest,
-    LoginResponse,
-    MfaCompleteRequest,
+    PasswordResetRequest,
+    SignupRequest,
+    SignupResponse,
+    VerifyEmailRequest,
+  )
+import Shomei.Account.User.Dto (AdminStatusFilter, AdminUserResponse, AdminUsersPage, UserPageCursor, UserResponse)
+import Shomei.Audit.Dto
+  ( AuditEventResponse,
+    AuditEventsPage,
+    AuditPageCursor,
+    AuditSessionId,
+    AuditTimestamp,
+    AuditUserId,
+  )
+import Shomei.Id (PasskeyId, SessionId, UserId)
+import Shomei.Mfa.Dto
+  ( MfaCompleteRequest,
     MfaProof,
-    PasskeyLoginBeginResponse,
+    RecoveryCodesCountResponse,
+    RecoveryCodesResponse,
+    TotpEnrollResponse,
+    TotpRemoveRequest,
+    TotpVerifyRequest,
+  )
+import Shomei.Passkey.Dto
+  ( PasskeyLoginBeginResponse,
     PasskeyLoginCompleteRequest,
     PasskeyRegisterBeginResponse,
     PasskeyRegisterCompleteRequest,
     PasskeyResponse,
-    PasswordResetRequest,
-    ReadyResponse,
-    RecoveryCodesCountResponse,
-    RecoveryCodesResponse,
-    RefreshRequest,
-    SessionResponse,
-    SignupRequest,
-    SignupResponse,
-    TokenPairResponse,
-    TotpEnrollResponse,
-    TotpRemoveRequest,
-    TotpVerifyRequest,
-    UserResponse,
-    VerifyEmailRequest,
   )
+import Shomei.Servant.Api (ShomeiRoutes)
+import Shomei.Servant.Auth (Authenticated)
+import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.Error
   ( ProblemSpec (..),
     pcBadRequest,
@@ -127,6 +129,8 @@ import Shomei.Servant.Error
     pcWebAuthnFailed,
   )
 import Shomei.Servant.OAuth (TokenResponse)
+import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
+import Shomei.Session.Dto (LoginRequest, LoginResponse, RefreshRequest, SessionResponse, TokenPairResponse)
 import Web.FormUrlEncoded (Form)
 
 -- ---------------------------------------------------------------------------
@@ -160,10 +164,6 @@ instance ToSchema TokenPairResponse
 instance ToSchema UserResponse
 
 instance ToSchema SessionResponse
-
-instance ToSchema HealthResponse
-
-instance ToSchema ReadyResponse
 
 instance ToSchema MfaCompleteRequest
 
@@ -248,7 +248,7 @@ instance ToSchema TokenResponse where
 -- | The @application\/x-www-form-urlencoded@ request body of @POST \/oauth\/token@.
 --
 -- The endpoint takes a raw 'Form' rather than a typed record, because it is a @grant_type@
--- dispatcher whose parameter set differs per grant (see "Shomei.Servant.API"). The schema is
+-- dispatcher whose parameter set differs per grant (see "Shomei.Servant.Api"). The schema is
 -- therefore an open object of string values, with the parameters this deployment reads described
 -- for a human reading the spec.
 instance ToSchema Form where
@@ -325,7 +325,7 @@ instance ToSchema MfaProof where
 -- | 'LoginResponse' has a hand-written, @status@-tagged 'ToJSON' (a completed
 -- login vs. an MFA challenge), so its schema is hand-written to match: a @oneOf@
 -- of the two flat object shapes. Generic derivation would not reproduce the
--- custom JSON. This must agree with 'Shomei.Servant.DTO.LoginResponse''s
+-- custom JSON. This must agree with 'Shomei.Session.Dto.LoginResponse''s
 -- instances — the M4 conformance test checks it.
 instance ToSchema LoginResponse where
   declareNamedSchema _ = do
@@ -375,14 +375,32 @@ instance ToParamSchema UserId where
 instance ToParamSchema SessionId where
   toParamSchema _ = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
 
+instance ToParamSchema AuditUserId where
+  toParamSchema _ = stringSchema
+
+instance ToParamSchema AuditSessionId where
+  toParamSchema _ = stringSchema
+
+instance ToParamSchema AuditTimestamp where
+  toParamSchema _ = stringSchema & O.format ?~ "date-time"
+
+instance ToParamSchema AuditPageCursor where
+  toParamSchema _ = stringSchema
+
+instance ToParamSchema AdminStatusFilter where
+  toParamSchema _ = stringSchema & O.enum_ ?~ ["active", "suspended", "deleted"]
+
+instance ToParamSchema UserPageCursor where
+  toParamSchema _ = stringSchema
+
 -- ---------------------------------------------------------------------------
 -- HasOpenApi for the custom combinators (none ship in servant-openapi-hs)
 -- ---------------------------------------------------------------------------
 
--- | @Authenticated = AuthProtect "shomei-jwt"@: register an HTTP bearer-JWT
+-- | Register an HTTP bearer-JWT
 -- security scheme in @components@ and require it on every operation of the
 -- sub-API.
-instance (HasOpenApi sub) => HasOpenApi (AuthProtect "shomei-jwt" :> sub) where
+instance (HasOpenApi sub) => HasOpenApi (Authenticated :> sub) where
   toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
 -- | 'RequireRole' and 'RequireScope' authenticate the caller themselves (they run the same
@@ -400,6 +418,18 @@ instance (HasOpenApi sub) => HasOpenApi (RequireScope (s :: Symbol) :> sub) wher
 
 instance (HasOpenApi sub) => HasOpenApi (RequirePermission (p :: Symbol) :> sub) where
   toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+
+instance (HasOpenApi sub) => HasOpenApi (RequireAdmin :> sub) where
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+
+instance (HasOpenApi sub) => HasOpenApi (PreHandlerResponses responses :> sub) where
+  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+
+instance (HasOpenApi sub) => HasOpenApi (CsrfProtected :> sub) where
+  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+
+instance (HasOpenApi sub) => HasOpenApi (RateLimited :> sub) where
+  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
 
 -- | Register the bearer-JWT security scheme and require it on every operation of @sub@.
 requireBearer :: (HasOpenApi sub) => Proxy sub -> O.OpenApi

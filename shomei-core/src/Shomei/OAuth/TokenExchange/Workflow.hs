@@ -84,7 +84,7 @@ accessTokenType = "urn:ietf:params:oauth:token-type:access_token"
 tokenExchangeSubjectScope :: Scope
 tokenExchangeSubjectScope = Scope "token-exchange:subject"
 
--- | A parsed RFC 8693 token-exchange request. The dispatcher in "Shomei.Servant.Handlers" reads the
+-- | A parsed RFC 8693 token-exchange request. The dispatcher in "Shomei.OAuth.Handler" reads the
 -- form parameters and performs client authentication (setting 'authenticatedService'); this
 -- workflow performs all of the policy.
 data ExchangeRequest = ExchangeRequest

@@ -21,7 +21,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.CaseInsensitive qualified as CI
-import Data.Foldable (toList)
+import Data.Foldable (forM_, toList)
 import Data.Generics.Labels ()
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
@@ -32,6 +32,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as Text
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Effectful (Eff, runEff)
+import GHC.Generics (Generic)
 import Network.HTTP.Client
   ( Manager,
     RequestBody (RequestBodyLBS),
@@ -66,13 +67,17 @@ import Servant
     type (:<|>) ((:<|>)),
     type (:>),
   )
+import Servant.API.Generic (type (:-))
+import Servant.Health (ProbeVerdict (Healthy))
 import Servant.Server.Experimental.Auth (AuthHandler)
+import Servant.Server.Generic (genericServe)
 import Shomei.Account.Email.Domain (emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
 import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..))
+import Shomei.Account.User.Dto (UserResponse)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
@@ -86,14 +91,13 @@ import Shomei.OAuth.TokenExchange.Workflow (tokenExchangeSubjectScope)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Passkey.Domain (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
 import Shomei.Prelude ((&), (.~), (^.))
-import Shomei.Servant.API (ShomeiRoutes)
+import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.DTO (UserResponse)
 import Shomei.Servant.Error (shomeiErrorFormatters)
-import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam (AppEffects, Env (..))
+import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount)
@@ -168,8 +172,55 @@ type TestAPI =
     :<|> RequireScope "kawa:ingest" :> "ingest" :> Get '[JSON] [UserResponse]
     :<|> RequirePermission "projects:write" :> "host" :> "projects" :> Get '[JSON] [UserResponse]
 
+data DispatchAccount mode = DispatchAccount
+  { accountMarker :: mode :- "account" :> Get '[JSON] Text
+  }
+  deriving stock (Generic)
+
+data DispatchSession mode = DispatchSession
+  { sessionMarker :: mode :- "session" :> Get '[JSON] Text
+  }
+  deriving stock (Generic)
+
+data DispatchAudit mode = DispatchAudit
+  { auditMarker :: mode :- "audit" :> Get '[JSON] Text
+  }
+  deriving stock (Generic)
+
+-- | Three independently owned records intentionally share one mount prefix. This is the
+-- small, marker-valued dispatch witness for the same composition technique used by
+-- 'Shomei.Servant.Api.ApplicationApi'.
+data DispatchRoot mode = DispatchRoot
+  { accountSlice :: mode :- "shared" :> NamedRoutes DispatchAccount,
+    sessionSlice :: mode :- "shared" :> NamedRoutes DispatchSession,
+    auditSlice :: mode :- "shared" :> NamedRoutes DispatchAudit
+  }
+  deriving stock (Generic)
+
+dispatchApp :: Application
+dispatchApp =
+  genericServe
+    DispatchRoot
+      { accountSlice = DispatchAccount {accountMarker = pure "account"},
+        sessionSlice = DispatchSession {sessionMarker = pure "session"},
+        auditSlice = DispatchAudit {auditMarker = pure "audit"}
+      }
+
+dispatchScenario :: Int -> IO ()
+dispatchScenario port = do
+  manager <- newManager defaultManagerSettings
+  forM_
+    [ ("/shared/account", "account"),
+      ("/shared/session", "session"),
+      ("/shared/audit", "audit")
+    ]
+    \(path, expected) -> do
+      (status, body) <- getJSON manager port path []
+      status @?= 200
+      body @?= Just (String expected)
+
 testServer :: Env -> Server TestAPI
-testServer env = shomeiRoutes env :<|> adminUsersH :<|> ingestH :<|> projectsH
+testServer env = shomeiRoutes env (pure Healthy) (pure Healthy) :<|> adminUsersH :<|> ingestH :<|> projectsH
   where
     adminUsersH :: AuthUser -> Handler [UserResponse]
     adminUsersH _user = pure []
@@ -804,16 +855,22 @@ scenarioVersionBoundary port = do
   newMe <- getRaw mgr port "/v1/auth/me" []
   assertProblem "versioned me path routes" 401 "missing_token" newMe
 
-  -- Probes and JWKS stay at the root.
-  (healthStatus, _) <- getJSON mgr port "/health" []
-  healthStatus @?= 200
+  -- Probe leaves and JWKS stay at the root.
+  (liveStatus, _) <- getJSON mgr port "/health/live" []
+  liveStatus @?= 200
+  (readyStatus, _) <- getJSON mgr port "/health/ready" []
+  readyStatus @?= 200
   (jwksStatus, jwksHdrs, _) <- getRaw mgr port "/.well-known/jwks.json" []
   jwksStatus @?= 200
   headerValue "Cache-Control" jwksHdrs @?= Just "public, max-age=300"
 
   -- ...and nothing bleeds into /v1: the version prefix covers the application record only.
-  v1Health <- getRaw mgr port "/v1/health" []
-  assertProblem "no /v1/health" 404 "not_found" v1Health
+  v1Health <- getRaw mgr port "/v1/health/live" []
+  assertProblem "no /v1/health/live" 404 "not_found" v1Health
+  oldHealth <- getRaw mgr port "/health" []
+  assertProblem "no compatibility /health route" 404 "not_found" oldHealth
+  oldReady <- getRaw mgr port "/ready" []
+  assertProblem "no compatibility /ready route" 404 "not_found" oldReady
   v1Jwks <- getRaw mgr port "/v1/.well-known/jwks.json" []
   assertProblem "no /v1/.well-known/jwks.json" 404 "not_found" v1Jwks
 
@@ -1277,7 +1334,9 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
+    [ testCase "same-prefix NamedRoutes dispatch every concept record to its distinct marker" $
+        testWithApplication (pure dispatchApp) dispatchScenario,
+      testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioProblemEnvelope,
       testCase "the /v1 boundary: application routes are versioned, probes and JWKS are not" $ do

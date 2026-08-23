@@ -1,6 +1,6 @@
 -- | The OAuth2 wire mechanics for @POST \/oauth\/token@ (EP-4): the RFC 6749 §5.2 error shape,
 -- client authentication, the success response, and the parameter readers the grant dispatcher
--- in "Shomei.Servant.Handlers" uses.
+-- in "Shomei.OAuth.Handler" uses.
 --
 -- __This endpoint does not speak Shōmei's error envelope.__ Everywhere else, a failure is an
 -- RFC 7807 problem document (see "Shomei.Servant.Error"). Under @\/oauth\/*@ a failure is

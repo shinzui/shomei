@@ -1,6 +1,6 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
--- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.API.ShomeiRoutes'.
+-- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.Api.ShomeiRoutes'.
 --
 -- Three layers:
 --
@@ -36,13 +36,19 @@ import Data.OpenApi (NamedSchema (..), Schema, ToSchema (..), validateJSON)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Servant.API (NamedRoutes, NoContent (..))
+import Servant.Health (ProbeStatus (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
 import Servant.Server (ServerError (errHTTPCode))
-import Shomei.Servant.API (ShomeiRoutes)
-import Shomei.Servant.DTO
+import Shomei.Account.Dto
+import Shomei.Account.User.Dto
+import Shomei.Audit.Dto
+import Shomei.Mfa.Dto
+import Shomei.Passkey.Dto
+import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Error (ProblemSpec (..), problemBody, problemCatalog)
 import Shomei.Servant.OAuth (TokenResponse (..))
 import Shomei.Servant.OpenApi (shomeiOpenApi)
+import Shomei.Session.Dto
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), oneof)
 import Test.QuickCheck.Instances ()
@@ -61,6 +67,9 @@ instance ToJSON NoContent where
 
 instance ToSchema NoContent where
   declareNamedSchema _ = pure (NamedSchema (Just "NoContent") mempty)
+
+instance Arbitrary ProbeStatus where
+  arbitrary = ProbeStatus <$> arbitrary <*> arbitrary <*> arbitrary
 
 main :: IO ()
 main = hspec spec
@@ -235,11 +244,11 @@ spec = do
           "delete /v1/auth/totp",
           "get /.well-known/jwks.json",
           "get /.well-known/openid-configuration",
-          "get /health",
+          "get /health/live",
+          "get /health/ready",
           "get /oauth/authorize",
           "get /oauth/userinfo",
           "get /openapi.json",
-          "get /ready",
           "get /v1/admin/audit/events",
           "get /v1/admin/users",
           "get /v1/admin/users/{userId}",
@@ -404,10 +413,6 @@ deriving stock instance Show AdminUserResponse
 
 deriving stock instance Show AdminUsersPage
 
-deriving stock instance Show HealthResponse
-
-deriving stock instance Show ReadyResponse
-
 deriving stock instance Show MfaCompleteRequest
 
 deriving stock instance Show MfaProof
@@ -527,12 +532,6 @@ instance Arbitrary AdminUserResponse where
 
 instance Arbitrary AdminUsersPage where
   arbitrary = AdminUsersPage <$> arbitrary <*> arbitrary
-
-instance Arbitrary HealthResponse where
-  arbitrary = HealthResponse <$> arbitrary
-
-instance Arbitrary ReadyResponse where
-  arbitrary = ReadyResponse <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary AuditEventResponse where
   arbitrary =

@@ -2,7 +2,7 @@
 --
 -- 'main' runs the turnkey startup: load config → run migrations (idempotent) → acquire the
 -- hasql pool → bootstrap the signing key → build the 'Env' → serve with warp. 'application'
--- builds the WAI app, reusing EP-5's 'Shomei.Servant.Handlers.shomeiServer' and the
+-- builds the WAI app from the exact 'Shomei.Servant.Server.shomeiRoutes' tree and the
 -- @AuthProtect "shomei-jwt"@ 'Context'. EP-5's handlers run in the smaller servant port
 -- stack ('Shomei.Servant.Seam.AppEffects'); they are bridged onto this server's larger
 -- PostgreSQL stack ('Shomei.Server.App.AppEffects') with @inject@ inside the seam env's
@@ -41,6 +41,7 @@ import Servant
     ErrorFormatters,
     serveWithContext,
   )
+import Servant.Health (ProbeCheck)
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
 import Shomei.Authorization.Claims.Domain (Issuer (..), Role (..))
@@ -51,19 +52,20 @@ import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
 import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
 import Shomei.Error (AuthError)
+import Shomei.Health.Server (buildHealthChecks)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude hiding (Context, (.=))
-import Shomei.Servant.API (shomeiRoutesAPI)
+import Shomei.Servant.Api (shomeiRoutesApi)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Error (shomeiErrorFormatters)
-import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Oidc (isAbsoluteHttpUrl)
 import Shomei.Servant.Seam qualified as Seam
+import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
@@ -94,6 +96,7 @@ main = do
     (argon2WarningFloor settings.serverArgon2)
   validateOidcIssuer cfg
   env <- buildEnv cfg settings
+  (liveness, readiness) <- buildHealthChecks env
   validateDefaultRoles cfg env
   installKeyReload cfg env
   installSweeper settings env
@@ -138,7 +141,7 @@ main = do
           . Warp.setOnException onServerException
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
-  Warp.runSettings warpSettings (stack (application env))
+  Warp.runSettings warpSettings (stack (application env liveness readiness))
   hPutStrLn stderr "[shomei] drain complete; closing connection pool"
   Pool.release env.envPool
   hPutStrLn stderr "[shomei] shutdown complete"
@@ -350,14 +353,15 @@ millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 -- 'Context'. Authentication is derived from the seam env's port runner and config, so it uses
 -- the current verification keys and honors @sessionCheckMode@.
 --
--- The served tree is 'shomeiRoutesAPI' (EP-3): application routes under @\/v1@, JWKS and the
+-- The served tree is 'shomeiRoutesApi' (EP-3): application routes under @\/v1@, JWKS and the
 -- probes at unversioned root paths.
 --
 -- 'problemMiddleware' converts Servant's one un-formattable failure — the bare @405@ a method
 -- mismatch raises below any 'ErrorFormatters' hook — into a problem document, so /every/ error
 -- the process emits carries the same envelope.
-application :: Env -> Application
-application env = problemMiddleware (serveWithContext shomeiRoutesAPI (authContext senv) (shomeiRoutes senv))
+application :: Env -> ProbeCheck -> ProbeCheck -> Application
+application env liveness readiness =
+  problemMiddleware (serveWithContext shomeiRoutesApi (authContext senv) (shomeiRoutes senv liveness readiness))
   where
     senv = seamEnv env
 

@@ -107,7 +107,13 @@ The finished behavior is visible without reading the implementation:
   preserved them through `runAppIO` and the Servant seam; retained internal errors only for
   persisted-value reconstruction; and passed the full workspace build plus all 228 core, 56
   PostgreSQL, and 44 JWT tests serially.
-- [ ] Milestone 3: split DTOs, handlers, and route records into vertical HTTP slices.
+- [x] (2026-08-23) Milestone 3: replaced the flat DTO, handler, and API modules with
+  concept-owned `Api`, `Dto`, and `Handler` modules; added typed query/cursor inputs, enforcing
+  authentication and administration combinators, pass-through pre-handler markers, a thin root
+  API/server composition, and same-prefix dispatch coverage. Adopted `servant-health` at
+  `/health/live` and `/health/ready`, injected independently tracked checks into every host,
+  added the released testkit contract matrix plus production readiness/onset tests, and passed
+  the full workspace build and focused OpenAPI/health/dispatch tests.
 - [ ] Milestone 4: introduce typed problem details and selective MultiVerb result types.
 - [ ] Milestone 5: update OpenAPI derivation, the Haskell client, assemblies, and examples.
 - [ ] Milestone 6: update documentation and complete every validation gate.
@@ -255,6 +261,20 @@ The finished behavior is visible without reading the implementation:
   `Left` to `IOException`. The seam runner now retains `Either AuthError`, flattens workflow
   errors explicitly, and allows ordinary handlers and readiness to distinguish
   `DependencyUnavailable PostgreSQL` from `InternalAuthError` without exception recovery.
+
+- Observation: releasing a Hasql pool is not a reliable way to fabricate an unavailable
+  dependency for a readiness test; a subsequent use can still complete far enough to produce
+  the empty-active-key result.
+  Evidence: the first production-readiness test expected `postgres` after `Pool.release` but
+  received `signing-key`. Using a pool configured for an unreachable loopback port exercises the
+  intended typed PostgreSQL failure deterministically, while the empty-key case remains a
+  separate reachable-database assertion.
+
+- Observation: `NamedRoutes` safely composes several concept records under the same static
+  prefix without depending on record-field order.
+  Evidence: the new runtime witness mounts three marker-valued records under `/shared` and
+  independently reaches `/shared/account`, `/shared/session`, and `/shared/audit`; the production
+  `ApplicationApi` uses the same composition for the `/v1/auth` and `/v1/admin` slices.
 
 
 ## Decision Log

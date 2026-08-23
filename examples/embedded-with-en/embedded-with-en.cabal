@@ -48,6 +48,7 @@ library
     , effectful-core
     , en-core
     , servant
+    , servant-health
     , servant-server
     , shomei-core
     , shomei-servant

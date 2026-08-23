@@ -19,7 +19,7 @@
 --
 -- Two deliberate exemptions:
 --
---   * @GET \/ready@'s 503 carries a structured 'Shomei.Servant.DTO.ReadyResponse' probe body,
+--   * health probe failures use the structured 'Servant.Health.ProbeResult' body,
 --     not a problem document. It is a status report, not an error.
 --   * The future @POST \/oauth\/token@ endpoint must use RFC 6749 §5.2's
 --     @{"error":"invalid_grant",…}@ shape, which OAuth2 clients require. That surface belongs

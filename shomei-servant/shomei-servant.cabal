@@ -35,18 +35,43 @@ library
   import:          warnings, shared
   hs-source-dirs:  src
   exposed-modules:
-    Shomei.Servant.API
+    Shomei.Account.Admin.Api
+    Shomei.Account.Api
+    Shomei.Account.Dto
+    Shomei.Account.Handler
+    Shomei.Account.User.Dto
+    Shomei.Audit.Api
+    Shomei.Audit.Dto
+    Shomei.Audit.Handler
+    Shomei.Authorization.Api
+    Shomei.Authorization.Handler
+    Shomei.Delegation.Handler
+    Shomei.Mfa.Api
+    Shomei.Mfa.Dto
+    Shomei.Mfa.Handler
+    Shomei.OAuth.Api
+    Shomei.OAuth.Handler
+    Shomei.Passkey.Api
+    Shomei.Passkey.Dto
+    Shomei.Passkey.Handler
+    Shomei.Servant.Api
     Shomei.Servant.Auth
     Shomei.Servant.Authz
     Shomei.Servant.Cookie
-    Shomei.Servant.DTO
     Shomei.Servant.Error
-    Shomei.Servant.Handlers
     Shomei.Servant.Middleware
     Shomei.Servant.OAuth
     Shomei.Servant.Oidc
     Shomei.Servant.OpenApi
+    Shomei.Servant.PreHandler
     Shomei.Servant.Seam
+    Shomei.Servant.Server
+    Shomei.Session.Admin.Api
+    Shomei.Session.Api
+    Shomei.Session.Dto
+    Shomei.Session.Handler
+    Shomei.SigningKey.Api
+    Shomei.SigningKey.Handler
 
   build-depends:
     , aeson
@@ -108,6 +133,7 @@ test-suite shomei-servant-openapi-test
     , QuickCheck
     , quickcheck-instances
     , servant
+    , servant-health
     , servant-openapi-hs
     , servant-server
     , shomei-servant
@@ -130,6 +156,8 @@ test-suite shomei-servant-test
     , http-client
     , http-types
     , jose
+    , servant
+    , servant-health
     , servant-server
     , shomei-core
     , shomei-jwt

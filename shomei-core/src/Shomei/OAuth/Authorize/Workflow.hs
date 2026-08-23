@@ -5,7 +5,7 @@
 -- the @client_id@ to an active 'OAuthClient', and it checked the presented @redirect_uri@ against
 -- that client's registered list by exact string equality. Those two checks decide whether an error
 -- may be /redirected/ at all, which is an HTTP-shape decision — see the two validation regimes in
--- "Shomei.Servant.Handlers". Everything else — PKCE policy, scope policy, minting and storing the
+-- "Shomei.OAuth.Handler". Everything else — PKCE policy, scope policy, minting and storing the
 -- code, auditing it — is here.
 --
 -- __Errors here are not 'Shomei.Error.AuthError'.__ Each one becomes an @error=@ parameter on a

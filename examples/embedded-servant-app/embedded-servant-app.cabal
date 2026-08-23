@@ -33,6 +33,7 @@ library
   build-depends:
     , aeson
     , base            >=4.18 && <5
+    , servant-health  >=0.1  && <0.2
     , servant-server
     , shomei-core
     , shomei-servant
@@ -63,6 +64,7 @@ test-suite embedded-servant-app-test
     , embedded-servant-app
     , http-client
     , http-types
+    , servant-health
     , shomei-client
     , shomei-core
     , shomei-jwt

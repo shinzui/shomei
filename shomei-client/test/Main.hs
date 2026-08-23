@@ -11,7 +11,10 @@ import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant.Client (ClientError (FailureResponse), responseStatusCode)
+import Servant.Health (ProbeCheck, ProbeVerdict (Healthy))
+import Shomei.Account.Dto (SignupRequest (..), SignupResponse (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
+import Shomei.Account.User.Dto (UserResponse (..))
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
@@ -19,18 +22,15 @@ import Shomei.Id (parseId)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
-import Shomei.Servant.DTO
-  ( LoginRequest (..),
-    LoginResponse (..),
-    RefreshRequest (..),
-    SignupRequest (..),
-    SignupResponse (..),
-    TokenPairResponse (..),
-    UserResponse (..),
-  )
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Session.Dto
+  ( LoginRequest (..),
+    LoginResponse (..),
+    RefreshRequest (..),
+    TokenPairResponse (..),
+  )
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -59,7 +59,7 @@ tests =
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
-          testWithApplication (pure (application env)) \port -> do
+          testWithApplication (pure (application env healthyProbe healthyProbe)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
             su <-
@@ -102,6 +102,9 @@ tests =
     password = "correct horse battery staple" :: Text
     -- A well-formed session id that belongs to nobody: the 403 fires before any lookup.
     straySessionId = "session_01h455vb4pex5vsknk084sn02q" :: Text
+
+healthyProbe :: ProbeCheck
+healthyProbe = pure Healthy
 
 -- | The route was reached and the admin gate refused it. A 404 would mean the client built a
 -- path the server does not serve; a 405, that it used the wrong verb.

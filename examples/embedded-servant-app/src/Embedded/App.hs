@@ -26,12 +26,13 @@ import Servant
     type (:<|>) ((:<|>)),
     type (:>),
   )
+import Servant.Health (ProbeCheck)
 import Servant.Server (Handler)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
 import Shomei.Prelude
-import Shomei.Servant.API (ShomeiRoutes)
+import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, Authenticated)
-import Shomei.Servant.Handlers (shomeiRoutes)
+import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env)
 import Shomei.Server.Boot (authContext, seamEnv)
 
@@ -45,7 +46,7 @@ data Project = Project
 
 -- | The host application's API: the whole Shōmei route tree ('ShomeiRoutes' already carries
 -- the @\/v1@ prefix on its application routes and serves @\/.well-known\/jwks.json@,
--- @\/health@, @\/ready@ at the root, so it is mounted directly, not under an extra prefix),
+-- @\/health\/{live,ready}@ at the root, so it is mounted directly, not under an extra prefix),
 -- plus an app-owned @\/projects@ route guarded by the same 'Authenticated' combinator.
 type AppAPI =
   NamedRoutes ShomeiRoutes
@@ -54,17 +55,17 @@ type AppAPI =
 
 -- | Serve 'AppAPI' reusing @shomei-server@'s assembly and auth 'Context', serving the static
 -- passkey-demo assets from the default @www@ directory (resolved relative to the process CWD).
-embeddedApplication :: Env -> Application
+embeddedApplication :: Env -> ProbeCheck -> ProbeCheck -> Application
 embeddedApplication = embeddedApplicationWith "www"
 
 -- | As 'embeddedApplication', but with the static-assets directory given explicitly (the
 -- executable reads it from @SHOMEI_DEMO_WWW@ so the demo can be launched from any directory).
-embeddedApplicationWith :: FilePath -> Env -> Application
-embeddedApplicationWith wwwDir env =
+embeddedApplicationWith :: FilePath -> Env -> ProbeCheck -> ProbeCheck -> Application
+embeddedApplicationWith wwwDir env liveness readiness =
   serveWithContext
     (Proxy @AppAPI)
     (authContext senv)
-    (shomeiRoutes senv :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
+    (shomeiRoutes senv liveness readiness :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
   where
     senv = seamEnv env
 

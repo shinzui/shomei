@@ -52,6 +52,7 @@ import Network.HTTP.Client
 import Network.HTTP.Types (Header, status200, statusCode)
 import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
+import Servant.Health (ProbeCheck, ProbeVerdict (Healthy))
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
 import Shomei.Account.User.Domain (NewUser (..), User (..))
@@ -104,7 +105,7 @@ tests =
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
-          testWithApplication (pure (application env)) (scenario pool),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
@@ -114,7 +115,7 @@ tests =
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedServiceAccount pool
-          testWithApplication (pure (application env)) (oauthScenario pool clientId),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
@@ -126,7 +127,7 @@ tests =
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedOAuthClient pool
-          testWithApplication (pure (application env)) (oidcScenario clientId),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
@@ -159,7 +160,7 @@ tests =
                     extraClaims = mempty
                   }
           AccessToken opTok <- either (assertFailure . ("could not sign the operator token: " <>) . show) pure =<< signAccessToken keys.signingKey opClaims
-          testWithApplication (pure (application env)) (exchangeScenario pool clientId opTok),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (exchangeScenario pool clientId opTok),
       testCase "EP-7: enroll TOTP → verify → login(mfa) → complete → recovery codes → audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
@@ -169,7 +170,7 @@ tests =
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
-          testWithApplication (pure (application env)) (totpScenario pool),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (totpScenario pool),
       testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
@@ -195,8 +196,11 @@ tests =
                     }
                 cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
                 env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
-            testWithApplication (pure (application env)) (webhookScenario captured whSecret)
+            testWithApplication (pure (application env healthyProbe healthyProbe)) (webhookScenario captured whSecret)
     ]
+
+healthyProbe :: ProbeCheck
+healthyProbe = pure Healthy
 
 -- | EP-8 against the real server: a signup + verify-email request delivered over the webhook
 -- transport produces one signed @email_verification_requested@ POST whose token, replayed at
@@ -731,8 +735,8 @@ scenario pool port = do
   assertBool "jwks has keys[].kid" (jwksHasKid jwks)
   assertBool "jwks has no private 'd'" (not (hasKeyDeep "d" jwks))
 
-  -- (j) health → 200.
-  (hStatus, _) <- getJSON mgr port "/health" []
+  -- (j) liveness → 200.
+  (hStatus, _) <- getJSON mgr port "/health/live" []
   hStatus @?= 200
   where
     email = "ada@example.com" :: Text

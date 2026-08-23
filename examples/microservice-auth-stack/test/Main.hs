@@ -48,6 +48,8 @@ import Network.HTTP.Types
   )
 import Network.Wai (Application, responseLBS)
 import Network.Wai.Handler.Warp (testWithApplication)
+import Servant.Health (ProbeVerdict (Healthy))
+import Shomei.Account.Dto (SignupRequest (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
@@ -55,15 +57,10 @@ import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
-import Shomei.Servant.DTO
-  ( LoginRequest (..),
-    LoginResponse (..),
-    SignupRequest (..),
-    TokenPairResponse (..),
-  )
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Session.Dto (LoginRequest (..), LoginResponse (..), TokenPairResponse (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Test.Tasty (DependencyType (AllFinish), TestTree, defaultMain, dependentTestGroup, testGroup)
@@ -89,7 +86,7 @@ main =
     limiter <- newHashingLimiter 2
     let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
         env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
-    testWithApplication (pure (application env)) \authPort -> do
+    testWithApplication (pure (application env (pure Healthy) (pure Healthy))) \authPort -> do
       mgr <- newManager defaultManagerSettings
       let jwksUrl = "http://127.0.0.1:" <> show authPort <> "/.well-known/jwks.json"
       jwksBytes <- fetchBody mgr jwksUrl

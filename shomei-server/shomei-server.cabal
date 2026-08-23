@@ -34,6 +34,7 @@ library
   import:          warnings, shared
   hs-source-dirs:  src
   exposed-modules:
+    Shomei.Health.Server
     Shomei.Notify
     Shomei.Server.App
     Shomei.Server.Boot
@@ -224,3 +225,24 @@ test-suite shomei-server-test
     , time
     , wai
     , warp
+
+test-suite shomei-health-test
+  import:         warnings, shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test-health
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , bytestring
+    , hasql-pool
+    , http-client
+    , servant-health
+    , servant-health:testkit
+    , shomei-core
+    , shomei-jwt
+    , shomei-migrations:test-support
+    , shomei-postgres
+    , shomei-server
+    , tasty
+    , tasty-hunit

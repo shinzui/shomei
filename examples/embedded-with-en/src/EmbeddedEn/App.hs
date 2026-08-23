@@ -54,9 +54,10 @@ import Servant
     type (:<|>) ((:<|>)),
     type (:>),
   )
-import Shomei.Servant.API (ShomeiRoutes)
+import Servant.Health (ProbeCheck)
+import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, Authenticated)
-import Shomei.Servant.Handlers (shomeiRoutes)
+import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env)
 import Shomei.Server.Boot (authContext, seamEnv)
 
@@ -95,7 +96,7 @@ data GrantResponse = GrantResponse
   deriving anyclass (ToJSON)
 
 -- | The host API: the whole Shōmei route tree (already carrying @\/v1@ on its application
--- routes and serving @\/.well-known\/jwks.json@, @\/health@, @\/ready@ at the root), plus the
+-- routes and serving @\/.well-known\/jwks.json@ and @\/health\/{live,ready}@ at the root), plus the
 -- en-guarded business routes and the demo grant route.
 type AppAPI =
   NamedRoutes ShomeiRoutes
@@ -105,12 +106,12 @@ type AppAPI =
 
 -- | Serve 'AppAPI', reusing @shomei-server@'s assembly and auth 'Context', with en running
 -- over the shared tuple 'IORef'.
-embeddedEnApplication :: Env -> IORef [Tuple] -> Application
-embeddedEnApplication env tuples =
+embeddedEnApplication :: Env -> ProbeCheck -> ProbeCheck -> IORef [Tuple] -> Application
+embeddedEnApplication env liveness readiness tuples =
   serveWithContext
     (Proxy @AppAPI)
     (authContext senv)
-    (shomeiRoutes senv :<|> getProject enEnv :<|> putProject enEnv :<|> grantHandler enEnv)
+    (shomeiRoutes senv liveness readiness :<|> getProject enEnv :<|> putProject enEnv :<|> grantHandler enEnv)
   where
     senv = seamEnv env
     enEnv = mkEnEnv tuples

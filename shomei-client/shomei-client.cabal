@@ -58,6 +58,7 @@ test-suite shomei-client-test
     , http-client
     , http-types
     , servant-client
+    , servant-health
     , shomei-client
     , shomei-core
     , shomei-jwt

@@ -74,7 +74,7 @@ import Shomei.SigningKey.Signer (TokenSigner)
 import Shomei.Time.Store (Clock, now)
 
 -- | How a client completes an MFA challenge. Exactly one arm is populated by the HTTP layer's
--- 'Shomei.Servant.DTO.MfaCompleteRequest' decoder: 'MfaPasskey' is a WebAuthn assertion,
+-- 'Shomei.Mfa.Dto.MfaCompleteRequest' decoder: 'MfaPasskey' is a WebAuthn assertion,
 -- 'MfaTotp' a six-digit code, 'MfaRecoveryCode' a single-use recovery code.
 data MfaCompletion
   = MfaPasskey Value
