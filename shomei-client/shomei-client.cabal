@@ -38,9 +38,10 @@ library
     , http-api-data
     , http-client
     , http-client-tls
-    , servant
-    , servant-client
+    , servant              >=0.20.3 && <0.21
+    , servant-client       >=0.20.3 && <0.21
     , servant-client-core
+    , servant-health       >=0.1    && <0.2
     , shomei-core
     , shomei-servant
     , text

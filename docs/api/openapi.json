@@ -1326,7 +1326,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1334,7 +1336,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -1489,7 +1491,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1497,7 +1501,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -1559,7 +1563,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1567,7 +1573,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -1699,7 +1705,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1707,7 +1715,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -1769,7 +1777,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1777,7 +1787,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -1890,7 +1900,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1898,7 +1910,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -1982,7 +1994,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -1990,7 +2004,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2097,7 +2111,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2105,7 +2121,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2242,7 +2258,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2250,7 +2268,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2363,7 +2381,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2371,7 +2391,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2478,7 +2498,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2486,7 +2508,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2579,7 +2601,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2587,7 +2611,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2671,7 +2695,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2679,7 +2705,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -2799,7 +2825,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2807,7 +2835,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -2875,7 +2903,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -2883,7 +2913,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -3206,7 +3236,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3214,7 +3246,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -3251,7 +3283,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3259,7 +3293,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "404": {
                         "content": {
@@ -3444,7 +3478,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3452,7 +3488,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -3489,7 +3525,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3497,7 +3535,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -3568,7 +3606,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3576,7 +3616,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "404": {
                         "content": {
@@ -3660,7 +3700,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3668,7 +3710,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "404": {
                         "content": {
@@ -3860,6 +3902,8 @@
                                             "enum": [
                                                 "missing_token",
                                                 "token_invalid",
+                                                "session_expired",
+                                                "session_revoked",
                                                 "invalid_login"
                                             ],
                                             "type": "string"
@@ -3868,7 +3912,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, invalid_login."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked, invalid_login."
                     }
                 },
                 "security": [
@@ -3905,7 +3949,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3913,7 +3959,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     }
                 },
                 "security": [
@@ -3948,7 +3994,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -3956,7 +4004,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -4266,7 +4314,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -4274,7 +4324,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "404": {
                         "content": {
@@ -4464,6 +4514,8 @@
                                             "enum": [
                                                 "missing_token",
                                                 "token_invalid",
+                                                "session_expired",
+                                                "session_revoked",
                                                 "totp_code_invalid",
                                                 "recovery_code_invalid"
                                             ],
@@ -4473,7 +4525,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, totp_code_invalid, recovery_code_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked, totp_code_invalid, recovery_code_invalid."
                     },
                     "403": {
                         "content": {
@@ -4555,7 +4607,9 @@
                                         "code": {
                                             "enum": [
                                                 "missing_token",
-                                                "token_invalid"
+                                                "token_invalid",
+                                                "session_expired",
+                                                "session_revoked"
                                             ],
                                             "type": "string"
                                         }
@@ -4563,7 +4617,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
                     },
                     "403": {
                         "content": {
@@ -4693,6 +4747,8 @@
                                             "enum": [
                                                 "missing_token",
                                                 "token_invalid",
+                                                "session_expired",
+                                                "session_revoked",
                                                 "totp_code_invalid"
                                             ],
                                             "type": "string"
@@ -4701,7 +4757,7 @@
                                 }
                             }
                         },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, totp_code_invalid."
+                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked, totp_code_invalid."
                     },
                     "403": {
                         "content": {

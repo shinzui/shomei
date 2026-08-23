@@ -63,7 +63,8 @@ library
     , network
     , process
     , ram
-    , servant-server
+    , servant-health        >=0.1  && <0.2
+    , servant-server        >=0.20.3 && <0.21
     , shomei-core
     , shomei-jwt
     , shomei-migrations
@@ -210,6 +211,8 @@ test-suite shomei-server-test
     , http-client
     , http-types
     , network
+    , servant-health
+    , servant-health:testkit
     , shomei-core
     , shomei-jwt
     , shomei-migrations:test-support

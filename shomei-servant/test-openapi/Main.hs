@@ -78,6 +78,9 @@ spec = do
     it "covers exactly 43 paths" $
       pathCount `shouldBe` 43
 
+    it "covers the exact served method and path inventory" $
+      sort (map fst operations) `shouldBe` expectedOperations
+
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
     it "declares the OAuthError schema" $
       (lookupTop "components" >>= field "schemas" >>= field "OAuthError") `shouldSatisfy` isJust
@@ -204,8 +207,63 @@ spec = do
     operations =
       [ (Key.toText method <> " " <> Key.toText path, op)
       | (path, Object item) <- KM.toList paths,
-        (method, Object op) <- KM.toList item
+        (method, Object op) <- KM.toList item,
+        method `elem` operationMethods
       ]
+
+    operationMethods = ["get", "put", "post", "delete", "options", "head", "patch", "trace"]
+
+    expectedOperations =
+      sort
+        [ "delete /v1/admin/sessions/{sessionId}",
+          "delete /v1/admin/users/{userId}",
+          "delete /v1/admin/users/{userId}/roles/{role}",
+          "delete /v1/admin/users/{userId}/sessions",
+          "delete /v1/auth/impersonate",
+          "delete /v1/auth/passkeys/{passkeyId}",
+          "delete /v1/auth/totp",
+          "get /.well-known/jwks.json",
+          "get /.well-known/openid-configuration",
+          "get /health",
+          "get /oauth/authorize",
+          "get /oauth/userinfo",
+          "get /openapi.json",
+          "get /ready",
+          "get /v1/admin/audit/events",
+          "get /v1/admin/users",
+          "get /v1/admin/users/{userId}",
+          "get /v1/admin/users/{userId}/sessions",
+          "get /v1/auth/me",
+          "get /v1/auth/passkeys",
+          "get /v1/auth/recovery-codes",
+          "get /v1/auth/session",
+          "post /oauth/introspect",
+          "post /oauth/revoke",
+          "post /oauth/token",
+          "post /v1/admin/users/{userId}/password-reset",
+          "post /v1/admin/users/{userId}/reinstate",
+          "post /v1/admin/users/{userId}/suspend",
+          "post /v1/auth/impersonate",
+          "post /v1/auth/login",
+          "post /v1/auth/login/passkey/begin",
+          "post /v1/auth/login/passkey/complete",
+          "post /v1/auth/logout",
+          "post /v1/auth/mfa/complete",
+          "post /v1/auth/passkeys/register/begin",
+          "post /v1/auth/passkeys/register/complete",
+          "post /v1/auth/password-reset/confirm",
+          "post /v1/auth/password-reset/request",
+          "post /v1/auth/password/change",
+          "post /v1/auth/recovery-codes",
+          "post /v1/auth/refresh",
+          "post /v1/auth/service-token",
+          "post /v1/auth/signup",
+          "post /v1/auth/totp/enroll",
+          "post /v1/auth/totp/verify",
+          "post /v1/auth/verify-email/confirm",
+          "post /v1/auth/verify-email/request",
+          "put /v1/admin/users/{userId}/roles/{role}"
+        ]
 
     -- Every problem-document response: its operation label + status, and the `code` enum it
     -- narrows the Problem schema to.

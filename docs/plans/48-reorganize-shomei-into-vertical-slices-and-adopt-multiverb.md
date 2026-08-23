@@ -4,7 +4,7 @@ slug: reorganize-shomei-into-vertical-slices-and-adopt-multiverb
 title: "Reorganize shomei into vertical slices and adopt MultiVerb"
 kind: exec-plan
 created_at: 2026-07-09T14:41:54Z
-intention: "intention_01kx3mms1zevyvwvaspxcrm3cd"
+intention: "intention_01m0r2mprpep1s12w89mb6hab5"
 ---
 
 # Reorganize shomei into vertical slices and adopt MultiVerb
@@ -15,1394 +15,1460 @@ Decision Log, and Outcomes & Retrospective must be kept up to date as work proce
 
 ## Purpose / Big Picture
 
-Shōmei is a Haskell authentication toolkit. It ships as a set of `cabal` packages under
-`/Users/shinzui/Keikaku/bokuno/shomei`: a transport-agnostic core (`shomei-core`), a JWT
-package (`shomei-jwt`), a WebAuthn package (`shomei-webauthn`), a PostgreSQL adapter layer
-(`shomei-postgres`), a Servant HTTP layer (`shomei-servant`), a standalone executable
-(`shomei-server`), and a generated client (`shomei-client`). It is consumed as a library by
-several sibling services (meibo, kawa, nagare, kanmon, kikan).
+Shōmei is not yet adopted, so this is the point at which to make its public Haskell and HTTP
+APIs coherent without compatibility shims. After this work, the repository is organized by
+authentication concept inside its existing package boundaries, the top-level Servant API is a
+thin composition of per-concept `NamedRoutes` records, and every expected status an operation
+owns is visible in its route type. A JSON endpoint uses `MultiVerb` when it can return an
+operation-owned non-success status, including a typed 503 from a store or required dependency.
+Only genuinely in-process, cannot-fail, single-status routes remain ordinary `Get`, `Post`, or
+`Verb` routes; `Raw` and streaming routes keep their native terminal combinators. This plan does
+not introduce `MultiVerb1` merely for uniformity.
 
-Two things about shomei's HTTP surface fall short of the fleet-wide Servant conventions
-recorded in `haskell-jitsurei/api/servant-routes.md` (the canonical best-practices document
-this plan implements; it is registered in the mori registry under the key
-`api-servant-routes`). This plan closes both gaps and, deliberately, leaves alone the one
-thing shomei already does right.
+The change has four observable benefits.
 
-First, **every terminal route in `shomei-servant/src/Shomei/Servant/API.hs` ends in a plain
-verb** — `Post '[JSON] X`, `Verb 'POST 202 '[JSON] NoContent`, `Get '[JSON] X` — and every
-error is *thrown* as a `ServerError` from inside the handler (through
-`Shomei.Servant.Seam.runAuth`, which calls `Shomei.Servant.Error.authErrorToServerError`).
-Because the error statuses are produced by a thrown exception rather than declared in the
-route type, they appear nowhere in the generated OpenAPI document
-(`docs/api/openapi.json`), nowhere in the generated client's result type
-(`shomei-client`), and nothing forces a handler to actually be able to produce them. After
-this change, each operation's response statuses are a **type-level list** (`MultiVerb`), the
-handler returns a **plain sum value** (one constructor per status) instead of throwing, and
-the OpenAPI document and the Haskell client both gain the error statuses as first-class
-facts. You will see this working by regenerating `docs/api/openapi.json` and observing new
-`400`/`404`/`409`/`503` response entries under each operation, and by driving the running
-server with `curl` to see a duplicate signup answer `409` with a typed JSON envelope and a
-malformed request body answer `400` with *the same* envelope shape rather than Servant's
-default plain-text body.
+First, a maintainer changing passkeys, sessions, OAuth, TOTP, or accounts can work in one
+concept-shaped module subtree instead of editing large layer-first modules such as
+`Shomei.Servant.API`, `Shomei.Servant.DTO`, and `Shomei.Servant.Handlers`. Cabal packages remain
+the architectural layer boundaries: domain and workflows stay in `shomei-core`, PostgreSQL
+interpreters stay in `shomei-postgres`, and HTTP types and handlers stay in `shomei-servant`.
+Only the module layout within each package becomes concept-first.
 
-Second, **`shomei-core` is organized layer-first**: `Shomei/Domain/*.hs`,
-`Shomei/Effect/*.hs`, `Shomei/Workflow/*.hs`, and (in `shomei-postgres`)
-`Shomei/Postgres/*.hs`. Everything about "the passkey concept" is smeared across
-`Shomei/Domain/Passkey.hs`, `Shomei/Effect/PasskeyStore.hs`,
-`Shomei/Effect/PendingCeremonyStore.hs`, `Shomei/Postgres/PasskeyStore.hs`,
-`Shomei/Workflow/Passkey.hs`, and `Shomei/Workflow/Mfa.hs`. The convention says organize by
-domain concept, not by layer, with the layer as the *leaf* of the module path. This plan
-moves the modules that genuinely belong to one concept under that concept's prefix (for
-example `Shomei/Passkey/Domain.hs`, `Shomei/Passkey/Store.hs`, `Shomei/Passkey/Workflow.hs`)
-and, crucially, is **honest that shomei is a weaker fit for full vertical slicing than a
-typical aggregate-shaped service** — a large fraction of its modules are cross-cutting
-toolkit code (claims, tokens, JWT, crypto, the shared error sum, the shared port stack) with
-no single owning concept, and those stay exactly where they are. The section
-[The vertical-slice analysis](#the-vertical-slice-analysis) works this out module by module.
+Second, expected operation failures become ordinary typed values. For an operation such as signup,
+the route type declares its `201` success plus the shared application error tail, including its
+`400`, `409`, `500`, and `503` outcomes; the handler returns a named result sum; the server,
+generated Haskell client, and OpenAPI document all use that same declaration. Authentication,
+authorization, request-decoding, and rate-limiting failures happen before the handler and remain
+centralized. Known dependency unavailability is an expected 503 value; genuinely unexpected
+exceptions remain at the fault boundary. A route is not converted to `MultiVerb` solely because a
+pre-handler or unexpected-fault path can reject the request.
 
-**What this plan does NOT touch, and why.** `Shomei/Servant/API.hs` is already a
-`NamedRoutes` record (`ShomeiAPI`) with the auth combinator on the individual field — it was
-the model for the convention's "auth goes on the field, not the record" rule, and the
-document cites it. It is not converted; it is only edited to change each field's terminal
-verb into a `MultiVerb`. The file contains two `:<|>` operators, inside the `AppAPI` type at
-the bottom. Those are the **embeddability example** — mounting the whole `ShomeiAPI` record
-alongside other routes in a host application — which is the one place `:<|>` is *correct* per
-the convention (the alternatives have distinct types, so there is no misordering hazard).
-**Leave the `AppAPI` `:<|>` operators alone. They are not a defect. Do not "fix" them.**
+Third, all compatibility surfaces that exist only because earlier plans assumed adopters are
+removed rather than carried into the initial API. There will be no deprecated re-export modules,
+old client signatures, email-as-login fallback, ambiguous MFA decoder, legacy service-token or
+impersonation endpoints, legacy password-hash decoder, plaintext signing-key fallback, or unused
+store operation retained for source compatibility. The supported machine-to-machine and delegation
+paths are the standard OAuth `client_credentials`, token-exchange, introspection, and revocation
+flows.
 
-**Shōmei already derives its OpenAPI document the right way, and this plan must not regress it —
-only complete it.** Unlike a service that needs OpenAPI *introduced*, shomei already meets most
-of the canonical recipe (`haskell-jitsurei/api/openapi-from-types.md`, the companion to the
-servant-routes document): `shomei-servant/src/Shomei/Servant/OpenApi.hs` derives the document
-from `Proxy (NamedRoutes ShomeiAPI)` by `toOpenApi` (never hand-written), confines its orphan
-`ToSchema`/`ToParamSchema`/`HasOpenApi` instances to that one module under `-Wno-orphans`,
-assigns stable `operationId`s (`withOperationIds`), enriches title/version/description/servers,
-emits the document from a dedicated executable (`shomei-openapi`,
-`shomei-servant/app/openapi/Main.hs`), checks the artifact in at `docs/api/openapi.json`, and
-pins the **`shinzui` forks — `servant-openapi` and `openapi-hs`, not Hackage
-`servant-openapi3`/`openapi3`** (verify: the `cabal.project` `source-repository-package` blocks
-for `github.com/shinzui/servant-openapi.git` and `github.com/shinzui/openapi-hs.git`, and
-`shomei-servant.cabal` depending on `servant-openapi`/`openapi-hs`). That fork pin is
-load-bearing precisely because this plan adds `MultiVerb`: Hackage `servant-openapi3` has no
-`HasOpenApi` instance for `MultiVerb`, so on it every error response the conversion declares
-would be silently dropped from the document. Shomei is correctly on the fork, which is why the
-`MultiVerb` conversion below will actually *surface* the new statuses rather than lose them — do
-not "simplify" the pin back to Hackage.
+Fourth, Shōmei stops owning bespoke probe types and status mapping. It mounts the released
+`servant-health` `HealthApi` at `/health`, supplies Shōmei-specific liveness and readiness checks,
+uses the package's check combinators and path constants, and runs its conformance test kit. This
+centralizes the easy-to-swap 200/503 `AsUnion` mapping and makes the runtime contract the fleet
+standard: `GET /health/live` and `GET /health/ready`.
 
-Because the `MultiVerb` conversion changes the API *type* the document is derived from (it adds
-response alternatives to every operation), the generated document **will** change, and that
-change is the visible proof the conversion worked: `docs/api/openapi.json` gains
-`400/401/403/404/409/429/503` responses under each operation. Milestone 3 regenerates and
-reviews that diff. Where shomei falls *short* of the recipe is narrow, and Milestone 3 closes
-it: the `shomei-openapi` executable does not sort keys (so a regenerated artifact can reshuffle
-rather than show a clean diff), there is no CI drift check, and the conformance test asserts a
-path *count* and `ToJSON`/`ToSchema` agreement but not the exact path *set* nor that every
-operation declares its error responses. Those are strengthened, not rebuilt.
+The finished behavior is visible without reading the implementation:
+
+* `docs/api/openapi.json` is regenerated from the exact API proxy served by `shomei-server`.
+  Multi-outcome handlers list all of their expected status codes and response media types.
+* Application errors follow RFC 9457, the current successor to RFC 7807. They use
+  `application/problem+json` and a typed `ProblemDetails` body containing `type`, `title`,
+  `status`, optional `detail` and `instance`, and the Shōmei extensions `code` and `retryable`.
+  OAuth protocol errors retain their RFC 6749 shape, and both health probes retain the
+  `servant-health` status-report shape.
+* The generated Haskell client returns route-specific result sums for MultiVerb operations and
+  ordinary values for ordinary routes. It does not collapse typed error arms into `ClientError`.
+* `POST /v1/auth/service-token`, `POST /v1/auth/impersonate`, and
+  `DELETE /v1/auth/impersonate` no longer exist.
+* The old `GET /health` and `GET /ready` routes no longer exist. There are no aliases or
+  redirects; Kubernetes and examples use `GET /health/live` and `GET /health/ready`.
+* Signup requires `loginId`; login accepts `loginId` rather than an alternate email field; MFA
+  completion uses one explicitly tagged proof.
+* A clean build, all test suites, deterministic OpenAPI generation, and the Nix flake checks pass.
 
 
 ## Progress
 
-- [ ] Milestone 1 (spike): prove a single route (`signup`) can be a `MultiVerb` that still
-      emits the two `Set-Cookie` headers on success. Pin the exact servant-0.20.2 combinator
-      names for response headers by reading servant's source. Nothing else changes.
-- [ ] Milestone 2: first add a runtime dispatch test pinning the same-typed admin families
-      (`adminSuspendUser`/`adminReinstateUser`/`adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset`,
-      all `AuthUser -> UserId -> Handler NoContent`; `adminGrantRole`/`adminRevokeRole`, both
-      `AuthUser -> UserId -> Text -> Handler NoContent`) each to its own handler — `NamedRoutes`
-      does not catch a same-typed transposition (falsified in meibo; see Surprises). Then add the
-      shared response vocabulary (`Shomei.Servant.Response`) and convert
-      every `ShomeiAPI` field to `MultiVerb`; rewrite the handlers to return the result sum;
-      wire `ErrorFormatters` into the server assembly. `cabal build all && cabal test all`
-      passes, the dispatch test included (OpenAPI conformance test updated in Milestone 3).
-- [ ] Milestone 3: regenerate `docs/api/openapi.json` and review the diff (new
-      `400/401/403/404/409/429/503` responses per operation); harden the `shomei-openapi`
-      executable to emit **sorted keys and a trailing newline** so the artifact is byte-diffable;
-      add a CI drift check (`cabal run shomei-openapi … && git diff --exit-code`) to
-      `.github/workflows/ci.yaml`; strengthen the conformance test
-      (`shomei-servant/test-openapi/Main.hs`) to assert the **exact 24-path set** (not just the
-      count) and that **every operation declares its error responses**, keeping the existing
-      `validateEveryToJSON` (`ToJSON` vs `ToSchema`); and fold the new typed error arms inside the
-      `shomei-client` wrappers so their public signatures — and therefore nagare — are unchanged.
-- [ ] Milestone 4: behavioral validation with `curl` against the running server (signup,
-      login, duplicate-signup 409 envelope, malformed-body 400 envelope, combinator 401), and
-      an OpenAPI regeneration diff.
-- [ ] Milestone 5: vertical-slice `shomei-core` and `shomei-postgres` along the genuine
-      concept seams (User/Account, Session, RefreshToken, Credential, Passkey, LoginAttempt,
-      Audit, Verification, PasswordReset), leaving the cross-cutting toolkit modules in place.
-      Add deprecated re-export shims for any moved module a downstream repo imports.
-- [ ] Milestone 6: vertical-slice the `shomei-servant` DTOs by concept, leaving a deprecated
-      `Shomei.Servant.DTO` re-export shim so nagare and `shomei-client` keep building. Keep
-      the `ShomeiAPI` record and the `shomei-client` field structure stable.
-- [ ] Milestone 7: reconcile this plan with roadmap plan 40
-      (`docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md`), which
-      independently claims the "universal error envelope" integration point; amend docs; note
-      remaining work in Outcomes.
+- [x] (2026-07-24) Re-audited the plan against the current working tree, current
+  `haskell-jitsurei` guidance, the Mori dependency corpus, Hackage releases, and upstream tags.
+- [x] (2026-07-24) Replaced the earlier blanket-MultiVerb and compatibility-preserving design
+  with the selective rule and breaking pre-adoption cleanup described here.
+- [x] (2026-07-24) Reviewed the error profile against RFC 9457, which obsoletes RFC 7807, and
+  corrected custom problem-type identity and the RFC/MultiVerb boundary.
+- [x] (2026-07-26) Reconciled the plan with the revised `haskell-jitsurei` API standards and the
+  released `servant-health` 0.1.0.0 source, routes, test kit, and OpenAPI cohort.
+- [x] (2026-08-23) Milestone 0: verified the released dependency cohort through Mori,
+  Hackage, and upstream tags; established a green full build and serial-test baseline; refreshed
+  the known OpenAPI authentication-code drift; tightened dependency bounds; normalized the
+  OpenAPI test stanza; and added an exact 43-path/48-operation inventory assertion. The existing
+  end-to-end admin lifecycle, session, password-reset, and role tests exercise every member of
+  the same-typed handler families. The compile-time MultiVerb and operation-owned-503 witnesses
+  are intentionally activated with the new route aliases in Milestone 4, when their assertions
+  can be true.
+- [ ] Milestone 1: delete pre-adoption compatibility surfaces before moving live code.
+- [ ] Milestone 2: reorganize `shomei-core`, `shomei-postgres`, and JWT support by concept.
+- [ ] Milestone 3: split DTOs, handlers, and route records into vertical HTTP slices.
+- [ ] Milestone 4: introduce typed problem details and selective MultiVerb result types.
+- [ ] Milestone 5: update OpenAPI derivation, the Haskell client, assemblies, and examples.
+- [ ] Milestone 6: update documentation and complete every validation gate.
 
 
 ## Surprises & Discoveries
 
-Findings from the pre-implementation audit that shape the plan. Add to this as work proceeds.
+- Observation: the repository has advanced substantially since the original version of this
+  plan. Plan 40's `/v1` mount, Problem Details formatters, method-not-allowed middleware, OpenAPI
+  endpoint, and status corrections are already implemented.
+  Evidence: `Shomei.Servant.API` now exposes 43 paths and 48 method/path operations through
+  `ShomeiRoutes`, and
+  `Shomei.Servant.Error`, `Shomei.Servant.OpenApi`, and the server middleware already contain
+  those facilities.
 
-- **2026-07-10 — `NamedRoutes` does not stop a same-typed transposition, and shomei has two such
-  families.** A claim repeated across the fleet's ExecPlans — that a `NamedRoutes` record means
-  "you cannot transpose two same-typed routes by accident" — was **falsified by experiment** in the
-  meibo service. Meibo converted to `NamedRoutes`, swapped its two genuinely same-typed handlers
-  (`byHandle`/`byCredential`, both `AuthUser -> Text -> Handler (MeiboResult PrincipalView)`), and
-  `cabal build` **succeeded**: the swap compiles, serves, and silently returns the wrong data; only
-  a runtime dispatch test caught it. (Meibo also moved a field to be first with all 43 tests still
-  green, disproving the related claim that record field order governs static-segment-versus-capture
-  precedence — servant hoists a literal segment above a sibling `Capture` regardless of declaration
-  order.) A record removes only the *positional* failure mode; a differing-typed transposition is a
-  compile error naming the field, while a same-typed transposition is caught only by a runtime
-  dispatch test. Shomei's `ShomeiAPI` has two same-typed sibling families in its admin surface:
-  five routes reduce to `AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`,
-  `adminReinstateUser`, `adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset` — the exact
-  transposition pairs are {`adminSuspendUser`, `adminReinstateUser`} at POST 204 and
-  {`adminDeleteUser`, `adminRevokeSessions`} at DELETE 204, which differ only by their static
-  segment), and two reduce to `AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`,
-  `adminRevokeRole`). The Milestone 2 handler rewrite is where one could be bound to the wrong field
-  and compile clean, so Milestone 2 now requires a runtime dispatch test pinning each admin path to
-  its own handler, written *before* the rewrite. Every non-admin route has a distinct handler type
-  (the three cookie-issuing token routes `refresh`/`mfaComplete`/`passkeyLoginComplete` all *return*
-  `WithCookies TokenPairResponse` but differ by request body, so they are distinct), so only the
-  admin families need pinning. (The `AppAPI` `:<|>` operators are unaffected: those alternatives
-  have distinct types, which is the one case where `:<|>` carries no misordering hazard.)
+- Observation: the original route count and response inventory were stale. The current surface
+  includes OAuth/OIDC, TOTP, recovery codes, passwordless passkeys, administrative operations,
+  and permission management.
+  Evidence: the committed `docs/api/openapi.json` contains 43 distinct paths and 48
+  method/path operations, rather than the earlier plan's 24 paths.
 
-- **shomei already JSON-encodes its domain errors.** `Shomei/Servant/Error.hs` builds every
-  `ServerError` with `errBody = Aeson.encode (object ["error" .= code, "message" .= msg])` and
-  `Content-Type: application/json`. So a duplicate signup *already* returns
-  `409 {"error":"login_id_taken","message":"…"}`, not Servant's plain-text default. The
-  before/after that `MultiVerb` most visibly changes is therefore twofold: (a) routing-layer
-  errors — a malformed JSON body or an unmatched route — currently return Servant's *plain*
-  body, and `ErrorFormatters` will bring them under the same envelope; and (b) the statuses
-  become visible in the OpenAPI document and the generated client instead of being an
-  invisible property of `authErrorToServerError`. The validation in Milestone 4 shows both.
+- Observation: blanket `MultiVerb1` adoption would encode the wrong architectural boundary, but
+  the earlier draft's ordinary-route exception was too broad. A store-backed route owns an
+  expected 503 even if its happy path has one payload, while auth, decoder, middleware, and
+  unexpected-fault responses remain outside the handler result.
+  Evidence: the revised `patterns/api/servant-routes.md` exempts only cannot-fail in-process
+  single-status endpoints, `Raw`, and streaming. `oauthUserinfoH`, `passkeysListH`,
+  `recoveryCodesCountH`, `passkeyLoginBeginH`, audit reads, and admin reads all execute a store or
+  another fallible port, so they are not one-status exemptions. Only JWKS and the OpenAPI document
+  are current typed, in-process, single-status operations.
 
-- **`MultiVerb` changes the generated client's result type, and that reaches nagare.** The
-  `shomei-client` wrappers in `shomei-client/src/Shomei/Client.hs` call the `genericClient`
-  field functions and today get back the plain body type
-  (`ClientM (WithCookies TokenPairResponse)` etc.). Under `MultiVerb`, `genericClient` returns
-  the *union* — the handler's result sum. nagare
-  (`nagare/cli/nagare-access/src/Nagare/Access/ShomeiClient.hs`) pattern-matches
-  `Shomei.login`/`Shomei.refresh`/`Shomei.mfaComplete` results as `Either ClientError X` with
-  `X` the plain DTO. To keep nagare source-compatible, the `shomei-client` wrappers must fold
-  the union's error arms back into a `Left`-shaped failure and keep their existing signatures.
-  This is a real, load-bearing part of Milestone 3, not an afterthought.
+- Observation: the current route standard now makes the MultiVerb scope explicit rather than
+  requiring it literally for every terminal combinator.
+  Evidence: `patterns/api/servant-routes.md` names cannot-fail in-process single-status routes,
+  `Raw`, and streaming as the three recorded exemptions while keeping `NamedRoutes`
+  unconditional. Shōmei can therefore avoid meaningless one-arm unions without creating a
+  service-specific exception to the fleet standard.
 
-- **shomei is a genuinely poor fit for full vertical slicing**, and the plan says so out loud
-  (see [The vertical-slice analysis](#the-vertical-slice-analysis)). Its authentication
-  "aggregate" is not partitioned the way meibo's Principal/Team/Role is: a single `signup` or
-  `login` workflow atomically touches User, Credential, Session, RefreshToken, LoginAttempt,
-  and Audit-Event state through one `AuthUnitOfWork` port. Many candidate concepts are a lone
-  domain type plus one store plus one Postgres adapter and no routes of their own. And a large
-  share of the code is cross-cutting toolkit (Claims, Token, Jwt, Crypto, Error, Config,
-  Id, the in-memory interpreter). The plan slices the concepts that are genuinely cohesive and
-  explicitly parks the rest.
+- Observation: the current health standard supersedes Shōmei's custom `/health` and `/ready`
+  surface with the released `servant-health` package.
+  Evidence: `servant-health` 0.1.0.0 is the sole normal Hackage version, upstream tag
+  `v0.1.0.0` resolves to commit `c70bffd`, and the local checkout's public source is unchanged
+  from that tag. `Servant.Health` owns `ProbeStatus`, `ProbeResponses`, the manual same-body
+  `AsUnion`, `HealthApi`, and `healthServer`; `Servant.Health.Check`,
+  `Servant.Health.Paths`, and the public `testkit` sublibrary own the reusable hardening,
+  paths, and wiring proof. Mori now registers it canonically as `shinzui/servant-health` and
+  reports no registered dependents, so there is no coordinated consumer migration to preserve.
 
-- **shomei's OpenAPI setup is already forks-based and mostly recipe-complete — the fork pin is
-  what makes the `MultiVerb` conversion safe.** `cabal.project` pins the `shinzui` forks
-  (`servant-openapi` and `openapi-hs`), *not* Hackage `servant-openapi3`/`openapi3`; the
-  `shinzui/servant-openapi` fork carries the `HasOpenApi` instance for `MultiVerb` (its own
-  `cabal` describes it as a fork of biocad `servant-openapi3` retargeted at OpenAPI 3.1 via
-  `openapi-hs`). This is why adding `MultiVerb` here will *surface* the error responses in the
-  document rather than silently drop them, as it would on the Hackage packages. Three small gaps
-  remain against the recipe, all closed in Milestone 3: the `shomei-openapi` executable uses
-  `encodePretty` with the default config (so keys are **not sorted** and a regenerated artifact
-  can reshuffle rather than diff cleanly — the recipe wants `confCompare = compare` and a
-  trailing newline); `.github/workflows/ci.yaml` has no step that regenerates the artifact and
-  fails on drift; and `test-openapi/Main.hs` asserts the path *count* (24) but not the exact path
-  *set*, and does not assert that every operation declares its error responses.
+- Observation: adopting `servant-health` is a deliberate breaking cleanup, not an aliasing
+  exercise.
+  Evidence: Shōmei currently serves `GET /health` with custom `HealthResponse` and `GET /ready`
+  with custom `ReadyResponse`; the package contract serves `/health/live` and `/health/ready`,
+  rejects bare `/health`, and fixes the body to exactly `status`, `check`, and `failingSince`.
+  Shōmei has no adopters, so the old routes, DTOs, handlers, schemas, client fields, and examples
+  can be deleted instead of translated or redirected.
 
-- **Roadmap plan 40 already owns the "error envelope" integration point.** Plans 37–47 under
-  `docs/plans/` are unimplemented roadmap (the routes still live under `/auth`, not `/v1`, and
-  no `ProblemDetails`/envelope type exists yet). Plan 40,
-  `40-api-v1-prefix-and-universal-problem-details-error-envelope.md`, is EP-3 of MasterPlan 7
-  and declares itself "the breaking-change window" for both a `/v1` prefix and a universal
-  error envelope. This plan introduces an error-envelope wire type too, so the two overlap and
-  must be reconciled (Milestone 7 and the Decision Log).
+- Observation: the current persistence interpreters cannot yet express the route standard's
+  503-versus-500 distinction.
+  Evidence: database execution failures and persisted-row reconstruction failures both become
+  `InternalAuthError`; the standalone seam then turns either into an `IOException`, so a
+  store-backed route can only fault as 500. The refactor must give known dependency
+  unavailability its own typed error while retaining 500 for corrupt data and impossible state.
+
+- Observation: RFC 9457 obsoleted RFC 7807 in July 2023, while the local guidance and current
+  Shōmei comments still use the older RFC number.
+  Evidence: RFC 9457 states the replacement explicitly and retains the
+  `application/problem+json` wire model. The plan targets RFC 9457 while remaining wire-compatible
+  with clients that describe the format as RFC 7807.
+
+- Observation: Shōmei's current `about:blank` plus a custom `code` and custom title does not
+  express custom problem identity correctly.
+  Evidence: RFC 9457 says consumers use `type` as the primary identifier and says
+  `about:blank` means there is no additional meaning beyond the HTTP status; with
+  `about:blank`, the title should be the standard reason phrase. Every Shōmei catalog entry has
+  additional semantics, so it needs a stable, documented type URI.
+
+- Observation: `servant-openapi-hs` 5.1.0 only compiles its MultiVerb `HasOpenApi` support when
+  built with `servant >= 0.20.3`.
+  Evidence: `src/Servant/OpenApi/Internal.hs` in the Mori-resolved
+  `shinzui/servant-openapi-hs` checkout guards the instances with
+  `MIN_VERSION_servant(0,20,3)`. Hackage and upstream tags contain
+  `servant-0.20.3.0`, `openapi-hs` 5.0.0, and `servant-openapi-hs` 5.1.0.
+
+- Observation: the current OpenAPI document derives success responses from route types but adds
+  handler errors through a large hand-maintained `routeErrors` table.
+  Evidence: `shomei-servant/src/Shomei/Servant/OpenApi.hs` defines `routeErrors`,
+  `baselineSpecs`, and OAuth response decorators. The handler-error portion can disappear after
+  MultiVerb; only responses emitted outside handlers still need centralized documentation.
+
+- Observation: the committed OpenAPI artifact already has pre-existing drift from the current
+  generator.
+  Evidence: on 2026-07-24,
+  `nix develop --command cabal run shomei-openapi > /tmp/shomei-plan48-openapi.json` succeeded,
+  but comparison with `docs/api/openapi.json` showed that generated protected operations now also
+  enumerate `session_expired` and `session_revoked`. The generated and committed documents still
+  agree on 43 paths and 48 method/path operations. The current
+  `shomei-servant-openapi-test` still passes all 56 examples because it checks the in-memory
+  document, not the committed golden. Milestone 0 must preserve this as a separate baseline
+  correction, and Milestone 5 must add the missing artifact-drift gate.
+
+- Observation: several compatibility paths already exist in the code even though there are no
+  adopters to protect.
+  Evidence: the source explicitly labels `loginIdFromEmail`, the optional login fields, the flat
+  MFA decoder, the three-part Argon2 format, plaintext signing keys, and
+  `DeleteExpiredCeremonies` as compatibility behavior. The service-token and bespoke
+  impersonation endpoints are documented as deprecated in favor of OAuth.
+
+- Observation: version-tolerant decoding of append-only audit events and support for standard
+  algorithms such as RS256 are not pre-adoption API shims.
+  Evidence: an audit row remains persisted state after release, and RS256 is a current
+  interoperable JWS algorithm. Those capabilities stay; misleading comments that call normal
+  behavior “legacy” should be rewritten.
+
+- Observation: this repository's database-backed test suites can contend when Cabal runs them in
+  parallel.
+  Evidence: completed ExecPlans 28, 33, 41, and 45 record green serial runs after intermittent
+  parallel failures. Final acceptance therefore sets `TASTY_NUM_THREADS=1`; it does not treat a
+  known resource-contention failure as a product regression.
+
+- Observation: the dependency and behavior baseline remained stable when implementation began on
+  2026-08-23.
+  Evidence: Hackage and upstream tags still identify Servant 0.20.3.0, `openapi-hs` 5.0.0,
+  `servant-openapi-hs` 5.1.0, and `servant-health` 0.1.0.0; `cabal build all` and the serial
+  `cabal test all` passed; and the generated document still contains exactly 43 paths and 48
+  method/path operations. The only committed-artifact drift was the already-recorded addition of
+  `session_expired` and `session_revoked` to protected-route 401 responses.
 
 
 ## Decision Log
 
-- Decision: Do not convert `Shomei/Servant/API.hs` away from `NamedRoutes`, and do not remove
-  the two `:<|>` operators in its `AppAPI` type.
-  Rationale: `ShomeiAPI` is already the convention-correct `NamedRoutes` record with the auth
-  combinator on each field; the document holds it up as the model. The `AppAPI` `:<|>`
-  operators mount the whole record alongside a host app's own routes, which is exactly the
-  case the convention names as the *correct* use of `:<|>` (distinct-typed alternatives, no
-  misordering hazard). Converting either would be churn with no benefit and would contradict
-  the source-of-truth document.
-  Date: 2026-07-09
+- Decision: Keep Cabal packages as layer boundaries and organize modules by concept within each
+  package.
+  Rationale: this follows `haskell-jitsurei/patterns/api/servant-routes.md` without creating circular
+  dependencies between domain, persistence, and transport.
+  Date: 2026-07-24.
 
-- Decision: Milestone 2 must add a runtime dispatch test for shomei's same-typed admin route
-  families, written *before* the handler rewrite.
-  Rationale: `ShomeiAPI` contains two same-typed sibling families —
-  `adminSuspendUser`/`adminReinstateUser`/`adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset`,
-  all `AuthUser -> UserId -> Handler NoContent`, and `adminGrantRole`/`adminRevokeRole`, both
-  `AuthUser -> UserId -> Text -> Handler NoContent` — whose fields differ only by a static path
-  segment. `NamedRoutes` does **not** make a swap between same-typed fields a compile error; that
-  claim was falsified by experiment in meibo (the swap compiled and served the wrong data; only a
-  runtime dispatch test caught it — see Surprises & Discoveries). Milestone 2 rewrites every handler
-  in one pass, which is exactly where an admin handler could be bound to a sibling's field and
-  compile clean, so a runtime dispatch test pinning each admin path to its own handler must exist
-  before that rewrite. No non-admin route needs it: each has a distinct handler type, so a
-  transposition elsewhere is already a compile error. There was no field-order-versus-capture claim
-  in this plan to correct.
-  Date: 2026-07-10
+- Decision: Replace the single flat `ShomeiAPI` record with a thin hierarchy of per-concept
+  `NamedRoutes` records. Several fields may mount records under the same `"v1" :> "auth"` or
+  `"v1" :> "admin"` prefix.
+  Rationale: this is the documented way to compose vertical slices while retaining named,
+  order-independent server records. Use `:<|>` only at an embedding boundary where genuinely
+  separate APIs are combined.
+  Date: 2026-07-24.
 
-- Decision: Adopt a single shared error-envelope wire type `ErrorEnvelopeWire { code, message,
-  retryable }` (matching the `en-servant` reference and meibo), superseding the ad-hoc
-  `{"error":…,"message":…}` bodies currently built in `Shomei/Servant/Error.hs`,
-  `Shomei/Servant/Auth.hs` (`csrfRejected`), and the `auditEvents` handler.
-  Rationale: The convention says `code` is the machine-readable field clients branch on and
-  `retryable` distinguishes "fix your request" from "try again"; the whole fleet uses this
-  shape. No downstream consumer parses shomei's error *body* today (nagare maps any `Left` to a
-  generic failure without reading the body), so renaming the `error` field to `code` breaks no
-  Haskell consumer. This is the moment to standardize because every route is already being
-  edited. The field rename is a visible wire change for non-Haskell clients and is called out
-  in Milestone 7's reconciliation with plan 40.
-  Date: 2026-07-09
+- Decision: Use `MultiVerb` for a normal JSON operation whenever it owns any non-success status
+  or multiple success representation/header shapes. A call to a fallible store or required
+  dependency owns a typed 503 even when the happy path has only one payload.
+  Rationale: every status the operation can intentionally answer belongs in its contract.
+  `MultiVerb1` on a total in-process one-status endpoint adds no information, but treating a
+  dependency failure as an unexpected exception hides a real 503 contract. This is the scope in
+  the revised fleet standard.
+  Date: 2026-07-26.
 
-- Decision: The success arm of a cookie-carrying route (signup, login, refresh, logout, MFA
-  complete, passkey login complete) keeps emitting the two `Set-Cookie` headers, modeled with
-  servant `MultiVerb`'s response-header support rather than by dropping `WithCookies`.
-  Rationale: The cookie transport is a security feature (EP-4/plan 31); the response must still
-  carry `Set-Cookie` on success. `MultiVerb` supports per-alternative headers. Milestone 1 is a
-  spike that proves this compiles on one route before the bulk conversion, because the exact
-  combinator spelling in servant 0.20.2 is the one real unknown in this plan.
-  Date: 2026-07-09
+- Decision: Do not use MultiVerb for a named `Raw` route, a true streaming route, or a genuinely
+  in-process, cannot-fail, single-status route. The initial typed exemption list is only
+  `GET /.well-known/jwks.json` and `GET /openapi.json`; the WAI `/metrics` endpoint is a recorded
+  `Raw`-style boundary outside the Servant proxy.
+  Rationale: those operations have no additional status contract for a response sum to express.
+  Keeping the list exact and tested prevents both blanket adoption and convenient under-modelling.
+  Date: 2026-07-26.
 
-- Decision: The tagged-union `LoginResponse` (`complete` vs `mfa_required`, both HTTP 200)
-  stays a single `Respond 200` alternative carrying `LoginResponse`; `MultiVerb` does not split
-  it into two status alternatives.
-  Rationale: Both arms are 200. The union is *within one status* and is already expressed by
-  `LoginResponse`'s hand-written `ToJSON` and the hand-written `ToSchema` (a `oneOf`) in
-  `Shomei/Servant/OpenApi.hs`. `MultiVerb` alternatives are keyed by status, so the two 200
-  shapes are not two alternatives. Both hand-written instances are preserved unchanged.
-  Date: 2026-07-09
+- Decision: Do not count auth combinator failures, request-decoder failures, rate-limiter
+  responses, method-not-allowed responses, or unexpected faults when deciding whether a
+  terminal route needs MultiVerb.
+  Rationale: these occur before or around the handler. Keep them uniform in
+  `ErrorFormatters`, auth/authorization combinators, middleware, and the top-level fault
+  boundary, and document them separately from handler-owned alternatives.
+  Date: 2026-07-24.
 
-- Decision: The `401` for a missing or invalid bearer token stays produced by the
-  `Authenticated` combinator (`Shomei/Servant/Auth.hs`), *upstream* of the handler, and is NOT
-  a `MultiVerb` response alternative. Likewise the `403 csrf_rejected` produced by the CSRF
-  gate before the token is even verified.
-  Rationale: No handler runs to *return* a combinator-raised error, so it cannot be a value in
-  the handler's result sum. `MultiVerb` can only enumerate statuses a handler produces. These
-  are documented in OpenAPI via the security scheme, not the response list. (A *domain* `401`
-  — `InvalidCredentials` from `login` — is different: the handler produces it, so it can be a
-  `MultiVerb` alternative; see Milestone 2.)
-  Date: 2026-07-09
+- Decision: Declare operation-specific pre-handler responses with pass-through Servant
+  combinators that have both `HasServer` and `HasOpenApi` instances.
+  Rationale: ordinary terminal verbs still need accurate OpenAPI documentation, but a
+  path-indexed decorator would recreate the drift-prone catalog that MultiVerb removes. Types
+  such as `PreHandlerResponses`, `CsrfProtected`, and `RateLimited` keep these responses in the
+  exact served proxy without changing the handler result.
+  Date: 2026-07-24.
 
-- Decision: Do not split the `ShomeiAPI` record into per-concept sub-records, and keep the
-  `shomei-client` field structure flat.
-  Rationale: `shomei-client`'s `genericClient` derives its record shape from `ShomeiAPI`, and
-  nagare calls the flat client functions (`Shomei.login`, `Shomei.refresh`). Splitting the
-  record into mounted sub-records would nest the client fields and break nagare's call sites for
-  no gain — the API is a single toolkit surface, not a multi-aggregate service. Vertical slicing
-  in shomei applies to `shomei-core`/`shomei-postgres` module trees and the DTO module, not the
-  route record.
-  Date: 2026-07-09
+- Decision: Use manual `AsUnion` instances for named route-result sums; do not use
+  `GenericAsUnion`.
+  Rationale: an explicit constructor-to-status mapping remains correct when two alternatives
+  carry the same body type, which is common for `ProblemDetails`.
+  Date: 2026-07-24.
 
-- Decision: For downstream compatibility use **deprecated re-export shims**, not a coordinated
-  version bump.
-  Rationale: shomei is a published library with external consumers (meibo, kawa, nagare,
-  kanmon, kikan). The only module a downstream repo imports that this plan *moves* is
-  `Shomei.Servant.DTO` (nagare imports it qualified; `shomei-client` re-exports its types). A
-  one-line `Shomei.Servant.DTO` module that re-exports the new per-concept DTO modules, carrying
-  a `{-# DEPRECATED #-}` pragma, keeps nagare and `shomei-client` building with zero changes on
-  their side and gives them a release to migrate. A coordinated bump would force simultaneous
-  edits across five repos for a mechanical rename — higher risk, no upside. Every other module a
-  downstream imports is cross-cutting and does not move (see the analysis), so it needs no shim.
-  Date: 2026-07-09
+- Decision: Give application MultiVerb routes one shared error tail covering 400, 401, 403, 404,
+  409, 422, 429, 500, and 503, while parameterizing the success status/body/headers. Protocol and
+  probe routes retain their own response vocabularies.
+  Rationale: Shōmei has one closed `AuthError` sum. A single exhaustive conversion is safer than
+  claiming a narrower list the type system cannot prove and then making a newly reachable error
+  partial. The slightly over-broad document is the explicit fleet-standard tradeoff; it does not
+  make a cannot-fail route MultiVerb.
+  Date: 2026-07-26.
 
-- Decision: Keep shomei on the `shinzui` OpenAPI forks (`servant-openapi`, `openapi-hs`) and,
-  in Milestone 3, strengthen the *existing* artifact and conformance test to the full canonical
-  recipe rather than treating any of it as new work.
-  Rationale: shomei already derives its document, checks in `docs/api/openapi.json`, has the
-  `shomei-openapi` executable, assigns stable `operationId`s, and pins the forks (whose
-  `HasOpenApi (MultiVerb …)` instance is exactly what lets this plan's new error responses reach
-  the document — on Hackage `servant-openapi3` they would silently vanish). The recipe's
-  remaining requirements it does *not* yet meet are three and small: (1) the executable must sort
-  keys (`confCompare = compare`) and end with a trailing newline so the checked-in artifact is
-  byte-diffable and a reviewer sees a real contract change, not a hash-order reshuffle; (2) CI
-  must regenerate and `git diff --exit-code` so an un-regenerated API change fails the build; and
-  (3) the conformance test must pin the *exact* path set and assert every operation declares its
-  error responses — not merely the path count. These are folded into Milestone 3, which already
-  regenerates the document and edits the conformance test, so no new milestone is needed. The
-  derivation module `Shomei/Servant/OpenApi.hs` and its `withOperationIds` are unchanged.
-  Date: 2026-07-09
+- Decision: RFC 9457 Problem Details, the current successor to RFC 7807, is the application error
+  format. OAuth endpoints retain RFC 6749 errors, and health/readiness endpoints retain
+  probe-specific payloads.
+  Rationale: RFC 9457 is the current IETF specification and explicitly allows an existing
+  domain-specific protocol error format when it is more appropriate. OAuth and probe clients
+  must receive the shapes their protocols specify.
+  Date: 2026-07-24.
 
-- Decision: `Shomei.Domain.Claims`, `Shomei.Domain.Token`, `Shomei.Domain.SigningKey`,
-  `Shomei.Error`, `Shomei.Id`, `Shomei.Config`, the whole `shomei-jwt` package, `Shomei.Crypto`,
-  `Shomei.Effect.InMemory`, and the aggregate-agnostic ports (`Clock`, `TokenGen`, `Notifier`,
-  `PasswordHasher`, `PasswordBreachChecker`, `TokenSigner`, `TokenVerifier`, `AuthUnitOfWork`)
-  are cross-cutting and are NOT moved.
-  Rationale: Each is either shared vocabulary consumed by every workflow and by downstream
-  repos (Claims, Token, Error, Id, Config, SigningKey), or infrastructure with no single owning
-  concept (Crypto, InMemory, the ports). Moving them would break downstream imports for a change
-  the convention does not ask for — the convention slices *concept-owned* modules, and these
-  have no owning concept. This is the honest core of shomei being a partial-slice case.
-  Date: 2026-07-09
+- Decision: Mount `Servant.Health.HealthApi` under the top-level `"health"` field and use the
+  released package without copying or wrapping its wire types, response list, `AsUnion`, server,
+  check combinators, path literals, or test matrix.
+  Rationale: both probe alternatives carry the same body type, so duplicating the manual status
+  mapping is risky. The dependency also supplies a fixed fleet wire contract, exact path
+  constants, OpenAPI schema, and a conformance kit that detects swapped live/ready wiring.
+  Date: 2026-07-26.
+
+- Decision: Replace `/health` and `/ready` outright with `/health/live` and `/health/ready`.
+  Rationale: the old names collapse or obscure Kubernetes' restart-versus-traffic-gating
+  semantics. There are no adopters to protect, and compatibility aliases would preserve the API
+  ambiguity this pre-adoption polish is meant to remove.
+  Date: 2026-07-26.
+
+- Decision: Give every Shōmei problem code a stable HTTPS problem-type URI under the public
+  repository documentation; reserve `about:blank` for a future error with no semantics beyond
+  its HTTP status.
+  Rationale: the type URI, not the extension `code`, is the RFC 9457 primary identifier. The
+  `code` remains a convenient short extension and must correspond one-to-one with the URI
+  fragment. The public documentation page makes each type dereferenceable.
+  Date: 2026-07-24.
+
+- Decision: Split known dependency unavailability from genuine internal failure in the core error
+  vocabulary and PostgreSQL interpreters. The former is HTTP 503 and retryable; invalid persisted
+  data, impossible state, and other internal failures are HTTP 500 and not retryable.
+  Rationale: changing every internal error to 503 invites unsafe retries, while allowing a known
+  database outage to escape as an exception hides an expected operation status.
+  Date: 2026-07-26.
+
+- Decision: Remove compatibility code instead of adding deprecated aliases, re-export shims,
+  client folds, migration branches, or dual request decoders.
+  Rationale: Shōmei has no adopted API or persisted production population, so preserving an
+  unpolished surface creates permanent cost without protecting a user.
+  Date: 2026-07-24.
+
+- Decision: Delete the bespoke service-token and impersonation HTTP operations while retaining
+  their reusable domain capabilities behind OAuth.
+  Rationale: OAuth `client_credentials`, RFC 8693 token exchange, RFC 7662 introspection, and
+  RFC 7009 revocation are the canonical machine-token and delegation API.
+  Date: 2026-07-24.
+
+- Decision: Require a key-encryption key and encrypted `enc:v1:` private-key rows in server and
+  key-rotation paths.
+  Rationale: there is no production plaintext key population to migrate, and a secure initial
+  default is preferable to an optional-at-rest protection mode.
+  Date: 2026-07-24.
+
+- Decision: Retain tolerant audit-event decoding, all current database migrations, OAuth
+  interoperability, and standard JWS algorithms.
+  Rationale: those are data-evolution and protocol requirements, not compatibility layers for
+  an obsolete Shōmei API.
+  Date: 2026-07-24.
+
+- Decision: Add the exact route/method inventory and dependency baseline in Milestone 0, but add
+  the closed `ResponseModel` and operation-owned-503 witnesses atomically with the route aliases
+  and MultiVerb response lists in Milestone 4.
+  Rationale: before conversion, every application route is still a plain terminal verb, so the
+  final classification witnesses would either fail the milestone's green-build requirement or
+  assert the obsolete model. The existing HTTP suite already exercises every same-typed admin
+  family through distinct observable behavior, while the exact inventory prevents silent route
+  loss during the intermediate refactor.
+  Date: 2026-08-23.
 
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+The plan was comprehensively rewritten on 2026-07-24 after comparison with the live code and
+the current `haskell-jitsurei` standards. A subsequent RFC review corrected the application
+error profile to RFC 9457, stable custom type URIs, and an explicit separation between error-body
+format and handler return modelling. The 2026-07-26 standards refresh tightened the ordinary-route
+exemption to genuinely in-process one-status routes and replaced Shōmei's bespoke probes with
+`servant-health` 0.1.0.0. The revised design validates the vertical-slice refactor, avoids both
+meaningless `MultiVerb1` wrappers and under-modelled store failures, and makes the lack of existing
+adopters an explicit reason to delete compatibility code and old probe paths. Implementation has
+not started.
+
+At implementation completion, replace this paragraph with the delivered module layout, the
+final plain-versus-MultiVerb inventory, dependency versions selected by the solver, validation
+transcripts, deviations from this plan, and lessons learned.
 
 
 ## Context and Orientation
 
-### What shomei is, package by package
-
-All paths below are relative to the repository root
-`/Users/shinzui/Keikaku/bokuno/shomei`. Each package is a directory with its own `.cabal`
-file; the workspace is pinned by `cabal.project` at the root (GHC 9.12.4, plus several
-`source-repository-package` pins for `codd`, `ephemeral-pg`, `hs-jose`, `webauthn`,
-`servant-openapi`, and `openapi-hs`).
-
-- `shomei-core` — the transport-agnostic domain: types, commands, events, the `AuthError`
-  sum, the effect *ports* (interfaces), the in-memory interpreter, and the workflows. No
-  Servant, WAI, PostgreSQL, or JWT dependency.
-- `shomei-jwt` — JWT signing/verification and JWKS publishing (`Shomei.Jwt.{Key,Sign,Verify,
-  Jwks,Rotation,KeyProtection}`).
-- `shomei-webauthn` — the passkey ceremony interpreter over `tweag/webauthn`.
-- `shomei-postgres` — PostgreSQL implementations of the core ports, plus `Shomei.Crypto`.
-- `shomei-migrations` — `codd`-managed embedded SQL migrations plus a test-support sublibrary.
-- `shomei-servant` — the HTTP layer: the `ShomeiAPI` record, the `Authenticated` and
-  `RequireRole`/`RequireScope` combinators, the DTOs, the handlers, the effect→`Handler` seam,
-  and the OpenAPI derivation.
-- `shomei-server` — the standalone executable and its admin CLI.
-- `shomei-client` — the generated Haskell client, derived from `ShomeiAPI` via `genericClient`.
-
-### Terms of art used in this plan
-
-Define these before using them.
-
-**Servant** is the Haskell library that describes an HTTP API as a *type* built from
-combinators joined by `:>`. `"auth" :> "login" :> ReqBody '[JSON] LoginRequest :> Post '[JSON]
-LoginResponse` describes `POST /auth/login`.
-
-**`NamedRoutes` record** is Servant's way of writing an API as a Haskell *record*, one field
-per route, each field's type joined to the field name by the `:-` operator, and the record
-parameterized by a `mode` type variable. `mode` is filled in differently to get different
-things: `AsServerT Handler` yields a record of handlers, `AsClientT ClientM` yields a record of
-client functions, `AsApi` yields a description. Because handlers are supplied by *field name*
-rather than by position, the record removes the *positional* failure mode: you cannot miscount,
-and inserting a route mid-record cannot shift every later handler. It does **not**, on its own,
-stop you transposing two *same-typed* routes — binding one same-typed field's handler to another's
-typechecks, compiles, and silently misroutes (falsified by experiment in meibo; see Surprises &
-Discoveries). A transposition is a compile error only where the two fields have *different* handler
-types; where they coincide, only a runtime dispatch test catches a swap. This is not academic for
-shomei: `ShomeiAPI` contains same-typed admin families — five routes reduce to
-`AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`, `adminReinstateUser`,
-`adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset`) and two to
-`AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`, `adminRevokeRole`) — so those
-must be pinned by a runtime dispatch test (see Milestone 2). `ShomeiAPI` is such a record.
-
-**`MultiVerb`** is a Servant combinator that replaces a single terminal verb (`Post '[JSON]
-X`) with a *type-level list of response alternatives*, one per HTTP status the operation can
-return, and pairs it with a plain Haskell sum type the handler returns — one constructor per
-alternative. The mapping between the sum's constructors and the response list is given by an
-`AsUnion` instance. Example from the convention:
-
-```haskell
-type OkResponses (desc :: Symbol) a =
-  '[ Respond 200 desc a,
-     Respond 400 "Malformed request" ErrorEnvelopeWire,
-     Respond 404 "Not found" ErrorEnvelopeWire,
-     Respond 409 "Conflict" ErrorEnvelopeWire,
-     Respond 503 "Store unavailable" ErrorEnvelopeWire
-   ]
-```
-
-Here `Respond status description bodyType` is one alternative; `RespondEmpty status
-description` is an alternative with no body (for `202`/`204`). The handler returns a sum like
-`data Result a = Ok a | BadRequest ErrorEnvelopeWire | NotFound ErrorEnvelopeWire | …`, and an
-`AsUnion` instance written *by hand* maps each constructor onto its position in the list.
-
-**`AsUnion` / the union constructors `Z`, `S`, `I`.** A response list of length *n* is
-represented at the value level as an *n*-ary sum (`NS` from the SOP — "sum of products" —
-generics vocabulary). `Z (I x)` is "the first alternative, carrying `x`"; `S (Z (I x))` is
-"the second"; each extra `S` shifts one position right. `I` is the identity wrapper. The
-`en-servant` reference (`/Users/shinzui/Keikaku/bokuno/en/en-servant/src/En/Servant/API.hs`,
-lines ~146–188) imports these and writes the instance out longhand. The final clause of
-`fromUnion` matches the *one-past-the-end* shift into an empty `case impossible of {}` — the
-**exhaustiveness witness**. If the response list grows, that clause stops compiling, which is
-the point: a new status must be handled deliberately.
-
-**`ErrorFormatters`** is a Servant context value that customizes the body Servant emits for
-errors raised by its *routing layer* — a request body that fails to parse, or a path that
-matches no route — *before any handler runs*. Supplying one lets those errors speak the same
-JSON envelope as handler-produced errors. It is installed with `serveWithContext api
-(envelopeFormatters :. authContext) server`.
-
-**A vertical slice** means every module belonging to one domain concept shares one module
-prefix named for that concept, with the *layer* (`Domain`, `Store`, `Postgres`, `Workflow`) as
-the *last* path component. `Shomei/Passkey/Domain.hs`, never `Shomei/Domain/Passkey.hs`.
-
-**A port / effect** in shomei is an `effectful` effect: an interface (`Shomei.Effect.UserStore`
-etc.) with an in-memory interpreter (`Shomei.Effect.InMemory`) for tests and a PostgreSQL
-interpreter (`Shomei.Postgres.UserStore`) in production. The full ordered stack an assembly
-must provide is `Shomei.Servant.Seam.AppEffects`.
-
-**`WithCookies a`** (`Shomei/Servant/Cookie.hs`) is a type alias for `Headers '[Header
-"Set-Cookie" Text, Header "Set-Cookie" Text] a` — a response body carrying the two
-`Set-Cookie` headers. In bearer-only deployments `applyCookies` sets them to no-ops; in cookie
-transport they carry the session and refresh cookies.
-
-### The current HTTP surface
-
-`Shomei/Servant/API.hs` defines the `ShomeiAPI mode` record with **25 route fields spanning 24
-distinct URL paths** (the `impersonate` and `stopImpersonate` fields share `/auth/impersonate`,
-differing only by method). The fields, their terminal verbs today, and the statuses their
-handlers can produce:
-
-- `signup` → `Post '[JSON] (WithCookies SignupResponse)` (200; domain 400 invalid
-  email/login-id, 400 weak password, 409 email/login-id taken).
-- `login` → `Post '[JSON] (WithCookies LoginResponse)` (200 complete *or* 200 mfa_required;
-  domain 400, 401 invalid credentials, 403 email-not-verified, 429 too-many-requests).
-- `refresh` → `Post '[JSON] (WithCookies TokenPairResponse)` (200; 400, 401 token
-  invalid/expired/reuse, 403 csrf from its own gate).
-- `serviceToken` → `Post '[JSON] ServiceTokenResponse` (200; 400, 403 disabled/invalid/scope).
-- `verifyEmailRequest`, `verifyEmailConfirm`, `passwordResetRequest`, `passwordResetConfirm` →
-  `Verb 'POST 202 '[JSON] NoContent` (202; 400 malformed/invalid token, 409 already verified).
-- `passwordChange` → `Authenticated :> … :> PostNoContent` (204; 400, 401, 403 blocked under
-  impersonation).
-- `logout` → `Authenticated :> … :> Verb 'POST 204 '[JSON] (WithCookies NoContent)` (204 with
-  cleared cookies).
-- `me`, `session` → `Authenticated :> … :> Get '[JSON] X` (200; 404 if the verified principal's
-  row is gone).
-- `passkeyRegisterBegin`/`Complete`, `passkeyList`, `passkeyDelete` → passkey enrollment
-  (200/204; 400, 404 ceremony/passkey not found, 403 under impersonation).
-- `mfaComplete`, `passkeyLoginBegin`, `passkeyLoginComplete` → `Post '[JSON] (WithCookies
-  TokenPairResponse)` / `Post '[JSON] PasskeyLoginBeginResponse` (200; 400, 401, 404).
-- `impersonate`, `stopImpersonate` → 200 / 204 (400, 403).
-- `auditEvents` → `Authenticated :> … :> Get '[JSON] AuditEventsPage` (200; 400 bad
-  cursor/param; the handler enforces the `admin` role with `requireRole`, a 403).
-- `jwks` → `Get '[JSON] Value` (200 always).
-- `health`, `ready` → `Get '[JSON] X` (200; `/ready` returns 503 on a failed dependency, built
-  by throwing `err503` today).
-
-`Shomei/Servant/Handlers.hs` builds the `shomeiServer` record; each handler runs the workflow
-through `Shomei.Servant.Seam.runAuth`, which turns a `Left AuthError` into a thrown
-`ServerError` via `Shomei.Servant.Error.authErrorToServerError`. `Shomei/Servant/Error.hs`
-maps all ~35 `AuthError` constructors to statuses (400/401/403/404/409/429/500) and encodes
-`{"error":code,"message":msg}`.
-
-`Shomei/Servant/OpenApi.hs` derives the document from `Proxy (NamedRoutes ShomeiAPI)`, with a
-`ToSchema` per DTO, a free-form `ToSchema Value`, the hand-written `ToSchema LoginResponse`
-(`oneOf`), a `ToParamSchema PasskeyId`, and hand-written `HasOpenApi` instances for the
-`AuthProtect "shomei-jwt"` and `RequireRole`/`RequireScope` combinators. The `shomei-openapi`
-executable (`shomei-servant/app/openapi/Main.hs`) serializes it; the conformance test
-(`shomei-servant/test-openapi/Main.hs`) runs `validateEveryToJSON` over the API and asserts
-`openapi == "3.1.0"` and **exactly 24 paths**.
-
-### The vertical-slice analysis
-
-This is the honest, module-by-module judgment the convention demands. Shōmei's authentication
-"aggregate" is not cleanly partitioned — one `signup`/`login` workflow atomically spans User,
-Credential, Session, RefreshToken, LoginAttempt, and Audit state through the `AuthUnitOfWork`
-port. So the slicing here is *by cohesive concept where one genuinely exists*, and a large,
-explicitly-named remainder stays put.
-
-**Concepts that get a slice** (each owns a domain type, at least one store port, its Postgres
-adapter, and — where one exists — a workflow):
-
-- **User / Account.** `Shomei/Domain/User.hs`, `Shomei/Effect/UserStore.hs`,
-  `Shomei/Postgres/UserStore.hs`, `Shomei/Workflow/Account.hs` (email verification, password
-  reset, password change) → `Shomei/User/{Domain,Store,Postgres}.hs` and
-  `Shomei/User/Account.hs`. `Shomei/Domain/LoginId.hs` and `Shomei/Domain/Email.hs` (the user's
-  identity value types) go under `Shomei/User/` as `LoginId.hs` and `Email.hs`.
-- **Credential (password).** `Shomei/Domain/Credential.hs`, `Shomei/Domain/Password.hs`,
-  `Shomei/Domain/CommonPasswords.hs`, `Shomei/Effect/CredentialStore.hs`,
-  `Shomei/Postgres/CredentialStore.hs`, `Shomei/Workflow/Breach.hs` →
-  `Shomei/Credential/{Domain,Password,CommonPasswords,Store,Postgres,Breach}.hs`.
-- **Session.** `Shomei/Domain/Session.hs`, `Shomei/Effect/SessionStore.hs`,
-  `Shomei/Postgres/SessionStore.hs`, `Shomei/Workflow/Session.hs` →
-  `Shomei/Session/{Domain,Store,Postgres,Workflow}.hs`.
-- **RefreshToken.** `Shomei/Domain/RefreshToken.hs`, `Shomei/Effect/RefreshTokenStore.hs`,
-  `Shomei/Postgres/RefreshTokenStore.hs` → `Shomei/RefreshToken/{Domain,Store,Postgres}.hs`.
-- **Passkey.** `Shomei/Domain/Passkey.hs`, `Shomei/Effect/PasskeyStore.hs`,
-  `Shomei/Effect/PendingCeremonyStore.hs`, `Shomei/Effect/WebAuthnCeremony.hs`,
-  `Shomei/Postgres/PasskeyStore.hs`, `Shomei/Postgres/PendingCeremonyStore.hs`,
-  `Shomei/Workflow/Passkey.hs`, `Shomei/Workflow/Mfa.hs`, and (in `shomei-webauthn`)
-  `Shomei/WebAuthn/Ceremony.hs` → `Shomei/Passkey/{Domain,Store,PendingCeremony,Ceremony,
-  Postgres,PostgresPending,Workflow,Mfa}.hs`. (`shomei-webauthn`'s `Shomei/WebAuthn/Ceremony.hs`
-  can stay, or move to `Shomei/Passkey/WebAuthn.hs`; it is a separate package with a separate
-  concern — the ceremony *interpreter* — so this plan leaves it as `Shomei/WebAuthn/Ceremony.hs`
-  and notes the option.)
-- **LoginAttempt (abuse throttling / lockout).** `Shomei/Domain/LoginAttempt.hs`,
-  `Shomei/Effect/LoginAttemptStore.hs`, `Shomei/Postgres/LoginAttemptStore.hs` →
-  `Shomei/LoginAttempt/{Domain,Store,Postgres}.hs`.
-- **Verification (email verification tokens).** `Shomei/Domain/VerificationToken.hs`,
-  `Shomei/Effect/VerificationTokenStore.hs`, `Shomei/Postgres/VerificationTokenStore.hs` →
-  `Shomei/Verification/{Domain,Store,Postgres}.hs`.
-- **PasswordReset.** `Shomei/Domain/PasswordResetToken.hs`,
-  `Shomei/Effect/PasswordResetTokenStore.hs`, `Shomei/Postgres/PasswordResetTokenStore.hs` →
-  `Shomei/PasswordReset/{Domain,Store,Postgres}.hs`.
-- **Audit (auth events).** `Shomei/Domain/Event.hs`, `Shomei/Domain/EventCodec.hs`,
-  `Shomei/Effect/AuthEventPublisher.hs`, `Shomei/Effect/AuthEventReader.hs`,
-  `Shomei/Postgres/AuthEventPublisher.hs`, `Shomei/Postgres/AuthEventReader.hs` →
-  `Shomei/Audit/{Event,EventCodec,Publisher,Reader,PostgresPublisher,PostgresReader}.hs`.
-
-**Modules that stay put, and why** (this is most of the cross-cutting surface):
-
-- `Shomei/Domain/Claims.hs` — `AuthClaims`, `Role`, `Scope`, `Audience`, `Issuer`: the shared
-  token-claims vocabulary consumed by every workflow, by `shomei-jwt`, and by *three* downstream
-  repos (meibo, kawa, nagare). No single owning concept.
-- `Shomei/Domain/Token.hs` — `AccessToken`, `TokenPair`: shared currency across session,
-  refresh, service-token, impersonation, and MFA. Consumed by meibo.
-- `Shomei/Domain/SigningKey.hs` — the JWT key material vocabulary; paired with the whole
-  `shomei-jwt` package. Consumed by nagare and the E2E test. Cross-cutting with JWT.
-- `Shomei/Domain/OneTimeToken.hs` — shared by both Verification and PasswordReset; belongs to
-  neither. Stays as a shared token type (e.g. keep at `Shomei/Domain/OneTimeToken.hs`).
-- `Shomei/Domain/Command.hs` — `SignupCommand`, `LoginCommand`, `RefreshCommand`,
-  `LogoutCommand`: the cross-concept command vocabulary the top-level `Shomei.Workflow` builds
-  from. Spans concepts; stays.
-- `Shomei/Domain/Notification.hs` — notifier payloads paired with the `Notifier` port; a
-  cross-cutting delivery concern.
-- `Shomei/Error.hs` (`AuthError`, `TokenError`, `PasswordPolicyViolation`) — one closed sum
-  shared by *every* workflow and imported by nagare. Moving it would fragment the error
-  vocabulary and break downstream. Stays.
-- `Shomei/Id.hs`, `Shomei/Config.hs`, `Shomei/Prelude.hs` — shared identifiers, configuration,
-  and prelude. Imported across the fleet. Stay.
-- `Shomei/Workflow.hs` — the top-level `signup`/`login`/`refresh`/`logout`/`verifyToken`
-  umbrella that composes many concepts; it is the cross-concept orchestrator. Stays at the root
-  (optionally renamed `Shomei/Auth/Workflow.hs`, but this plan leaves it to avoid churn).
-- `Shomei/Workflow/Impersonation.hs`, `Shomei/Workflow/ServiceToken.hs` — token-issuance flows
-  that read many concepts and own no store of their own. This plan keeps them as feature
-  workflows; they may move to `Shomei/Impersonation/Workflow.hs` /
-  `Shomei/ServiceToken/Workflow.hs` if desired, but with no domain/store to accompany them the
-  slice is one file, so the plan leaves them and notes the option.
-- `Shomei/Effect/InMemory.hs` — the in-memory interpreter assembly spanning *all* ports.
-  Cross-cutting. Stays.
-- `Shomei/Effect/AuthUnitOfWork.hs` — the atomic write tail spanning User + Session +
-  RefreshToken; the direct analogue of meibo's cross-aggregate `OrgStore`. No single owner.
-  Stays.
-- `Shomei/Effect/{Clock,TokenGen,Notifier,PasswordHasher,PasswordBreachChecker,TokenSigner,
-  TokenVerifier}.hs` — aggregate-agnostic infrastructure ports. Stay (the analogue of meibo's
-  `Clock`/`IdGen`).
-- `Shomei/Postgres/{Codec,Database,Pool,Maintenance}.hs` and `Shomei/Crypto.hs` — Postgres
-  plumbing and crypto helpers with no owning concept. Stay. `Shomei/Postgres/Pool.hs` is
-  imported by nagare.
-- The whole `shomei-jwt` package (`Shomei/Jwt/*`) — a cohesive crypto toolkit consumed directly
-  by meibo, kawa, and nagare; not one aggregate. Stays.
-- `Shomei/Servant/{Auth,Authz,Cookie,Error,Seam}.hs` — the servant combinators and seam are
-  cross-cutting toolkit; `Auth` and `Authz` are imported by meibo and kawa. Stay.
-
-**The honest bottom line.** After slicing, roughly nine cohesive concepts get a home, and an
-equally large set of genuinely cross-cutting modules stay at their layer paths. That ratio is
-the opposite of a clean aggregate service like meibo (three aggregates, almost everything
-slices). It is stated here so a future reader does not mistake the remaining `Shomei/Domain/*`
-and `Shomei/Effect/*` modules for unfinished work: they are cross-cutting by nature, and the
-convention explicitly exempts them.
-
-### Downstream consumers (who breaks on a move)
-
-Verified by grepping the sibling repos under `/Users/shinzui/Keikaku/bokuno` for `import
-Shomei.*` and `shomei-*` cabal dependencies:
-
-- **meibo** imports `Shomei.Domain.Claims`, `Shomei.Domain.Token`, `Shomei.Id`,
-  `Shomei.Config`, `Shomei.Jwt.Verify`, and `Shomei.Servant.Auth` (`AuthUser`,
-  `authUserFromClaims`, `extractToken`, `Authenticated`). All cross-cutting, none moved →
-  **meibo is unaffected.**
-- **kawa** imports `Shomei.Domain.Claims`, `Shomei.Id`, `Shomei.Config`, `Shomei.Jwt.Verify`,
-  `Shomei.Servant.Auth` (`AuthUser`, `Authenticated`, `authHandler`), and
-  `Shomei.Servant.Authz` (`requireScope`). All cross-cutting, none moved → **kawa is
-  unaffected.**
-- **nagare** imports `Shomei.Client`, `Shomei.Config`, `Shomei.Domain.Claims`,
-  `Shomei.Domain.SigningKey`, `Shomei.Error`, `Shomei.Id`, `Shomei.Jwt.Verify`,
-  `Shomei.Postgres.Pool`, `Shomei.Migrations.TestSupport`, `Shomei.Server.{App,Boot,Keys}`, and
-  — the one that matters — **`Shomei.Servant.DTO`** (qualified, constructing `SignupRequest`/
-  `LoginRequest`/`RefreshRequest`/`MfaCompleteRequest` and pattern-matching
-  `LoginCompleteResponse`/`LoginMfaRequiredResponse`/`TokenPairResponse`). nagare also depends
-  on the `Shomei.Client` wrapper *result types* being the plain DTOs. → **nagare is the repo at
-  risk**, on two axes: (a) the `Shomei.Servant.DTO` module move, mitigated by the re-export shim
-  (Milestone 6); and (b) the `MultiVerb` client-type change, mitigated by folding the union arms
-  inside the `shomei-client` wrappers so their signatures stay identical (Milestone 3).
-- **kanmon** and **kikan** — flagged as project-level dependents by `mori registry dependents
-  shinzui/shomei`, but neither has a `shomei-*` cabal dependency or an `import Shomei.*` in its
-  sources (kanmon reimplements verification behind its own `Kanmon.Egress.Identity`). →
-  **unaffected.**
-
-Net: with the shim (Milestone 6) and the wrapper fold (Milestone 3), **no downstream repo
-requires any change**. Absent those two mitigations, nagare would fail to build.
-
-### Build, test, and run commands
-
-All from the repository root inside the nix dev shell. The `justfile` provides recipes.
+Run all commands from `/Users/shinzui/Keikaku/bokuno/shomei`. Never inspect `/nix/store` or
+search the filesystem root. Use Mori to locate dependencies before reading their APIs:
 
 ```bash
-cabal build all
-cabal test all
+mori registry list
+mori registry search servant
+mori registry show haskell-servant/servant --full
+mori registry show shinzui/openapi-hs --full
+mori registry show shinzui/servant-openapi-hs --full
+mori registry show shinzui/servant-health --full
+mori registry docs shinzui/haskell-jitsurei
 ```
 
-Test suites of interest: `shomei-servant-test` and `shomei-servant-openapi-test` (in
-`shomei-servant/`), `shomei-core`'s hspec suite, and `shomei-server`'s `E2ESpec`
-(`shomei-server/test/Shomei/Server/E2ESpec.hs`), which boots the real server over an ephemeral
-PostgreSQL via `Shomei.Migrations.TestSupport.withShomeiMigratedDatabase` and drives it with
-`http-client`. Database recipes: `just create-database` (idempotent), `just migrate`. The
-OpenAPI document is produced by `cabal run shomei-openapi > docs/api/openapi.json`.
+Before choosing bounds, verify Mori's local checkout against Hackage and upstream release tags.
+As of 2026-07-26, the relevant released cohort is:
+
+* `servant`, `servant-server`, and `servant-client` 0.20.3.0;
+* `openapi-hs` 5.0.0;
+* `servant-openapi-hs` 5.1.0;
+* `servant-health` 0.1.0.0, with its public `testkit` sublibrary used only by tests.
+
+Use PVP bounds that select that feature cohort:
+
+```cabal
+servant            >= 0.20.3 && < 0.21
+servant-client     >= 0.20.3 && < 0.21
+servant-server     >= 0.20.3 && < 0.21
+openapi-hs         >= 5.0   && < 5.1
+servant-openapi-hs >= 5.1   && < 5.2
+servant-health     >= 0.1   && < 0.2
+```
+
+Add `servant-health` directly to `shomei-servant`, whose public route type mentions `HealthApi`;
+to `shomei-client`, whose generated public client mentions `ProbeResult`; and to `shomei-server`,
+which builds checks and imports the path constants. Add `servant-health:testkit` only to the
+`shomei-server-test` stanza. Do not add a local `packages:` path or source-repository pin: 0.1.0.0
+is released. Do not restore old git pins or the obsolete `servant-openapi` package name. Re-run
+the authoritative registry and tag checks when implementing because release state can change.
+
+The standards applied by this plan are:
+
+* `haskell-jitsurei/patterns/core/standards.md`: GHC 9.12 or newer, GHC2024, one imported common stanza
+  for every component, project prelude, and postpositive qualified imports.
+* `haskell-jitsurei/patterns/api/servant-routes.md`: `NamedRoutes`, concept-first vertical slices,
+  thin composition roots, field-local auth, runtime dispatch tests, typed operation outcomes, and
+  only the three recorded terminal-combinator exemptions.
+* `haskell-jitsurei/patterns/api/openapi-from-types.md`: derive from the exact served proxy, keep one
+  deterministic generator, commit its artifact, and fail CI on drift.
+* `haskell-jitsurei/patterns/api/rfc9457-problem-details.md`: the application Problem Details
+  profile. Its `about:blank` default applies until a service hosts error documentation; this plan
+  creates that documentation before minting stable type URIs. The URI remains the RFC problem-type
+  identifier, with `code` as a one-to-one fleet extension and convenient short alias.
+* `haskell-jitsurei/patterns/api/health-endpoints.md`: mount the released `servant-health`
+  `HealthApi`; keep liveness dependency-free; make readiness dependency-aware; harden checks with
+  the package combinators; use package path constants; and prove wiring with its test kit.
+* `haskell-jitsurei/patterns/api/request-logging.md`: exclude the two package-owned probe paths
+  from routine request logs using `Servant.Health.Paths.healthRawPaths`.
+
+`shomei-core` owns domain types, effect ports, and workflows. `shomei-postgres` interprets ports
+with Hasql. `shomei-jwt` owns signing, verification, and key protection.
+`shomei-servant` owns the HTTP contract, DTOs, response sums, handler adapters, error formatters,
+and OpenAPI derivation. `shomei-client` derives a client from the same route types.
+`shomei-server` assembles the standalone runtime and configuration. Keep those dependency
+directions.
+
+### Target concept layout
+
+The layer name is the final module component. The following table is the ownership map, not a
+requirement to put every listed concern in one file; split a concept further when a module would
+remain unwieldy.
+
+| Concept | `shomei-core` ownership | `shomei-postgres` ownership | `shomei-servant` ownership |
+| --- | --- | --- | --- |
+| Account | user, login id, email, password, account lifecycle and one-time-token workflows/ports | user, credential, verification-token, reset-token stores | signup, profile, email verification, password reset/change, admin account lifecycle |
+| Session | session, refresh token, login attempt, signup/login/refresh/logout workflows and unit of work | session, refresh-token, login-attempt stores and auth transaction runner | login, refresh, logout, current session, admin session operations |
+| Passkey | passkey, pending ceremony, registration/passwordless workflows and WebAuthn port | passkey and ceremony stores | passkey registration, login, list, and removal |
+| MFA | TOTP, recovery code, second-factor workflow and stores | TOTP and recovery-code stores | enrollment, verification, removal, recovery codes, challenge completion |
+| Authorization | roles, permissions, grants, authorization workflows and stores | role/permission grant store | enforcing combinators and admin grant/revoke routes |
+| ServiceAccount | service-account domain, credential verification, client-credentials workflow and store | service-account store | OAuth-facing machine credential adapter only; no bespoke route |
+| OAuth | OAuth clients, authorization codes, token grants/exchange, OIDC claims and stores | OAuth-client and authorization-code stores | authorize, token, introspect, revoke, userinfo, and discovery |
+| Delegation | delegated-token policy and token-exchange workflow | no separate adapter beyond session/audit stores | RFC 8693 grant arm only; no `/auth/impersonate` routes |
+| Audit | event model, codec, query, publisher/reader ports | event publisher and query store | admin audit query |
+| SigningKey | signing-key domain/store port | signing-key store | JWKS route; signing mechanics remain in `shomei-jwt` |
+| Health | no domain aggregate | readiness reuses the signing-key store port | imported `HealthApi` mount only; concrete service checks are assembled in `Shomei.Health.Server` |
+
+Genuinely cross-cutting modules remain small and explicitly named: `Shomei.Config`,
+`Shomei.Error`, `Shomei.Id`, and `Shomei.Prelude` in core; transport plumbing such as cookies,
+error formatters, and method middleware in servant. Do not preserve the layer-first
+`Shomei.Domain.*`, `Shomei.Effect.*`, `Shomei.Workflow.*`, `Shomei.Postgres.*`, or monolithic
+`Shomei.Servant.DTO` modules as re-export aliases after their declarations move.
+
+The target transport composition is concept-shaped. Names are illustrative where the existing
+domain language offers a better exact noun, but the hierarchy is required:
+
+```haskell
+data ShomeiRoutes mode = ShomeiRoutes
+  { application :: mode :- "v1" :> NamedRoutes ApplicationApi
+  , oauth :: mode :- NamedRoutes OAuthApi
+  , wellKnown :: mode :- ".well-known" :> NamedRoutes WellKnownApi
+  , health :: mode :- "health" :> NamedRoutes HealthApi
+  , openapi :: mode :- "openapi.json" :> Get '[JSON] Value
+  }
+  deriving stock Generic
+
+data ApplicationApi mode = ApplicationApi
+  { account :: mode :- "auth" :> NamedRoutes AccountApi
+  , session :: mode :- "auth" :> NamedRoutes SessionApi
+  , passkey :: mode :- "auth" :> NamedRoutes PasskeyApi
+  , mfa :: mode :- "auth" :> NamedRoutes MfaApi
+  , adminAccount :: mode :- "admin" :> NamedRoutes AdminAccountApi
+  , adminSession :: mode :- "admin" :> NamedRoutes AdminSessionApi
+  , authorization :: mode :- "admin" :> NamedRoutes AuthorizationApi
+  , audit :: mode :- "admin" :> NamedRoutes AuditApi
+  }
+  deriving stock Generic
+```
+
+Multiple fields intentionally share the `"auth"` and `"admin"` prefixes. Runtime dispatch tests
+must prove that same-shaped siblings reach the intended named handler. `AppAPI` examples may use
+`:<|>` only to mount the complete Shōmei API beside a host application's distinct API.
+
+`HealthApi` is imported from `Servant.Health`; do not define a Shōmei copy. The umbrella record
+mounts it directly because the package fixes the relative `live` and `ready` fields. OpenAPI and
+client generation use this same `ShomeiRoutes` proxy, so the package-owned 200/503 alternatives
+and `ProbeStatus` schema appear without a route decorator.
+
+### Compatibility surfaces to remove
+
+Delete the obsolete path and its tests/documentation in the same milestone that deletes its
+implementation. Do not leave deprecated declarations.
+
+| Existing surface | Final surface |
+| --- | --- |
+| optional `SignupRequest.loginId` plus email fallback | required `loginId :: Text`; optional `email :: Maybe Text` |
+| optional `LoginRequest.loginId` plus alternate `email` | required `loginId :: Text`; no email field |
+| `loginIdFromEmail` and `resolvePrincipal` | explicit `mkLoginId`; explicit optional `mkEmail` |
+| `LoginResponse` decoder defaulting a missing `methods` field | `methods` is required on the MFA arm |
+| flat `MfaCompleteRequest` with three optional proof fields | `ceremonyId` plus one tagged `MfaProof` sum |
+| `WebAuthnConfig.mfaRequired` with widened MFA semantics | `MfaConfig.requireSecondFactor` |
+| `POST /v1/auth/service-token` and static account-secret config | OAuth `client_credentials`; database-backed service accounts |
+| `POST`/`DELETE /v1/auth/impersonate` | OAuth token exchange and `/oauth/revoke` |
+| three-part `argon2id$salt$digest` verifier | PHC-formatted Argon2id only |
+| optional KEK and plaintext private JWK rows | required KEK and encrypted `enc:v1:` rows |
+| `rotateSigningKeyFor` compatibility wrapper | one encrypted-key rotation entry point |
+| unused `DeleteExpiredCeremonies` store effect | maintenance sweeper is the sole bulk-delete path |
+| custom `/health` and `/ready`, `HealthResponse`, `ReadyResponse`, `healthH`, and `readyH` | `servant-health` at `/health/live` and `/health/ready` |
+| old module paths and old client wrapper signatures | new concept modules and result types only |
+
+The MFA wire shape is:
+
+```json
+{
+  "ceremonyId": "ceremony_...",
+  "proof": {
+    "type": "totp",
+    "code": "123456"
+  }
+}
+```
+
+The other proof tags are `"passkey"` with an `assertion` field and `"recovery_code"` with a
+`code` field. Unknown tags, missing payloads, and extra proof arms are decoding failures; there is
+no fallback decoder for the earlier flat object.
+
+### Selective response-model rule
+
+Classify an endpoint from its complete operation contract after moving parsing and authorization
+to their proper Servant boundaries:
+
+1. If a normal JSON operation can produce any operation-owned non-success status, or more than
+   one success status or representation/header shape, use a named MultiVerb response list, a
+   named result sum, and a manual `AsUnion` instance.
+2. Treat known unavailability of a store or required dependency as an operation-owned, retryable
+   503. A store-backed route is therefore MultiVerb even when its happy path has only one payload.
+   Make the interpreter return a typed dependency error; do not manufacture 503 from arbitrary
+   exceptions.
+3. Use an ordinary terminal verb only for a genuinely in-process, cannot-fail, single-status
+   endpoint. Keep `Raw` and true streaming routes in their native forms. Record every exemption
+   by operation ID and fail conformance tests if the inventory changes silently.
+4. Authentication/authorization combinators, `FromHttpApiData`/`FromJSON` failures, the WAI rate
+   limiter, 404/405 routing, and the unexpected-fault boundary do not themselves require
+   MultiVerb. Document operation-specific pre-handler responses with typed pass-through
+   combinators, not fake handler alternatives.
+5. If a later feature adds or removes an operation-owned status, change the terminal combinator,
+   result sum, client contract, and exemption inventory together.
+
+RFC 9457 does not determine the terminal Servant combinator. It determines the representation
+after an application error has been selected. The source of the response determines MultiVerb:
+
+| Response source | Wire representation | MultiVerb? |
+| --- | --- | --- |
+| expected application failure selected by the handler | RFC 9457 `ProblemDetails` | yes, as a `RespondAs ProblemJSON` alternative |
+| successful handler with two meaningful statuses or body/header shapes | the operation's success DTOs | yes |
+| authentication, authorization, request decoding, CSRF, or rate limiting before the handler | RFC 9457 `ProblemDetails` | no; declare it on the enforcing/pass-through combinator |
+| unexpected exception caught by the application fault boundary | RFC 9457 500 `ProblemDetails` without internal detail | no; it is not an expected handler result |
+| known store or required-dependency unavailability | RFC 9457 503 `ProblemDetails` | yes; it is an expected operation fault |
+| OAuth/OIDC protocol failure | the RFC 6749/OIDC error shape | based on handler outcomes, but never converted to `ProblemDetails` |
+| either `servant-health` probe verdict | `ProbeStatus` at 200 or 503 | yes, already declared and mapped by `HealthApi` |
+| one total, in-process handler success | the success DTO | no; use an ordinary verb |
+| `Raw` or streaming response | its native representation | no; retain `Raw` or `Stream` |
+
+The initial ordinary-route allow-list is:
+
+| Route | Handler-owned result |
+| --- | --- |
+| `GET /.well-known/jwks.json` | 200 JWKS with cache header |
+| `GET /openapi.json` | 200 OpenAPI document |
+
+The WAI `/metrics` endpoint is also exempt as an explicit non-Servant/`Raw` boundary, not as a
+third ordinary typed route. This list is deliberately exact and enforced in tests. Re-evaluate
+any route whose handler still calls `throwError` or runs a fallible port: expected operation
+errors must become MultiVerb alternatives, parsing/policy must move to a pre-handler boundary,
+and dependency failure must become a typed 503. Unexpected exceptions alone do not justify
+MultiVerb.
+
+Examples that must use MultiVerb include signup, login, refresh, confirmation flows, credential
+mutations, `me`, current-session lookup, passkey completion/removal, every TOTP mutation, MFA
+completion, every store-backed list/read, administrative lookup/mutation routes, OIDC discovery,
+OAuth authorize/token/userinfo/introspect/revoke, and both health probes. The OAuth alternatives
+use OAuth response types, not `ProblemDetails`. The probe alternatives use package-owned
+`ProbeStatus` and `ProbeResult`, not a Shōmei result or problem document.
 
 
 ## Plan of Work
 
-### Milestone 1 — Spike: one `MultiVerb` route that still sets cookies
+### Milestone 0: freeze behavior and enforce the standards baseline
 
-Scope: prove, on the single `signup` route, that a `MultiVerb` success alternative can still
-emit the two `Set-Cookie` headers, and pin the exact servant-0.20.2 combinator spelling. This
-is the one genuine unknown; everything else in the plan is mechanical once it is resolved. At
-the end of this milestone `signup` is a `MultiVerb`, the server still sets cookies on success,
-and `cabal build all` succeeds. Nothing else has changed.
+Start from a green tree. Run the build and tests before edits and record any pre-existing failure
+in Surprises & Discoveries rather than silently changing expectations.
 
-First read servant's `MultiVerb` source to learn the header combinator. Use mori to locate it
-rather than guessing:
+Add a route inventory test in `shomei-servant/test-openapi/Main.hs` that asserts the exact method
+and path set. Add a response-classification test that asserts the ordinary-route allow-list above
+and asserts that every other JSON terminal handler route uses MultiVerb after Milestone 4. Record
+the WAI `/metrics` boundary separately. The test must recognize the package-owned `HealthApi` as
+MultiVerb rather than attempting to inspect or reproduce its response list. Add
+same-typed dispatch tests for sibling records that share `/v1/auth` or `/v1/admin`; give each
+stub handler a distinct marker and call every path.
+
+Regenerate `docs/api/openapi.json` once before changing route types and inspect the known
+`session_expired`/`session_revoked` drift. Land or at least record that baseline delta separately
+so the later MultiVerb diff can be reviewed against generated current behavior rather than a
+stale artifact.
+
+Export a route type alias for every record field. In the test suite define a closed
+`ResponseModel` type family that recursively strips `:>` combinators, reduces `MultiVerb` to a
+`MultiOutcome` marker, and reduces `Verb`/`Get`/`Post` to a `SingleOutcome` marker. Give every
+route alias an explicit `ResponseModel Route :~: ExpectedMarker` witness. These compile-time
+witnesses, rather than inference from OpenAPI, enforce the classification table.
+
+Define a second closed family over a MultiVerb response list that recognizes `Respond`,
+`RespondAs`, `RespondEmpty`, and `WithHeaders` alternatives by status. Give every store-backed
+route alias an explicit `OperationOwnsStatus 503 Route :~: 'True` witness. This is distinct from
+the pre-handler OpenAPI checks: it proves 503 is in the operation's own response list rather than
+merely added by a decorator. The two ordinary route aliases must instead prove
+`ResponseModel ... :~: SingleOutcome`; `HealthApi` is asserted as imported MultiVerb without
+copying its list.
+
+Normalize Cabal component settings while touching the package files. Every library, executable,
+and test suite must import its package's GHC2024 shared stanza. In particular,
+`shomei-servant-openapi-test` currently imports only `warnings`; make it import `shared` and keep
+only genuinely test-local extensions in that stanza. Retain the existing project prelude and make
+all moved/touched imports postpositive qualified.
+
+Raise the Servant/OpenAPI bounds to the released cohort in Context and Orientation and add
+released `servant-health` 0.1.0.0 to the three packages named there. Let Cabal solve them; do not
+add a local path or source-repository-package pin. Confirm `cabal freeze --dry-run` or a normal
+build does not select a pre-0.20.3 Servant package and that `servant-health` resolves the same
+OpenAPI 5.x cohort.
+
+Acceptance for this milestone is a green pre-refactor build plus tests that would fail if a route
+were lost, dispatched to the wrong handler, or classified as ordinary/MultiVerb contrary to the
+decision table.
+
+### Milestone 1: remove compatibility surfaces
+
+Delete dead public surface before reorganizing what remains.
+
+In the account DTO and handlers, require `SignupRequest.loginId`, retain signup's optional email,
+require `LoginRequest.loginId`, and delete login's email field. Validate these fields once and
+pass typed values to workflows. Delete `Shomei.Domain.LoginId.loginIdFromEmail`,
+`resolvePrincipal`, email-only request tests, and compatibility comments. Update all internal test
+fixtures to construct a `LoginId` explicitly; do not add a differently named conversion helper.
+
+Make `LoginResponse` decode exactly what it encodes. The MFA arm requires `methods`. Replace the
+flat optional-field `MfaCompleteRequest` with `MfaProof = PasskeyProof | TotpProof |
+RecoveryCodeProof` and the tagged wire shape specified above. Update schema, golden, client, and
+round-trip tests and delete legacy-shape tests.
+
+Move the policy now called `WebAuthnConfig.mfaRequired` into
+`MfaConfig.requireSecondFactor`, because it governs passkey or TOTP factors rather than WebAuthn
+alone. Rename the file/Dhall and environment settings to the MFA concept, including
+`SHOMEI_MFA_REQUIRE_SECOND_FACTOR`; do not read the old name as a fallback.
+
+Remove the bespoke `serviceToken` API field, DTOs, handler, OpenAPI entries, generated-client
+wrapper, tests, and user documentation. Delete `Shomei.Workflow.ServiceToken.issueServiceToken`
+and the file/env `ServiceTokenConfig` fields that define static accounts. Move only reusable
+constant-time secret verification and hashing into the ServiceAccount concept. Rename the
+remaining token lifetime setting to a machine-token/OAuth name if `client_credentials` or token
+exchange still needs it; do not keep the old config field as an alias.
+
+Remove both bespoke impersonation API fields, DTOs, handlers, OpenAPI entries, client wrappers,
+tests, and user documentation. Keep the delegation policy, audit events, `act` claim, and minting
+logic under Delegation/OAuth token exchange. Stop delegated access through `/oauth/revoke`.
+
+In `shomei-postgres/src/Shomei/Crypto.hs`, accept only the PHC Argon2id form with embedded
+parameters. Delete `legacyArgonOptions`, the three-part branch, and its tests. In
+`shomei-jwt`, require `KeyEncryptionKey` rather than `Maybe KeyEncryptionKey`, reject anything
+without the `enc:v1:` prefix, remove the unencrypted rotation wrapper, and update server/admin
+configuration and tests to require a KEK. Because there are no adopted databases, do not add a
+backfill or plaintext fallback.
+
+Delete `DeleteExpiredCeremonies` from the pending-ceremony effect, in-memory interpreter, and
+PostgreSQL interpreter. Keep the batched maintenance sweep as the sole bulk cleanup. Rewrite
+comments in the env loader, event codec, login result, MFA workflow, and signing algorithm code
+when “legacy” describes current behavior rather than an actual compatibility branch.
+
+Run a scoped search at the end:
 
 ```bash
-mori registry show haskell-servant/servant --full   # find the servant source path on disk
-# then read Servant/API/MultiVerb.hs for the header combinators (WithHeaders / AsHeaders)
+rg -n --glob '*.hs' --glob '*.cabal' --glob '*.md' \
+  'DEPRECATED|deprecated|backward compatibility|source compatibility|legacy|service-token|/v1/auth/impersonate' \
+  shomei-core shomei-postgres shomei-jwt shomei-servant shomei-client shomei-server docs/user
 ```
 
-servant 0.20.2 (pinned as `servant >=0.20.2` in `shomei-servant.cabal`) provides response
-headers inside `MultiVerb` via a header-carrying `Respond` variant. Read the module and record
-the exact names in Surprises & Discoveries. The design you are proving is: the success arm is a
-*header-carrying* `200` alternative whose body is `SignupResponse` and whose headers are the two
-`Set-Cookie` values, and the handler's `Ok` constructor carries a value that both the body and
-the headers are projected from.
+Every hit must either disappear or be recorded in the Decision Log with a concrete explanation
+of why it is protocol/data evolution rather than compatibility with an old Shōmei surface.
 
-Add a throwaway `signup`-only response type and result sum next to `ShomeiAPI` (you will
-generalize it in Milestone 2). Convert only the `signup` field:
+### Milestone 2: reorganize core, persistence, and JWT support by concept
+
+Move declarations according to the Target concept layout. Do one concept at a time: add the new
+module, update its Cabal `exposed-modules`/`other-modules`, update imports and tests, build the
+affected packages, then delete the old module. Use `git mv` for traceable moves when most of a
+module moves intact. Split mixed modules with patches.
+
+Name leaf modules for their role: for example, `Shomei.Passkey.Domain`,
+`Shomei.Passkey.Store`, `Shomei.Passkey.Workflow`,
+`Shomei.Passkey.Postgres`, and corresponding test paths. Do not create a broad
+`Shomei.Passkey` re-export. Keep cross-concept dependencies pointing toward stable domain/port
+types rather than importing another concept's HTTP or PostgreSQL modules.
+
+Decompose the current aggregate workflow/export modules rather than preserving them. Any caller
+that imported `Shomei.Workflow` or an old `Shomei.Domain.*`/`Shomei.Effect.*` path must move to the
+owning concept module in the same commit. Do not add deprecated re-exports.
+
+Keep the event codec capable of reading every event shape that the final clean schema can write.
+Keep migration files so a new database can be constructed deterministically. This milestone is a
+module/API reorganization, not a database-history squash.
+
+While moving the error and persistence modules, separate known dependency failure from internal
+corruption. Add `AuthDependency = PostgreSQL` and
+`DependencyUnavailable !AuthDependency` to the closed error vocabulary, and make every Hasql
+command failure use that constructor. Keep row-reconstruction, codec, invariant, and
+impossible-state failures under `InternalAuthError`. Do not expose Hasql messages or SQL in either
+public problem. Preserve the distinction through `runAppIO` and the Servant seam so route-local
+total mappings can return a generic retryable 503 for the former and a non-retryable 500 for the
+latter; do not turn the typed error into `IOException` first. Extend the closed dependency enum
+only when another required dependency has an intentional operation-level availability contract.
+
+Acceptance is that `shomei-core`, `shomei-postgres`, `shomei-jwt`, and their tests build without
+any old layer-first compatibility module, and module dependency directions remain acyclic.
+
+### Milestone 3: create vertical HTTP slices and a thin API root
+
+Create concept-owned `Api`, `Dto`, `Result`, and `Handler` modules under `shomei-servant`, using
+the Target concept layout. A `Result` module is needed only for slices with MultiVerb routes.
+Keep the root `Shomei.Api`/`Shomei.Servant.Api` module limited to record composition, proxies, and
+public API aliases. Keep the root server assembly limited to constructing the parallel hierarchy
+of handler records.
+
+Move request parsing into types where Servant can perform it before the handler. Add
+`FromHttpApiData` newtypes for audit user/session IDs, timestamps, cursors, admin status filters,
+and pagination cursors. Introduce an enforcing `RequireAdmin` combinator for the existing
+admin-role-or-scope disjunction so handlers do not each call `requireAdmin`. Keep authentication
+on the individual field or the smallest record whose every route shares it; do not authenticate
+an unrelated parent record.
+
+Replace the `Authenticated` type alias with an enforcing custom combinator that delegates to the
+existing context `AuthHandler` and contributes its 401 responses through `HasOpenApi`.
+Give `RequireRole`, `RequirePermission`, and the new `RequireAdmin` equivalent `HasOpenApi`
+instances. Add pass-through `PreHandlerResponses responses`, `CsrfProtected`, and `RateLimited`
+combinators: their `HasServer` instances leave handler types unchanged, while their `HasOpenApi`
+instances add the declared response types to the operation. `CsrfProtected` marks unsafe
+cookie-authenticated methods that the auth handler can reject with 403; do not add that response
+to safe authenticated GETs. Put the markers in the route type wherever JSON/query/capture
+decoding, CSRF policy, or WAI rate limiting can reject the request. Test that the rate-limiter's
+runtime path/method inventory exactly matches routes carrying `RateLimited`.
+
+Write the runtime dispatch tests before deleting the flat `ShomeiAPI` handler record. Mount
+several records under the same prefix and prove all methods/paths reach distinct markers. The
+exact served proxy used by the standalone server, embedded examples, OpenAPI generator, and
+client must be one exported value.
+
+Split `Shomei.Servant.DTO` and `Shomei.Servant.Handlers` completely. Delete the old modules after
+all callers move. No aggregate re-export shim remains.
+
+Replace the custom operations fields `health` and `ready` with one top-level field:
 
 ```haskell
--- Illustrative shape; confirm the header combinator name from servant's source in this
--- milestone and correct it before relying on it.
-signup ::
-  mode
-    :- "auth"
-      :> "signup"
-      :> ReqBody '[JSON] SignupRequest
-      :> MultiVerb 'POST '[JSON]
-           (SignupResponses "Signed up")
-           (AuthResult (WithCookies SignupResponse))
+health :: mode :- "health" :> NamedRoutes HealthApi
 ```
 
-Rewrite `signupH` to return `AuthResult (WithCookies SignupResponse)` instead of running
-through `runAuth` (which throws): run the workflow with a variant of the seam that yields
-`Either AuthError a`, and map a `Left` through `faultToResult` (defined in Milestone 2) to the
-error arm, a `Right` to `AuthOk (applyCookies …)`.
+Import `HealthApi`, `ProbeCheck`, and `healthServer` from `Servant.Health`. Delete
+`HealthResponse`, `ReadyResponse`, `healthH`, `readyH`, their custom OpenAPI instances and
+arbitraries, and every Shōmei-owned response sum or `AsUnion` proposed for readiness. Change the
+root handler constructor to accept liveness and readiness `ProbeCheck`s, in that order, and mount
+them with `healthServer`. Keep the checks injectable instead of closing over production state so
+the package test kit and embedding hosts can prove their own wiring.
 
-Acceptance: `cabal build all` succeeds; start the server (see Concrete Steps) and confirm
-`curl -i -X POST …/auth/signup …` still returns `200` **and** the two `Set-Cookie` headers when
-cookie transport is on. Record the exact combinator names and any type-inference wrinkles in
-Surprises & Discoveries. Do not proceed to Milestone 2 until the cookie headers are proven to
-survive the `MultiVerb` conversion.
-
-### Milestone 2 — The shared response vocabulary and the full conversion
-
-Scope: introduce a new module `shomei-servant/src/Shomei/Servant/Response.hs` holding the
-error envelope, the response-list aliases, the result sum, the hand-written `AsUnion`
-instances, and the total `faultToResult :: AuthError -> AuthResult a`. Convert every remaining
-`ShomeiAPI` field to `MultiVerb`. Rewrite every handler in `Shomei/Servant/Handlers.hs` to
-return the result sum instead of throwing. Install `ErrorFormatters` in the server assembly. At
-the end, `cabal build all` succeeds and `cabal test all` passes except the OpenAPI conformance
-test, which Milestone 3 updates.
-
-**Before rewriting the handlers, pin the same-typed admin families with a runtime dispatch test.**
-`ShomeiAPI` has two families whose fields share one handler type and differ only by a static path
-segment: five routes reduce to `AuthUser -> UserId -> Handler NoContent` (`adminSuspendUser`,
-`adminReinstateUser`, `adminDeleteUser`, `adminRevokeSessions`, `adminPasswordReset` — the closest
-transposition risks are the exact-verb pairs {`adminSuspendUser`, `adminReinstateUser`} at POST 204
-and {`adminDeleteUser`, `adminRevokeSessions`} at DELETE 204), and two reduce to
-`AuthUser -> UserId -> Text -> Handler NoContent` (`adminGrantRole`, `adminRevokeRole`). Because
-`NamedRoutes` does **not** make a same-typed transposition a compile error (falsified in meibo; see
-Surprises & Discoveries), rewriting every handler in one pass is exactly the moment one admin
-handler could be bound to a sibling's field and compile clean. Add a runtime dispatch test that
-drives each of these admin paths against the real server and asserts each reaches its *own* handler
-(suspending a user leaves the user suspended, not reinstated; granting a role grants it, not revokes
-it), written *before* the handler rewrite, and keep it green through the conversion. Every non-admin
-`ShomeiAPI` route has a distinct handler type (distinct `ReqBody` or distinct response — e.g. the
-three cookie-issuing token routes differ by request body), so only the admin families need pinning.
-
-`Shomei/Servant/Response.hs` defines the envelope exactly as the convention and the
-`en-servant` reference specify:
+Create `Shomei.Health.Server` in `shomei-server` for the concrete checks. Build liveness from an
+in-process `boolCheck`, wrap it in `safeCheck`, put `withProbeTimeout` outside that wrapper, and
+give it its own `newFailureTracker`. Build readiness from the existing signing-key store call:
+an execution failure is named `postgres`, while a successful empty key set is named
+`signing-key`; put that composite check through `sequenceChecks` and a distinct failure tracker.
+The intended composition is:
 
 ```haskell
--- | The one error-body shape. `code` is stable and machine-readable; `retryable`
--- distinguishes "fix your request" (False) from "try again" (True).
-data ErrorEnvelopeWire = ErrorEnvelopeWire
-  { code :: !Text,
-    message :: !Text,
-    retryable :: !Bool
+liveness =
+  trackLiveness
+    . withProbeTimeout 2_000_000 "liveness"
+    . safeCheck "liveness"
+    $ boolCheck "liveness" (pure True)
+
+readiness =
+  trackReadiness . sequenceChecks $
+    [ safeCheck "postgres" $
+        boolCheck "signing-key" (not . null <$> runSigningKeyQuery)
+    ]
+```
+
+`runSigningKeyQuery` is the service-owned IO bridge for `listActiveSigningKeys`; it is not a new
+library function. Keep the timeout in microseconds and outside `safeCheck` so its asynchronous
+interrupt is not swallowed. Do not add downstream HTTP or incidental infrastructure checks.
+Construct the two tracked checks once during server startup, not once per request.
+
+Make the WAI application builder explicit about injection, for example
+`application :: Env -> ProbeCheck -> ProbeCheck -> Application`. Production startup passes the
+checks from `Shomei.Health.Server`; embedded hosts pass their own; tests pass controlled checks.
+Do not retain the old one-argument application builder as a compatibility wrapper.
+
+Use `probeContractTests` from `Servant.Health.TestKit` against that application builder. Retain a
+separate Shōmei integration test for the production readiness check: a reachable database with an
+active signing key is healthy, a reachable database with no active signing key fails under
+`signing-key`, and an unavailable pool fails under `postgres`. Call a tracked failing check twice
+and assert `failingSince` remains the first onset, then make it healthy and prove the next failure
+starts a new run. The library test kit proves route wiring; these service tests prove Shōmei's
+readiness policy.
+
+Acceptance is that a contributor can locate a route, its wire DTO, response result, and handler
+adapter under one concept prefix, changing field order cannot change routing, and Shōmei owns no
+probe wire type or 200/503 mapping.
+
+### Milestone 4: implement typed problem details and selective MultiVerb
+
+Replace the hand-built Problem Details `Value` with an RFC 9457 profile:
+
+```haskell
+data ProblemDetails = ProblemDetails
+  { problemType :: !Text
+  , title :: !Text
+  , status :: !Int
+  , detail :: !(Maybe Text)
+  , problemInstance :: !(Maybe Text)
+  , code :: !Text
+  , retryable :: !Bool
   }
-  deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving stock (Eq, Show, Generic)
+
+data ProblemJSON
 ```
 
-Then the shared error tail, plus the success-status variants shomei needs (200, 202, 204,
-and the two header-carrying variants for cookie-setting routes). The error tail is shared —
-slightly over-broad per operation, but that is the price of a *total* `faultToResult`, exactly
-the tradeoff the convention and the `en-servant` reference make:
+Give `ProblemJSON` `Accept` and `MimeRender`/`MimeUnrender` instances for
+`application/problem+json`. Use shared Aeson options to encode `problemType` as `"type"` and omit
+absent `detail` and `problemInstance`, encoding the latter as `"instance"`; use the same options
+for `ToJSON`, `FromJSON`, and `ToSchema`. The schema marks `type` as a URI reference, constrains
+`status` to 100 through 599, allows extension members, and requires Shōmei's profile fields
+`type`, `title`, `status`, `code`, and `retryable`.
+
+Define the problem-type URI from the public repository and the stable code:
 
 ```haskell
--- The statuses a shomei handler can *return* (not the combinator-raised 401/403; see below).
-type ErrorTail =
-  '[ Respond 400 "Invalid request"      ErrorEnvelopeWire,
-     Respond 401 "Authentication failed" ErrorEnvelopeWire,
-     Respond 403 "Forbidden"            ErrorEnvelopeWire,
-     Respond 404 "Not found"            ErrorEnvelopeWire,
-     Respond 409 "Conflict"             ErrorEnvelopeWire,
-     Respond 429 "Too many requests"    ErrorEnvelopeWire,
-     Respond 503 "Dependency unavailable" ErrorEnvelopeWire
+problemTypeFor :: Text -> Text
+problemTypeFor code =
+  "https://github.com/shinzui/shomei/blob/master/docs/user/problem-details.md#" <> code
+```
+
+Create `docs/user/problem-details.md` with an explicit HTML anchor for every code, its stable
+title, HTTP status, retryability, safe client behavior, and whether `Retry-After` can accompany
+it. Restrict codes to lowercase ASCII letters, digits, and underscore; with the fixed HTTPS base,
+that makes every constructed type a valid URI reference without adding a URI library. The
+catalog test must verify the base and code alphabet, verify that every URI has a matching
+document anchor, and verify a one-to-one mapping between `type` and `code`.
+`about:blank` is not emitted by the catalog because every current entry conveys Shōmei-specific
+semantics. `code` and `retryable` are RFC 9457 extension members, not standard members; decoders
+must ignore additional unknown extensions. `retryable` does not replace the standard
+`Retry-After` header on 429 or a 503 for which the server knows an honest retry interval.
+
+Extend `ProblemSpec` with `retryable` and make both
+`toProblemError` (pre-handler paths) and returned MultiVerb problems call the same
+`problemDetails` constructor. Test every catalog entry for HTTP/body status equality, stable code,
+type URI, title, media type, and retryability. `detail` contains only occurrence-specific,
+client-actionable text and is never a machine key or an implementation/debugging message.
+`problemInstance` is absent until the request context has a safe opaque occurrence URI; never put
+a stack trace, database identifier, token, or other secret into either optional field. Add a
+decoder test with an unknown extension member and require successful decoding, as RFC 9457
+requires clients to ignore extensions they do not recognize.
+
+Define one application error tail and result vocabulary, then give each multi-outcome application
+operation a named response-list alias and named result alias in its concept's `Result` module. A
+representative shape is:
+
+```haskell
+type ApplicationErrorResponses =
+  '[ RespondAs ProblemJSON 400 "Bad request" ProblemDetails
+   , WithHeaders WwwAuthenticateHeaders ProblemWithAuthenticate
+       (RespondAs ProblemJSON 401 "Authentication failed" ProblemDetails)
+   , RespondAs ProblemJSON 403 "Forbidden" ProblemDetails
+   , RespondAs ProblemJSON 404 "Not found" ProblemDetails
+   , RespondAs ProblemJSON 409 "Conflict" ProblemDetails
+   , RespondAs ProblemJSON 422 "Unprocessable content" ProblemDetails
+   , WithHeaders RetryAfterHeaders ProblemWithRetryAfter
+       (RespondAs ProblemJSON 429 "Too many requests" ProblemDetails)
+   , RespondAs ProblemJSON 500 "Internal server error" ProblemDetails
+   , WithHeaders RetryAfterHeaders ProblemWithRetryAfter
+       (RespondAs ProblemJSON 503 "Required dependency unavailable" ProblemDetails)
    ]
 
-type OkResponses      (desc :: Symbol) a = Respond 200 desc a  ': ErrorTail
-type AcceptedResponses (desc :: Symbol)  = RespondEmpty 202 desc ': ErrorTail
-type NoContentResponses (desc :: Symbol) = RespondEmpty 204 desc ': ErrorTail
+type SignupResponses =
+  WithHeaders CookieHeaders SignupCreatedResponse
+    (Respond 201 "Account created" SignupResponse)
+    ': ApplicationErrorResponses
+
+type SignupResult = ApplicationResult SignupCreatedResponse
 ```
 
-The result sum has one constructor per position. Note the success constructor is polymorphic in
-the body so the same sum serves every operation:
+Define `CookieHeaders` with MultiVerb's `DescHeader`/`OptHeader` and an explicit `AsHeaders`
+instance so cookie-bearing success alternatives preserve both `Set-Cookie` headers in cookie
+mode and omit them in bearer mode. Do not wrap an existing Servant `Headers` value blindly;
+MultiVerb's `WithHeaders` return type is controlled by `AsHeaders`.
 
-```haskell
-data AuthResult a
-  = AuthOk a                         -- 200 (or the empty-body successes; see below)
-  | AuthBadRequest    !ErrorEnvelopeWire  -- 400
-  | AuthUnauthorized  !ErrorEnvelopeWire  -- 401 (domain, e.g. InvalidCredentials)
-  | AuthForbidden     !ErrorEnvelopeWire  -- 403
-  | AuthNotFound      !ErrorEnvelopeWire  -- 404
-  | AuthConflict      !ErrorEnvelopeWire  -- 409
-  | AuthTooManyRequests !ErrorEnvelopeWire -- 429
-  | AuthUnavailable   !ErrorEnvelopeWire  -- 503
-  deriving stock (Generic, Eq, Show)
-```
+Define `ApplicationResult a` with one success constructor and one constructor for each status in
+`ApplicationErrorResponses`. Write a load-bearing manual `AsUnion` instance for every route's
+complete response alias; keep the shared tail in one fixed order and never use `GenericAsUnion`.
+Apply the same tail to every application MultiVerb route so
+`AuthError -> ApplicationResult a` is total. When two failures share a status but have different
+machine codes, the one status constructor carries `ProblemDetails`; the type URI is the primary
+distinction and `code` is its short alias. OAuth, OIDC protocol, and health routes do not use this
+application tail.
 
-Write the `AsUnion` instance out **by hand**, following the `en-servant` reference longhand,
-with the exhaustiveness witness as the final clause. Do NOT use `GenericAsUnion`: the
-constructor-to-status correspondence is the load-bearing fact, and a change to the list must
-break the build loudly. For the empty-body successes (`202`/`204`), provide a second `AsUnion`
-instance whose `AuthOk` maps onto the `RespondEmpty` head (the body type is `()` /
-`NoContent`).
+Define `WwwAuthenticateHeaders` and `RetryAfterHeaders` with `OptHeader`/`DescHeader`, plus
+explicit `AsHeaders` return wrappers. Populate `WWW-Authenticate` only for problems that actually
+challenge bearer authentication. Populate `Retry-After` for 429 and only for a 503 whose retry
+interval is honest; leave either optional header absent otherwise. The shared tail is deliberately
+over-broad in statuses, but it must not invent headers on occurrences where they do not apply.
 
-The total fault conversion maps every `AuthError` constructor to a status. It is total because
-`AuthError` is one closed sum and the error tail covers every status any handler can produce:
+Refactor the handler seam so workflows return `Either AuthError a` to a route-local total mapping.
+Expected domain failures become result constructors. An unclassified error fails a test; do not
+silently map a newly added `AuthError` to the wrong status. Known unavailable dependencies map to
+503, genuine internal failures map to 500. The top-level exception boundary still catches
+unanticipated exceptions and produces a 500 problem response for application routes.
 
-```haskell
-faultToResult :: AuthError -> AuthResult a
-faultToResult = \case
-  InvalidEmail            -> AuthBadRequest   (env "invalid_email" "Email is not valid" False)
-  InvalidLoginId          -> AuthBadRequest   (env "invalid_login_id" "Login identifier is not valid" False)
-  WeakPassword _          -> AuthBadRequest   (env "weak_password" "Password does not meet policy" False)
-  EmailAlreadyRegistered  -> AuthConflict     (env "email_taken" "Email is already registered" False)
-  LoginIdAlreadyRegistered-> AuthConflict     (env "login_id_taken" "Login identifier is already registered" False)
-  InvalidCredentials      -> AuthUnauthorized (env "invalid_login" "Invalid email or password" False)
-  UserNotActive           -> AuthUnauthorized (env "invalid_login" "Invalid email or password" False)
-  AccountLocked           -> AuthUnauthorized (env "invalid_login" "Invalid email or password" False)
-  TooManyRequests         -> AuthTooManyRequests (env "too_many_requests" "Too many requests" True)
-  SessionNotFound         -> AuthNotFound     (env "session_not_found" "Session not found" False)
-  -- … one arm per AuthError constructor, transcribed from Shomei/Servant/Error.hs …
-  InternalAuthError _     -> AuthUnavailable  (env "internal" "Internal authentication error" True)
-  where env c m r = ErrorEnvelopeWire c m r
-```
+Concretely, change the seam environment's runner from
+`forall a. Eff AppEffects a -> IO a` to
+`forall a. Eff AppEffects a -> IO (Either AuthError a)`. Plain port actions use the outer result;
+workflows that already return `Either AuthError a` flatten the interpreter and workflow results
+before route-local mapping. The authentication combinator maps the same typed result to a thrown
+pre-handler problem because it runs before an operation handler. Delete `runPortChecked` and the
+old HTTP-rendering `runAuth`/plain `runPort` helpers, and delete the standalone server's `ioError`
+conversion: typed failures must not become exceptions before the route decides 500 versus 503.
+An actual IO exception remains unexpected and reaches the fault boundary.
 
-Transcribe every arm directly from the existing `authErrorToServerError` in
-`Shomei/Servant/Error.hs` so the status/`code`/`message` for each error is unchanged (only the
-field name `error` → `code` and the added `retryable` differ). Map `InternalAuthError` to `503`
-`retryable = True` rather than `500`: the convention says a failed *dependency* is a 503 the
-caller can retry, and shomei's only remaining true-500 case (a genuine internal bug) is not a
-documented response alternative. Note this status change (500 → 503 for `InternalAuthError`) in
-Surprises & Discoveries; it is the single behavioral status change in the conversion.
+Use dedicated result sums for protocol endpoints:
 
-`Shomei/Servant/Error.hs` can be retained for the CSRF/combinator path (it still builds the
-combinator-raised errors) but its `authErrorToServerError` is now only used where errors are
-still thrown upstream of a handler; the handler path uses `faultToResult`. Keep `csrfRejected`
-and the combinator 401s exactly as they are — they are not `MultiVerb` alternatives.
+* OAuth authorize models redirect headers and RFC 6749 errors.
+* OAuth token/introspection/revocation model their success and RFC 6749 failure shapes.
+* OIDC discovery models 200 and protocol-shaped 404.
+* `servant-health` already models both probe routes at 200 and 503; Shōmei must not define a
+  parallel result sum.
 
-Convert every field in `Shomei/Servant/API.hs`:
+Leave the ordinary-route allow-list as ordinary verbs. Add a test that rejects `MultiVerb1` and
+fails if an allow-listed route becomes MultiVerb without updating the Decision Log and test
+fixture. Add a complementary test that a non-allow-listed JSON terminal route is MultiVerb, that
+every store-backed route declares 503, and that the imported health sub-API remains package-owned
+MultiVerb. `Raw` and streaming markers are checked separately rather than forced through this
+binary assertion.
 
-- Body-returning `Post`/`Get` → `MultiVerb 'POST '[JSON] (OkResponses "…" X) (AuthResult X)` (or
-  the header-carrying variant proven in Milestone 1 for the `WithCookies` routes).
-- `Verb 'POST 202 '[JSON] NoContent` → `MultiVerb 'POST '[JSON] (AcceptedResponses "…")
-  (AuthResult ())`.
-- `PostNoContent` / `Verb 'POST 204 …` → `MultiVerb 'POST '[JSON] (NoContentResponses "…")
-  (AuthResult …)` (the `logout` route keeps its `Set-Cookie`-clearing headers via the
-  header-carrying `204` variant).
-- `login`'s success stays a single `Respond 200 "…" LoginResponse` alternative carrying the
-  tagged-union `LoginResponse`; `MultiVerb` does not split its two 200 arms.
-- `jwks`, `health` produce no domain errors; they may keep a plain verb *or* use a
-  degenerate one-alternative `MultiVerb`. Keep them plain to minimize churn (the convention's
-  target shape is a guide, not a mandate to add error arms an endpoint cannot produce). Record
-  this choice in the Decision Log if you deviate.
-- `ready` already returns 503 by throwing; model it as `MultiVerb` with a `200` success and the
-  `503` arm so the readiness contract is typed.
+Acceptance is demonstrated by server tests that pattern-match result constructors before HTTP
+serialization, integration tests for every status, and the classification tests.
 
-Rewrite each handler in `Shomei/Servant/Handlers.hs` to return `AuthResult …`. Replace the
-`runAuth` calls (which throw) with a variant that yields `Either AuthError a` and maps `Left`
-through `faultToResult`, `Right` through `AuthOk`. Add a seam helper in
-`Shomei/Servant/Seam.hs`, e.g. `runResult :: Env -> Eff AppEffects (Either AuthError a) ->
-Handler (AuthResult a)`, so handlers stay thin. Pre-workflow validation that currently throws
-`err400` (malformed ceremony id, empty scopes, missing loginId/email, bad audit cursor) returns
-`AuthBadRequest (env "…" "…" False)` instead. The `requireRole` admin gate in `auditEventsH`
-returns `AuthForbidden …` instead of throwing.
+### Milestone 5: derive OpenAPI and client behavior from the reorganized API
 
-Install `ErrorFormatters` in the server assembly. Find where the app is served — the standalone
-executable assembles it in `shomei-server/src/Shomei/Server/{App,Boot}.hs`, and the
-embeddability example and tests call `serveWithContext`. Add an `envelopeFormatters ::
-ErrorFormatters` (modeled on the `en-servant` reference, lines ~245–255) that emits
-`ErrorEnvelopeWire` for `bodyParserErrorFormatter`, `urlParseErrorFormatter`, and
-`notFoundErrorFormatter`, and prepend it to the existing context:
+Make `Shomei.Servant.OpenApi` derive from the exact `shomeiRoutesAPI` proxy used by
+`shomei-server`. Delete `routeErrors`, `baselineSpecs`, and every path-indexed response decorator.
+MultiVerb supplies handler outcomes; `Authenticated`, authorization combinators,
+`PreHandlerResponses`, `CsrfProtected`, and `RateLimited` supply operation-specific pre-handler
+responses from the served proxy itself. Keep only document-wide metadata and
+schema/operation-ID enrichment in the OpenAPI assembly. A global 404/405 or unexpected 500 need
+not be copied onto every operation, because it is not an outcome of a matched operation.
 
-```haskell
-serveWithContext shomeiAPI (envelopeFormatters :. authContext) (shomeiServer env)
-```
+Assert:
 
-Keep whatever `AuthHandler` context entry the assembly already passes for the `Authenticated`
-combinator; `ErrorFormatters` is *added*, not a replacement.
+* every MultiVerb alternative appears at its declared status;
+* `RespondAs ProblemJSON` alternatives advertise `application/problem+json`;
+* every application problem schema includes `type`, `title`, `status`, optional `detail` and
+  `instance`, and extension members `code` and `retryable`;
+* every catalog type is a documented HTTPS URI, no catalog entry uses `about:blank`, and each
+  body `status` equals its HTTP response status;
+* OAuth alternatives advertise the OAuth JSON shape and required headers;
+* cookie/redirect/cache headers appear on only the relevant alternatives;
+* ordinary routes have their one handler success plus applicable pre-handler responses, without
+  a fake MultiVerb union;
+* every store-backed operation declares its retryable 503, and every operation whose total fault
+  mapping accepts `InternalAuthError` declares a non-retryable 500;
+* `/health/live` and `/health/ready` each advertise package-owned 200 and 503
+  `application/json` responses with the `ProbeStatus` schema, while `/health` and `/ready` are
+  absent;
+* the OpenAPI path/method set exactly matches the served proxy;
+* no removed route appears;
+* every `operationId` is stable and unique;
+* two consecutive generator runs are byte-identical.
 
-Acceptance: `cabal build all` succeeds; `cabal test all` passes except
-`shomei-servant-openapi-test` (updated next). The `en-servant` reference file is the model for
-every piece here — read it alongside.
+Update `shomei-client` from the reorganized records. MultiVerb calls return the named result sum
+as their success value; ordinary calls return the ordinary response. Remove wrappers for deleted
+routes and old signatures. The two generated probe calls return `ProbeResult`; do not recreate
+`HealthResponse`, `ReadyResponse`, or old-path wrapper functions. Do not convert a
+`ProblemDetails` result constructor into
+`Left ClientError`: `ClientError` is reserved for transport failure, decoding failure, or a
+response that violates the declared API.
 
-### Milestone 3 — Regenerate OpenAPI, fix the conformance test, fold the client arms
+Update `shomei-server`, `shomei-admin`, all embedded examples, and tests directly to the new
+modules and client results. There are no downstream compatibility shims to add. Mori
+`dependents` can identify registered local projects for a separate coordinated change if any
+current workspace project imports Shōmei, but that work must not alter this clean initial API.
 
-Scope: bring the generated document and its test back to green, and keep `shomei-client`'s
-public signatures — and therefore nagare — unchanged. At the end, `cabal test all` passes
-fully and `docs/api/openapi.json` reflects the new response statuses.
+Change `requestLoggingMiddleware` to skip `rawPathInfo` values in
+`Servant.Health.Paths.healthRawPaths` when request logging is enabled. Use the same constants in
+the Problem Details conformance exemption; do not restate `"/health/live"` and
+`"/health/ready"` in Haskell. Keep failed probes observable through Kubernetes, metrics, and the
+probe response rather than re-enabling per-request noise.
 
-First, harden the `shomei-openapi` executable so the checked-in artifact is byte-diffable. Today
-`shomei-servant/app/openapi/Main.hs` uses `encodePretty` (default config) and relies on a shell
-redirect, which does **not** sort keys — so a regenerated document can reshuffle object members
-and produce a noisy diff that hides the real contract change. The recipe requires sorted keys and
-a trailing newline. Change it to write the file directly with a sorted, 2-space-indented config,
-mirroring meibo's `meibo-api/app/OpenApi.hs`:
+### Milestone 6: documentation, artifact generation, and final cleanup
 
-```haskell
--- shomei-servant/app/openapi/Main.hs
-module Main (main) where
+Rewrite current user documentation, examples, and curl transcripts for the final API. Remove
+service-token and bespoke impersonation pages or replace their content with OAuth
+`client_credentials`, token exchange, and revocation. Document the required login ID, tagged MFA
+proof, typed result sums, the RFC 9457 Problem Details profile, stable problem-type URIs, and
+which routes are intentionally ordinary. Replace every current operational reference to
+`/health` or `/ready` with `/health/live` or `/health/ready` according to its restart-versus-
+traffic-gating purpose, document the exact `ProbeStatus` body, and update Kubernetes manifests,
+process-compose checks, examples, smoke tests, and security/key-rotation guidance. Do not add a
+transition period, redirect, or alias for the old paths.
+Historical completed ExecPlans may continue to describe the state they implemented; add a note
+only when a reader could mistake one for current user documentation.
 
-import Data.Aeson.Encode.Pretty (Config (..), Indent (Spaces), defConfig, encodePretty')
-import Data.ByteString.Lazy qualified as BSL
-import Shomei.Servant.OpenApi (shomeiOpenApi)
-import System.Directory (createDirectoryIfMissing)
-
-main :: IO ()
-main = do
-  createDirectoryIfMissing True "docs/api"
-  BSL.writeFile "docs/api/openapi.json" (encodePretty' config shomeiOpenApi <> "\n")
-  where
-    config = defConfig {confIndent = Spaces 2, confCompare = compare, confTrailingNewline = False}
-```
-
-Add `directory` to the `shomei-openapi` executable's `build-depends` (it already has
-`aeson-pretty`, `bytestring`, and `shomei-servant`). Now the executable *writes* the artifact
-rather than printing it, so regenerate by running it (no redirect):
-
-```bash
-cabal run shomei-openapi
-git diff docs/api/openapi.json      # expect NEW 400/401/403/404/409/429/503 responses per op
-```
-
-Because keys are now sorted, the *first* regeneration under this config may reorder the whole
-existing file — commit that reordering together with the new response entries, and note in the
-commit body that the reshuffle is the one-time cost of switching to sorted output; every
-subsequent diff is a real change only.
-
-Add the drift check to CI. `.github/workflows/ci.yaml` already builds and tests under
-`nix develop`; add a step after the build (mirroring meibo's "Check the OpenAPI artifact is in
-sync") so an un-regenerated API change fails the build:
-
-```yaml
-      - name: Check the OpenAPI artifact is in sync
-        run: |
-          nix develop --command cabal run -v0 shomei-openapi
-          git diff --exit-code -- docs/api/openapi.json
-```
-
-`Shomei/Servant/OpenApi.hs` needs a `ToSchema ErrorEnvelopeWire` instance (add it next to the
-other DTO `ToSchema` instances — a plain `instance ToSchema ErrorEnvelopeWire` suffices, its
-generic derivation matches the derived `ToJSON`). `MultiVerb`'s `HasOpenApi` instance ships in
-`servant-openapi`, so no new combinator instance is required for the response lists; verify this
-by building the `shomei-openapi` executable. The document's *path count* is unchanged (24) —
-`MultiVerb` adds responses to existing operations, it does not add paths.
-
-Update `shomei-servant/test-openapi/Main.hs`. The suite today runs `validateEveryToJSON` (the
-recipe's third property — every DTO's `ToJSON` validates against its `ToSchema`, in strong form),
-asserts `openapi == "3.1.0"`, and asserts a path *count* of 24. Keep those and add the two
-properties the recipe requires that are currently missing:
-
-- **Assert the exact path *set*, not just the count.** A count of 24 passes even if an endpoint
-  was renamed or swapped for another. Replace (or supplement) the `pathCount == 24` assertion
-  with an equality against the sorted list of all 24 expected paths, so a renamed or dropped
-  route fails loudly:
-
-  ```haskell
-  it "covers exactly the served path set" $
-    sort (pathKeys shomeiOpenApi) `shouldBe` servedPaths   -- the 24 literal "/auth/..." paths
-  ```
-
-- **Assert every operation declares its error responses.** This is the test that gives the
-  `MultiVerb` conversion its teeth and would catch a silent regression to Hackage
-  `servant-openapi3` (on which every error response vanishes at once). For each
-  `(path, method, operation)` in the document, assert the operation's response codes include at
-  least one `>= 400` status (the health/jwks routes that were deliberately kept plain — see the
-  Milestone 2 Decision Log — are the documented exceptions; scope the assertion to the
-  domain-error operations or list the plain routes explicitly):
-
-  ```haskell
-  it "every domain operation declares at least one error response" $
-    for_ (operationsOf shomeiOpenApi) $ \(path, method, op) ->
-      when (path `notElem` plainRoutes) $
-        any (>= 400) (responseCodesOf op) `shouldBe` True
-  ```
-
-- `validateEveryToJSON` now also traverses the `ErrorEnvelopeWire` response bodies; add an
-  `Arbitrary ErrorEnvelopeWire` and `Show ErrorEnvelopeWire` orphan (test-only, like the
-  others) so the property can generate them.
-- The `pathCount == 24` invariant still holds (`MultiVerb` adds responses to existing
-  operations, not paths); keep it too if you prefer, but the exact-set assertion subsumes it.
-- The existing `NoContent` orphan handling stays; the empty-body `MultiVerb` successes still
-  present as `NoContent` to the validator.
-
-Fold the typed error arms inside the `shomei-client` wrappers so nagare is untouched. Under
-`MultiVerb`, `API.login shomeiClient body` now returns `ClientM (AuthResult (WithCookies
-LoginResponse))` (or the header-carrying union). The wrappers in
-`shomei-client/src/Shomei/Client.hs` must keep their existing signatures — e.g. `login ::
-ClientEnv -> LoginRequest -> IO (Either ClientError LoginResponse)` — by mapping the union:
-`AuthOk withCookies -> Right (getResponse withCookies)`, and every error arm →
-`Left (mkFailure envelope)`. Introduce one helper, `resultToEither :: AuthResult a -> Either
-ClientError a`, that turns an error arm into the `ClientError` shape servant-client already
-produces for a non-2xx (a `FailureResponse` carrying the status and the encoded envelope), so
-callers that only look at `Left`/`Right` (nagare does) see no change. Document at the top of
-`Shomei.Client` that the *wire* now advertises typed error statuses but the Haskell wrappers
-preserve the `Either ClientError X` ergonomics; a future major version may expose `AuthResult`
-directly.
-
-Acceptance: `cabal test all` passes, including `shomei-servant-openapi-test`. Build nagare
-against the working tree (`cabal build all` in `/Users/shinzui/Keikaku/bokuno/nagare`) to
-confirm `Shomei.Client` still satisfies `Nagare.Access.ShomeiClient` — it must compile with no
-nagare edits. Record the nagare build result in Surprises & Discoveries.
-
-### Milestone 4 — Behavioral validation
-
-Scope: prove the behavior end-to-end with `curl` and an OpenAPI diff. This milestone adds no
-code; it demonstrates the change is real. See [Validation and Acceptance](#validation-and-acceptance)
-for the full transcript. In brief: start the server, sign up a user (`200` + `Set-Cookie`), log
-in (`200`), attempt a *duplicate* signup and observe `409` with `{"code":"login_id_taken",…,
-"retryable":false}`, POST a malformed JSON body and observe `400` with the same envelope shape
-(this is the `ErrorFormatters` win — before this plan it was Servant's plain-text body), and
-call an `Authenticated` route with no token and observe `401` still coming from the combinator.
-Then regenerate the OpenAPI document and confirm the diff shows the new response statuses.
-
-### Milestone 5 — Vertical-slice `shomei-core` and `shomei-postgres`
-
-Scope: move the concept-owned modules under their concept prefix per
-[The vertical-slice analysis](#the-vertical-slice-analysis); leave the cross-cutting modules in
-place; update every module header, the `exposed-modules` in `shomei-core.cabal` and
-`shomei-postgres.cabal`, and all imports. Use `git mv` so history follows. No behavior changes.
-`cabal build all && cabal test all` passes.
-
-Move only the modules listed as "concepts that get a slice." For example, for the Passkey
-concept:
-
-```bash
-git mv shomei-core/src/Shomei/Domain/Passkey.hs        shomei-core/src/Shomei/Passkey/Domain.hs
-git mv shomei-core/src/Shomei/Effect/PasskeyStore.hs   shomei-core/src/Shomei/Passkey/Store.hs
-git mv shomei-core/src/Shomei/Effect/PendingCeremonyStore.hs shomei-core/src/Shomei/Passkey/PendingCeremony.hs
-git mv shomei-core/src/Shomei/Workflow/Passkey.hs      shomei-core/src/Shomei/Passkey/Workflow.hs
-git mv shomei-core/src/Shomei/Workflow/Mfa.hs          shomei-core/src/Shomei/Passkey/Mfa.hs
-git mv shomei-postgres/src/Shomei/Postgres/PasskeyStore.hs shomei-postgres/src/Shomei/Passkey/Postgres.hs
-# … then rename the `module Shomei.Domain.Passkey` header to `module Shomei.Passkey.Domain`,
-#     fix the two cabal exposed-modules lists, and let GHC name every broken import.
-```
-
-Repeat for User/Account, Credential, Session, RefreshToken, LoginAttempt, Verification,
-PasswordReset, and Audit. Do **not** move any module in the "stays put" list — most importantly
-`Shomei.Domain.Claims`, `Shomei.Domain.Token`, `Shomei.Domain.SigningKey`, `Shomei.Error`,
-`Shomei.Id`, `Shomei.Config`, `Shomei.Effect.InMemory`, `Shomei.Effect.AuthUnitOfWork`, and the
-infrastructure ports.
-
-For any moved module that a **downstream** repo imports, add a deprecated re-export shim at the
-old path. Per the downstream analysis, `shomei-core`'s moved modules are all internal-only
-(downstream imports Claims/Token/SigningKey/Error/Id/Config from core, none of which move), so
-**no `shomei-core` shim is required**. Confirm this by grepping the sibling repos again after the
-move; if any moved module turns out to be imported downstream, add a shim:
-
-```haskell
--- shomei-core/src/Shomei/Domain/Passkey.hs  (shim, only if a downstream imports it)
-{-# DEPRECATED "Import Shomei.Passkey.Domain instead; this alias is temporary." #-}
-module Shomei.Domain.Passkey (module Shomei.Passkey.Domain) where
-import Shomei.Passkey.Domain
-```
-
-Update `shomei-core/app/…`, the `shomei-core` test suite modules, `shomei-postgres`'s tests,
-and `shomei-server`'s modules that import the moved modules. Build after each concept's move so
-GHC's errors name the next site.
-
-Acceptance: `cabal build all && cabal test all` passes. `git status` shows renames (`R`), not
-delete+add. `find shomei-core/src shomei-postgres/src -name '*.hs' | grep -iE 'passkey|session'`
-shows the concept as a *directory* component, not a filename, for the sliced concepts.
-
-### Milestone 6 — Vertical-slice the `shomei-servant` DTOs
-
-Scope: split `Shomei/Servant/DTO.hs` (one 467-line module holding every DTO) into per-concept
-DTO modules, leaving a deprecated `Shomei.Servant.DTO` re-export shim so nagare and
-`shomei-client` keep building unchanged. Keep the `ShomeiAPI` record and the `shomei-client`
-field structure flat and stable. `cabal build all && cabal test all` passes.
-
-Split by the same concepts as Milestone 5 — for instance `Shomei/User/Dto.hs`
-(`SignupRequest`/`Response`, `UserResponse`, `LoginRequest`), `Shomei/Session/Dto.hs`
-(`SessionResponse`), `Shomei/Credential/Dto.hs` (`ChangePasswordRequest`,
-`ConfirmPasswordResetRequest`, `PasswordResetRequest`), `Shomei/Passkey/Dto.hs` (the passkey and
-MFA DTOs), `Shomei/Audit/Dto.hs` (`AuditEventResponse`, `AuditEventsPage`), plus shared wire
-types (`TokenPairResponse`, the tagged-union `LoginResponse` with its hand-written instances,
-`HealthResponse`, `ReadyResponse`) in `Shomei/Servant/Dto/Shared.hs`. Move the mapping functions
-(`userToResponse`, `tokenPairToResponse`, etc.) alongside the DTOs they build.
-
-Then make `Shomei/Servant/DTO.hs` a shim that re-exports every symbol from the new modules,
-preserving the exact export list nagare and `shomei-client` rely on, with a `{-# DEPRECATED #-}`
-pragma:
-
-```haskell
-{-# DEPRECATED "Import the per-concept Shomei.*.Dto modules; this aggregate re-export is temporary." #-}
-module Shomei.Servant.DTO (module X) where
-import Shomei.User.Dto as X
-import Shomei.Session.Dto as X
-import Shomei.Credential.Dto as X
-import Shomei.Passkey.Dto as X
-import Shomei.Audit.Dto as X
-import Shomei.Servant.Dto.Shared as X
-```
-
-Update `Shomei/Servant/OpenApi.hs`, `Shomei/Servant/Handlers.hs`, and
-`shomei-client/src/Shomei/Client.hs` to import the new modules directly (they are inside the
-shomei repo). Leave nagare importing the shim.
-
-Acceptance: `cabal build all && cabal test all` passes. Building nagare against the working tree
-still succeeds with no nagare edits (the shim carries it). `git status` shows the DTO split as
-renames plus one new small shim file.
-
-### Milestone 7 — Reconcile with roadmap plan 40; amend docs
-
-Scope: resolve the overlap with the unimplemented roadmap plan
-`docs/plans/40-api-v1-prefix-and-universal-problem-details-error-envelope.md`, and update any
-in-repo docs that describe the pre-`MultiVerb` shape. No code beyond doc edits.
-
-Plan 40 (EP-3 of MasterPlan 7) declares itself the owner of a "universal problem-details error
-envelope" and a `/v1` prefix, and calls itself "the breaking-change window." This plan
-introduces `ErrorEnvelopeWire` first. Append a dated revision note to plan 40 stating that the
-error-envelope integration point is now established by this plan
-(`docs/plans/48-reorganize-shomei-into-vertical-slices-and-adopt-multiverb.md`) as
-`ErrorEnvelopeWire { code, message, retryable }` delivered through `MultiVerb` + Servant
-`ErrorFormatters`, and that plan 40's remaining scope narrows to the `/v1` path prefix and any
-RFC-7807 `application/problem+json` content-type framing it still wants on top of this envelope.
-If the two envelope shapes are meant to differ (RFC 7807 uses `type`/`title`/`detail`/`status`),
-record in this plan's Decision Log which one wins fleet-wide; do not leave two competing
-envelope conventions in the tree.
-
-Search for and update any user-facing docs in the repo that show the old thrown-error shape or
-the old verb types:
-
-```bash
-grep -rn "Post '\[JSON\]\|authErrorToServerError\|\"error\":" docs/ README.md 2>/dev/null
-```
-
-Acceptance: plan 40 carries a dated revision note naming plan 48; no in-repo doc still presents
-the pre-`MultiVerb` route types as current.
+Regenerate `docs/api/openapi.json` with the repository command. Inspect the diff for the removed
+paths, exact new responses, problem media type, response headers, and unchanged unrelated paths.
+Run formatting, build, all tests, and flake checks. Search for old modules/routes/symbols and bare
+unqualified imports. Update Progress, Surprises & Discoveries, Decision Log, and Outcomes &
+Retrospective with evidence before marking the plan complete.
 
 
 ## Concrete Steps
 
-Work from the repository root inside the nix dev shell.
+All commands run from `/Users/shinzui/Keikaku/bokuno/shomei`.
 
-```bash
-cd /Users/shinzui/Keikaku/bokuno/shomei
-cabal build all    # baseline: must succeed before you start
-cabal test all     # baseline: must pass before you start
-```
+1. Establish the baseline and record versions.
 
-Milestone 1 (spike). Read servant's `MultiVerb` source first:
+   ```bash
+   git status --short
+   mori registry show haskell-servant/servant --full
+   mori registry show shinzui/openapi-hs --full
+   mori registry show shinzui/servant-openapi-hs --full
+   mori registry show shinzui/servant-health --full
+   curl -fsSL https://hackage.haskell.org/package/servant-health/preferred.json
+   git ls-remote --tags https://github.com/shinzui/servant-health.git
+   nix develop --command cabal build all
+   nix develop --command env TASTY_NUM_THREADS=1 cabal test all
+   ```
 
-```bash
-mori registry show haskell-servant/servant --full
-# read Servant/API/MultiVerb.hs; note the response-header combinator names.
-```
+   Expected: only user-owned pre-existing changes are shown by Git; every package and test suite
+   passes. If not, record the exact failure before refactoring.
 
-Edit only `Shomei/Servant/API.hs` (the `signup` field) and `Shomei/Servant/Handlers.hs`
-(`signupH`). Build, then run the server and check the cookie headers survive:
+2. Capture the current route and OpenAPI baseline.
 
-```bash
-just create-database        # ephemeral/local PostgreSQL, idempotent
-cabal run shomei-server &   # or the project's run recipe
-curl -i -X POST http://localhost:8080/auth/signup \
-  -H 'content-type: application/json' \
-  -d '{"loginId":"alice","email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
-# expect: HTTP/1.1 200, and two `Set-Cookie: shomei_session=…` / `shomei_refresh=…` headers
-#         (in cookie transport; bearer transport sets no cookies — configure accordingly).
-```
+   ```bash
+   nix develop --command cabal run shomei-openapi > /tmp/shomei-openapi-before.json
+   jq -r '.paths | to_entries[] | .key as $p | .value | keys[] | [$p, .] | @tsv' \
+     /tmp/shomei-openapi-before.json | sort
+   ```
 
-Milestones 2–3. Add `Shomei/Servant/Response.hs`; convert the remaining fields; rewrite
-handlers; add the seam helper; install `ErrorFormatters`; regenerate and test:
+   Expected: the baseline includes 43 paths and 48 method/path operations, including the old
+   `/health` and `/ready`, before the three obsolete operations on two paths are removed and the
+   two probe paths are replaced; record any changed count caused by intervening work.
 
-```bash
-cabal build all
-cabal run shomei-openapi                 # writes docs/api/openapi.json (sorted keys, trailing newline)
-cabal test all
-cabal run shomei-openapi && git diff --exit-code -- docs/api/openapi.json   # drift check: clean
-git add -A && git commit    # message form below
-```
+3. Implement Milestones 0 through 5 one concept at a time. After each concept or route family:
 
-Every commit on this plan must carry both trailers:
+   ```bash
+   nix develop --command cabal build \
+     shomei-core shomei-postgres shomei-jwt shomei-servant shomei-client shomei-server
+   nix develop --command cabal test \
+     shomei-core:shomei-core-test \
+     shomei-postgres:shomei-postgres-test \
+     shomei-jwt:shomei-jwt-test
+   nix develop --command cabal test \
+     shomei-servant:shomei-servant-test \
+     shomei-servant:shomei-servant-openapi-test \
+     shomei-client:shomei-client-test \
+     shomei-server:shomei-server-test
+   ```
 
-```text
-feat(servant): adopt MultiVerb response lists and the shared error envelope
+   Expected: affected packages remain green. If a component name differs, obtain it with
+   `cabal list-bin` or from the package's `.cabal` file and update this plan.
 
-<body>
+4. Regenerate OpenAPI deterministically.
 
-ExecPlan: docs/plans/48-reorganize-shomei-into-vertical-slices-and-adopt-multiverb.md
-Intention: intention_01kx3mms1zevyvwvaspxcrm3cd
-```
+   ```bash
+   nix develop --command cabal run shomei-openapi > /tmp/shomei-openapi-one.json
+   nix develop --command cabal run shomei-openapi > /tmp/shomei-openapi-two.json
+   cmp /tmp/shomei-openapi-one.json /tmp/shomei-openapi-two.json
+   cp /tmp/shomei-openapi-one.json docs/api/openapi.json
+   jq empty docs/api/openapi.json
+   ```
 
-Milestones 5–6 use `git mv` so history follows the file. Commit each concept's slice, or each
-milestone, separately — never combine a `MultiVerb` type change with a file move in one commit;
-a reviewer cannot read that diff. Example commit for the slice work:
+   Expected: `cmp` is silent, `jq` exits zero, and the committed artifact changes only as
+   explained by this plan.
 
-```text
-refactor(core): vertical-slice the passkey concept under Shomei/Passkey
+5. Inspect response and removal invariants.
 
-<body>
+   ```bash
+   jq -e '
+     (.paths["/v1/auth/service-token"] == null) and
+     (.paths["/v1/auth/impersonate"] == null) and
+     (.paths["/health"] == null) and
+     (.paths["/ready"] == null) and
+     (.paths["/health/live"].get.responses["200"] != null) and
+     (.paths["/health/live"].get.responses["503"] != null) and
+     (.paths["/health/ready"].get.responses["200"] != null) and
+     (.paths["/health/ready"].get.responses["503"] != null) and
+     (.paths["/v1/auth/signup"].post.responses["201"] != null) and
+     (.paths["/v1/auth/signup"].post.responses["400"] != null) and
+     (.paths["/v1/auth/signup"].post.responses["409"] != null) and
+     (.paths["/v1/auth/signup"].post.responses["500"] != null) and
+     (.paths["/v1/auth/signup"].post.responses["503"] != null)
+   ' docs/api/openapi.json
 
-ExecPlan: docs/plans/48-reorganize-shomei-into-vertical-slices-and-adopt-multiverb.md
-Intention: intention_01kx3mms1zevyvwvaspxcrm3cd
-```
+   jq -e '
+     .paths["/v1/auth/signup"].post.responses["409"].content
+     ["application/problem+json"] != null
+   ' docs/api/openapi.json
+   ```
 
-After the slice milestones, re-verify no downstream broke:
+   Expected: both commands print `true`.
+   The final document has 41 paths and 45 method/path operations: removing the service-token path
+   removes one operation, removing the shared impersonation path removes two operations, and
+   replacing two probe paths with two package paths is count-neutral. If intervening intentional
+   API work changes the baseline, update the exact route-inventory test and this arithmetic in the
+   same revision rather than weakening it to a lower bound.
 
-```bash
-( cd /Users/shinzui/Keikaku/bokuno/nagare && cabal build all )   # must succeed, no nagare edits
-```
+6. Run source hygiene checks.
+
+   ```bash
+   rg -n --glob '*.hs' \
+     'Shomei\.(Domain|Effect|Workflow|Postgres)\.|Shomei\.Servant\.(DTO|Handlers)|loginIdFromEmail|resolvePrincipal|legacyArgonOptions|DeleteExpiredCeremonies|HealthResponse|ReadyResponse|healthH|readyH|runPortChecked' \
+     shomei-core shomei-postgres shomei-jwt shomei-servant shomei-client shomei-server
+
+   rg -n --glob '*.hs' 'import qualified ' \
+     shomei-core shomei-postgres shomei-jwt shomei-servant shomei-client shomei-server
+
+   rg -n --glob '*.hs' 'MultiVerb1' shomei-servant shomei-client
+   ```
+
+   Expected: no old module/symbol imports, no prepositive qualified imports, and no
+   `MultiVerb1`.
+
+   Run a second path search over current code and user/deployment artifacts:
+
+   ```bash
+   rg -n '(/health([^/]|$)|/ready([^/]|$))' \
+     shomei-core shomei-postgres shomei-jwt shomei-servant shomei-client shomei-server \
+     docs/user process-compose.yaml flake.module.nix .github
+   ```
+
+   Expected: no current operational reference uses the removed bare paths. Historical completed
+   plans may still contain them.
+
+7. Run final repository gates.
+
+   ```bash
+   nix fmt -- --fail-on-change
+   nix develop --command cabal build all
+   nix develop --command env TASTY_NUM_THREADS=1 cabal test all
+   nix flake check
+   git diff --check
+   git status --short
+   ```
+
+   Expected: all commands exit zero. Git lists only the intended source, test, documentation,
+   OpenAPI, Cabal, and plan changes plus any pre-existing user-owned changes.
 
 
 ## Validation and Acceptance
 
-Beyond `cabal build all && cabal test all`, prove the behavior against the running server. Start
-it (Milestone 4):
+Acceptance is behavioral, structural, and documentary.
+
+The HTTP integration suite must cover every result constructor. At minimum it proves:
+
+* signup returns 201, semantic validation returns 400, and a duplicate login ID returns 409;
+* login and refresh return their documented result arms, including MFA and cookie headers;
+* handler-returned problems use `application/problem+json`, contain the required `type`, `title`,
+  `status`, `code`, and `retryable` fields, contain `detail` and `instance` only when the
+  occurrence supplies them, and permit unknown extension members;
+* every `type` is the documented HTTPS URI for its `code`, clients treat `type` as the primary
+  identifier, and `about:blank` is absent from the Shōmei catalog;
+* every body `status` equals the HTTP status, `title` is stable for a type, `detail` is
+  client-actionable rather than machine-parsed, and internal 500 responses disclose no
+  implementation detail;
+* malformed JSON, malformed captures/query parameters, missing credentials, insufficient
+  authorization, rate limiting, 404, and 405 use the same application problem constructor even
+  though they are not MultiVerb handler arms;
+* OAuth errors remain RFC 6749 JSON and carry `WWW-Authenticate` where required;
+* the `servant-health:testkit` matrix passes against Shōmei's assembled application: both probes
+  healthy; readiness alone failing at 503 while liveness stays 200; and liveness alone failing at
+  503 while readiness stays 200. Bodies and `application/json` match `ProbeStatus`, and liveness
+  has no external dependency;
+* Shōmei's integration suite separately proves the removed `/health` and `/ready` paths return
+  404 and that no redirect or compatibility handler intercepts them;
+* removed service-token and impersonation paths return 404;
+* OAuth client credentials and token exchange still provide the retained capabilities;
+* plaintext signing keys and legacy Argon2 hashes are rejected;
+* request bodies missing `loginId`, missing MFA `methods`, or using the old flat MFA proof are
+  rejected.
+
+The response-classification test must fail on both kinds of drift: using MultiVerb for one of the
+two allow-listed in-process single-outcome routes, or using a plain verb for an operation-owned
+error/status set. It must specifically fail when a store-backed route lacks 503. It must not infer
+classification only from generated OpenAPI because pre-handler responses also appear there, and
+it must treat package `HealthApi`, `Raw`, and streaming routes according to their recorded forms.
+
+The OpenAPI conformance suite must compare the exact served path/method set with the generated
+document, validate all response references, and check media types and headers per alternative.
+There must be no path-indexed error catalog parallel to the route types.
+
+The vertical-slice review is accepted when:
+
+* every concept's domain/port/workflow, PostgreSQL interpreter, API/DTO/result/handler, and tests
+  share a recognizable concept prefix;
+* package boundaries and dependency directions are unchanged;
+* root API and server modules only compose named records;
+* no large `DTO`, `Handlers`, `Domain`, `Effect`, `Workflow`, or `Postgres` compatibility
+  aggregator remains;
+* same-prefix runtime dispatch tests pass;
+* every Cabal component imports its GHC2024 shared stanza.
+
+The final user-visible smoke test is:
 
 ```bash
-just create-database
-just migrate
-cabal run shomei-server        # serves on http://localhost:8080
+nix develop --command cabal run shomei-openapi > /tmp/final-openapi.json
+cmp /tmp/final-openapi.json docs/api/openapi.json
+nix develop --command env TASTY_NUM_THREADS=1 cabal test all
+nix flake check
 ```
 
-Sign up a user:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/auth/signup \
-  -H 'content-type: application/json' \
-  -d '{"loginId":"alice","email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
-```
-
-Expected: `200`.
-
-Log in:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"loginId":"alice","password":"correct horse battery staple"}'
-```
-
-Expected: `200`.
-
-Duplicate signup — the typed conflict. Re-run the signup command and capture the body:
-
-```bash
-curl -s -w '\n%{http_code}\n' -X POST http://localhost:8080/auth/signup \
-  -H 'content-type: application/json' \
-  -d '{"loginId":"alice","email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
-```
-
-Expected: body `{"code":"login_id_taken","message":"Login identifier is already registered",
-"retryable":false}` followed by `409`. This is a returned value now, and it appears in the
-OpenAPI document under `POST /auth/signup` as a `409` response — not an invisible thrown error.
-
-Malformed request body — the `ErrorFormatters` win. This is the clearest before/after, because
-shomei already JSON-encoded *domain* errors but not *routing* errors:
-
-```bash
-curl -s -w '\n%{http_code}\n' -X POST http://localhost:8080/auth/signup \
-  -H 'content-type: application/json' \
-  -d '{"loginId":"alice", NOT VALID JSON'
-```
-
-Expected: `400` with a body in the **same** `ErrorEnvelopeWire` shape
-(`{"code":"invalid_request_body",…,"retryable":false}`), not Servant's default plain-text
-`"Error in $: …"`. Before this plan, this request returned Servant's plain body.
-
-Combinator 401 — unchanged, and deliberately NOT a `MultiVerb` alternative:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/auth/me
-```
-
-Expected: `401`, produced by the `Authenticated` combinator upstream of the handler. Confirm the
-OpenAPI document does *not* list a `401` under `GET /auth/me`'s response *content* as a handler
-alternative — it is expressed via the bearer security scheme instead. (A domain `401` like
-`login`'s `InvalidCredentials` *does* appear as a response alternative, because a handler returns
-it.)
-
-OpenAPI regeneration diff — the type-level win:
-
-```bash
-git stash -- docs/api/openapi.json 2>/dev/null || true   # or inspect against HEAD
-cabal run shomei-openapi
-git --no-pager diff docs/api/openapi.json | head -40
-```
-
-Expected: added `400`/`401`/`403`/`404`/`409`/`429`/`503` response entries under the operations,
-each referencing the `ErrorEnvelopeWire` schema; the `paths` object still has 24 entries; and the
-document still begins `"openapi": "3.1.0"` (proof it is on the `shinzui` forks — a `3.0.x`
-version would mean Hackage `servant-openapi3` had slipped in and the `MultiVerb` errors were
-being dropped). After committing, the drift check is clean and stays clean:
-
-```bash
-cabal run shomei-openapi && git diff --exit-code -- docs/api/openapi.json
-```
-
-This is the same check CI runs (Milestone 3); a red result means an API change was not
-regenerated.
-
-Structural acceptance for the slices:
-
-```bash
-find shomei-core/src shomei-postgres/src -name '*.hs' | grep -iE '/(Passkey|Session|Credential|User|Audit)/'
-```
-
-Expected: the sliced concepts appear as directory components (`Shomei/Passkey/Domain.hs`), and
-no line matches `Shomei/(Domain|Effect|Postgres|Workflow)/(Passkey|Session)`.
-
-Downstream acceptance:
-
-```bash
-( cd /Users/shinzui/Keikaku/bokuno/nagare && cabal build all )
-```
-
-Expected: success, with zero edits to nagare — proving the DTO shim (Milestone 6) and the
-client-wrapper fold (Milestone 3) preserved compatibility.
+All commands must exit zero without modifying the working tree.
 
 
 ## Idempotence and Recovery
 
-Milestones 1–4 are ordinary edits and additions; re-running the build is safe and repeated edits
-converge. `cabal run shomei-openapi > docs/api/openapi.json` is deterministic, so regenerating it
-repeatedly is a no-op once the types are stable.
+Module moves are recoverable when performed one concept at a time and committed only after the
+affected packages pass. Re-running formatters, generators, builds, and tests is safe. OpenAPI
+generation is deterministic; generate into `/tmp`, compare, and copy only after validation so a
+failed run cannot truncate the committed artifact.
 
-Milestones 5–6 are file moves. `git mv` fails loudly on a repeated run ("bad source") rather than
-corrupting anything. If a move goes wrong mid-way, the working tree is recoverable with `git
-checkout -- .` (uncommitted) or `git reset --hard HEAD` (to the last commit). Commit after each
-concept's slice so there is always a clean point to return to.
+Do not use `git reset --hard`, `git checkout -- .`, broad recursive deletion, or any command that
+would discard user-owned changes. Before each milestone inspect `git status --short` and preserve
+unrelated changes such as the currently untracked `assets/` directory.
 
-The database is untouched by this plan — no migration runs, no schema changes. The migration
-files under `shomei-migrations/sql-migrations/` are not edited. If you have already run `just
-migrate`, nothing here invalidates it.
+If a move is interrupted, use `git status --short`, `git diff --name-status`, and the package's
+Cabal module list to determine whether both old and new modules exist. Complete the imports and
+Cabal change or reverse only the specific move with another `git mv`; never restore the entire
+tree.
 
-The riskiest step is the Milestone 1 spike: if servant 0.20.2's `MultiVerb` cannot cleanly carry
-the `Set-Cookie` headers on a success alternative, stop and record the finding. The fallback,
-recorded here so the plan does not dead-end: keep the six cookie-setting routes as plain verbs
-returning `WithCookies X` (their success path is unchanged) and apply `MultiVerb` only to their
-*error* modeling via a thrown-to-returned bridge, or defer those six routes to a follow-up and
-convert the remaining nineteen. Do not block the whole plan on the six cookie routes.
+If the dependency solver selects Servant older than 0.20.3, stop and inspect all local bounds with
+`cabal build --dry-run -v1`. Do not compensate by reintroducing the old manual OpenAPI response
+catalog or a git pin. Align the released dependency cohort.
+
+If a MultiVerb route fails to compile because two alternatives carry the same type, correct its
+manual `AsUnion` mapping. Do not switch to `GenericAsUnion` or merge semantically distinct status
+arms. If headers fail to round-trip, fix the route-specific `AsHeaders` instance and test both
+cookie and bearer modes.
+
+If a supposedly ordinary route still has an expected `throwError` or invokes a fallible port,
+either move parsing/policy to a proper pre-handler combinator or reclassify the route as MultiVerb
+with its typed failure status. Do not catch arbitrary exceptions as 503, add a hidden
+classification exception, or preserve an old probe route as a recovery shortcut.
 
 
 ## Interfaces and Dependencies
 
-No new library dependencies. `MultiVerb` lives in `servant` (already `>=0.20.2`), its
-`HasOpenApi` instance in **`servant-openapi`** — the `shinzui` fork pinned in `cabal.project`,
-*not* Hackage `servant-openapi3`; that instance is exactly what carries this plan's new
-`MultiVerb` error responses into the document — and its `HasClient` instance in `servant-client`
-(already used by `shomei-client`). `ErrorFormatters` lives in `servant-server` (already a
-dependency). The one dependency edit is on the `shomei-openapi` *executable* stanza: add
-`directory` (for `createDirectoryIfMissing`) alongside its existing `aeson-pretty`/`bytestring`,
-so it can write the artifact to disk with sorted keys and a trailing newline (Milestone 3).
-
-At the end of Milestone 2 these must exist:
+The following interfaces are required, though concept prefixes may be refined consistently
+during Milestone 2.
 
 ```haskell
--- shomei-servant/src/Shomei/Servant/Response.hs
-data ErrorEnvelopeWire = ErrorEnvelopeWire { code :: !Text, message :: !Text, retryable :: !Bool }
-data AuthResult a = AuthOk a | AuthBadRequest !ErrorEnvelopeWire | … | AuthUnavailable !ErrorEnvelopeWire
-type OkResponses       (desc :: Symbol) a
-type AcceptedResponses (desc :: Symbol)
-type NoContentResponses (desc :: Symbol)
-faultToResult :: AuthError -> AuthResult a          -- total
--- hand-written `instance AsUnion (OkResponses …) (AuthResult a)` with the exhaustiveness witness
+data ProblemDetails = ProblemDetails
+  { problemType :: !Text
+  , title :: !Text
+  , status :: !Int
+  , detail :: !(Maybe Text)
+  , problemInstance :: !(Maybe Text)
+  , code :: !Text
+  , retryable :: !Bool
+  }
 
--- shomei-servant/src/Shomei/Servant/Seam.hs
-runResult :: Env -> Eff AppEffects (Either AuthError a) -> Handler (AuthResult a)
+data ProblemSpec = ProblemSpec
+  { code :: !Text
+  , status :: !Status
+  , title :: !Text
+  , retryable :: !Bool
+  }
 
--- shomei-servant/src/Shomei/Servant/API.hs — every field now ends in MultiVerb
--- shomei-servant/src/Shomei/Servant/Handlers.hs — every handler returns AuthResult …
--- the server assembly serves with (envelopeFormatters :. authContext)
+data ProblemOccurrence = ProblemOccurrence
+  { detail :: !(Maybe Text)
+  , instanceUri :: !(Maybe Text)
+  , wwwAuthenticate :: !(Maybe Text)
+  , retryAfterSeconds :: !(Maybe Natural)
+  }
+
+problemTypeFor :: Text -> Text
+problemDetails :: ProblemSpec -> ProblemOccurrence -> ProblemDetails
+toProblemError :: ProblemSpec -> ProblemOccurrence -> ServerError
 ```
 
-At the end of Milestone 3, `docs/api/openapi.json` carries the new response entries and is
-emitted with sorted keys and a trailing newline (so `cabal run shomei-openapi && git diff
---exit-code` is clean); `.github/workflows/ci.yaml` runs that drift check; the conformance test
-passes and now asserts the exact 24-path *set* and that every domain operation declares an error
-response (alongside the existing `validateEveryToJSON`); and `shomei-client`'s public wrapper
-signatures are byte-for-byte the same as before (`login :: ClientEnv -> LoginRequest -> IO
-(Either ClientError LoginResponse)`, etc.), backed by `resultToEither :: AuthResult a -> Either
-ClientError a`.
+`ProblemJSON` must implement the Servant content-type classes for
+`application/problem+json`. `problemDetails` is the only application-problem constructor used by
+returned handler results, auth combinators, error formatters, and middleware. `problemTypeFor`
+uses the fixed public documentation base and the catalog code; callers cannot supply an arbitrary
+or deployment-specific type URI. The JSON options map `problemType` to `"type"` and
+`problemInstance` to `"instance"`.
 
-At the end of Milestone 5, the sliced concepts exist as `Shomei/<Concept>/<Layer>.hs` in
-`shomei-core` and `shomei-postgres`, the cross-cutting modules named in the analysis are
-unchanged, and `Shomei.Domain.Claims`, `Shomei.Domain.Token`, `Shomei.Domain.SigningKey`,
-`Shomei.Error`, `Shomei.Id`, and `Shomei.Config` still resolve at their original paths (no shim
-needed, since no downstream-visible core module moved).
+`problemDetails` uses only the body fields of `ProblemOccurrence`; `toProblemError` and returned
+MultiVerb wrappers additionally render `wwwAuthenticate` and `retryAfterSeconds` as
+`WWW-Authenticate` and `Retry-After`. Constructors for ordinary occurrences default both to
+`Nothing`. Tests assert that the two rendering styles produce the same body and the same
+applicable headers for an equivalent occurrence.
 
-At the end of Milestone 6, the per-concept `Shomei/<Concept>/Dto.hs` modules exist,
-`Shomei/Servant/Dto/Shared.hs` holds the shared wire types, and `Shomei.Servant.DTO` remains as a
-deprecated re-export shim exporting the exact symbol set nagare and `shomei-client` consume.
+The core error interface additionally defines `data AuthDependency = PostgreSQL` and adds
+`DependencyUnavailable !AuthDependency` to the existing `AuthError` sum. PostgreSQL execution
+failures use that constructor; persisted-value reconstruction failures remain
+`InternalAuthError`.
 
+Application MultiVerb routes share `ApplicationErrorResponses` and `ApplicationResult a` from
+Milestone 4, then export named aliases and an explicit mapping at the route boundary:
 
-## Revision Notes
+```haskell
+type SignupResponses =
+  WithHeaders CookieHeaders SignupCreatedResponse
+    (Respond 201 "Account created" SignupResponse)
+    ': ApplicationErrorResponses
 
-- 2026-07-09 — Aligned this plan with the canonical OpenAPI recipe
-  (`haskell-jitsurei/api/openapi-from-types.md`). Shomei already derives its document
-  (`Shomei.Servant.OpenApi.shomeiOpenApi = toOpenApi (Proxy @(NamedRoutes ShomeiAPI))`), confines
-  its orphans, assigns stable `operationId`s, emits a checked-in `docs/api/openapi.json` from the
-  `shomei-openapi` executable, and pins the **`shinzui` forks (`servant-openapi`, `openapi-hs`),
-  not Hackage** — verified against `cabal.project`. So no generation, no fork change, and no new
-  milestone is introduced. What was added: (1) an explicit Purpose statement that the derivation
-  must not regress, naming the module and the fork pin, and noting that the `MultiVerb`
-  conversion changes the derived document (new `4xx/5xx` per operation) — which is the visible
-  proof it worked, reviewed in Milestone 3; and (2) three targeted strengthenings folded into the
-  existing Milestone 3 (which already regenerates the artifact and edits the conformance test),
-  because shomei's setup fell just short of the recipe there: the `shomei-openapi` executable now
-  emits **sorted keys and a trailing newline** (it used `encodePretty`'s default, so a
-  regenerated artifact could reshuffle instead of diffing cleanly); a **CI drift check**
-  (`cabal run shomei-openapi && git diff --exit-code`) is added to `.github/workflows/ci.yaml`;
-  and the conformance test now asserts the **exact 24-path set** (not just the count) and that
-  **every domain operation declares its error responses**, keeping the existing
-  `validateEveryToJSON`. Reflected across Purpose, Progress (M3), Surprises & Discoveries,
-  Decision Log, Milestone 3, Concrete Steps, Validation, and Interfaces & Dependencies. Reason:
-  adopting `MultiVerb` makes the fork pin and the per-operation-error conformance property
-  load-bearing, and a byte-diffable artifact plus a CI drift check are what keep the derived
-  document honest as the API grows.
+type SignupResult = ApplicationResult SignupCreatedResponse
 
-- 2026-07-10 — Corrected the "you cannot transpose two same-typed routes by accident" claim and
-  added a dispatch test. The *Terms of art* definition of a `NamedRoutes` record previously stated
-  that "you cannot transpose two same-typed routes by accident." That is false: a record does not
-  turn a swap of two identically-typed fields into a compile error — the meibo service proved it by
-  experiment (the swap compiled and served the wrong data; only a runtime dispatch test caught it),
-  and meibo separately disproved the related field-order-versus-capture-precedence claim. The
-  definition now states the honest property (a record removes the positional failure mode; a
-  differing-typed transposition is a compile error naming the field; a same-typed transposition is
-  caught only by a runtime dispatch test). This matters concretely for shomei, which — an audit
-  found — has two same-typed admin families: `adminSuspendUser`/`adminReinstateUser`/
-  `adminDeleteUser`/`adminRevokeSessions`/`adminPasswordReset` (all
-  `AuthUser -> UserId -> Handler NoContent`) and `adminGrantRole`/`adminRevokeRole` (both
-  `AuthUser -> UserId -> Text -> Handler NoContent`). Because Milestone 2 rewrites every handler in
-  one pass, a new Surprises & Discoveries entry, a new Decision Log entry, and additions to
-  Milestone 2 and the Progress list now require a runtime dispatch test pinning each admin path to
-  its own handler, written *before* the rewrite. Shomei stays on `NamedRoutes` and the `AppAPI`
-  `:<|>` operators are untouched (their alternatives have distinct types — the one hazard-free use
-  of `:<|>`). Reflected in *Terms of art used in this plan*, *Surprises & Discoveries*, the Decision
-  Log, Milestone 2, Progress, and this note.
+instance AsUnion SignupResponses SignupResult
+```
+
+Cookie-bearing alternatives additionally use:
+
+```haskell
+type CookieHeaders =
+  '[ OptHeader (DescHeader "Set-Cookie" "Session cookie" Text)
+   , OptHeader (DescHeader "Set-Cookie" "Refresh cookie" Text)
+   ]
+
+data CookieResponse a = CookieResponse
+  { body :: !a
+  , sessionCookie :: !(Maybe Text)
+  , refreshCookie :: !(Maybe Text)
+  }
+
+instance AsHeaders CookieHeaders a (CookieResponse a)
+```
+
+Adjust the field names if needed to avoid duplicate-record ambiguity, but preserve optional
+headers in bearer mode and two headers in cookie mode.
+
+The route-classification boundary requires three kinds of mappings:
+
+```haskell
+-- Expected handler outcome: returned as a route result.
+authErrorToApplicationResult :: AuthError -> ApplicationResult a
+
+-- Pre-handler application rejection: thrown centrally as RFC 9457.
+toProblemError :: ProblemSpec -> ProblemOccurrence -> ServerError
+
+-- Unexpected exception/fault: caught by the server boundary as HTTP 500.
+internalProblemError :: SomeException -> ServerError
+```
+
+The transport environment preserves typed interpreter faults:
+
+```haskell
+data Env = Env
+  { runPorts :: !(forall a. Eff AppEffects a -> IO (Either AuthError a))
+  -- existing configuration and in-process fields follow
+  }
+
+runPortResult :: Env -> Eff AppEffects a -> Handler (Either AuthError a)
+runWorkflowResult :: Env -> Eff AppEffects (Either AuthError a) -> Handler (Either AuthError a)
+```
+
+`runWorkflowResult` flattens the interpreter and workflow layers. It does not render HTTP; each
+operation applies a total result mapping. Pre-handler authentication is the exception to that
+return style because it must reject before a handler runs, but it consumes the same typed runner.
+
+OAuth defines parallel protocol-specific results and does not depend on `ProblemDetails`.
+Health defines no Shōmei response sum. The required package-owned and service-owned seams are:
+
+```haskell
+-- Imported from servant-health.
+health :: mode :- "health" :> NamedRoutes HealthApi
+
+shomeiRoutes :: Env -> ProbeCheck -> ProbeCheck -> ShomeiRoutes (AsServerT Handler)
+
+-- Owned by shomei-server; constructed once at startup.
+shomeiProbeChecks :: Env -> IO (ProbeCheck, ProbeCheck)
+
+application :: Env -> ProbeCheck -> ProbeCheck -> Application
+```
+
+`shomeiProbeChecks` uses `Servant.Health.Check`; `application` and `shomeiRoutes` preserve the
+liveness-then-readiness argument order. `requestLoggingMiddleware` and the Problem Details
+exemption use `Servant.Health.Paths.healthRawPaths`. No Shōmei module defines `ProbeStatus`,
+`ProbeResponses`, `ProbeResult`, or their `AsUnion` instance.
+
+Pre-handler documentation is expressed in the served API:
+
+```haskell
+data PreHandlerResponses (responses :: [Type])
+data CsrfProtected
+data RateLimited
+
+instance HasServer api context
+      => HasServer (PreHandlerResponses responses :> api) context
+
+instance (KnownPreHandlerResponses responses, HasOpenApi api)
+      => HasOpenApi (PreHandlerResponses responses :> api)
+```
+
+`PreHandlerResponses` changes neither the handler arguments nor its return type. Its OpenAPI
+instance folds the same `RespondAs ProblemJSON ... ProblemDetails` descriptions used by the
+runtime problem catalog. `CsrfProtected` and `RateLimited` are specialized 403 and 429 markers
+whose server behavior is already implemented by the auth handler and WAI middleware,
+respectively. `Authenticated`, `RequireRole`, `RequirePermission`, and `RequireAdmin` enforce
+their checks and add their own typed problem responses. Use Mori-resolved
+`servant-openapi-hs` source when implementing `HasOpenApi`; do not guess at its lenses or
+internal classes.
+
+The exact dependency bounds are the released cohort recorded in Context and Orientation. The
+implementation must use Mori-resolved source for API details and re-verify releases before
+changing bounds. The only new production dependency is released `servant-health`; its `testkit`
+sublibrary is test-only.
+
+Revision note (2026-07-24): Rewrote the plan against the current 43-path/48-operation API and
+current `haskell-jitsurei` standards. Replaced blanket MultiVerb conversion with an explicit
+handler-outcome rule and ordinary-route allow-list; replaced the old wire envelope with typed
+RFC 7807 `ProblemDetails`; updated the released Servant/OpenAPI cohort; expanded vertical slicing
+to the route-record and handler composition roots; removed all compatibility shims and identified
+existing pre-adoption API, config, crypto, key-storage, and store compatibility paths for
+deletion. This revision was requested because Shōmei has not yet been adopted and its initial API
+should be polished rather than compatibility-constrained.
+
+Revision note (2026-07-24, Problem Details review): Reviewed the error contract against the
+current IETF specification after the user asked how RFC 7807 relates to selective MultiVerb.
+Changed the normative target to RFC 9457, which obsoletes RFC 7807; replaced the
+custom-semantics-plus-`about:blank` design with documented HTTPS problem-type URIs; added optional
+`instance`, extension-member and disclosure rules, and type/status conformance tests; and added a
+response-source matrix showing that Problem Details controls error representation while
+MultiVerb is used for operation-owned alternatives rather than pre-handler or unexpected-fault
+responses.
+
+Revision note (2026-07-26, API standards and health review): Reconciled the plan with the revised
+`haskell-jitsurei` API standards and `servant-health` 0.1.0.0. Narrowed ordinary terminal routes
+to the fleet's genuine exemptions; made typed dependency 503s part of store-backed operation
+contracts; replaced custom `/health` and `/ready`, DTOs, handlers, and status mapping with the
+package-owned `/health/live` and `/health/ready` `HealthApi`; added service-owned hardened checks,
+path-constant logger exclusions, and the testkit wiring matrix; and explicitly rejected probe
+aliases or redirects because Shōmei has no adopters.
+
+Revision note (2026-08-23, Milestone 0 implementation): Associated implementation with intention
+`intention_01m0r2mprpep1s12w89mb6hab5`; re-verified the released dependency cohort; recorded the
+green build/test and 43-path/48-operation baseline; refreshed the pre-existing OpenAPI drift;
+tightened dependency bounds; and added an exact route inventory test. Deferred only the final
+compile-time response-model witnesses to the atomic MultiVerb conversion, because they cannot
+truthfully pass against the pre-conversion API.
