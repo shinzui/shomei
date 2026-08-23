@@ -1,18 +1,35 @@
 -- | OAuth 2.0 protocol routes. These use protocol result types rather than application problems.
-module Shomei.OAuth.Api (OAuthApi (..)) where
+module Shomei.OAuth.Api
+  ( OAuthApi (..),
+    AuthorizeRoute,
+    TokenRoute,
+    UserinfoRoute,
+    IntrospectRoute,
+    RevokeRoute,
+  )
+where
 
-import Data.Aeson (Value)
 import Servant.API
+import Servant.API.MultiVerb (MultiVerb)
+import Shomei.OAuth.Result
 import Shomei.Prelude
-import Shomei.Servant.Auth (Authenticated)
-import Shomei.Servant.OAuth (TokenResponse)
 import Web.FormUrlEncoded (Form)
 
+type AuthorizeRoute = "authorize" :> Header "Authorization" Text :> Header "Cookie" Text :> QueryParam "response_type" Text :> QueryParam "client_id" Text :> QueryParam "redirect_uri" Text :> QueryParam "scope" Text :> QueryParam "state" Text :> QueryParam "nonce" Text :> QueryParam "code_challenge" Text :> QueryParam "code_challenge_method" Text :> MultiVerb 'GET '[JSON] AuthorizeResponses AuthorizeResult
+
+type TokenRoute = "token" :> Header "Authorization" Text :> RemoteHost :> ReqBody '[FormUrlEncoded] Form :> MultiVerb 'POST '[JSON] TokenResponses TokenResult
+
+type UserinfoRoute = "userinfo" :> Header "Authorization" Text :> Header "Cookie" Text :> MultiVerb 'GET '[JSON] UserinfoResponses UserinfoResult
+
+type IntrospectRoute = "introspect" :> Header "Authorization" Text :> ReqBody '[FormUrlEncoded] Form :> MultiVerb 'POST '[JSON] IntrospectResponses IntrospectResult
+
+type RevokeRoute = "revoke" :> Header "Authorization" Text :> ReqBody '[FormUrlEncoded] Form :> MultiVerb 'POST '[JSON] RevokeResponses RevokeResult
+
 data OAuthApi mode = OAuthApi
-  { authorize :: mode :- "authorize" :> Header "Authorization" Text :> Header "Cookie" Text :> QueryParam "response_type" Text :> QueryParam "client_id" Text :> QueryParam "redirect_uri" Text :> QueryParam "scope" Text :> QueryParam "state" Text :> QueryParam "nonce" Text :> QueryParam "code_challenge" Text :> QueryParam "code_challenge_method" Text :> Verb 'GET 302 '[JSON] (Headers '[Header "Location" Text, Header "Cache-Control" Text] NoContent),
-    token :: mode :- "token" :> Header "Authorization" Text :> RemoteHost :> ReqBody '[FormUrlEncoded] Form :> Post '[JSON] (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] TokenResponse),
-    userinfo :: mode :- "userinfo" :> Authenticated :> Get '[JSON] Value,
-    introspect :: mode :- "introspect" :> Header "Authorization" Text :> ReqBody '[FormUrlEncoded] Form :> Post '[JSON] Value,
-    revoke :: mode :- "revoke" :> Header "Authorization" Text :> ReqBody '[FormUrlEncoded] Form :> Post '[JSON] NoContent
+  { authorize :: mode :- AuthorizeRoute,
+    token :: mode :- TokenRoute,
+    userinfo :: mode :- UserinfoRoute,
+    introspect :: mode :- IntrospectRoute,
+    revoke :: mode :- RevokeRoute
   }
   deriving stock (Generic)

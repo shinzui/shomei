@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-missing-signatures -Wno-orphans #-}
 
 -- | EP-27 M4 — OpenAPI 3.1 conformance for the served tree, 'Shomei.Servant.Api.ShomeiRoutes'.
 --
@@ -25,32 +25,51 @@
 -- only) so the production library carries no test dependency.
 module Main (main) where
 
+import Control.Monad (filterM)
 import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, eitherDecode, encode, fromJSON)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Char (isAsciiLower, isDigit)
 import Data.Either (isLeft)
 import Data.Foldable (toList)
+import Data.Kind (Type)
 import Data.List (nub, sort)
 import Data.Maybe (isJust)
 import Data.OpenApi (NamedSchema (..), Schema, ToSchema (..), validateJSON)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
-import Servant.API (NamedRoutes, NoContent (..))
-import Servant.Health (ProbeStatus (..))
+import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
+import Data.Type.Equality ((:~:) (Refl))
+import GHC.TypeLits (Nat)
+import Servant.API (NamedRoutes, NoContent (..), Verb, type (:>))
+import Servant.API.MultiVerb (MultiVerb, Respond, RespondAs, WithHeaders)
+import Servant.Health (ProbeResponses, ProbeStatus (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
-import Servant.Server (ServerError (errHTTPCode))
+import Servant.Server (ServerError (..))
+import Shomei.Account.Admin.Api
+import Shomei.Account.Api
 import Shomei.Account.Dto
 import Shomei.Account.User.Dto
+import Shomei.Audit.Api
 import Shomei.Audit.Dto
+import Shomei.Authorization.Api
+import Shomei.Mfa.Api
 import Shomei.Mfa.Dto
+import Shomei.OAuth.Api
+import Shomei.Passkey.Api
 import Shomei.Passkey.Dto
-import Shomei.Servant.Api (ShomeiRoutes)
-import Shomei.Servant.Error (ProblemSpec (..), problemBody, problemCatalog)
-import Shomei.Servant.OAuth (TokenResponse (..))
+import Shomei.Servant.Api (OpenApiRoute, ShomeiRoutes)
+import Shomei.Servant.Error (ProblemDetails (..), ProblemSpec (..), detailOccurrence, noProblemOccurrence, problemBody, problemCatalog, problemDetails, problemTypeFor, toProblemError)
+import Shomei.Servant.OAuth (OAuthErrorResponse (..), TokenResponse (..))
 import Shomei.Servant.OpenApi (shomeiOpenApi)
+import Shomei.Session.Admin.Api
+import Shomei.Session.Api
 import Shomei.Session.Dto
+import Shomei.SigningKey.Api
+import System.Directory (doesFileExist)
 import Test.Hspec
-import Test.QuickCheck (Arbitrary (..), oneof)
+import Test.QuickCheck (Arbitrary (..), chooseInt, oneof)
 import Test.QuickCheck.Instances ()
 
 -- | @logout@ answers @204@ with @Set-Cookie@ headers. Servant models a header-carrying empty
@@ -71,11 +90,132 @@ instance ToSchema NoContent where
 instance Arbitrary ProbeStatus where
   arbitrary = ProbeStatus <$> arbitrary <*> arbitrary <*> arbitrary
 
+instance Arbitrary ProblemDetails where
+  arbitrary =
+    ProblemDetails
+      <$> pure "https://example.test/problems/example"
+      <*> arbitrary
+      <*> chooseInt (100, 599)
+      <*> arbitrary
+      <*> pure (Just "/requests/example")
+      <*> arbitrary
+      <*> arbitrary
+
+instance Arbitrary OAuthErrorResponse where
+  arbitrary = OAuthErrorResponse <$> arbitrary <*> arbitrary
+
+data OutcomeModel = SingleOutcome | MultiOutcome
+
+type ResponseModel :: Type -> OutcomeModel
+type family ResponseModel route where
+  ResponseModel (_ :> route) = ResponseModel route
+  ResponseModel (MultiVerb method content responses result) = 'MultiOutcome
+  ResponseModel (Verb method status content body) = 'SingleOutcome
+
+type ResponseOwnsStatus :: Nat -> Type -> Bool
+type family ResponseOwnsStatus status response where
+  ResponseOwnsStatus status (Respond status description body) = 'True
+  ResponseOwnsStatus status (Respond other description body) = 'False
+  ResponseOwnsStatus status (RespondAs content status description body) = 'True
+  ResponseOwnsStatus status (RespondAs content other description body) = 'False
+  ResponseOwnsStatus status (WithHeaders headers result response) = ResponseOwnsStatus status response
+
+type ResponsesOwnStatus :: Nat -> [Type] -> Bool
+type family ResponsesOwnStatus status responses where
+  ResponsesOwnStatus status '[] = 'False
+  ResponsesOwnStatus status (response ': responses) = Or (ResponseOwnsStatus status response) (ResponsesOwnStatus status responses)
+
+type Or :: Bool -> Bool -> Bool
+type family Or left right where
+  Or 'True right = 'True
+  Or 'False right = right
+
+type OperationOwnsStatus :: Nat -> Type -> Bool
+type family OperationOwnsStatus status route where
+  OperationOwnsStatus status (_ :> route) = OperationOwnsStatus status route
+  OperationOwnsStatus status (MultiVerb method content responses result) = ResponsesOwnStatus status responses
+
+type Classified route =
+  ( ResponseModel route :~: 'MultiOutcome,
+    OperationOwnsStatus 503 route :~: 'True
+  )
+
+accountWitnesses =
+  ( (Refl, Refl) :: Classified SignupRoute,
+    (Refl, Refl) :: Classified VerifyEmailRequestRoute,
+    (Refl, Refl) :: Classified VerifyEmailConfirmRoute,
+    (Refl, Refl) :: Classified PasswordResetRequestRoute,
+    (Refl, Refl) :: Classified PasswordResetConfirmRoute,
+    (Refl, Refl) :: Classified PasswordChangeRoute,
+    (Refl, Refl) :: Classified MeRoute,
+    (Refl, Refl) :: Classified ListUsersRoute,
+    (Refl, Refl) :: Classified GetUserRoute,
+    (Refl, Refl) :: Classified SuspendUserRoute,
+    (Refl, Refl) :: Classified ReinstateUserRoute,
+    (Refl, Refl) :: Classified DeleteUserRoute,
+    (Refl, Refl) :: Classified AdminPasswordResetRoute
+  )
+
+sessionWitnesses =
+  ( (Refl, Refl) :: Classified LoginRoute,
+    (Refl, Refl) :: Classified RefreshRoute,
+    (Refl, Refl) :: Classified LogoutRoute,
+    (Refl, Refl) :: Classified CurrentSessionRoute,
+    (Refl, Refl) :: Classified ListSessionsRoute,
+    (Refl, Refl) :: Classified RevokeSessionsRoute,
+    (Refl, Refl) :: Classified RevokeSessionRoute
+  )
+
+passkeyWitnesses =
+  ( (Refl, Refl) :: Classified RegisterBeginRoute,
+    (Refl, Refl) :: Classified RegisterCompleteRoute,
+    (Refl, Refl) :: Classified ListPasskeysRoute,
+    (Refl, Refl) :: Classified RemovePasskeyRoute,
+    (Refl, Refl) :: Classified PasskeyLoginBeginRoute,
+    (Refl, Refl) :: Classified PasskeyLoginCompleteRoute
+  )
+
+mfaWitnesses =
+  ( (Refl, Refl) :: Classified MfaCompleteRoute,
+    (Refl, Refl) :: Classified TotpEnrollRoute,
+    (Refl, Refl) :: Classified TotpVerifyRoute,
+    (Refl, Refl) :: Classified TotpDeleteRoute,
+    (Refl, Refl) :: Classified RecoveryCodesGenerateRoute,
+    (Refl, Refl) :: Classified RecoveryCodesCountRoute
+  )
+
+otherMultiWitnesses =
+  ( (Refl, Refl) :: Classified AuditEventsRoute,
+    (Refl, Refl) :: Classified GrantRoleRoute,
+    (Refl, Refl) :: Classified RevokeRoleRoute,
+    (Refl, Refl) :: Classified AuthorizeRoute,
+    (Refl, Refl) :: Classified TokenRoute,
+    (Refl, Refl) :: Classified UserinfoRoute,
+    (Refl, Refl) :: Classified IntrospectRoute,
+    (Refl, Refl) :: Classified RevokeRoute,
+    (Refl, Refl) :: Classified OidcDiscoveryRoute
+  )
+
+ordinaryWitnesses =
+  ( Refl :: ResponseModel JwksRoute :~: 'SingleOutcome,
+    Refl :: ResponseModel OpenApiRoute :~: 'SingleOutcome
+  )
+
+health503Witness :: ResponsesOwnStatus 503 ProbeResponses :~: 'True
+health503Witness = Refl
+
 main :: IO ()
 main = hspec spec
 
 spec :: Spec
 spec = do
+  problemCatalogDocument <- runIO do
+    let candidates = ["docs/user/problem-details.md", "../docs/user/problem-details.md"]
+    existing <- filterM doesFileExist candidates
+    case existing of
+      path : _ -> TextIO.readFile path
+      [] -> fail "docs/user/problem-details.md not found"
+
   describe "OpenAPI 3.1 schema: ToJSON matches ToSchema" $
     validateEveryToJSON (Proxy :: Proxy (NamedRoutes ShomeiRoutes))
 
@@ -102,9 +242,21 @@ spec = do
     it "covers the exact served method and path inventory" $
       sort (map fst operations) `shouldBe` expectedOperations
 
+    -- 'ResponseModel' has no 'MultiVerb1' equation. Replacing any named route witness below
+    -- with MultiVerb1 therefore makes this module fail to compile rather than silently pass.
+    it "rejects MultiVerb1, keeps the exact ordinary allow-list, and gives every other JSON route an operation-owned 503" $
+      accountWitnesses `seq`
+        sessionWitnesses `seq`
+          passkeyWitnesses `seq`
+            mfaWitnesses `seq`
+              otherMultiWitnesses `seq`
+                ordinaryWitnesses `seq`
+                  health503Witness `seq`
+                    True `shouldBe` True
+
   describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
-    it "declares the OAuthError schema" $
-      (lookupTop "components" >>= field "schemas" >>= field "OAuthError") `shouldSatisfy` isJust
+    it "declares the OAuthErrorResponse schema" $
+      (lookupTop "components" >>= field "schemas" >>= field "OAuthErrorResponse") `shouldSatisfy` isJust
 
     -- The whole point of the exemption: a stock OAuth2 client parses `error`/`error_description`
     -- by field name. If any /oauth/token response ever carried application/problem+json, that
@@ -120,8 +272,8 @@ spec = do
       ]
         `shouldBe` []
 
-    it "documents the RFC 6749 error codes it can actually emit" $
-      sort (nub (concat oauthErrorCodes)) `shouldBe` sort ["invalid_client", "invalid_grant", "invalid_request", "invalid_scope", "server_error", "unsupported_grant_type"]
+    it "documents the protocol-owned error statuses" $
+      responseStatusesAt "/oauth/token" `shouldBe` ["200", "400", "401", "404", "500", "503"]
 
   describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
     -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling
@@ -137,7 +289,7 @@ spec = do
         `shouldBe` []
 
     it "documents the 404 it answers when the provider is disabled" $
-      sort (nub (concat (oauthErrorCodesAt "/.well-known/openid-configuration"))) `shouldBe` ["not_found"]
+      "404" `shouldSatisfy` (`elem` responseStatusesAt "/.well-known/openid-configuration")
 
   describe "EP-5: /oauth/authorize speaks RFC 6749, and only its no-redirect failures are statuses" $ do
     it "documents no problem+json response on /oauth/authorize" $
@@ -152,13 +304,12 @@ spec = do
 
     -- Every OTHER authorize failure -- bad response_type, PKCE policy, disallowed scope -- is a
     -- 302 back to the validated redirect_uri, so it is not a status this operation declares.
-    it "documents only the failures that are statuses rather than error redirects" $
-      sort (nub (concat (oauthErrorCodesAt "/oauth/authorize")))
-        `shouldBe` ["invalid_request", "login_required", "not_found"]
+    it "documents only protocol statuses rather than redirect query error values" $
+      responseStatusesAt "/oauth/authorize" `shouldBe` ["302", "400", "401", "404", "500", "503"]
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
-    it "declares the Problem schema with exactly the four required members" $
-      problemRequired `shouldBe` ["code", "status", "title", "type"]
+    it "declares the ProblemDetails schema with the RFC 9457 profile members" $
+      problemRequired `shouldBe` ["code", "retryable", "status", "title", "type"]
 
     -- The published schema and the bytes the server writes come from different code
     -- (`problemSchema` in OpenApi.hs, `problemBody` in Error.hs). Validate the real runtime
@@ -168,19 +319,45 @@ spec = do
       [ (problemCode p, isJust detail, errs)
       | p <- problemCatalog,
         detail <- [Nothing, Just "a request-specific explanation"],
-        let errs = validateJSON mempty publishedProblemSchema (problemBody p detail),
+        let occurrence = maybe noProblemOccurrence detailOccurrence detail,
+        let errs = validateJSON mempty publishedProblemSchema (problemBody p occurrence),
         not (null errs)
       ]
         `shouldBe` []
 
-    it "documents only error codes that exist in problemCatalog" $
-      filter (`notElem` catalogCodes) (map snd documentedCodes) `shouldBe` []
+    it "keeps body status, type, code, title, and retryability synchronized" $
+      [ p.problemCode
+      | p <- problemCatalog,
+        let body = problemDetails p noProblemOccurrence,
+        body.status /= errHTTPCode p.problemStatus
+          || body.problemType /= problemTypeFor p.problemCode
+          || body.code /= p.problemCode
+          || body.title /= p.problemTitle
+          || body.retryable /= p.problemRetryable
+      ]
+        `shouldBe` []
 
-    it "documents each error code at a status the runtime actually sends it with" $
-      filter (`notElem` catalogPairs) documentedCodes `shouldBe` []
+    it "uses a URI-safe code alphabet and a one-to-one type/code mapping" $ do
+      [p.problemCode | p <- problemCatalog, Text.any (\c -> not (isAsciiLower c || isDigit c || c == '_')) p.problemCode] `shouldBe` []
+      length (nub (map (problemTypeFor . problemCode) problemCatalog))
+        `shouldBe` length (nub (map problemCode problemCatalog))
 
-    it "documents at least one error code for every 4xx it declares" $
-      [key | (key, codes) <- errorResponses, null codes] `shouldBe` []
+    it "documents an explicit public anchor for every code" $
+      [p.problemCode | p <- problemCatalog, not (Text.isInfixOf ("id=\"" <> p.problemCode <> "\"") problemCatalogDocument)]
+        `shouldBe` []
+
+    it "renders matching RFC 9457 bodies and media types at the pre-handler boundary" $
+      [ p.problemCode
+      | p <- problemCatalog,
+        let rendered = toProblemError p noProblemOccurrence,
+        lookup "Content-Type" rendered.errHeaders /= Just "application/problem+json"
+          || (decode rendered.errBody :: Maybe ProblemDetails) /= Just (problemDetails p noProblemOccurrence)
+      ]
+        `shouldBe` []
+
+    it "decodes unknown RFC 9457 extension members" $
+      (eitherDecode "{\"type\":\"https://example.test/problem\",\"title\":\"Example\",\"status\":400,\"code\":\"example\",\"retryable\":false,\"future\":true}" :: Either String ProblemDetails)
+        `shouldSatisfy` either (const False) (const True)
 
     it "documents a 401 on every operation that requires a bearer token" $
       [key | (key, op) <- operations, requiresBearer op, not (declares "401" op)] `shouldBe` []
@@ -208,9 +385,9 @@ spec = do
 
     pathCount = KM.size paths
 
-    problemSchemaJson = case lookupTop "components" >>= field "schemas" >>= field "Problem" of
+    problemSchemaJson = case lookupTop "components" >>= field "schemas" >>= field "ProblemDetails" of
       Just v -> v
-      Nothing -> error "shomeiOpenApi has no components.schemas.Problem"
+      Nothing -> error "shomeiOpenApi has no components.schemas.ProblemDetails"
 
     -- Round-tripped through the serialized document on purpose: this is the schema a client
     -- generator reads, not the Haskell value that produced it.
@@ -283,79 +460,24 @@ spec = do
           "put /v1/admin/users/{userId}/roles/{role}"
         ]
 
-    -- Every problem-document response: its operation label + status, and the `code` enum it
-    -- narrows the Problem schema to.
-    errorResponses :: [(Text, [Text])]
-    errorResponses =
-      [ (key <> " " <> Key.toText status, codeEnum resp)
-      | (key, op) <- operations,
-        (status, resp) <- responsesOf op,
-        isProblemResponse resp
-      ]
-
-    -- (status, code) as the document promises them. Status keys are always numeric here:
-    -- nothing in this document uses `default` or a `4XX` range key.
-    documentedCodes :: [(Int, Text)]
-    documentedCodes =
-      nub
-        [ (statusInt status, code)
-        | (_, op) <- operations,
-          (status, resp) <- responsesOf op,
-          isProblemResponse resp,
-          code <- codeEnum resp
-        ]
-
-    statusInt status = case reads (Key.toString status) of
-      [(n, "")] -> n
-      _ -> error ("non-numeric response key: " <> Key.toString status)
-
-    catalogCodes :: [Text]
-    catalogCodes = nub (map problemCode problemCatalog)
-
-    catalogPairs :: [(Int, Text)]
-    catalogPairs = nub [(errHTTPCode (problemStatus p), problemCode p) | p <- problemCatalog]
-
     responsesOf op = case KM.lookup "responses" op of
       Just (Object rs) -> [(status, r) | (status, Object r) <- KM.toList rs]
       _ -> []
 
     isProblemResponse resp = KM.member "application/problem+json" (contentOf resp)
 
-    -- The `error` enum of every /oauth/token error response.
-    oauthErrorCodes :: [[Text]]
-    oauthErrorCodes = oauthErrorCodesAt "/oauth/token"
-
-    -- The `error` enum of every RFC 6749-shaped error response on one path.
-    oauthErrorCodesAt :: Key.Key -> [[Text]]
-    oauthErrorCodesAt wanted =
-      [ codes
-      | (path, Object item) <- KM.toList paths,
-        path == wanted,
-        (_, Object op) <- KM.toList item,
-        (_, resp) <- responsesOf op,
-        Just (Array xs) <-
-          [ KM.lookup "application/json" (contentOf resp)
-              >>= field "schema"
-              >>= field "properties"
-              >>= field "error"
-              >>= field "enum"
-          ],
-        let codes = [t | String t <- toList xs],
-        not (null codes)
-      ]
+    responseStatusesAt wanted =
+      sort
+        [ Key.toText status
+        | (path, Object item) <- KM.toList paths,
+          path == wanted,
+          (_, Object op) <- KM.toList item,
+          (status, _) <- responsesOf op
+        ]
 
     contentOf resp = case KM.lookup "content" resp of
       Just (Object c) -> c
       _ -> KM.empty
-
-    codeEnum resp =
-      case KM.lookup "application/problem+json" (contentOf resp)
-        >>= field "schema"
-        >>= field "properties"
-        >>= field "code"
-        >>= field "enum" of
-        Just (Array xs) -> [t | String t <- toList xs]
-        _ -> []
 
     requiresBearer op = case KM.lookup "security" op of
       Just (Array xs) -> not (null xs)

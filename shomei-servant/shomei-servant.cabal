@@ -39,22 +39,29 @@ library
     Shomei.Account.Api
     Shomei.Account.Dto
     Shomei.Account.Handler
+    Shomei.Account.Result
     Shomei.Account.User.Dto
     Shomei.Audit.Api
     Shomei.Audit.Dto
     Shomei.Audit.Handler
+    Shomei.Audit.Result
     Shomei.Authorization.Api
     Shomei.Authorization.Handler
+    Shomei.Authorization.Result
     Shomei.Delegation.Handler
     Shomei.Mfa.Api
     Shomei.Mfa.Dto
     Shomei.Mfa.Handler
+    Shomei.Mfa.Result
     Shomei.OAuth.Api
     Shomei.OAuth.Handler
+    Shomei.OAuth.Result
     Shomei.Passkey.Api
     Shomei.Passkey.Dto
     Shomei.Passkey.Handler
+    Shomei.Passkey.Result
     Shomei.Servant.Api
+    Shomei.Servant.Application
     Shomei.Servant.Auth
     Shomei.Servant.Authz
     Shomei.Servant.Cookie
@@ -64,12 +71,14 @@ library
     Shomei.Servant.Oidc
     Shomei.Servant.OpenApi
     Shomei.Servant.PreHandler
+    Shomei.Servant.Result
     Shomei.Servant.Seam
     Shomei.Servant.Server
     Shomei.Session.Admin.Api
     Shomei.Session.Api
     Shomei.Session.Dto
     Shomei.Session.Handler
+    Shomei.Session.Result
     Shomei.SigningKey.Api
     Shomei.SigningKey.Handler
 
@@ -83,8 +92,10 @@ library
     , effectful
     , effectful-core
     , http-api-data
+    , http-media
     , http-types
     , lens
+    , mtl
     , network
     , openapi-hs          >=5.0    && <5.1
     , servant             >=0.20.3 && <0.21
@@ -92,8 +103,10 @@ library
     , servant-openapi-hs  >=5.1    && <5.2
     , servant-server      >=0.20.3 && <0.21
     , shomei-core
+    , sop-core
     , text
     , time
+    , transformers
     , uuid
     , wai
 
@@ -123,11 +136,13 @@ test-suite shomei-servant-openapi-test
     ScopedTypeVariables
     StandaloneDeriving
     TypeApplications
+    UndecidableInstances
 
-  ghc-options:        -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:        -threaded -rtsopts -with-rtsopts=-N -freduction-depth=0
   build-depends:
     , aeson
     , base
+    , directory
     , hspec
     , openapi-hs
     , QuickCheck

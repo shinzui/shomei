@@ -63,18 +63,21 @@ tests =
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
             su <-
-              expect "signup"
+              fmap C.cookieBody . expectApplicationSuccess "signup"
                 =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "Ada Lovelace"}
 
-            lr <-
-              expect "login"
+            loginResponse <-
+              fmap C.cookieBody . expectApplicationSuccess "login"
                 =<< C.login cenv LoginRequest {loginId = email, password = password}
+            lr <- case loginResponse of
+              complete@LoginCompleteResponse {} -> pure complete
+              LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
             tok <- C.Token <$> requireBodyToken lr.token.accessToken
 
-            ur <- expect "me" =<< C.me cenv tok
+            ur <- expectApplicationSuccess "me" =<< C.me cenv tok
             ur.email @?= Just email
 
-            tp <- expect "refresh" =<< C.refresh cenv RefreshRequest {refreshToken = lr.token.refreshToken}
+            tp <- fmap C.cookieBody . expectApplicationSuccess "refresh" =<< C.refresh cenv RefreshRequest {refreshToken = lr.token.refreshToken}
             (tp.refreshToken /= lr.token.refreshToken) @?= True
 
             -- EP-2. The admin wrappers are derived from the same route types the server serves,
@@ -108,11 +111,17 @@ healthyProbe = pure Healthy
 
 -- | The route was reached and the admin gate refused it. A 404 would mean the client built a
 -- path the server does not serve; a 405, that it used the wrong verb.
-expect403 :: String -> Either C.ClientError a -> IO ()
+expect403 :: String -> Either C.ClientError (C.ApplicationResult a) -> IO ()
 expect403 label = \case
-  Left (FailureResponse _ resp) | statusCode (responseStatusCode resp) == 403 -> pure ()
-  Left e -> assertFailure (label <> ": expected a 403, got " <> show e)
-  Right _ -> assertFailure (label <> ": expected a 403, got success")
+  Right (C.ApplicationForbidden problem) | C.status problem == 403 -> pure ()
+  Right _ -> assertFailure (label <> ": expected a typed 403, got a different typed outcome")
+  Left e -> assertFailure (label <> ": expected a typed 403, got transport failure " <> show e)
+
+expectApplicationSuccess :: String -> Either C.ClientError (C.ApplicationResult a) -> IO a
+expectApplicationSuccess label = \case
+  Right (C.ApplicationSuccess value) -> pure value
+  Right _ -> assertFailure (label <> ": expected success, got an application failure")
+  Left err -> assertFailure (label <> ": transport failure: " <> show err)
 
 expect :: (Show e) => String -> Either e a -> IO a
 expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pure

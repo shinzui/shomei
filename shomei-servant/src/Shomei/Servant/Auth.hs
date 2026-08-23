@@ -69,7 +69,7 @@ import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..),
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Servant.Error (pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
+import Shomei.Servant.Error (bearerOccurrence, noProblemOccurrence, pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
 import Shomei.Servant.Seam (Env (..), verifyRequestToken)
 import Web.Cookie (parseCookies)
 
@@ -156,7 +156,7 @@ authHandler env = mkAuthHandler handle
     handle :: Request -> Handler AuthUser
     handle req = do
       (source, tok) <-
-        maybe (throwError (toProblemError pcMissingToken Nothing)) pure (extractToken policy.transport req)
+        maybe (throwError (toProblemError pcMissingToken bearerOccurrence)) pure (extractToken policy.transport req)
       when (source == FromCookie && not (isSafeMethod req) && not (originAllowed policy.allowedOrigins req)) $
         throwError csrfRejected
       res <- liftIO (verifyRequestToken env tok)
@@ -172,9 +172,9 @@ authHandler env = mkAuthHandler handle
 -- including an unresolvable session id, fails closed as @401 token_invalid@.
 authFailure :: AuthError -> ServerError
 authFailure = \case
-  SessionExpired -> toProblemError pcSessionExpired Nothing
-  SessionRevoked -> toProblemError pcSessionRevoked Nothing
-  _ -> toProblemError pcTokenInvalidAuth Nothing
+  SessionExpired -> toProblemError pcSessionExpired bearerOccurrence
+  SessionRevoked -> toProblemError pcSessionRevoked bearerOccurrence
+  _ -> toProblemError pcTokenInvalidAuth bearerOccurrence
 
 -- | Extract the presented token and record where it came from.
 --
@@ -268,4 +268,4 @@ originHeaderAllowed allowed mOrigin mReferer = maybe refererAllowed (`elem` allo
 -- This is an HTTP-layer error, not an 'Shomei.Error.AuthError': CSRF is a property of /how the
 -- credential arrived/, which the core workflows never see.
 csrfRejected :: ServerError
-csrfRejected = toProblemError pcCsrfRejected Nothing
+csrfRejected = toProblemError pcCsrfRejected noProblemOccurrence

@@ -5,6 +5,11 @@ module Shomei.Servant.Api
     ApplicationApi (..),
     applicationApi,
     AppApi,
+    ApplicationRoutes,
+    OAuthRoutes,
+    WellKnownRoutes,
+    HealthRoutes,
+    OpenApiRoute,
     Project (..),
   )
 where
@@ -47,12 +52,22 @@ applicationApi = Proxy
 
 -- | The exact served API. Standalone, embedded, OpenAPI, and client entry points all consume
 -- this proxy.
+type ApplicationRoutes = "v1" :> NamedRoutes ApplicationApi
+
+type OAuthRoutes = "oauth" :> NamedRoutes OAuthApi
+
+type WellKnownRoutes = ".well-known" :> NamedRoutes WellKnownApi
+
+type HealthRoutes = "health" :> NamedRoutes HealthApi
+
+type OpenApiRoute = "openapi.json" :> Get '[JSON] Value
+
 data ShomeiRoutes mode = ShomeiRoutes
-  { application :: mode :- "v1" :> NamedRoutes ApplicationApi,
-    oauth :: mode :- "oauth" :> NamedRoutes OAuthApi,
-    wellKnown :: mode :- ".well-known" :> NamedRoutes WellKnownApi,
-    health :: mode :- "health" :> NamedRoutes HealthApi,
-    openapi :: mode :- "openapi.json" :> Get '[JSON] Value
+  { application :: mode :- ApplicationRoutes,
+    oauth :: mode :- OAuthRoutes,
+    wellKnown :: mode :- WellKnownRoutes,
+    health :: mode :- HealthRoutes,
+    openapi :: mode :- OpenApiRoute
   }
   deriving stock (Generic)
 

@@ -6,23 +6,20 @@
 -- in EP-6) must provide a runner for. 'Env' carries that runner ('runPorts'), the
 -- 'ShomeiConfig' and the precomputed public JWKS document for the @jwks@ route.
 -- 'verifyRequestToken' derives HTTP authentication from that runner and configuration, so
--- @sessionCheckMode = VerifyTokenAndSession@ cannot be bypassed by assembly wiring. 'runAuth'
--- runs a workflow that
--- already yields @Either AuthError@ and maps a 'Left' to the matching 'ServerError';
--- 'runPort' runs a plain port action whose result the handler branches on itself.
+-- @sessionCheckMode = VerifyTokenAndSession@ cannot be bypassed by assembly wiring. The two
+-- result runners preserve typed failures for route-local response mapping.
 module Shomei.Servant.Seam
   ( AppEffects,
     Env (..),
     verifyRequestToken,
-    runAuth,
-    runPort,
-    runPortChecked,
+    runPortResult,
+    runWorkflowResult,
   )
 where
 
 import Data.Aeson (Value)
 import Effectful (Eff, IOE)
-import Servant (Handler, throwError)
+import Servant (Handler)
 import Shomei.Account.Credential.Store (CredentialStore)
 import Shomei.Account.Notification.Store (Notifier)
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
@@ -45,7 +42,6 @@ import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
 import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
 import Shomei.Passkey.Store (PasskeyStore)
 import Shomei.Prelude
-import Shomei.Servant.Error (authErrorToServerError)
 import Shomei.ServiceAccount.Store (ServiceAccountStore)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.LoginAttempt.Domain (AccountKey)
@@ -126,20 +122,10 @@ verifyRequestToken env raw = do
   result <- runPorts env (Wf.verifyToken (config env) (AccessToken raw))
   pure (result >>= id)
 
--- | Run a workflow that yields @Either AuthError a@: a 'Right' flows through; a
--- 'Left' becomes the matching 'ServerError'.
-runAuth :: Env -> Eff AppEffects (Either AuthError a) -> Handler a
-runAuth env action = do
-  result <- liftIO (runPorts env action)
-  either (throwError . authErrorToServerError) pure (result >>= id)
+-- | Run a plain port action without rendering or throwing its typed error.
+runPortResult :: Env -> Eff AppEffects a -> Handler (Either AuthError a)
+runPortResult env action = liftIO (runPorts env action)
 
--- | Run a plain port action to its value; the caller branches on the result.
-runPort :: Env -> Eff AppEffects a -> Handler a
-runPort env action = do
-  result <- liftIO (runPorts env action)
-  either (throwError . authErrorToServerError) pure result
-
--- | Run a port action while retaining its typed dependency/internal failure for a
--- route-local total mapping (currently used by readiness).
-runPortChecked :: Env -> Eff AppEffects a -> Handler (Either AuthError a)
-runPortChecked env action = liftIO (runPorts env action)
+-- | Run a workflow and flatten interpreter and workflow failures without choosing HTTP.
+runWorkflowResult :: Env -> Eff AppEffects (Either AuthError a) -> Handler (Either AuthError a)
+runWorkflowResult env action = fmap (>>= id) (liftIO (runPorts env action))

@@ -443,7 +443,9 @@ oauthScenario pool clientId port = do
   -- (d) A wrong secret is an RFC 6749 object, not a problem document.
   (bStatus, bHdrs, bBody) <- postForm mgr port "/oauth/token" (Just (clientId, "wrong")) [("grant_type", "client_credentials")]
   bStatus @?= 401
-  lookup "Content-Type" bHdrs @?= Just "application/json"
+  assertBool
+    "OAuth errors use application/json"
+    (maybe False ("application/json" `BS.isPrefixOf`) (lookup "Content-Type" bHdrs))
   lookup "WWW-Authenticate" bHdrs @?= Just "Basic realm=\"shomei\""
   berr <- must "error body" bBody
   (dig ["error"] berr >>= asText) @?= Just "invalid_client"

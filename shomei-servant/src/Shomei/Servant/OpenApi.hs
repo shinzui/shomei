@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 -- \| The OpenAPI 3.1 description of 'Shomei.Servant.Api.ShomeiRoutes', derived
@@ -34,19 +35,17 @@ import Data.Char (isAlphaNum, toUpper)
 -- openapi-hs 5 vendors the insertion-ordered map it used to take from
 -- insert-ordered-containers; the OpenAPI record fields are keyed by this type.
 import Data.HashMap.Strict.InsOrd.Compat qualified as IOHM
-import Data.List (nub, sortOn)
-import Data.List.NonEmpty qualified as NE
 import Data.Maybe (isNothing)
 import Data.OpenApi (ToParamSchema (..), ToSchema (..))
 import Data.OpenApi qualified as O
+import Data.OpenApi.Declare (runDeclare)
 import Data.Proxy (Proxy (..))
 import Data.Text qualified as T
-import GHC.TypeLits (Symbol)
+import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Servant.API
+import Servant.API.MultiVerb (DescHeader, OptHeader)
 import Servant.OpenApi (HasOpenApi (..))
--- The status of a 'ProblemSpec' is carried as the Servant base error it renders from; only
--- 'errHTTPCode' is read here.
-import Servant.Server (ServerError (errHTTPCode))
+import Servant.OpenApi.Internal (IsSwaggerResponseList (..), ToResponseHeader (..))
 import Shomei.Account.Dto
   ( ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
@@ -85,53 +84,30 @@ import Shomei.Passkey.Dto
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.Error
-  ( ProblemSpec (..),
-    pcBadRequest,
-    pcBodyParseError,
-    pcCeremonyNotFound,
-    pcCsrfRejected,
-    pcEmailAlreadyVerified,
-    pcEmailNotVerified,
-    pcEmailTaken,
-    pcImpersonationActionBlocked,
-    pcInvalidEmail,
-    pcInvalidLogin,
-    pcInvalidLoginId,
-    pcInvalidUserStatus,
-    pcLoginIdTaken,
-    pcMfaFailed,
-    pcMissingRole,
-    pcMissingToken,
-    pcPasskeyNotFound,
-    pcPasswordResetTokenInvalid,
-    pcReauthenticationRequired,
-    pcRecoveryCodeInvalid,
-    pcRefreshTokenExpired,
-    pcRefreshTokenInvalid,
-    pcRoleNotDefined,
-    pcRoleNotGranted,
-    pcSelfTargetForbidden,
-    pcSessionExpired,
-    pcSessionNotFound,
-    pcSessionRevoked,
-    pcTokenInvalidAuth,
-    pcTokenReuse,
-    pcTooManyRequests,
-    pcTotpAlreadyEnrolled,
-    pcTotpCodeInvalid,
-    pcTotpDisabled,
-    pcTotpEnrollmentNotFound,
-    pcUserHasNoEmail,
-    pcUserNotFound,
-    pcVerificationTokenInvalid,
-    pcWeakPassword,
-    pcWebAuthnFailed,
-  )
 import Shomei.Servant.OAuth (TokenResponse)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
+import Shomei.Servant.Result
+  ( AuthenticationPreHandlerResponses,
+    AuthorizationPreHandlerResponses,
+    CsrfPreHandlerResponses,
+    RateLimitPreHandlerResponses,
+  )
 import Shomei.Session.Dto (LoginRequest, LoginResponse, RefreshRequest, SessionResponse, TokenPairResponse)
 import Web.FormUrlEncoded (Form)
+
+-- servant-openapi-hs 5.1 understands MultiVerb and WithHeaders, but its released header
+-- renderer only recognizes Servant's plain 'Header'. Bridge MultiVerb's public descriptive and
+-- optional header wrappers here so the exact served proxy remains the source of the document.
+instance (KnownSymbol name, KnownSymbol description, ToParamSchema a) => ToResponseHeader (DescHeader name description a) where
+  toResponseHeader _ =
+    ( T.pack (symbolVal (Proxy @name)),
+      mempty
+        & O.description ?~ T.pack (symbolVal (Proxy @description))
+        & O.schema ?~ O.Inline (toParamSchema (Proxy @a))
+    )
+
+instance (ToResponseHeader header) => ToResponseHeader (OptHeader header) where
+  toResponseHeader _ = toResponseHeader (Proxy @header)
 
 -- ---------------------------------------------------------------------------
 -- ToSchema for every DTO
@@ -401,7 +377,7 @@ instance ToParamSchema UserPageCursor where
 -- security scheme in @components@ and require it on every operation of the
 -- sub-API.
 instance (HasOpenApi sub) => HasOpenApi (Authenticated :> sub) where
-  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @AuthenticationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
 
 -- | 'RequireRole' and 'RequireScope' authenticate the caller themselves (they run the same
 -- 'Shomei.Servant.Auth.authHandler' 'Authenticated' does) and then check a claim. To a client
@@ -411,25 +387,38 @@ instance (HasOpenApi sub) => HasOpenApi (Authenticated :> sub) where
 -- These must not be transparent pass-throughs: an operation carrying only 'RequireRole' would
 -- otherwise be documented as unauthenticated, and generated clients would omit the token.
 instance (HasOpenApi sub) => HasOpenApi (RequireRole (r :: Symbol) :> sub) where
-  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @AuthorizationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
 
 instance (HasOpenApi sub) => HasOpenApi (RequireScope (s :: Symbol) :> sub) where
-  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @AuthorizationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
 
 instance (HasOpenApi sub) => HasOpenApi (RequirePermission (p :: Symbol) :> sub) where
-  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @AuthorizationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
 
 instance (HasOpenApi sub) => HasOpenApi (RequireAdmin :> sub) where
-  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @AuthorizationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
 
-instance (HasOpenApi sub) => HasOpenApi (PreHandlerResponses responses :> sub) where
-  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+instance (HasOpenApi sub, IsSwaggerResponseList '[JSON] responses) => HasOpenApi (PreHandlerResponses responses :> sub) where
+  toOpenApi _ = addTypedResponses (Proxy @responses) (toOpenApi (Proxy :: Proxy sub))
 
 instance (HasOpenApi sub) => HasOpenApi (CsrfProtected :> sub) where
-  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @CsrfPreHandlerResponses) (toOpenApi (Proxy :: Proxy sub))
 
 instance (HasOpenApi sub) => HasOpenApi (RateLimited :> sub) where
-  toOpenApi _ = toOpenApi (Proxy :: Proxy sub)
+  toOpenApi _ = addTypedResponses (Proxy @RateLimitPreHandlerResponses) (toOpenApi (Proxy :: Proxy sub))
+
+-- | Add the responses a combinator can produce before its sub-handler runs. Operation-owned
+-- alternatives are left-biased when a status overlaps, while otherwise-missing statuses and the
+-- declared Problem Details schema are supplied from servant-openapi-hs's MultiVerb machinery.
+addTypedResponses :: forall responses. (IsSwaggerResponseList '[JSON] responses) => Proxy responses -> O.OpenApi -> O.OpenApi
+addTypedResponses _ spec =
+  spec
+    & O.components . O.schemas <>~ schemaDefinitions
+    & O.allOperations . O.responses . O.responses
+      %~ (`IOHM.union` (O.Inline <$> typedResponses))
+  where
+    (schemaDefinitions, typedResponses) =
+      runDeclare (responseListSwagger @_ @'[JSON] @responses) mempty
 
 -- | Register the bearer-JWT security scheme and require it on every operation of @sub@.
 requireBearer :: (HasOpenApi sub) => Proxy sub -> O.OpenApi
@@ -445,269 +434,8 @@ requireBearer p =
         (O.SecuritySchemeHttp (O.HttpSchemeBearer (Just "jwt")))
         (Just "JWT access token")
 
--- ---------------------------------------------------------------------------
--- The error surface, generated from the runtime catalog
--- ---------------------------------------------------------------------------
-
--- | The RFC 7807 document every Shōmei error is, as a @components.schemas@ entry.
---
--- Must agree with 'Shomei.Servant.Error.problemBody', which builds the runtime value. The
--- conformance suite pins the @required@ list.
-problemSchema :: O.Schema
-problemSchema =
-  mempty
-    & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
-    & O.description
-      ?~ "An RFC 7807 problem document. Every Shōmei error response has this shape, served as \
-         \application/problem+json. Switch on `code`; `title` is stable human text and `detail`, \
-         \when present, explains this particular occurrence."
-    & O.properties
-      .~ IOHM.fromList
-        [ ("type", O.Inline (stringSchema & O.description ?~ "Always \"about:blank\": Shōmei hosts no error-documentation URLs.")),
-          ("title", O.Inline (stringSchema & O.description ?~ "Stable human-readable summary of the error kind.")),
-          ("status", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger & O.description ?~ "Mirrors the HTTP status code.")),
-          ("code", O.Inline (stringSchema & O.description ?~ "The machine-readable error key. This is what a client switches on.")),
-          ("detail", O.Inline (stringSchema & O.description ?~ "Human-readable explanation specific to this occurrence."))
-        ]
-    & O.required .~ ["type", "title", "status", "code"]
-
 stringSchema :: O.Schema
 stringSchema = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
-
--- | The HTTP methods Shōmei's routes use, as a selector for the matching 'O.PathItem' field. A
--- route→codes table entry names one operation, and a path may carry several methods.
---
--- 'allMethods' must list every constructor: 'withErrorResponses' folds over it, so a method
--- missing here silently documents no errors at all for every route that uses it. EP-2's
--- @PUT …\/roles\/{role}@ was exactly that hole, caught by the conformance suite's
--- "documents a 401 on every bearer operation" check.
-data Method = MGet | MPost | MPut | MDelete
-  deriving stock (Eq, Show, Enum, Bounded)
-
-allMethods :: [Method]
-allMethods = [minBound .. maxBound]
-
-methodLens :: Method -> Lens' O.PathItem (Maybe O.Operation)
-methodLens = \case
-  MGet -> O.get
-  MPost -> O.post
-  MPut -> O.put
-  MDelete -> O.delete
-
--- | Which problem kinds each operation can produce, beyond the baseline every operation gets
--- from its own shape (see 'baselineSpecs').
---
--- This is the one hand-maintained part of the error documentation, and it is deliberately so:
--- deriving it would need effect-level tracking of which 'Shomei.Error.AuthError' each workflow
--- can throw. What cannot drift is the /content/ of each entry — the status and title come from
--- the same 'ProblemSpec' constant the runtime renders, so this table can be incomplete but never
--- wrong. The conformance suite checks every documented code against 'problemCatalog'.
---
--- The 429s are the rate limiter's, and they name exactly the five paths
--- 'Shomei.Server.Middleware.RateLimit.throttledPath' guards — a WAI layer the route types know
--- nothing about.
-routeErrors :: [(FilePath, Method, [ProblemSpec])]
-routeErrors =
-  [ ( "/v1/auth/signup",
-      MPost,
-      [pcInvalidEmail, pcInvalidLoginId, pcWeakPassword, pcBadRequest, pcEmailTaken, pcLoginIdTaken, pcTooManyRequests]
-    ),
-    ("/v1/auth/login", MPost, [pcBadRequest, pcInvalidLogin, pcEmailNotVerified, pcTooManyRequests]),
-    ( "/v1/auth/refresh",
-      MPost,
-      [ pcBadRequest,
-        pcRefreshTokenInvalid,
-        pcRefreshTokenExpired,
-        pcTokenReuse,
-        pcSessionExpired,
-        pcCsrfRejected,
-        pcEmailNotVerified,
-        pcTooManyRequests
-      ]
-    ),
-    ("/v1/auth/verify-email/request", MPost, [pcTooManyRequests]),
-    ("/v1/auth/verify-email/confirm", MPost, [pcVerificationTokenInvalid, pcEmailAlreadyVerified]),
-    ("/v1/auth/password-reset/request", MPost, [pcTooManyRequests]),
-    ("/v1/auth/password-reset/confirm", MPost, [pcPasswordResetTokenInvalid]),
-    ("/v1/auth/password/change", MPost, [pcInvalidLogin]),
-    ("/v1/auth/me", MGet, [pcUserNotFound]),
-    ("/v1/auth/session", MGet, [pcSessionNotFound]),
-    ("/v1/auth/passkeys/register/complete", MPost, [pcBadRequest, pcWebAuthnFailed, pcCeremonyNotFound]),
-    -- A malformed capture is a 400, not a 404: servant's @Capture@ runs 'urlParseErrorFormatter',
-    -- which this codebase points at 'pcBadRequest'. Verified against the running server.
-    ("/v1/auth/passkeys/{passkeyId}", MDelete, [pcBadRequest, pcPasskeyNotFound]),
-    -- EP-7 TOTP + recovery codes. The 401s and body-parse 400s come from 'baselineSpecs'.
-    ("/v1/auth/totp/enroll", MPost, [pcTotpDisabled, pcTotpAlreadyEnrolled, pcImpersonationActionBlocked, pcUserNotFound]),
-    ("/v1/auth/totp/verify", MPost, [pcTotpDisabled, pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcUserNotFound]),
-    ("/v1/auth/totp", MDelete, [pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcRecoveryCodeInvalid, pcImpersonationActionBlocked, pcUserNotFound]),
-    ("/v1/auth/recovery-codes", MPost, [pcReauthenticationRequired, pcImpersonationActionBlocked, pcUserNotFound]),
-    ("/v1/auth/mfa/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
-    ("/v1/auth/login/passkey/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
-    ("/v1/admin/audit/events", MGet, [pcBadRequest, pcMissingRole]),
-    -- EP-2's admin surface. Every one of these is gated by 'Shomei.Servant.Authz.requireAdmin',
-    -- whose refusal is the same @missing_role@ document 'RequireRole' raises, so 'pcMissingRole'
-    -- appears throughout. The 401s and the body-parse 400s come from 'baselineSpecs', not here.
-    ("/v1/admin/users", MGet, [pcBadRequest, pcMissingRole]),
-    ("/v1/admin/users/{userId}", MGet, [pcMissingRole, pcUserNotFound]),
-    ("/v1/admin/users/{userId}", MDelete, [pcMissingRole, pcSelfTargetForbidden, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
-    ("/v1/admin/users/{userId}/suspend", MPost, [pcMissingRole, pcSelfTargetForbidden, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
-    ("/v1/admin/users/{userId}/reinstate", MPost, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcInvalidUserStatus]),
-    ("/v1/admin/users/{userId}/sessions", MGet, [pcMissingRole, pcUserNotFound]),
-    ("/v1/admin/users/{userId}/sessions", MDelete, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound]),
-    ("/v1/admin/sessions/{sessionId}", MDelete, [pcMissingRole, pcImpersonationActionBlocked, pcSessionNotFound]),
-    ("/v1/admin/users/{userId}/password-reset", MPost, [pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcUserHasNoEmail]),
-    ("/v1/admin/users/{userId}/roles/{role}", MPut, [pcBadRequest, pcMissingRole, pcImpersonationActionBlocked, pcUserNotFound, pcRoleNotDefined]),
-    ("/v1/admin/users/{userId}/roles/{role}", MDelete, [pcBadRequest, pcMissingRole, pcImpersonationActionBlocked, pcRoleNotGranted])
-  ]
-
--- | What an operation can fail with by virtue of its /shape/, independent of the table.
---
--- An operation that requires a bearer token can always answer @401@ with no credential, a bad
--- token, or — when configured for session checks — an expired or revoked session. An operation
--- that takes a request body can always fail Servant's body parser. Both are read off the generated
--- document rather than restated per route, so a new authenticated route documents its 401s the
--- day it is added.
-baselineSpecs :: O.Operation -> [ProblemSpec]
-baselineSpecs op =
-  [spec | not (null (op ^. O.security)), spec <- [pcMissingToken, pcTokenInvalidAuth, pcSessionExpired, pcSessionRevoked]]
-    <> [pcBodyParseError | has (O.requestBody . _Just) op]
-
--- | The paths exempt from the problem-details envelope: they answer RFC 6749 §5.2 error objects,
--- because that is what stock OAuth2 \/ OIDC clients parse.
---
--- __Any new @\/oauth\/*@ or OIDC route must be added here__, with the statuses it can actually
--- emit. Otherwise 'baselineSpecs' documents it with a @problem+json@ response it cannot produce
--- (silently, for a route with a request body — no other conformance check inspects a non-problem
--- response). Plan 43's token-exchange grant lands on @\/oauth\/token@ and needs no new entry.
---
--- Note @\/oauth\/userinfo@ is deliberately absent: it is guarded by the ordinary 'Authenticated'
--- combinator and its @401@s are the ordinary problem documents, not OAuth error objects.
-oauthErrorResponsesByPath :: [(FilePath, [(O.HttpStatusCode, [T.Text])])]
-oauthErrorResponsesByPath =
-  [ -- @401@ is @invalid_client@ alone (and carries @WWW-Authenticate: Basic@); @400@ covers the
-    -- request-shape and scope failures. @500@ is documented because a database outage must still
-    -- answer in the OAuth shape rather than break the client's error parser.
-    ( "/oauth/token",
-      [ (400, ["invalid_request", "unsupported_grant_type", "invalid_scope", "invalid_grant"]),
-        (401, ["invalid_client"]),
-        (500, ["server_error"])
-      ]
-    ),
-    -- A deployment with @oidcEnabled = false@ must not advertise; the refusal reaches OIDC
-    -- tooling, so it speaks the OAuth error shape rather than the application envelope.
-    ("/.well-known/openid-configuration", [(404, ["not_found"])]),
-    -- @400@ is the no-redirect regime (unknown client, unregistered redirect_uri): every OTHER
-    -- authorize failure is a @302@ carrying @error=@, and so is a success — which is why no 4xx
-    -- here mentions @invalid_scope@ or @unsupported_response_type@. @401@ is the unauthenticated
-    -- request when no @loginUrl@ is configured.
-    ( "/oauth/authorize",
-      [ (400, ["invalid_request"]),
-        (401, ["login_required"]),
-        (404, ["not_found"])
-      ]
-    ),
-    -- RFC 7662/7009: introspection and revocation never error on a bad TOKEN (that would let a
-    -- caller probe) -- {"active": false} at 200 / empty 200. Their only failure is a bad CLIENT.
-    ("/oauth/introspect", [(401, ["invalid_client"]), (500, ["server_error"])]),
-    ("/oauth/revoke", [(401, ["invalid_client"]), (500, ["server_error"])])
-  ]
-
-oauthPaths :: [FilePath]
-oauthPaths = map fst oauthErrorResponsesByPath
-
--- | The RFC 6749 §5.2 error object, as a @components.schemas@ entry.
---
--- Deliberately NOT the @Problem@ schema. Must agree with 'Shomei.Servant.OAuth.oauthError',
--- which builds the runtime value.
-oauthErrorSchema :: O.Schema
-oauthErrorSchema =
-  mempty
-    & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
-    & O.description
-      ?~ "An RFC 6749 §5.2 error response. Endpoints under /oauth/* speak the OAuth2 wire \
-         \protocol, so they answer with this shape rather than the RFC 7807 problem document \
-         \every other Shōmei endpoint returns. Switch on `error`."
-    & O.properties
-      .~ IOHM.fromList
-        [ ("error", O.Inline (stringSchema & O.description ?~ "The machine-readable OAuth2 error code.")),
-          ("error_description", O.Inline (stringSchema & O.description ?~ "Human-readable explanation."))
-        ]
-    & O.required .~ ["error"]
-
--- | The response object for one OAuth status, narrowing @error@ to the codes it can carry.
-oauthErrorResponse :: [T.Text] -> O.Response
-oauthErrorResponse codes =
-  mempty
-    & O.description
-      .~ ("An RFC 6749 error response. The `error` member is one of: " <> T.intercalate ", " codes <> ".")
-    & O.content .~ IOHM.singleton "application/json" (mempty & O.schema ?~ O.Inline narrowed)
-  where
-    narrowed =
-      mempty
-        & O.allOf ?~ [O.Ref (O.Reference "OAuthError")]
-        & O.properties
-          .~ IOHM.singleton "error" (O.Inline (stringSchema & O.enum_ ?~ map String codes))
-
--- | Attach a problem-document response per distinct status an operation can fail with — except
--- on 'oauthPaths', which get RFC 6749 error objects instead.
-withErrorResponses :: O.OpenApi -> O.OpenApi
-withErrorResponses doc =
-  doc
-    & O.components . O.schemas . at "Problem" ?~ problemSchema
-    & O.components . O.schemas . at "OAuthError" ?~ oauthErrorSchema
-    & O.paths %~ imap decoratePath
-  where
-    decoratePath path item
-      | Just statuses <- lookup path oauthErrorResponsesByPath =
-          -- Never fall through to the problem-details decoration: a body-carrying operation here
-          -- would otherwise be documented with a problem+json 400 it cannot emit.
-          foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOAuthOp statuses) item allMethods
-    decoratePath path item =
-      foldl' (\acc m -> acc & methodLens m . _Just %~ decorateOp path m) item allMethods
-
-    decorateOAuthOp statuses op =
-      foldl' (\acc (status, codes) -> acc & at status ?~ O.Inline (oauthErrorResponse codes)) op statuses
-
-    decorateOp path m op =
-      foldl' addStatus op (byStatus (baselineSpecs op <> tabled path m))
-
-    tabled path m = concat [specs | (p, m', specs) <- routeErrors, p == path, m' == m]
-
-    addStatus op specs =
-      op & at (statusOf (NE.head specs)) ?~ O.Inline (problemResponse (NE.toList specs))
-
-    -- Response maps are keyed by 'O.HttpStatusCode' (openapi-hs >= 4.1), which can also
-    -- hold @1XX@..@5XX@ range keys; every Shōmei problem response is an explicit code.
-    statusOf :: ProblemSpec -> O.HttpStatusCode
-    statusOf = O.StatusCode . errHTTPCode . problemStatus
-
-    -- One response per status; a status shared by several codes lists them all.
-    byStatus :: [ProblemSpec] -> [NE.NonEmpty ProblemSpec]
-    byStatus = NE.groupBy (\a b -> statusOf a == statusOf b) . sortOn statusOf
-
--- | The response object for one status: the 'Problem' schema, narrowed to the codes this
--- operation can actually return.
---
--- The narrowing rides in @properties.code.enum@ rather than a @x-error-codes@ vendor
--- extension, because @openapi-hs@'s 'O.Response' has no extensions field (see Surprises) —
--- and because an @enum@ is standard JSON Schema that a client generator can turn into a
--- sum type, which is better than an extension anyway.
-problemResponse :: [ProblemSpec] -> O.Response
-problemResponse specs =
-  mempty
-    & O.description .~ description
-    & O.content .~ IOHM.singleton "application/problem+json" (mempty & O.schema ?~ O.Inline narrowed)
-  where
-    codes = nub [spec.problemCode | spec <- specs]
-    description =
-      "An RFC 7807 problem document. The `code` member is one of: "
-        <> T.intercalate ", " codes
-        <> "."
-    narrowed =
-      mempty
-        & O.allOf ?~ [O.Ref (O.Reference "Problem")]
-        & O.properties
-          .~ IOHM.singleton "code" (O.Inline (stringSchema & O.enum_ ?~ map String codes))
 
 -- ---------------------------------------------------------------------------
 -- Spec hygiene: the bits servant-openapi-hs cannot know
@@ -773,7 +501,6 @@ shomeiOpenApi =
       ?~ "Authentication, session, passkey, MFA, delegation, and token API for the Shōmei auth service."
     & O.servers .~ [localServer]
     & withOperationIds
-    & withErrorResponses
     & withSpecHygiene
   where
     localServer = ("http://localhost:8080" :: O.Server) & O.description ?~ "Local development server"

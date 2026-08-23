@@ -51,12 +51,14 @@ import Network.Wai
     requestMethod,
     responseStatus,
   )
+import Servant.Health.Paths (healthRawPaths)
 import Shomei.Config (LogFormat (..), ObservabilityConfig (..))
 import System.IO (Handle, stdout)
 
 requestLoggingMiddleware :: ObservabilityConfig -> Middleware
 requestLoggingMiddleware cfg app req respond
   | not cfg.requestLoggingEnabled = app req respond
+  | rawPathInfo req `elem` healthRawPaths = app req respond
   | otherwise = do
       reqId <- resolveRequestId req
       start <- getMonotonicTimeNSec

@@ -69,8 +69,11 @@ tests =
 
             -- Sign up + log in through the mounted /auth routes (via the real client).
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
-            _ <- expect "signup" =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "Dev"}
-            lr <- expect "login" =<< C.login cenv LoginRequest {loginId = email, password = password}
+            _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "Dev"}
+            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = email, password = password}
+            lr <- case loginResponse of
+              complete@LoginCompleteResponse {} -> pure complete
+              LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
 
             -- /projects with the Bearer token → 200.
             withTok <- getProjects mgr port lr.token.accessToken
@@ -99,8 +102,11 @@ getStatus mgr port path = do
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp))
 
-expect :: (Show e) => String -> Either e a -> IO a
-expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pure
+expectApplicationSuccess :: String -> Either C.ClientError (C.ApplicationResult a) -> IO a
+expectApplicationSuccess label = \case
+  Right (C.ApplicationSuccess value) -> pure value
+  Right _ -> assertFailure (label <> ": expected success, got an application failure")
+  Left err -> assertFailure (label <> ": transport failure: " <> show err)
 
 -- | Cheap Argon2 parameters for tests. This suite hashes and verifies real passwords, and the
 -- production cost (~100 ms per hash) would dominate its runtime. Hash strength is irrelevant

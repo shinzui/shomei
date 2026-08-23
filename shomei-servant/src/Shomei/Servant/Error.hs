@@ -2,16 +2,16 @@
 --
 -- Every failure Shōmei returns — from a workflow, from the auth handler, from an authorization
 -- combinator, from Servant's own request parser, from the rate-limit middleware — is an
--- __RFC 7807 problem document__ served as @application/problem+json@:
+-- __RFC 9457 problem document__ served as @application/problem+json@:
 --
 -- @
--- {"type":"about:blank","title":"Token is invalid","status":401,"code":"token_invalid"}
+-- {"type":"https://github.com/shinzui/shomei/blob/master/docs/user/problem-details.md#token_invalid",
+--  "title":"Token is invalid","status":401,"code":"token_invalid","retryable":false}
 -- @
 --
--- @type@ is always @about:blank@ (Shōmei hosts no error-documentation URLs). @title@ is stable
--- human text. @status@ mirrors the HTTP status. @code@ is the __machine key__ a client switches
--- on, and carries the same strings the pre-7807 @{"error":…}@ shape used. An optional @detail@
--- member carries request-specific text (a parse message, an offending role name).
+-- @type@ is the stable, dereferenceable primary identifier. @title@ is stable human text,
+-- @status@ mirrors the HTTP status, and @code@ and @retryable@ are Shōmei extensions. Optional
+-- @detail@ and @instance@ members describe a safe occurrence.
 --
 -- 'ProblemSpec' constants are the single source shared by the runtime mapping here and by the
 -- OpenAPI error documentation in "Shomei.Servant.OpenApi", so a status or title cannot drift
@@ -30,13 +30,23 @@
 -- disclosed, and 'InternalAuthError' carries no detail to the client.
 module Shomei.Servant.Error
   ( -- * The envelope
+    ProblemDetails (..),
+    ProblemJSON,
     ProblemSpec (..),
+    ProblemOccurrence (..),
+    noProblemOccurrence,
+    detailOccurrence,
+    bearerOccurrence,
+    retryAfterOccurrence,
+    problemTypeFor,
+    problemDetails,
     toProblemError,
     problemBody,
     problemHeaders,
 
     -- * The catalog
     problemCatalog,
+    authErrorProblem,
     authErrorToServerError,
 
     -- * Servant's built-in failures
@@ -106,11 +116,23 @@ module Shomei.Servant.Error
   )
 where
 
+import Control.Lens
+import Data.Aeson (FromJSON (..), Options (..), ToJSON (..), defaultOptions, eitherDecode, genericParseJSON, genericToJSON)
 import Data.Aeson qualified as Aeson
+import Data.HashMap.Strict.InsOrd.Compat qualified as IOHM
+import Data.OpenApi (NamedSchema (..), ToSchema (..))
+import Data.OpenApi qualified as O
+import Data.Proxy (Proxy (..))
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Network.HTTP.Media (MediaType)
 import Network.HTTP.Types.Header (Header)
+import Numeric.Natural (Natural)
 import Servant
-  ( ErrorFormatters (..),
+  ( Accept (..),
+    ErrorFormatters (..),
+    MimeRender (..),
+    MimeUnrender (..),
     ServerError (..),
     defaultErrorFormatters,
     err400,
@@ -154,8 +176,74 @@ err422 =
 -- The envelope
 -- ---------------------------------------------------------------------------
 
--- | One stable error kind: the machine 'problemCode', the HTTP status (carried as the Servant
--- base error it renders from), and the human 'problemTitle'.
+-- | RFC 9457 body plus Shōmei's stable extension members.
+data ProblemDetails = ProblemDetails
+  { problemType :: !Text,
+    title :: !Text,
+    status :: !Int,
+    detail :: !(Maybe Text),
+    problemInstance :: !(Maybe Text),
+    code :: !Text,
+    retryable :: !Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+problemJsonOptions :: Options
+problemJsonOptions =
+  defaultOptions
+    { fieldLabelModifier = \case
+        "problemType" -> "type"
+        "problemInstance" -> "instance"
+        field -> field,
+      omitNothingFields = True
+    }
+
+instance ToJSON ProblemDetails where
+  toJSON = genericToJSON problemJsonOptions
+
+instance FromJSON ProblemDetails where
+  parseJSON = genericParseJSON problemJsonOptions
+
+-- | The fixed media type for application errors.
+data ProblemJSON
+
+instance Accept ProblemJSON where
+  contentType _ = "application/problem+json" :: MediaType
+
+instance MimeRender ProblemJSON ProblemDetails where
+  mimeRender _ = Aeson.encode
+
+instance MimeUnrender ProblemJSON ProblemDetails where
+  mimeUnrender _ = eitherDecode
+
+instance ToSchema ProblemDetails where
+  declareNamedSchema _ = pure (NamedSchema (Just "ProblemDetails") problemDetailsSchema)
+
+problemDetailsSchema :: O.Schema
+problemDetailsSchema =
+  mempty
+    & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+    & O.description ?~ "RFC 9457 Problem Details with Shomei code and retryability extensions."
+    & O.properties
+      .~ IOHM.fromList
+        [ ("type", O.Inline (stringSchema & O.format ?~ "uri-reference")),
+          ("title", O.Inline stringSchema),
+          ("status", O.Inline (integerSchema & O.minimum_ ?~ 100 & O.maximum_ ?~ 599)),
+          ("detail", O.Inline stringSchema),
+          ("instance", O.Inline (stringSchema & O.format ?~ "uri-reference")),
+          ("code", O.Inline stringSchema),
+          ("retryable", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiBoolean))
+        ]
+    & O.required .~ ["type", "title", "status", "code", "retryable"]
+    & O.additionalProperties ?~ O.AdditionalPropertiesAllowed True
+
+stringSchema :: O.Schema
+stringSchema = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
+
+integerSchema :: O.Schema
+integerSchema = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger
+
+-- | One stable error kind shared by handler results and pre-handler rendering.
 --
 -- These constants are the SINGLE SOURCE shared by 'authErrorToServerError' below and by the
 -- OpenAPI error documentation, so the two cannot disagree about a status or a title.
@@ -163,40 +251,78 @@ data ProblemSpec = ProblemSpec
   { problemCode :: !Text,
     -- | the Servant base error; only its status and reason phrase are used
     problemStatus :: !ServerError,
-    problemTitle :: !Text
+    problemTitle :: !Text,
+    problemRetryable :: !Bool
   }
 
--- | The problem document for a spec, with an optional @detail@.
-problemBody :: ProblemSpec -> Maybe Text -> Aeson.Value
-problemBody spec mDetail =
-  Aeson.object
-    ( [ "type" Aeson..= ("about:blank" :: Text),
-        "title" Aeson..= spec.problemTitle,
-        "status" Aeson..= spec.problemStatus.errHTTPCode,
-        "code" Aeson..= spec.problemCode
-      ]
-        <> maybe [] (\d -> ["detail" Aeson..= d]) mDetail
-    )
+problemSpec :: Text -> ServerError -> Text -> ProblemSpec
+problemSpec problemCode problemStatus problemTitle =
+  ProblemSpec {problemCode, problemStatus, problemTitle, problemRetryable = False}
+
+retryableProblemSpec :: Text -> ServerError -> Text -> ProblemSpec
+retryableProblemSpec problemCode problemStatus problemTitle =
+  ProblemSpec {problemCode, problemStatus, problemTitle, problemRetryable = True}
+
+-- | Safe occurrence-specific data and optional response headers.
+data ProblemOccurrence = ProblemOccurrence
+  { occurrenceDetail :: !(Maybe Text),
+    instanceUri :: !(Maybe Text),
+    wwwAuthenticate :: !(Maybe Text),
+    retryAfterSeconds :: !(Maybe Natural)
+  }
+  deriving stock (Eq, Show, Generic)
+
+noProblemOccurrence :: ProblemOccurrence
+noProblemOccurrence = ProblemOccurrence Nothing Nothing Nothing Nothing
+
+detailOccurrence :: Text -> ProblemOccurrence
+detailOccurrence value = noProblemOccurrence {occurrenceDetail = Just value}
+
+bearerOccurrence :: ProblemOccurrence
+bearerOccurrence = noProblemOccurrence {wwwAuthenticate = Just "Bearer"}
+
+retryAfterOccurrence :: Natural -> ProblemOccurrence
+retryAfterOccurrence seconds = noProblemOccurrence {retryAfterSeconds = Just seconds}
+
+problemTypeFor :: Text -> Text
+problemTypeFor problemCode =
+  "https://github.com/shinzui/shomei/blob/master/docs/user/problem-details.md#" <> problemCode
+
+problemDetails :: ProblemSpec -> ProblemOccurrence -> ProblemDetails
+problemDetails spec occurrence =
+  ProblemDetails
+    { problemType = problemTypeFor spec.problemCode,
+      title = spec.problemTitle,
+      status = spec.problemStatus.errHTTPCode,
+      detail = occurrence.occurrenceDetail,
+      problemInstance = occurrence.instanceUri,
+      code = spec.problemCode,
+      retryable = spec.problemRetryable
+    }
+
+problemBody :: ProblemSpec -> ProblemOccurrence -> Aeson.Value
+problemBody spec = toJSON . problemDetails spec
 
 -- | The response headers a problem document carries at a given status.
 --
 -- A 401 advertises the scheme the client should use (RFC 6750 §3); a 429 tells the client how
 -- long to wait. The token bucket refills continuously, so 60 seconds is an honest upper bound
 -- for a full per-minute budget rather than an exact wait.
-problemHeaders :: ProblemSpec -> [Header]
-problemHeaders spec =
-  ("Content-Type", "application/problem+json")
-    : case spec.problemStatus.errHTTPCode of
-      401 -> [("WWW-Authenticate", "Bearer")]
-      429 -> [("Retry-After", "60")]
-      _ -> []
+problemHeaders :: ProblemOccurrence -> [Header]
+problemHeaders occurrence =
+  [("Content-Type", "application/problem+json")]
+    <> foldMap (\value -> [("WWW-Authenticate", encodeUtf8 value)]) occurrence.wwwAuthenticate
+    <> foldMap (\seconds -> [("Retry-After", showBytes seconds)]) occurrence.retryAfterSeconds
+  where
+    encodeUtf8 = TextEncoding.encodeUtf8
+    showBytes = encodeUtf8 . Text.pack . show
 
 -- | Render a spec as an RFC 7807 'ServerError'. 'Nothing' omits the @detail@ member.
-toProblemError :: ProblemSpec -> Maybe Text -> ServerError
-toProblemError spec mDetail =
+toProblemError :: ProblemSpec -> ProblemOccurrence -> ServerError
+toProblemError spec occurrence =
   spec.problemStatus
-    { errBody = Aeson.encode (problemBody spec mDetail),
-      errHeaders = problemHeaders spec
+    { errBody = Aeson.encode (problemDetails spec occurrence),
+      errHeaders = problemHeaders occurrence
     }
 
 -- ---------------------------------------------------------------------------
@@ -213,12 +339,12 @@ shomeiErrorFormatters :: ErrorFormatters
 shomeiErrorFormatters =
   defaultErrorFormatters
     { bodyParserErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBodyParseError (Just (Text.pack msg)),
+        toProblemError pcBodyParseError (detailOccurrence (Text.pack msg)),
       urlParseErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBadRequest (Just (Text.pack msg)),
+        toProblemError pcBadRequest (detailOccurrence (Text.pack msg)),
       headerParseErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBadRequest (Just (Text.pack msg)),
-      notFoundErrorFormatter = \_req -> toProblemError pcNotFound Nothing
+        toProblemError pcBadRequest (detailOccurrence (Text.pack msg)),
+      notFoundErrorFormatter = \_req -> toProblemError pcNotFound noProblemOccurrence
     }
 
 -- ---------------------------------------------------------------------------
@@ -230,125 +356,125 @@ shomeiErrorFormatters =
 -- @code@ instead.
 
 pcInvalidEmail, pcInvalidLoginId, pcWeakPassword :: ProblemSpec
-pcInvalidEmail = ProblemSpec "invalid_email" err400 "Email is not valid"
-pcInvalidLoginId = ProblemSpec "invalid_login_id" err400 "Login identifier is not valid"
-pcWeakPassword = ProblemSpec "weak_password" err400 "Password does not meet policy"
+pcInvalidEmail = problemSpec "invalid_email" err400 "Email is not valid"
+pcInvalidLoginId = problemSpec "invalid_login_id" err400 "Login identifier is not valid"
+pcWeakPassword = problemSpec "weak_password" err400 "Password does not meet policy"
 
 pcEmailTaken, pcLoginIdTaken :: ProblemSpec
-pcEmailTaken = ProblemSpec "email_taken" err409 "Email is already registered"
-pcLoginIdTaken = ProblemSpec "login_id_taken" err409 "Login identifier is already registered"
+pcEmailTaken = problemSpec "email_taken" err409 "Email is already registered"
+pcLoginIdTaken = problemSpec "login_id_taken" err409 "Login identifier is already registered"
 
 -- | The single generic answer for a wrong password, an unknown account, and a locked account.
 pcInvalidLogin :: ProblemSpec
-pcInvalidLogin = ProblemSpec "invalid_login" err401 "Invalid email or password"
+pcInvalidLogin = problemSpec "invalid_login" err401 "Invalid email or password"
 
 pcTooManyRequests :: ProblemSpec
-pcTooManyRequests = ProblemSpec "too_many_requests" err429 "Too many requests"
+pcTooManyRequests = retryableProblemSpec "too_many_requests" err429 "Too many requests"
 
 pcSessionNotFound, pcSessionExpired, pcSessionRevoked :: ProblemSpec
-pcSessionNotFound = ProblemSpec "session_not_found" err404 "Session not found"
-pcSessionExpired = ProblemSpec "session_expired" err401 "Session expired"
-pcSessionRevoked = ProblemSpec "session_revoked" err401 "Session revoked"
+pcSessionNotFound = problemSpec "session_not_found" err404 "Session not found"
+pcSessionExpired = problemSpec "session_expired" err401 "Session expired"
+pcSessionRevoked = problemSpec "session_revoked" err401 "Session revoked"
 
 pcRefreshTokenInvalid, pcRefreshTokenExpired, pcTokenReuse :: ProblemSpec
-pcRefreshTokenInvalid = ProblemSpec "token_invalid" err401 "Refresh token is invalid"
-pcRefreshTokenExpired = ProblemSpec "token_expired" err401 "Refresh token expired"
-pcTokenReuse = ProblemSpec "token_reuse" err401 "Refresh token reuse detected"
+pcRefreshTokenInvalid = problemSpec "token_invalid" err401 "Token is invalid"
+pcRefreshTokenExpired = problemSpec "token_expired" err401 "Refresh token expired"
+pcTokenReuse = problemSpec "token_reuse" err401 "Refresh token reuse detected"
 
 pcVerificationTokenInvalid, pcPasswordResetTokenInvalid, pcEmailAlreadyVerified :: ProblemSpec
-pcVerificationTokenInvalid = ProblemSpec "verification_token_invalid" err400 "Verification token is invalid"
-pcPasswordResetTokenInvalid = ProblemSpec "password_reset_token_invalid" err400 "Password reset token is invalid"
-pcEmailAlreadyVerified = ProblemSpec "email_already_verified" err409 "Email is already verified"
+pcVerificationTokenInvalid = problemSpec "verification_token_invalid" err400 "Verification token is invalid"
+pcPasswordResetTokenInvalid = problemSpec "password_reset_token_invalid" err400 "Password reset token is invalid"
+pcEmailAlreadyVerified = problemSpec "email_already_verified" err409 "Email is already verified"
 
 -- | 403, not 401: the credential WAS correct; the account is simply not yet eligible.
 pcEmailNotVerified :: ProblemSpec
-pcEmailNotVerified = ProblemSpec "email_not_verified" err403 "Email address is not verified"
+pcEmailNotVerified = problemSpec "email_not_verified" err403 "Email address is not verified"
 
 -- | The access token failed verification. Deliberately does not say why.
 pcTokenInvalid :: ProblemSpec
-pcTokenInvalid = ProblemSpec "token_invalid" err401 "Token is invalid"
+pcTokenInvalid = problemSpec "token_invalid" err401 "Token is invalid"
 
 pcPasskeyNotFound, pcCeremonyNotFound, pcWebAuthnFailed, pcMfaFailed :: ProblemSpec
-pcPasskeyNotFound = ProblemSpec "passkey_not_found" err404 "Passkey not found"
-pcCeremonyNotFound = ProblemSpec "ceremony_not_found" err404 "Registration ceremony not found or expired"
-pcWebAuthnFailed = ProblemSpec "webauthn_verification_failed" err400 "Passkey registration could not be verified"
-pcMfaFailed = ProblemSpec "mfa_failed" err401 "Multi-factor authentication failed"
+pcPasskeyNotFound = problemSpec "passkey_not_found" err404 "Passkey not found"
+pcCeremonyNotFound = problemSpec "ceremony_not_found" err404 "Registration ceremony not found or expired"
+pcWebAuthnFailed = problemSpec "webauthn_verification_failed" err400 "Passkey registration could not be verified"
+pcMfaFailed = problemSpec "mfa_failed" err401 "Multi-factor authentication failed"
 
 -- | EP-7 TOTP / recovery-code failures. The invalid-code specs are 401s that deliberately do
 -- not distinguish a wrong code from a replayed one from an absent credential.
 pcTotpDisabled, pcTotpAlreadyEnrolled, pcTotpEnrollmentNotFound, pcTotpCodeInvalid, pcRecoveryCodeInvalid :: ProblemSpec
-pcTotpDisabled = ProblemSpec "totp_disabled" err403 "TOTP is not enabled"
-pcTotpAlreadyEnrolled = ProblemSpec "totp_already_enrolled" err409 "A TOTP credential is already enrolled"
-pcTotpEnrollmentNotFound = ProblemSpec "totp_enrollment_not_found" err404 "No pending TOTP enrollment to verify"
-pcTotpCodeInvalid = ProblemSpec "totp_code_invalid" err401 "TOTP code is invalid"
-pcRecoveryCodeInvalid = ProblemSpec "recovery_code_invalid" err401 "Recovery code is invalid"
+pcTotpDisabled = problemSpec "totp_disabled" err403 "TOTP is not enabled"
+pcTotpAlreadyEnrolled = problemSpec "totp_already_enrolled" err409 "A TOTP credential is already enrolled"
+pcTotpEnrollmentNotFound = problemSpec "totp_enrollment_not_found" err404 "No pending TOTP enrollment to verify"
+pcTotpCodeInvalid = problemSpec "totp_code_invalid" err401 "TOTP code is invalid"
+pcRecoveryCodeInvalid = problemSpec "recovery_code_invalid" err401 "Recovery code is invalid"
 
 -- | EP-7: a sensitive self-service action (recovery-code regeneration) requires a recently issued
 -- access token. Raised by the HTTP layer's freshness gate, not by an 'AuthError'.
 pcReauthenticationRequired :: ProblemSpec
-pcReauthenticationRequired = ProblemSpec "reauthentication_required" err403 "Recent authentication required for this action"
+pcReauthenticationRequired = problemSpec "reauthentication_required" err403 "Recent authentication required for this action"
 
 pcImpersonationForbidden, pcImpersonationTargetInvalid, pcImpersonationActionBlocked :: ProblemSpec
-pcImpersonationForbidden = ProblemSpec "impersonation_forbidden" err403 "Not allowed to impersonate"
-pcImpersonationTargetInvalid = ProblemSpec "impersonation_target_invalid" err400 "Invalid impersonation target"
-pcImpersonationActionBlocked = ProblemSpec "impersonation_action_blocked" err403 "This action is not permitted while impersonating"
+pcImpersonationForbidden = problemSpec "impersonation_forbidden" err403 "Not allowed to impersonate"
+pcImpersonationTargetInvalid = problemSpec "impersonation_target_invalid" err400 "Invalid impersonation target"
+pcImpersonationActionBlocked = problemSpec "impersonation_action_blocked" err403 "This action is not permitted while impersonating"
 
 pcUserNotFound, pcRoleNotDefined, pcDependencyUnavailable, pcInternal :: ProblemSpec
-pcUserNotFound = ProblemSpec "user_not_found" err404 "User not found"
-pcRoleNotDefined = ProblemSpec "role_not_defined" err422 "Role not defined"
-pcDependencyUnavailable = ProblemSpec "dependency_unavailable" err503 "Required dependency unavailable"
-pcInternal = ProblemSpec "internal" err500 "Internal authentication error"
+pcUserNotFound = problemSpec "user_not_found" err404 "User not found"
+pcRoleNotDefined = problemSpec "role_not_defined" err422 "Role not defined"
+pcDependencyUnavailable = retryableProblemSpec "dependency_unavailable" err503 "Required dependency unavailable"
+pcInternal = problemSpec "internal" err500 "Internal authentication error"
 
 -- | EP-2's admin lifecycle. Both are 409s: the request was well-formed and authorized, but the
 -- target's state refuses it.
 pcInvalidUserStatus, pcUserHasNoEmail :: ProblemSpec
-pcInvalidUserStatus = ProblemSpec "invalid_user_status" err409 "User is not in a state that allows this action"
-pcUserHasNoEmail = ProblemSpec "user_has_no_email" err409 "User has no email address"
+pcInvalidUserStatus = problemSpec "invalid_user_status" err409 "User is not in a state that allows this action"
+pcUserHasNoEmail = problemSpec "user_has_no_email" err409 "User has no email address"
 
 -- Specs raised by the HTTP layer, with no 'AuthError' counterpart.
 
 -- | No credential was presented at all — distinct from one that failed verification.
 pcMissingToken :: ProblemSpec
-pcMissingToken = ProblemSpec "missing_token" err401 "Authentication required"
+pcMissingToken = problemSpec "missing_token" err401 "Authentication required"
 
 -- | The auth handler's invalid-token 401. Shares the @token_invalid@ code with 'pcTokenInvalid'
 -- and, like it, deliberately does not distinguish expired from forged from malformed.
 pcTokenInvalidAuth :: ProblemSpec
-pcTokenInvalidAuth = ProblemSpec "token_invalid" err401 "Token is invalid"
+pcTokenInvalidAuth = problemSpec "token_invalid" err401 "Token is invalid"
 
 pcMissingRole, pcMissingScope, pcMissingPermission, pcCsrfRejected :: ProblemSpec
-pcMissingRole = ProblemSpec "missing_role" err403 "Missing required role"
-pcMissingScope = ProblemSpec "missing_scope" err403 "Missing required scope"
+pcMissingRole = problemSpec "missing_role" err403 "Missing required role"
+pcMissingScope = problemSpec "missing_scope" err403 "Missing required scope"
 
 -- | EP-9: the @RequirePermission@ combinator's 403 — the token's @permissions@ claim does not
 -- contain the required capability. Distinct code from @missing_role@ so a client can tell a
 -- role-gated route from a permission-gated one.
-pcMissingPermission = ProblemSpec "missing_permission" err403 "Missing required permission"
+pcMissingPermission = problemSpec "missing_permission" err403 "Missing required permission"
 
-pcCsrfRejected = ProblemSpec "csrf_rejected" err403 "Origin not allowed for cookie-authenticated request"
+pcCsrfRejected = problemSpec "csrf_rejected" err403 "Origin not allowed for cookie-authenticated request"
 
 -- | A malformed or incomplete request the handler rejected; the @detail@ says what.
 pcBadRequest :: ProblemSpec
-pcBadRequest = ProblemSpec "bad_request" err400 "Bad request"
+pcBadRequest = problemSpec "bad_request" err400 "Bad request"
 
 -- | Servant could not parse the JSON request body; the @detail@ carries the parse message.
 pcBodyParseError :: ProblemSpec
-pcBodyParseError = ProblemSpec "body_parse_error" err400 "Request body could not be parsed"
+pcBodyParseError = problemSpec "body_parse_error" err400 "Request body could not be parsed"
 
 pcNotFound, pcMethodNotAllowed :: ProblemSpec
-pcNotFound = ProblemSpec "not_found" err404 "Resource not found"
-pcMethodNotAllowed = ProblemSpec "method_not_allowed" err405 "Method not allowed"
+pcNotFound = problemSpec "not_found" err404 "Resource not found"
+pcMethodNotAllowed = problemSpec "method_not_allowed" err405 "Method not allowed"
 
 -- | EP-2: an administrator tried to suspend or delete their own account. Refused so a single
 -- mistyped request cannot lock the last administrator out of a deployment; the @shomei-admin@ CLI
 -- on the box remains the escape hatch for genuinely removing one.
 pcSelfTargetForbidden :: ProblemSpec
-pcSelfTargetForbidden = ProblemSpec "self_target_forbidden" err403 "An administrator cannot perform this action on their own account"
+pcSelfTargetForbidden = problemSpec "self_target_forbidden" err403 "An administrator cannot perform this action on their own account"
 
 -- | EP-2: a role revocation named a role the user did not hold. A @404@ rather than a silent
 -- success, so a typo in the role name is visible.
 pcRoleNotGranted :: ProblemSpec
-pcRoleNotGranted = ProblemSpec "role_not_granted" err404 "User does not hold that role"
+pcRoleNotGranted = problemSpec "role_not_granted" err404 "User does not hold that role"
 
 -- | Every problem kind Shōmei can emit. The OpenAPI documentation is generated from this list,
 -- and a conformance test asserts every documented code appears here.
@@ -409,9 +535,10 @@ problemCatalog =
     pcRoleNotGranted
   ]
 
--- | The one mapping from a domain 'AuthError' to its wire representation.
-authErrorToServerError :: AuthError -> ServerError
-authErrorToServerError = \case
+-- | The one total mapping from a domain error to its application problem and occurrence.
+-- Returned handler results and thrown pre-handler errors deliberately share this function.
+authErrorProblem :: AuthError -> (ProblemSpec, ProblemOccurrence)
+authErrorProblem = \case
   InvalidEmail -> plain pcInvalidEmail
   InvalidLoginId -> plain pcInvalidLoginId
   WeakPassword _ -> plain pcWeakPassword
@@ -420,7 +547,7 @@ authErrorToServerError = \case
   InvalidCredentials -> plain pcInvalidLogin
   UserNotActive -> plain pcInvalidLogin
   AccountLocked -> plain pcInvalidLogin
-  TooManyRequests -> plain pcTooManyRequests
+  TooManyRequests -> (pcTooManyRequests, retryAfterOccurrence 60)
   SessionNotFound -> plain pcSessionNotFound
   SessionExpired -> plain pcSessionExpired
   SessionRevoked -> plain pcSessionRevoked
@@ -460,10 +587,16 @@ authErrorToServerError = \case
   UserNotFound -> plain pcUserNotFound
   -- The offending name is request-specific, so it belongs in 'detail', keeping 'title' stable
   -- for the OpenAPI catalog.
-  RoleNotDefined (Role r) -> toProblemError pcRoleNotDefined (Just r)
+  RoleNotDefined (Role r) -> (pcRoleNotDefined, detailOccurrence r)
   InvalidUserStatus -> plain pcInvalidUserStatus
   UserHasNoEmail -> plain pcUserHasNoEmail
   DependencyUnavailable _ -> plain pcDependencyUnavailable
   InternalAuthError _ -> plain pcInternal
   where
-    plain spec = toProblemError spec Nothing
+    plain spec = (spec, noProblemOccurrence)
+
+-- | Render a domain error at a pre-handler boundary.
+authErrorToServerError :: AuthError -> ServerError
+authErrorToServerError err =
+  let (spec, occurrence) = authErrorProblem err
+   in toProblemError spec occurrence

@@ -57,7 +57,7 @@ import Network.HTTP.Types (methodPost)
 import Network.Socket (SockAddr (..))
 import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
-import Shomei.Servant.Error (pcTooManyRequests)
+import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
 import Shomei.Servant.Middleware (problemResponse)
 
 -- | One bucket per client IP: current token level + last-refill time (POSIX seconds).
@@ -152,7 +152,7 @@ rateLimitMiddleware rl app req respond
     -- The same RFC 7807 document every other error path returns, with @Retry-After@. This
     -- answers before Servant ever routes the request, so it cannot go through the handler
     -- error mapping — it shares the catalog constant instead.
-    tooMany = problemResponse pcTooManyRequests Nothing
+    tooMany = problemResponse pcTooManyRequests (retryAfterOccurrence 60)
 
 -- | The unauthenticated POST endpoints the limiter guards. Authenticated routes (which carry
 -- a bearer token) are intentionally excluded.

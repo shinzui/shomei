@@ -6,6 +6,7 @@ module Shomei.OAuth.Handler
   )
 where
 
+import Control.Monad.Except (catchError)
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
@@ -14,26 +15,18 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
-import Network.HTTP.Types.Status (status400, status401, status404, status500)
+import Effectful (Eff)
+import Network.HTTP.Types.Status (status400, status401, status404, status500, status503)
 import Network.HTTP.Types.URI (renderSimpleQuery)
 import Network.Socket (SockAddr (..))
-import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, throwError)
+import Servant (Handler, ServerError (..), throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Email.Domain (emailText)
 import Shomei.Account.User.Domain (User (..))
 import Shomei.Account.User.Store (findUserById)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config (OAuthConfig (..), ShomeiConfig (..))
-import Shomei.Error
-  ( AuthError
-      ( ImpersonationForbidden,
-        ImpersonationTargetInvalid,
-        OAuthClientInvalid,
-        OAuthGrantInvalid,
-        OAuthRequestMalformed,
-        OAuthScopeInvalid
-      ),
-  )
+import Shomei.Error (AuthError (..))
 import Shomei.Id (idText)
 import Shomei.OAuth.Api (OAuthApi (..))
 import Shomei.OAuth.Authorize.Workflow qualified as OAuthAuthorize
@@ -41,13 +34,14 @@ import Shomei.OAuth.Client.Domain (OAuthClientStatus (..), isRegisteredRedirectU
 import Shomei.OAuth.Client.Domain qualified as OAuthClient
 import Shomei.OAuth.Client.Store (findOAuthClientByClientId)
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
+import Shomei.OAuth.Result
 import Shomei.OAuth.TokenExchange.Workflow qualified as TokenExchange
 import Shomei.OAuth.TokenGrant.Workflow qualified as OAuthTokenGrant
 import Shomei.Prelude
 import Shomei.Servant.Auth (AuthUser (..), resolveAuthUser)
 import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Oidc qualified as Oidc
-import Shomei.Servant.Seam (Env (..), runPort)
+import Shomei.Servant.Seam (AppEffects, Env (..), runPortResult)
 import Shomei.ServiceAccount.ClientCredentials.Workflow qualified as ClientCredentials
 import Shomei.ServiceAccount.Domain qualified as ServiceAccount
 import Shomei.ServiceAccount.Secret qualified as ServiceAccountSecret
@@ -66,12 +60,23 @@ import Web.FormUrlEncoded (Form)
 oauthServer :: Env -> OAuthApi (AsServerT Handler)
 oauthServer env =
   OAuthApi
-    { authorize = oauthAuthorizeH env,
-      token = oauthTokenH env,
-      userinfo = oauthUserinfoH env,
-      introspect = oauthIntrospectH env,
-      revoke = oauthRevokeH env
+    { authorize = \a b c d e f g h i j -> typedOAuth (oauthAuthorizeH env a b c d e f g h i j),
+      token = \authorization peer form -> typedOAuth (oauthTokenH env authorization peer form),
+      userinfo = \authorization cookie -> typedOAuth (oauthUserinfoH env authorization cookie),
+      introspect = \authorization form -> typedOAuth (oauthIntrospectH env authorization form),
+      revoke = \authorization form -> typedOAuth (oauthRevokeH env authorization form)
     }
+
+typedOAuth :: Handler a -> Handler (OAuthResult a)
+typedOAuth action = (OAuthSuccess <$> action) `catchError` (pure . oauthServerErrorResult)
+
+runOAuthPort :: Env -> Eff AppEffects a -> Handler a
+runOAuthPort env action = runPortResult env action >>= either (throwError . oauthInfrastructureError) pure
+
+oauthInfrastructureError :: AuthError -> ServerError
+oauthInfrastructureError = \case
+  DependencyUnavailable _ -> OAuth.oauthError status503 "temporarily_unavailable" "a required dependency is unavailable"
+  _ -> OAuth.oauthError status500 "server_error" "the authorization server encountered an unexpected condition"
 
 clientIpText :: SockAddr -> Text
 clientIpText = \case
@@ -84,8 +89,11 @@ clientIpText = \case
 -- With the provider disabled the answer is @404@ carrying an RFC 6749-shaped body, not a problem
 -- document: a client that reaches this URL is OIDC tooling, and it must fail on a shape it can
 -- parse. This is the same envelope boundary the @\/oauth\/*@ endpoints observe.
-oidcDiscoveryH :: Env -> Handler Value
-oidcDiscoveryH env
+oidcDiscoveryH :: Env -> Handler OidcDiscoveryResult
+oidcDiscoveryH env = typedOAuth (oidcDiscoveryValueH env)
+
+oidcDiscoveryValueH :: Env -> Handler Value
+oidcDiscoveryValueH env
   | env.config.oauthConfig.oidcEnabled = pure (Oidc.discoveryDocument env.config)
   | otherwise =
       throwError
@@ -128,7 +136,7 @@ oauthAuthorizeH ::
   Maybe Text ->
   Maybe Text ->
   Maybe Text ->
-  Handler (Headers '[Header "Location" Text, Header "Cache-Control" Text] NoContent)
+  Handler AuthorizeRedirect
 oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mScope mState mNonce mChallenge mChallengeMethod = do
   unless env.config.oauthConfig.oidcEnabled (throwError providerDisabled)
 
@@ -136,7 +144,7 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
   clientId <- maybe (throwError (oauthBadRequest "client_id is required")) pure mClientId
   redirectUri <- maybe (throwError (oauthBadRequest "redirect_uri is required")) pure mRedirectUri
   client <-
-    runPort env (findOAuthClientByClientId clientId)
+    runOAuthPort env (findOAuthClientByClientId clientId)
       >>= maybe (throwError (oauthBadRequest "unknown client_id")) pure
   -- A revoked client is refused exactly as an unknown one is, and neither may redirect.
   unless (client ^. #status == OAuthClientActive) (throwError (oauthBadRequest "unknown client_id"))
@@ -162,7 +170,7 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
       Just loginUrl -> redirectTo (loginUrl `withQuery` [("return_to", TE.encodeUtf8 (reconstructedAuthorizeUrl params clientId))])
       Nothing -> throwError (OAuth.oauthError status401 "login_required" "no authenticated user and no login URL is configured")
     Just user -> do
-      outcome <- runPort env (OAuthAuthorize.authorize env.config client user.authClaims params)
+      outcome <- runOAuthPort env (OAuthAuthorize.authorize env.config client user.authClaims params)
       case outcome of
         -- (2) The redirect regime: the client learns what it did wrong, at a URI we validated.
         Left e ->
@@ -195,7 +203,7 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
 
     -- `no-store` on every answer: a cached 302 would replay a one-time code out of the browser's
     -- history, and a cached error redirect would confuse a retry.
-    redirectTo loc = pure (addHeader loc (addHeader "no-store" NoContent))
+    redirectTo loc = pure (AuthorizeRedirect loc "no-store")
 
     -- Rebuilt from what this handler validated, never from a caller-supplied copy. The base is the
     -- issuer, which for an OIDC-enabled deployment IS the public base URL (boot enforces it).
@@ -243,7 +251,7 @@ oauthTokenH ::
   Maybe Text ->
   SockAddr ->
   Form ->
-  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+  Handler TokenSuccess
 oauthTokenH env mAuthHeader peer form =
   case OAuth.lookupParam "grant_type" form of
     Nothing -> throwError (OAuth.invalidRequest "grant_type is required")
@@ -258,7 +266,7 @@ clientCredentialsGrant ::
   Env ->
   Maybe Text ->
   Form ->
-  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+  Handler TokenSuccess
 clientCredentialsGrant env mAuthHeader form = do
   auth <- either throwError pure (OAuth.extractClientAuth mAuthHeader form)
   let grant =
@@ -267,7 +275,7 @@ clientCredentialsGrant env mAuthHeader form = do
             clientSecret = auth ^. #clientSecret,
             requestedScopes = OAuth.parseScopeParam form
           }
-  outcome <- runPort env (ClientCredentials.grantClientCredentials env.config grant)
+  outcome <- runOAuthPort env (ClientCredentials.grantClientCredentials env.config grant)
   granted <- either (throwError . oauthErrorFor) pure outcome
   -- Read through lens labels: 'GrantedToken' shares @accessToken@/@expiresIn@/@sessionId@ with
   -- Several grant result records share @accessToken@, so select the field through its label.
@@ -283,7 +291,7 @@ clientCredentialsGrant env mAuthHeader form = do
             idToken = Nothing,
             issuedTokenType = Nothing
           }
-  pure (addHeader "no-store" (addHeader "no-cache" body))
+  pure (TokenSuccess body "no-store" "no-cache")
 
 -- | RFC 6749 §4.1.3 with PKCE (RFC 7636). Redeem the code, mint access + refresh + (for @openid@)
 -- an ID token.
@@ -291,7 +299,7 @@ authorizationCodeGrant ::
   Env ->
   Maybe Text ->
   Form ->
-  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+  Handler TokenSuccess
 authorizationCodeGrant env mAuthHeader form = do
   (clientId, mSecret) <- oauthClientCredentials mAuthHeader form
   code <- requireParam "code" form
@@ -304,7 +312,7 @@ authorizationCodeGrant env mAuthHeader form = do
             redirectUri,
             codeVerifier = OAuth.lookupParam "code_verifier" form
           }
-  outcome <- runPort env (OAuthTokenGrant.exchangeAuthorizationCode env.config grant)
+  outcome <- runOAuthPort env (OAuthTokenGrant.exchangeAuthorizationCode env.config grant)
   exchanged <- either (throwError . grantError) pure outcome
   let AccessToken access = exchanged ^. #tokens . #accessToken
       RefreshToken refresh = exchanged ^. #tokens . #refreshToken
@@ -318,7 +326,7 @@ authorizationCodeGrant env mAuthHeader form = do
             idToken = (\(IdToken t) -> t) <$> exchanged ^. #idToken,
             issuedTokenType = Nothing
           }
-  pure (addHeader "no-store" (addHeader "no-cache" body))
+  pure (TokenSuccess body "no-store" "no-cache")
 
 -- | RFC 6749 §6, bound to the client that minted the session. Rotation and reuse detection are the
 -- existing workflow's; this arm adds only the client check.
@@ -326,7 +334,7 @@ refreshTokenGrant ::
   Env ->
   Maybe Text ->
   Form ->
-  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+  Handler TokenSuccess
 refreshTokenGrant env mAuthHeader form = do
   (clientId, mSecret) <- oauthClientCredentials mAuthHeader form
   presented <- requireParam "refresh_token" form
@@ -336,7 +344,7 @@ refreshTokenGrant env mAuthHeader form = do
             clientSecret = mSecret,
             refreshToken = RefreshToken presented
           }
-  outcome <- runPort env (OAuthTokenGrant.refreshViaOAuth env.config grant)
+  outcome <- runOAuthPort env (OAuthTokenGrant.refreshViaOAuth env.config grant)
   pair <- either (throwError . grantError) pure outcome
   -- Read through lens labels: 'TokenPair' shares @accessToken@/@refreshToken@/@expiresIn@ with
   -- 'OAuth.TokenResponse' and 'ExchangedTokens', so dot access is ambiguous here.
@@ -357,7 +365,7 @@ refreshTokenGrant env mAuthHeader form = do
             idToken = Nothing,
             issuedTokenType = Nothing
           }
-  pure (addHeader "no-store" (addHeader "no-cache" body))
+  pure (TokenSuccess body "no-store" "no-cache")
 
 -- | RFC 8693 token exchange (EP-6): the third grant on @POST \/oauth\/token@. Two modes selected by
 -- the parameters (see "Shomei.OAuth.TokenExchange.Workflow"):
@@ -375,7 +383,7 @@ tokenExchangeGrant ::
   Maybe Text ->
   SockAddr ->
   Form ->
-  Handler (Headers '[Header "Cache-Control" Text, Header "Pragma" Text] OAuth.TokenResponse)
+  Handler TokenSuccess
 tokenExchangeGrant env mAuthHeader peer form = do
   when (isJust (OAuth.lookupParam "resource" form)) $
     throwError (OAuth.invalidRequest "resource parameter not supported")
@@ -395,7 +403,7 @@ tokenExchangeGrant env mAuthHeader peer form = do
             clientIp = Just (clientIpText peer),
             authenticatedService = mSvc
           }
-  outcome <- runPort env (TokenExchange.exchangeToken env.config req)
+  outcome <- runOAuthPort env (TokenExchange.exchangeToken env.config req)
   exchanged <- either (throwError . exchangeErrorFor) pure outcome
   let AccessToken access = exchanged ^. #accessToken
       body =
@@ -410,7 +418,7 @@ tokenExchangeGrant env mAuthHeader peer form = do
             -- RFC 8693 §2.2.1 requires this member; Shōmei's exchange only ever issues access tokens.
             issuedTokenType = Just TokenExchange.accessTokenType
           }
-  pure (addHeader "no-store" (addHeader "no-cache" body))
+  pure (TokenSuccess body "no-store" "no-cache")
 
 -- | Resolve the /optional/ client authentication of a token-exchange request. Absent credentials →
 -- 'Nothing' (impersonation mode). Present credentials must resolve to an active service account and
@@ -420,7 +428,7 @@ resolveExchangeClient :: Env -> Maybe Text -> Form -> Handler (Maybe ServiceAcco
 resolveExchangeClient env mAuthHeader form =
   case OAuth.extractClientAuth mAuthHeader form of
     Right auth -> do
-      mAccount <- runPort env (findServiceAccountByClientId (auth ^. #clientId))
+      mAccount <- runOAuthPort env (findServiceAccountByClientId (auth ^. #clientId))
       case mAccount of
         Just acc | serviceAccountAuthenticates (auth ^. #clientSecret) acc -> pure (Just acc)
         _ -> throwError OAuth.invalidClient
@@ -475,16 +483,18 @@ grantError e = case OAuthTokenGrant.grantErrorCode e of
   "invalid_client" -> OAuth.invalidClient
   code -> OAuth.oauthError status400 code (OAuthTokenGrant.grantErrorDescription e)
 
--- | @GET \/oauth\/userinfo@ (OIDC Core §5.3). Bearer-protected by the ordinary 'Authenticated'
--- combinator, so its @401@s are the ordinary problem documents.
+-- | @GET \/oauth\/userinfo@ (OIDC Core §5.3). Authentication happens inside the protocol
+-- handler so a missing or invalid credential remains an OAuth @invalid_token@ response rather
+-- than crossing into the application Problem Details envelope.
 --
 -- Returns @sub@ (always), @roles@ and @scopes@ (from the presented token's claims, possibly empty
 -- before EP-1's enrichment lands), and @email@\/@email_verified@ when the user row has them. The
 -- roles\/scopes come from the verified claims, not a fresh store read: userinfo reports what /this
 -- token/ carries, which is what a relying party correlating it with the ID token expects.
-oauthUserinfoH :: Env -> AuthUser -> Handler Value
-oauthUserinfoH env user = do
-  mUser <- runPort env (findUserById user.authUserId)
+oauthUserinfoH :: Env -> Maybe Text -> Maybe Text -> Handler Value
+oauthUserinfoH env authorization cookie = do
+  user <- liftIO (resolveAuthUser env authorization cookie) >>= maybe (throwError OAuth.invalidToken) pure
+  mUser <- runOAuthPort env (findUserById user.authUserId)
   let base =
         [ "sub" Aeson..= idText user.authUserId,
           "roles" Aeson..= [r | Role r <- Set.toList user.authRoles],
@@ -515,12 +525,12 @@ oauthIntrospectH env mAuthHeader form = do
       -- would never verify as a JWT, so without the hint it would always look inactive.
       Just "refresh_token" -> introspectRefresh env presented
       _ -> do
-        verified <- runPort env (verifyAccessToken (AccessToken presented))
+        verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
         case verified of
           Left _ -> pure inactive
           Right claims -> do
-            mSession <- runPort env (findSessionById claims.sessionId)
-            now' <- runPort env now
+            mSession <- runOAuthPort env (findSessionById claims.sessionId)
+            now' <- runOAuthPort env now
             case mSession of
               Just s | sessionIsLive now' s -> pure (activeAccess claims s)
               -- The signature is fine but the session is gone or dead: to a resource server the
@@ -531,15 +541,15 @@ oauthIntrospectH env mAuthHeader form = do
 -- session's liveness.
 introspectRefresh :: Env -> Text -> Handler Value
 introspectRefresh env presented = do
-  tokHash <- runPort env (hashRefreshToken (RefreshToken presented))
-  mTok <- runPort env (findRefreshTokenByHash tokHash)
+  tokHash <- runOAuthPort env (hashRefreshToken (RefreshToken presented))
+  mTok <- runOAuthPort env (findRefreshTokenByHash tokHash)
   case mTok of
     Nothing -> pure inactive
     Just tok
       | (tok ^. #status) /= RefreshTokenActive -> pure inactive
       | otherwise -> do
-          mSession <- runPort env (findSessionById (tok ^. #sessionId))
-          now' <- runPort env now
+          mSession <- runOAuthPort env (findSessionById (tok ^. #sessionId))
+          now' <- runOAuthPort env now
           case mSession of
             Just s | sessionIsLive now' s -> pure (Aeson.object ["active" Aeson..= True, "token_type" Aeson..= ("refresh_token" :: Text)])
             _ -> pure inactive
@@ -551,33 +561,33 @@ introspectRefresh env presented = do
 -- keeps accepting that JWT until @exp@; under @VerifyTokenAndSession@ its next use is refused with
 -- @401 session_revoked@. An unknown token is not an error — RFC 7009 §2.2 forbids that, to stop
 -- probing — so this only ever raises on a failed client authentication.
-oauthRevokeH :: Env -> Maybe Text -> Form -> Handler NoContent
+oauthRevokeH :: Env -> Maybe Text -> Form -> Handler ()
 oauthRevokeH env mAuthHeader form = do
   authenticateOAuthCaller env mAuthHeader form
   case OAuth.lookupParam "token" form of
-    Nothing -> pure NoContent
+    Nothing -> pure ()
     Just presented -> do
-      now' <- runPort env now
-      tokHash <- runPort env (hashRefreshToken (RefreshToken presented))
-      mTok <- runPort env (findRefreshTokenByHash tokHash)
+      now' <- runOAuthPort env now
+      tokHash <- runOAuthPort env (hashRefreshToken (RefreshToken presented))
+      mTok <- runOAuthPort env (findRefreshTokenByHash tokHash)
       case mTok of
         -- A refresh token: revoke the family and the session it belongs to.
         Just tok -> do
-          runPort env do
+          runOAuthPort env do
             revokeRefreshTokenFamily (tok ^. #refreshTokenId) now'
             SessionStore.revokeSession (tok ^. #sessionId) now'
-          pure NoContent
+          pure ()
         -- Otherwise try to read it as an access JWT and revoke its session.
         Nothing -> do
-          verified <- runPort env (verifyAccessToken (AccessToken presented))
+          verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
           case verified of
             Right claims -> do
-              runPort env do
+              runOAuthPort env do
                 SessionStore.revokeSession claims.sessionId now'
                 revokeSessionRefreshTokens claims.sessionId now'
-              pure NoContent
+              pure ()
             -- Neither a known refresh token nor a valid access token: nothing to do, still 200.
-            Left _ -> pure NoContent
+            Left _ -> pure ()
 
 -- | Client-authenticate a caller of @\/oauth\/introspect@ or @\/oauth\/revoke@ against __either__ a
 -- confidential OAuth client or an EP-4 service account, both of which legitimately introspect.
@@ -591,7 +601,7 @@ authenticateOAuthCaller env mAuthHeader form = do
   let clientId = auth ^. #clientId
       secret = auth ^. #clientSecret
   ok <-
-    runPort env do
+    runOAuthPort env do
       mClient <- findOAuthClientByClientId clientId
       case mClient of
         Just client

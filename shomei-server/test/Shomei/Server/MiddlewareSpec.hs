@@ -23,12 +23,13 @@ import Data.Text qualified as T
 import Data.Word (Word64)
 import Network.HTTP.Types (statusCode)
 import Network.HTTP.Types.Status (status200)
-import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, responseLBS, responseStatus)
+import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, responseHeaders, responseLBS, responseStatus)
 import Network.Wai.Internal (ResponseReceived (..))
-import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultRateLimitConfig)
+import Servant.Health.Paths (healthRawPaths)
+import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultObservabilityConfig, defaultRateLimitConfig)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
-import Shomei.Server.Observability.Logging (emitLine, renderLogLine, serverErrorLine)
+import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.IO (BufferMode (LineBuffering), hClose, hSetBuffering, openTempFile)
@@ -56,7 +57,8 @@ tests =
         [ testRenderLogLineIsOneJsonLine,
           testPlainFormatStripsControlCharacters,
           testConcurrentWritersProduceIntactLines,
-          testServerErrorLineIsStructured
+          testServerErrorLineIsStructured,
+          testHealthRequestsSkipLogging
         ],
       testGroup
         "body limit"
@@ -204,6 +206,16 @@ testPlainFormatStripsControlCharacters = testCase "the plain format strips contr
   assertBool "line ends with a newline" ("\n" `BS.isSuffixOf` line)
   assertEqual "exactly one newline, at the end" 1 (BC.count '\n' line)
   assertEqual "no embedded quotes survive" 0 (BC.count '"' line)
+
+testHealthRequestsSkipLogging :: TestTree
+testHealthRequestsSkipLogging = testCase "health paths bypass request logging" do
+  let okApp _req respond = respond (responseLBS status200 [] "ok")
+  forM_ healthRawPaths \path -> do
+    let request = defaultRequest {rawPathInfo = path}
+    ResponseReceived <- requestLoggingMiddleware defaultObservabilityConfig okApp request \response -> do
+      lookup "X-Request-Id" (responseHeaders response) @?= Nothing
+      pure ResponseReceived
+    pure ()
 
 -- | A value carrying the two characters that could break the one-line contract.
 hostileFields :: [(Key, Value)]

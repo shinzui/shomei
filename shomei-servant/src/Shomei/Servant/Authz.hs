@@ -68,7 +68,7 @@ import Shomei.Authorization.Claims.Domain (Permission (..), Role (..), Scope (..
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))
-import Shomei.Servant.Error (pcMissingPermission, pcMissingRole, pcMissingScope, toProblemError)
+import Shomei.Servant.Error (noProblemOccurrence, pcMissingPermission, pcMissingRole, pcMissingScope, toProblemError)
 
 -- | Enforcing combinator: the route demands the named role. (The type parameter is named @r@,
 -- not @role@: under GHC2024 @RoleAnnotations@ is on, so @role@ is a context-sensitive keyword
@@ -116,9 +116,9 @@ requireScope scope u
 -- | The two 403 problem documents these combinators and guards raise. Shared so the type-level
 -- and handler-level paths cannot answer differently.
 missingRole, missingScope, missingPermission :: ServerError
-missingRole = toProblemError pcMissingRole Nothing
-missingScope = toProblemError pcMissingScope Nothing
-missingPermission = toProblemError pcMissingPermission Nothing
+missingRole = toProblemError pcMissingRole noProblemOccurrence
+missingScope = toProblemError pcMissingScope noProblemOccurrence
+missingPermission = toProblemError pcMissingPermission noProblemOccurrence
 
 -- | The @admin@ role, granted through the 'Shomei.Authorization.Role.Store' (a human administrator).
 adminRole :: Role

@@ -1,29 +1,53 @@
 -- | Account-owned HTTP routes.
-module Shomei.Account.Api (AccountApi (..)) where
+module Shomei.Account.Api
+  ( AccountApi (..),
+    SignupRoute,
+    VerifyEmailRequestRoute,
+    VerifyEmailConfirmRoute,
+    PasswordResetRequestRoute,
+    PasswordResetConfirmRoute,
+    PasswordChangeRoute,
+    MeRoute,
+  )
+where
 
 import Servant.API
+import Servant.API.MultiVerb (MultiVerb)
 import Shomei.Account.Dto
   ( ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
     PasswordResetRequest,
     SignupRequest,
-    SignupResponse,
     VerifyEmailRequest,
   )
-import Shomei.Account.User.Dto (UserResponse)
+import Shomei.Account.Result
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
-import Shomei.Servant.Cookie (WithCookies)
-import Shomei.Servant.PreHandler (CsrfProtected, RateLimited)
+import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
+import Shomei.Servant.Result (ApplicationContentTypes, BadRequestPreHandlerResponses)
+
+type SignupRoute = "signup" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] SignupRequest :> MultiVerb 'POST ApplicationContentTypes SignupResponses SignupResult
+
+type VerifyEmailRequestRoute = "verify-email" :> "request" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] VerifyEmailRequest :> MultiVerb 'POST ApplicationContentTypes VerifyEmailRequestResponses VerifyEmailRequestResult
+
+type VerifyEmailConfirmRoute = "verify-email" :> "confirm" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmEmailVerificationRequest :> MultiVerb 'POST ApplicationContentTypes VerifyEmailConfirmResponses VerifyEmailConfirmResult
+
+type PasswordResetRequestRoute = "password-reset" :> "request" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetRequestResponses PasswordResetRequestResult
+
+type PasswordResetConfirmRoute = "password-reset" :> "confirm" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmPasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetConfirmResponses PasswordResetConfirmResult
+
+type PasswordChangeRoute = "password" :> "change" :> Authenticated :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ChangePasswordRequest :> MultiVerb 'POST ApplicationContentTypes PasswordChangeResponses PasswordChangeResult
+
+type MeRoute = Authenticated :> "me" :> MultiVerb 'GET ApplicationContentTypes MeResponses MeResult
 
 data AccountApi mode = AccountApi
-  { signup :: mode :- "signup" :> RateLimited :> ReqBody '[JSON] SignupRequest :> Verb 'POST 201 '[JSON] (WithCookies SignupResponse),
-    verifyEmailRequest :: mode :- "verify-email" :> "request" :> RateLimited :> ReqBody '[JSON] VerifyEmailRequest :> Verb 'POST 202 '[JSON] NoContent,
-    verifyEmailConfirm :: mode :- "verify-email" :> "confirm" :> ReqBody '[JSON] ConfirmEmailVerificationRequest :> Post '[JSON] NoContent,
-    passwordResetRequest :: mode :- "password-reset" :> "request" :> RateLimited :> ReqBody '[JSON] PasswordResetRequest :> Verb 'POST 202 '[JSON] NoContent,
-    passwordResetConfirm :: mode :- "password-reset" :> "confirm" :> ReqBody '[JSON] ConfirmPasswordResetRequest :> Post '[JSON] NoContent,
-    passwordChange :: mode :- "password" :> "change" :> Authenticated :> CsrfProtected :> ReqBody '[JSON] ChangePasswordRequest :> PostNoContent,
-    me :: mode :- Authenticated :> "me" :> Get '[JSON] UserResponse
+  { signup :: mode :- SignupRoute,
+    verifyEmailRequest :: mode :- VerifyEmailRequestRoute,
+    verifyEmailConfirm :: mode :- VerifyEmailConfirmRoute,
+    passwordResetRequest :: mode :- PasswordResetRequestRoute,
+    passwordResetConfirm :: mode :- PasswordResetConfirmRoute,
+    passwordChange :: mode :- PasswordChangeRoute,
+    me :: mode :- MeRoute
   }
   deriving stock (Generic)

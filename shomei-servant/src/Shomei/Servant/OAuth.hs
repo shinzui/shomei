@@ -22,9 +22,11 @@
 module Shomei.Servant.OAuth
   ( -- * The RFC 6749 §5.2 error shape
     oauthError,
+    invalidToken,
     invalidClient,
     invalidRequest,
     unsupportedGrantType,
+    OAuthErrorResponse (..),
 
     -- * Client authentication (RFC 6749 §2.3.1)
     ClientAuth (..),
@@ -41,6 +43,7 @@ where
 
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Base64 qualified as B64
+import Data.OpenApi (ToSchema (..), fromAesonOptions, genericDeclareNamedSchema)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -54,6 +57,30 @@ import Web.FormUrlEncoded (Form, lookupUnique)
 -- ---------------------------------------------------------------------------
 -- Errors
 -- ---------------------------------------------------------------------------
+
+data OAuthErrorResponse = OAuthErrorResponse
+  { oauthErrorCode :: !Text,
+    oauthErrorDescription :: !Text
+  }
+  deriving stock (Generic, Eq, Show)
+
+oauthErrorOptions :: Aeson.Options
+oauthErrorOptions =
+  Aeson.defaultOptions
+    { Aeson.fieldLabelModifier = \case
+        "oauthErrorCode" -> "error"
+        "oauthErrorDescription" -> "error_description"
+        field -> field
+    }
+
+instance Aeson.ToJSON OAuthErrorResponse where
+  toJSON = Aeson.genericToJSON oauthErrorOptions
+
+instance Aeson.FromJSON OAuthErrorResponse where
+  parseJSON = Aeson.genericParseJSON oauthErrorOptions
+
+instance ToSchema OAuthErrorResponse where
+  declareNamedSchema = genericDeclareNamedSchema (fromAesonOptions oauthErrorOptions)
 
 -- | Render an RFC 6749 §5.2 error as a 'ServerError'.
 --
@@ -70,12 +97,7 @@ oauthError status code description =
     { errHTTPCode = statusCode status,
       errReasonPhrase = Text.unpack (TE.decodeUtf8 (statusMessage status)),
       errBody =
-        Aeson.encode
-          ( Aeson.object
-              [ "error" Aeson..= code,
-                "error_description" Aeson..= description
-              ]
-          ),
+        Aeson.encode (OAuthErrorResponse code description),
       errHeaders =
         [ ("Content-Type", "application/json"),
           ("Cache-Control", "no-store"),
@@ -89,6 +111,20 @@ oauthError status code description =
 -- produce this exact response. Nothing about which one occurred reaches the caller.
 invalidClient :: ServerError
 invalidClient = oauthError status401 "invalid_client" "client authentication failed"
+
+-- | OIDC UserInfo bearer authentication failure. Unlike client authentication at the token,
+-- introspection, and revocation endpoints, this challenge names the Bearer scheme and uses the
+-- RFC 6750 @invalid_token@ code.
+invalidToken :: ServerError
+invalidToken =
+  (oauthError status401 "invalid_token" "the access token is missing or invalid")
+    { errHeaders =
+        [ ("Content-Type", "application/json"),
+          ("Cache-Control", "no-store"),
+          ("Pragma", "no-cache"),
+          ("WWW-Authenticate", "Bearer realm=\"shomei\", error=\"invalid_token\"")
+        ]
+    }
 
 -- | A missing or malformed request parameter; @what@ names it.
 invalidRequest :: Text -> ServerError

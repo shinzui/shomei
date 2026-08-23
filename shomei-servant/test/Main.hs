@@ -82,6 +82,7 @@ import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issue
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
+import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InternalAuthError))
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..))
@@ -94,8 +95,9 @@ import Shomei.Prelude ((&), (.~), (^.))
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.Error (shomeiErrorFormatters)
+import Shomei.Servant.Error (ProblemDetails (..), problemTypeFor, shomeiErrorFormatters)
 import Shomei.Servant.Middleware (problemMiddleware)
+import Shomei.Servant.Result (ApplicationResult (ApplicationInternal, ApplicationUnavailable), ProblemWithRetryAfter (..), applicationError)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
@@ -1215,7 +1217,8 @@ assertProblem what expectedStatus expectedCode (status, hdrs, body) = do
   headerValue "Content-Type" hdrs @?= Just "application/problem+json"
   doc <- must (what <> ": body") body
   (dig ["code"] doc >>= asText) @?= Just expectedCode
-  (dig ["type"] doc >>= asText) @?= Just "about:blank"
+  (dig ["type"] doc >>= asText) @?= Just (problemTypeFor expectedCode)
+  assertBool (what <> ": has retryability") (isJust (dig ["retryable"] doc))
   assertBool (what <> ": has a title") (isJust (dig ["title"] doc))
   case dig ["status"] doc of
     Just (Number n) -> (round n :: Int) @?= expectedStatus
@@ -1257,7 +1260,9 @@ postForm mgr port path mBasic params = do
 assertOAuthError :: String -> Int -> Text -> RawResponse -> IO ()
 assertOAuthError what expectedStatus expectedCode (status, hdrs, body) = do
   assertEqual (what <> ": status") expectedStatus status
-  assertEqual (what <> ": content type") (Just "application/json") (headerValue "Content-Type" hdrs)
+  assertBool
+    (what <> ": JSON content type")
+    (maybe False ("application/json" `T.isPrefixOf`) (headerValue "Content-Type" hdrs))
   -- Never cached, error or not.
   assertEqual (what <> ": no-store") (Just "no-store") (headerValue "Cache-Control" hdrs)
   doc <- must (what <> ": body") body
@@ -1333,8 +1338,19 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
 tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
-    "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "same-prefix NamedRoutes dispatch every concept record to its distinct marker" $
+    "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
+    [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
+        case applicationError (DependencyUnavailable PostgreSQL) :: ApplicationResult () of
+          ApplicationUnavailable response -> do
+            response.retryProblem.status @?= 503
+            response.retryProblem.retryable @?= True
+          _ -> assertFailure "expected ApplicationUnavailable"
+        case applicationError (InternalAuthError "persisted value violated an invariant") :: ApplicationResult () of
+          ApplicationInternal problem -> do
+            problem.status @?= 500
+            problem.retryable @?= False
+          _ -> assertFailure "expected ApplicationInternal",
+      testCase "same-prefix NamedRoutes dispatch every concept record to its distinct marker" $
         testWithApplication (pure dispatchApp) dispatchScenario,
       testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
         e <- freshEnv
@@ -2247,8 +2263,13 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   idSub <- idTokenSub jwk idToken
   uiSub @?= idSub
   assertBool "userinfo carries scopes" (isJust (dig ["scopes"] ui))
-  (noTokenUi, _) <- getJSON mgr port "/oauth/userinfo" []
-  noTokenUi @?= 401
+  noTokenUi@(_, noTokenHeaders, _) <- getRaw mgr port "/oauth/userinfo" []
+  assertOAuthError "userinfo without a bearer token" 401 "invalid_token" noTokenUi
+  headerValue "WWW-Authenticate" noTokenHeaders
+    @?= Just "Bearer realm=\"shomei\", error=\"invalid_token\""
+  assertBool
+    "userinfo authentication failures stay outside the problem envelope"
+    (headerValue "Content-Type" noTokenHeaders /= Just "application/problem+json")
 
   -- introspection requires client auth; without it, 401.
   noAuth <- postForm mgr port "/oauth/introspect" Nothing [("token", Text.encodeUtf8 accessToken)]

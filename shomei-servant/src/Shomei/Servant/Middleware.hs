@@ -19,13 +19,13 @@ import Network.HTTP.Types (Status, mkStatus, statusCode)
 import Network.Wai (Middleware, Response, responseLBS, responseStatus)
 import Servant (ServerError (..))
 import Shomei.Prelude
-import Shomei.Servant.Error (ProblemSpec (..), pcMethodNotAllowed, problemBody, problemHeaders)
+import Shomei.Servant.Error (ProblemOccurrence, ProblemSpec (..), noProblemOccurrence, pcMethodNotAllowed, problemBody, problemHeaders)
 
 -- | Build a WAI response carrying a problem document. Used by this module and by the
 -- rate-limit middleware, which answers before Servant ever sees the request.
-problemResponse :: ProblemSpec -> Maybe Text -> Response
-problemResponse spec mDetail =
-  responseLBS (statusOf spec) (problemHeaders spec) (Aeson.encode (problemBody spec mDetail))
+problemResponse :: ProblemSpec -> ProblemOccurrence -> Response
+problemResponse spec occurrence =
+  responseLBS (statusOf spec) (problemHeaders occurrence) (Aeson.encode (problemBody spec occurrence))
 
 statusOf :: ProblemSpec -> Status
 statusOf spec = mkStatus spec.problemStatus.errHTTPCode (BS8.pack spec.problemStatus.errReasonPhrase)
@@ -36,5 +36,5 @@ problemMiddleware app req respond =
   app req \res ->
     respond
       if statusCode (responseStatus res) == 405
-        then problemResponse pcMethodNotAllowed Nothing
+        then problemResponse pcMethodNotAllowed noProblemOccurrence
         else res
