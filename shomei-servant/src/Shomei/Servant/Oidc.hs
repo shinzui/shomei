@@ -22,10 +22,10 @@ where
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as Text
+import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (ShomeiConfig (..), configSigningAlgorithm)
-import Shomei.Domain.Claims (Issuer (..))
-import Shomei.Domain.SigningKey (signingAlgorithmToText)
 import Shomei.Prelude
+import Shomei.SigningKey.Domain (signingAlgorithmToText)
 
 -- | The issuer with any trailing slashes removed, so @issuer <> "\/oauth\/token"@ never yields a
 -- doubled slash. OIDC compares @iss@ byte-for-byte, so the issuer itself is published verbatim in

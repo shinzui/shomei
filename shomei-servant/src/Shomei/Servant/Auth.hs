@@ -53,8 +53,8 @@ import Servant.Server.Experimental.Auth
     AuthServerData,
     mkAuthHandler,
   )
+import Shomei.Authorization.Claims.Domain (AuthClaims (..), Permission, Role, Scope)
 import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..), transportUsesCookies)
-import Shomei.Domain.Claims (AuthClaims (..), Permission, Role, Scope)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude

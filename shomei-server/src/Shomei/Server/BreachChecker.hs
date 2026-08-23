@@ -6,7 +6,7 @@
 -- shared TLS 'Manager' and a fixed per-call timeout (the EP-1 @breachCheckTimeoutMs@ policy).
 --
 -- Any transport error or timeout is caught and reported as 'BreachCheckUnavailable', leaving the
--- fail-open / fail-closed decision to 'Shomei.Workflow.Breach.enforceBreachPolicy'.
+-- fail-open / fail-closed decision to 'Shomei.Account.Password.Breach.Workflow.enforceBreachPolicy'.
 module Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp) where
 
 import Control.Exception (SomeException, try)
@@ -25,7 +25,7 @@ import Network.HTTP.Client
     responseTimeoutMicro,
   )
 import Network.HTTP.Types.Header (hUserAgent)
-import Shomei.Effect.PasswordBreachChecker
+import Shomei.Account.Password.Breach.Store
   ( BreachResult (..),
     PasswordBreachChecker (..),
     parseHibpResponse,

@@ -19,9 +19,9 @@
 -- permission on an undefined role.
 --
 -- @define@, @list-defined@, @allow@, @disallow@, and @show@ talk to the
--- 'Shomei.Effect.RoleStore.RoleStore' port directly: catalog metadata (including permission
+-- 'Shomei.Authorization.Role.Store.RoleStore' port directly: catalog metadata (including permission
 -- wiring) is not a security event, so they publish no audit event. @grant@ and @revoke@ go
--- through 'Shomei.Workflow.Roles', which audits them as @role_granted@ / @role_revoked@ with a
+-- through 'Shomei.Authorization.Role.Workflow', which audits them as @role_granted@ / @role_revoked@ with a
 -- @NULL@ actor (there is no authenticated admin on the box); a time-bound grant records its
 -- expiry in the @role_granted@ payload.
 module Shomei.Admin.Roles
@@ -44,11 +44,14 @@ import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Options.Applicative
+import Shomei.Account.User.Postgres (runUserStorePostgres)
+import Shomei.Account.User.Store (UserStore)
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Domain.Claims (Permission (..), Role (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
-import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.RoleStore
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher)
+import Shomei.Authorization.Claims.Domain (Permission (..), Role (..))
+import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
+import Shomei.Authorization.Role.Store
   ( RoleDefinition (..),
     RoleStore,
     allowPermission,
@@ -57,15 +60,12 @@ import Shomei.Effect.RoleStore
     listDefinedRoles,
     listPermissionsForRole,
   )
-import Shomei.Effect.UserStore (UserStore)
+import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom, rolesOf)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId, idText, parseId, userIdFromUUID)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.Database (Database, runDatabasePool)
-import Shomei.Postgres.RoleStore (runRoleStorePostgres)
-import Shomei.Postgres.UserStore (runUserStorePostgres)
-import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom, rolesOf)
+import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.Time.Postgres (runClockIO)
+import Shomei.Time.Store (Clock, now)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

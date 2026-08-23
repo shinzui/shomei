@@ -63,7 +63,7 @@ import Servant.Server.Internal
     runHandler,
     withRequest,
   )
-import Shomei.Domain.Claims (Permission (..), Role (..), Scope (..))
+import Shomei.Authorization.Claims.Domain (Permission (..), Role (..), Scope (..))
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))
@@ -114,7 +114,7 @@ missingRole = toProblemError pcMissingRole Nothing
 missingScope = toProblemError pcMissingScope Nothing
 missingPermission = toProblemError pcMissingPermission Nothing
 
--- | The @admin@ role, granted through the 'Shomei.Effect.RoleStore' (a human administrator).
+-- | The @admin@ role, granted through the 'Shomei.Authorization.Role.Store' (a human administrator).
 adminRole :: Role
 adminRole = Role "admin"
 

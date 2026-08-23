@@ -1,6 +1,6 @@
 -- | Pure, in-memory tests for the EP-2 brute-force lockout and per-IP failure throttle
--- ('Shomei.Workflow.login' abuse protection). Every case runs through
--- 'Shomei.Effect.InMemory.runInMemory' with no database or network, and asserts both the
+-- ('Shomei.Session.Authentication.Workflow.login' abuse protection). Every case runs through
+-- 'Shomei.Test.InMemory.runInMemory' with no database or network, and asserts both the
 -- returned 'Either' and the resulting lockout state read back from the 'World'.
 --
 -- The test config tightens the thresholds (3 failures per account, 5 per IP) so the loops are
@@ -13,17 +13,17 @@ import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Effectful (Eff, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpose, passthrough, send)
+import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
-import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, mkLoginId)
-import Shomei.Domain.Password (PlainPassword (..))
-import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
-import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
 import Shomei.Error (AuthError (..))
-import Shomei.Workflow (login, signup)
+import Shomei.Session.Authentication.Workflow (login, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore (..))
+import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

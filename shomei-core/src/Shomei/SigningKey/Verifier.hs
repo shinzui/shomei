@@ -1,0 +1,25 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeFamilies #-}
+
+-- | The token-verifier port: validating a signed 'AccessToken' back into 'AuthClaims'
+-- (real JWT/JWKS verification in EP-4).
+module Shomei.SigningKey.Verifier
+  ( TokenVerifier (..),
+    verifyAccessToken,
+  )
+where
+
+import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
+import Effectful.Dispatch.Dynamic (send)
+import Shomei.Authorization.Claims.Domain (AuthClaims)
+import Shomei.Error (TokenError)
+import Shomei.Session.Token.Domain (AccessToken)
+
+data TokenVerifier :: Effect where
+  VerifyAccessToken :: AccessToken -> TokenVerifier m (Either TokenError AuthClaims)
+
+type instance DispatchOf TokenVerifier = Dynamic
+
+verifyAccessToken :: (TokenVerifier :> es) => AccessToken -> Eff es (Either TokenError AuthClaims)
+verifyAccessToken = send . VerifyAccessToken

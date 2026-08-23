@@ -28,14 +28,14 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Either (isLeft)
 import Effectful (runEff)
 import Shomei.Config (defaultWebAuthnConfig)
-import Shomei.Domain.Passkey (UserHandle (..))
-import Shomei.Effect.WebAuthnCeremony
+import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
     beginAuthenticationCeremony,
     beginRegistrationCeremony,
     completeRegistrationCeremony,
   )
+import Shomei.Passkey.Domain (UserHandle (..))
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase)

@@ -6,8 +6,8 @@
 -- @AuthProtect "shomei-jwt"@ 'Context'. EP-5's handlers run in the smaller servant port
 -- stack ('Shomei.Servant.Seam.AppEffects'); they are bridged onto this server's larger
 -- PostgreSQL stack ('Shomei.Server.App.AppEffects') with @inject@ inside the seam env's
--- runner. Infrastructure failures (a 'Left' from 'runAppIO') become an IO exception (warp
--- returns 500); domain failures flow through EP-5's seam to the right status.
+-- runner. Infrastructure failures remain typed through the seam; domain failures flow
+-- through the same channel to the right status.
 module Shomei.Server.Boot
   ( main,
     application,
@@ -42,19 +42,20 @@ import Servant
     serveWithContext,
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
-import Shomei.Crypto (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
-import Shomei.Domain.Claims (Issuer (..), Role (..))
-import Shomei.Domain.LoginAttempt (AccountKey (..))
-import Shomei.Error (AuthError)
-import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
-import Shomei.Postgres.Database (runDatabasePool)
-import Shomei.Postgres.Maintenance (sweepOnce, sweepReportCounts)
-import Shomei.Postgres.Pool (acquirePool)
-import Shomei.Postgres.RoleStore (runRoleStorePostgres)
-import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
+import Shomei.Authorization.Claims.Domain (Issuer (..), Role (..))
+import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
+
+import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
+import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
+import Shomei.Error (AuthError)
+import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
+import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
+import Shomei.Persistence.Database.Postgres (runDatabasePool)
+import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
+import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.API (shomeiRoutesAPI)
 import Shomei.Servant.Auth (AuthUser, authHandler)
@@ -71,7 +72,7 @@ import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
-import Shomei.Workflow.Roles (undefinedDefaultRoles)
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
@@ -170,10 +171,10 @@ validateOidcIssuer cfg =
 -- Validating once here rather than on every signup keeps the hot path free of catalog reads and
 -- turns a config typo into an immediate, obvious startup failure instead of a stream of 500s on
 -- an endpoint nobody is watching. The registry is append-only, so a role validated here cannot
--- later disappear — which is why 'Shomei.Workflow.Roles.applyDefaultRoles' does not re-check.
+-- later disappear — which is why 'Shomei.Authorization.Role.Workflow.applyDefaultRoles' does not re-check.
 --
 -- An embedding host that sets @defaultRoles@ should call
--- 'Shomei.Workflow.Roles.undefinedDefaultRoles' the same way where it assembles its ports.
+-- 'Shomei.Authorization.Role.Workflow.undefinedDefaultRoles' the same way where it assembles its ports.
 validateDefaultRoles :: ShomeiConfig -> Env -> IO ()
 validateDefaultRoles cfg env = do
   outcome <-
@@ -371,8 +372,8 @@ authContext senv =
     :. EmptyContext
 
 -- | Build EP-5's seam 'Seam.Env' from this server's assembly 'Env'. The port runner
--- bridges EP-5's smaller stack onto the PostgreSQL stack with @inject@; an
--- infrastructure 'Left' is raised as an IO exception (warp → 500).
+-- bridges EP-5's smaller stack onto the PostgreSQL stack with @inject@ while preserving
+-- its typed error channel.
 seamEnv :: Env -> Seam.Env
 seamEnv env =
   Seam.Env
@@ -385,8 +386,5 @@ seamEnv env =
       Seam.accountKeyOf = AccountKey . sha256Hex
     }
   where
-    runPorts :: forall a. Eff Seam.AppEffects a -> IO a
-    runPorts act =
-      runAppIO env (inject act)
-        >>= either (\e -> ioError (userError ("shomei infrastructure error: " <> Text.unpack (tshow e)))) pure
-    tshow = Text.pack . show
+    runPorts :: forall a. Eff Seam.AppEffects a -> IO (Either AuthError a)
+    runPorts act = runAppIO env (inject act)

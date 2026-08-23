@@ -1,7 +1,7 @@
 -- | The house idiom for supervised background threads.
 --
 -- A /background thread/ here means a periodic maintenance task forked at server boot: the
--- expired-data sweeper ("Shomei.Postgres.Maintenance"), the signing-key reload
+-- expired-data sweeper ("Shomei.Persistence.Maintenance.Postgres"), the signing-key reload
 -- ("Shomei.Server.Keys"), and whatever later plans add. Every one of them wants the same
 -- three things, and none of them wants a supervisor hierarchy:
 --

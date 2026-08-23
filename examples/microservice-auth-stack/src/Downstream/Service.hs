@@ -80,11 +80,11 @@ import Servant.Server.Experimental.Auth
     AuthServerData,
     mkAuthHandler,
   )
+import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Config (ShomeiConfig)
-import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Id (UserId, idText)
-import Shomei.Jwt.Verify (verifyToken)
 import Shomei.Prelude hiding (Context)
+import Shomei.SigningKey.Verify.Jwt (verifyToken)
 import System.IO (stderr)
 
 -- | One cached fetch result. 'effectiveTtl' is the configured TTL unless the JWKS response

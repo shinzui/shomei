@@ -56,13 +56,7 @@ import Shomei.Config
     rpName,
     userVerification,
   )
-import Shomei.Domain.Passkey
-  ( PublicKeyBytes (..),
-    SignatureCounter (..),
-    UserHandle (..),
-    WebAuthnCredentialId (..),
-  )
-import Shomei.Effect.WebAuthnCeremony
+import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
     StoredCredentialForVerify (..),
@@ -70,6 +64,12 @@ import Shomei.Effect.WebAuthnCeremony
     VerifiedRegistration (..),
     WebAuthnCeremony (..),
     WebAuthnError (..),
+  )
+import Shomei.Passkey.Domain
+  ( PublicKeyBytes (..),
+    SignatureCounter (..),
+    UserHandle (..),
+    WebAuthnCredentialId (..),
   )
 import Time.System (dateCurrent)
 

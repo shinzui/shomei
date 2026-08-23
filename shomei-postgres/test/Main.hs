@@ -26,8 +26,27 @@ import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
-import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
-import Shomei.Crypto
+import Shomei.Account.Credential.Domain (Credential (..))
+import Shomei.Account.Credential.Postgres (runCredentialStorePostgres)
+import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
+import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+import Shomei.Account.Lifecycle.Workflow
+  ( ConfirmEmailVerification (..),
+    ConfirmPasswordReset (..),
+    RequestEmailVerification (..),
+    RequestPasswordReset (..),
+    confirmEmailVerification,
+    confirmPasswordReset,
+    requestEmailVerification,
+    requestPasswordReset,
+  )
+import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.Notification.Store (Notifier (..))
+import Shomei.Account.OneTimeToken.Domain (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
+import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
+import Shomei.Account.Password.Domain (PasswordHash (..), PlainPassword (..))
+import Shomei.Account.Password.Hash.Postgres
   ( Argon2Params (..),
     defaultArgon2Params,
     dummyHashFor,
@@ -39,142 +58,18 @@ import Shomei.Crypto
     verifyPasswordArgon2id,
     withHashingPermit,
   )
-import Shomei.Domain.AuthorizationCode (AuthorizationCode (..), NewAuthorizationCode (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
-import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.EventCodec (reconstructAuthEvent)
-import Shomei.Domain.IdTokenClaims (IdToken (..))
-import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
-import Shomei.Domain.LoginId (LoginId, loginIdText, mkLoginId)
-import Shomei.Domain.Notification (Notification (..))
-import Shomei.Domain.OAuthClient
-  ( ClientType (..),
-    NewOAuthClient (..),
-    OAuthClient (..),
-    OAuthClientStatus (..),
-  )
-import Shomei.Domain.OneTimeToken (OneTimeToken, OneTimeTokenHash (..), OneTimeTokenStatus (..))
-import Shomei.Domain.Passkey
-  ( CeremonyKind (..),
-    NewPasskeyCredential (..),
-    PasskeyCredential (..),
-    PendingCeremony (..),
-    PublicKeyBytes (..),
-    SignatureCounter (..),
-    UserHandle (..),
-    WebAuthnCredentialId (..),
-  )
-import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
-import Shomei.Domain.PasswordResetToken (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
-import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
-import Shomei.Domain.ServiceAccount (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
-import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (..))
-import Shomei.Domain.SigningKey (SigningKeyStatus (..), StoredSigningKey (..))
-import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
-import Shomei.Domain.Totp (NewRecoveryCode (..), NewTotpCredential (..), TotpCredential (..))
-import Shomei.Domain.User (NewUser (..), User (..), UserStatus (..))
-import Shomei.Domain.VerificationToken (NewVerificationToken (..), PersistedVerificationToken (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.AuthEventReader
-  ( AuditCursor (..),
-    AuditEventQuery (..),
-    AuthEventReader,
-    StoredAuthEvent (..),
-    countAuthEvents,
-    emptyAuditQuery,
-    queryAuthEvents,
-  )
-import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
-import Shomei.Effect.ClaimsEnricher (ClaimsEnricher, runClaimsEnricherNull)
-import Shomei.Effect.Clock (Clock (..), now)
-import Shomei.Effect.CredentialStore (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
-import Shomei.Effect.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
-import Shomei.Effect.LoginAttemptStore
-  ( LoginAttemptStore,
-    clearAccountLockout,
-    countRecentFailuresByAccount,
-    countRecentFailuresByIp,
-    getAccountLockout,
-    recordLoginAttempt,
-    setAccountLockout,
-  )
-import Shomei.Effect.Notifier (Notifier (..))
-import Shomei.Effect.OAuthClientStore
-  ( OAuthClientStore,
-    createOAuthClient,
-    findOAuthClientByClientId,
-    listOAuthClients,
-    revokeOAuthClient,
-  )
-import Shomei.Effect.OAuthCodeStore
-  ( OAuthCodeStore,
-    consumeAuthorizationCode,
-    deleteExpiredAuthorizationCodes,
-    putAuthorizationCode,
-  )
-import Shomei.Effect.PasskeyStore
-  ( PasskeyStore,
-    countPasskeysByUser,
-    createPasskey,
-    deletePasskey,
-    findPasskeyByCredentialId,
-    findPasskeysByUser,
-    findPasskeysByUserHandle,
-    updatePasskeySignCounter,
-  )
-import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
-import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPasswordDummy)
-import Shomei.Effect.PasswordResetTokenStore
+import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPasswordDummy)
+import Shomei.Account.PasswordReset.Domain (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
+import Shomei.Account.PasswordReset.Postgres (runPasswordResetTokenStorePostgres)
+import Shomei.Account.PasswordReset.Store
   ( PasswordResetTokenStore,
     createPasswordResetToken,
     findPasswordResetTokenByHash,
     markPasswordResetTokenConsumed,
   )
-import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
-import Shomei.Effect.RecoveryCodeStore
-  ( RecoveryCodeStore,
-    consumeRecoveryCode,
-    countUnusedRecoveryCodes,
-    replaceRecoveryCodes,
-  )
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
-import Shomei.Effect.RoleStore
-  ( RoleDefinition (..),
-    RoleStore,
-    allowPermission,
-    defineRole,
-    disallowPermission,
-    grantRole,
-    listDefinedRoles,
-    listPermissionsForRole,
-    listRolesForUser,
-    permissionsForRoles,
-    revokeRole,
-  )
-import Shomei.Effect.ServiceAccountStore
-  ( ServiceAccountStore,
-    createServiceAccount,
-    findServiceAccountByClientId,
-    listServiceAccounts,
-    revokeServiceAccount,
-    rotateServiceAccountSecret,
-  )
-import Shomei.Effect.SessionStore (SessionStore, createSession, findSessionById, listSessionsForUser, revokeSession)
-import Shomei.Effect.SigningKeyStore (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
-import Shomei.Effect.TokenGen (TokenGen, hashRefreshToken)
-import Shomei.Effect.TokenSigner (TokenSigner (..))
-import Shomei.Effect.TotpCredentialStore
-  ( TotpCredentialStore,
-    confirmTotp,
-    deleteTotpByUser,
-    findTotpByUser,
-    setTotpLastUsedCounter,
-    upsertTotpEnrollment,
-  )
-import Shomei.Effect.UserStore
+import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (..))
+import Shomei.Account.User.Postgres (runUserStorePostgres)
+import Shomei.Account.User.Store
   ( UserCursor (..),
     UserListQuery (..),
     UserStore,
@@ -187,63 +82,168 @@ import Shomei.Effect.UserStore
     markUserEmailVerified,
     updateUserStatus,
   )
-import Shomei.Effect.VerificationTokenStore
+import Shomei.Account.Verification.Domain (NewVerificationToken (..), PersistedVerificationToken (..))
+import Shomei.Account.Verification.Postgres (runVerificationTokenStorePostgres)
+import Shomei.Account.Verification.Store
   ( VerificationTokenStore,
     createVerificationToken,
     findVerificationTokenByHash,
     markVerificationTokenConsumed,
   )
-import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
-import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
+import Shomei.Audit.Event.Codec (reconstructAuthEvent)
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
+import Shomei.Audit.Reader.Postgres (runAuthEventReaderPostgres)
+import Shomei.Audit.Reader.Store
+  ( AuditCursor (..),
+    AuditEventQuery (..),
+    AuthEventReader,
+    StoredAuthEvent (..),
+    countAuthEvents,
+    emptyAuditQuery,
+    queryAuthEvents,
+  )
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
+import Shomei.Authorization.Claims.Store (ClaimsEnricher, runClaimsEnricherNull)
+import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
+import Shomei.Authorization.Role.Store
+  ( RoleDefinition (..),
+    RoleStore,
+    allowPermission,
+    defineRole,
+    disallowPermission,
+    grantRole,
+    listDefinedRoles,
+    listPermissionsForRole,
+    listRolesForUser,
+    permissionsForRoles,
+    revokeRole,
+  )
+import Shomei.Authorization.Role.Workflow (grantRoleTo)
+import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
+import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
+import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
+import Shomei.Mfa.RecoveryCode.Store
+  ( RecoveryCodeStore,
+    consumeRecoveryCode,
+    countUnusedRecoveryCodes,
+    replaceRecoveryCodes,
+  )
+import Shomei.Mfa.Totp.Algorithm (TotpSecret (..))
+import Shomei.Mfa.Totp.Domain (NewRecoveryCode (..), NewTotpCredential (..), TotpCredential (..))
+import Shomei.Mfa.Totp.Postgres
+  ( TotpEncryptionKey,
+    runTotpCredentialStorePostgres,
+    totpEncryptionKeyFromBytes,
+  )
+import Shomei.Mfa.Totp.Store
+  ( TotpCredentialStore,
+    confirmTotp,
+    deleteTotpByUser,
+    findTotpByUser,
+    setTotpLastUsedCounter,
+    upsertTotpEnrollment,
+  )
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
-import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
-import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.CredentialStore (runCredentialStorePostgres)
-import Shomei.Postgres.Database (Database (..), runDatabasePool)
-import Shomei.Postgres.LoginAttemptStore (runLoginAttemptStorePostgres)
-import Shomei.Postgres.Maintenance
+import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
+import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
+import Shomei.OAuth.AuthorizationCode.Store
+  ( OAuthCodeStore,
+    consumeAuthorizationCode,
+    deleteExpiredAuthorizationCodes,
+    putAuthorizationCode,
+  )
+import Shomei.OAuth.Client.Domain
+  ( ClientType (..),
+    NewOAuthClient (..),
+    OAuthClient (..),
+    OAuthClientStatus (..),
+  )
+import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
+import Shomei.OAuth.Client.Store
+  ( OAuthClientStore,
+    createOAuthClient,
+    findOAuthClientByClientId,
+    listOAuthClients,
+    revokeOAuthClient,
+  )
+import Shomei.OAuth.IdToken.Domain (IdToken (..))
+import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
+import Shomei.Passkey.Ceremony.Postgres (runPendingCeremonyStorePostgres)
+import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
+import Shomei.Passkey.Domain
+  ( CeremonyKind (..),
+    NewPasskeyCredential (..),
+    PasskeyCredential (..),
+    PendingCeremony (..),
+    PublicKeyBytes (..),
+    SignatureCounter (..),
+    UserHandle (..),
+    WebAuthnCredentialId (..),
+  )
+import Shomei.Passkey.Postgres (runPasskeyStorePostgres)
+import Shomei.Passkey.Store
+  ( PasskeyStore,
+    countPasskeysByUser,
+    createPasskey,
+    deletePasskey,
+    findPasskeyByCredentialId,
+    findPasskeysByUser,
+    findPasskeysByUserHandle,
+    updatePasskeySignCounter,
+  )
+import Shomei.Persistence.Database.Postgres (Database (..), runDatabasePool)
+import Shomei.Persistence.Maintenance.Postgres
   ( SweepConfig (..),
     SweepReport (..),
     defaultSweepConfig,
     emptySweepReport,
     sweepOnce,
   )
-import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
-import Shomei.Postgres.OAuthCodeStore (runOAuthCodeStorePostgres)
-import Shomei.Postgres.PasskeyStore (runPasskeyStorePostgres)
-import Shomei.Postgres.PasswordResetTokenStore (runPasswordResetTokenStorePostgres)
-import Shomei.Postgres.PendingCeremonyStore (runPendingCeremonyStorePostgres)
-import Shomei.Postgres.Pool (acquirePool)
-import Shomei.Postgres.RecoveryCodeStore (runRecoveryCodeStorePostgres)
-import Shomei.Postgres.RefreshTokenStore (runRefreshTokenStorePostgres)
-import Shomei.Postgres.RoleStore (runRoleStorePostgres)
-import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
-import Shomei.Postgres.SessionStore (runSessionStorePostgres)
-import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
-import Shomei.Postgres.TotpCredentialStore
-  ( TotpEncryptionKey,
-    runTotpCredentialStorePostgres,
-    totpEncryptionKeyFromBytes,
+import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
+import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
+import Shomei.ServiceAccount.Store
+  ( ServiceAccountStore,
+    createServiceAccount,
+    findServiceAccountByClientId,
+    listServiceAccounts,
+    revokeServiceAccount,
+    rotateServiceAccountSecret,
   )
-import Shomei.Postgres.UserStore (runUserStorePostgres)
-import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
-import Shomei.Totp (TotpSecret (..))
-import Shomei.Workflow (login, refresh, signup)
-import Shomei.Workflow.Account
-  ( ConfirmEmailVerification (..),
-    ConfirmPasswordReset (..),
-    RequestEmailVerification (..),
-    RequestPasswordReset (..),
-    confirmEmailVerification,
-    confirmPasswordReset,
-    requestEmailVerification,
-    requestPasswordReset,
+import Shomei.Session.Authentication.Workflow (login, refresh, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
+import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
+import Shomei.Session.LoginAttempt.Store
+  ( LoginAttemptStore,
+    clearAccountLockout,
+    countRecentFailuresByAccount,
+    countRecentFailuresByIp,
+    getAccountLockout,
+    recordLoginAttempt,
+    setAccountLockout,
   )
-import Shomei.Workflow.Roles (grantRoleTo)
-import Shomei.Workflow.Session (buildEnrichedClaims)
+import Shomei.Session.Postgres (runSessionStorePostgres)
+import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
+import Shomei.Session.RefreshToken.Postgres (runRefreshTokenStorePostgres)
+import Shomei.Session.RefreshToken.Store (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
+import Shomei.Session.Store (SessionStore, createSession, findSessionById, listSessionsForUser, revokeSession)
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
+import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
+import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
+import Shomei.Session.Workflow (buildEnrichedClaims)
+import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
+import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
+import Shomei.SigningKey.Signer (TokenSigner (..))
+import Shomei.SigningKey.Store (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
+import Shomei.Test.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
+import Shomei.Time.Postgres (runClockIO)
+import Shomei.Time.Store (Clock (..), now)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -439,8 +439,8 @@ execSql pool sql = do
   res <- Pool.use pool (Session.script sql)
   either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
 
--- | Unwrap the @Either UsageError@ that 'sweepOnce' returns.
-expectSweep :: Either Pool.UsageError SweepReport -> IO SweepReport
+-- | Unwrap the typed dependency result that 'sweepOnce' returns.
+expectSweep :: Either AuthError SweepReport -> IO SweepReport
 expectSweep = either (\e -> assertFailure ("sweep failed: " <> show e)) pure
 
 -- | A scalar @count(*)@ (or any single-bigint) query, run directly against the pool.
@@ -594,9 +594,9 @@ testRoleGrants =
     secondRevoke @?= False
     remaining @?= Set.singleton (Role "auditor")
 
--- | The database enforces both foreign keys, so code that bypasses 'Shomei.Workflow.Roles'
--- still cannot create a dangling grant. The raw port surfaces the violation as
--- 'InternalAuthError'; the workflow catches both cases first and returns a typed error.
+-- | The database enforces both foreign keys, so code that bypasses 'Shomei.Authorization.Role.Workflow'
+-- still cannot create a dangling grant. Hasql command failures cross the adapter boundary as
+-- 'DependencyUnavailable'; the workflow catches both cases first and returns a typed error.
 testRoleGrantForeignKeys :: TestTree
 testRoleGrantForeignKeys =
   testCase "role grants: FKs reject undefined roles and unknown users; workflow pre-checks" $ withDb \pool -> do
@@ -609,14 +609,14 @@ testRoleGrantForeignKeys =
     rawUndefinedRole <- runApp pool do
       ts <- now
       grantRole uid (Role "nosuchrole") Nothing Nothing ts
-    expectInternalError "grant of an undefined role" rawUndefinedRole
+    expectDependencyError "grant of an undefined role" rawUndefinedRole
 
     -- Raw port, unknown user: the shomei_role_grants.user_id FK fires.
     ghost <- genUserId
     rawUnknownUser <- runApp pool do
       ts <- now
       grantRole ghost (Role "admin") Nothing Nothing ts
-    expectInternalError "grant to a nonexistent user" rawUnknownUser
+    expectDependencyError "grant to a nonexistent user" rawUnknownUser
 
     -- The workflow refuses both BEFORE touching the table, with typed errors.
     workflowUndefinedRole <- runApp pool (grantRoleTo Nothing Nothing uid (Role "nosuchrole"))
@@ -635,9 +635,9 @@ testRoleGrantForeignKeys =
     events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'role_granted'"
     events @?= 1
   where
-    expectInternalError what = \case
-      Left (InternalAuthError _) -> pure ()
-      Left e -> assertFailure (what <> ": expected InternalAuthError, got " <> show e)
+    expectDependencyError what = \case
+      Left (DependencyUnavailable PostgreSQL) -> pure ()
+      Left e -> assertFailure (what <> ": expected PostgreSQL dependency failure, got " <> show e)
       Right _ -> assertFailure (what <> ": expected the foreign key to reject it")
 
 -- | The claims path end to end over the real store: a role granted through the workflow shows
@@ -690,7 +690,8 @@ testRolePermissions =
     afterDisallow @?= Set.singleton (Permission "tickets:read")
 
 -- | The @shomei_role_permissions.role@ FK rejects attaching a permission to an undefined role,
--- exactly as the grants FK rejects granting one. The raw port surfaces it as 'InternalAuthError'.
+-- exactly as the grants FK rejects granting one. The raw port surfaces the Hasql command
+-- failure as 'DependencyUnavailable PostgreSQL'.
 testRolePermissionForeignKey :: TestTree
 testRolePermissionForeignKey =
   testCase "role permissions: allow on an undefined role hits the FK" $ withDb \pool -> do
@@ -698,8 +699,8 @@ testRolePermissionForeignKey =
       ts <- now
       allowPermission (Role "nosuchrole") (Permission "tickets:write") ts
     case res of
-      Left (InternalAuthError _) -> pure ()
-      Left e -> assertFailure ("expected InternalAuthError, got " <> show e)
+      Left (DependencyUnavailable PostgreSQL) -> pure ()
+      Left e -> assertFailure ("expected PostgreSQL dependency failure, got " <> show e)
       Right _ -> assertFailure "expected the FK to reject a permission on an undefined role"
 
 -- | Time-bound grants (EP-9): a grant with an expiry drops out of 'listRolesForUser' as of an
@@ -1817,7 +1818,7 @@ testArgon2MalformedHashesVerifyFalse =
 -- verifying a real hash costs, or response time reveals whether an account exists. This is
 -- asserted structurally — same embedded parameters — rather than with a stopwatch, because
 -- equal parameters mean equal Argon2 work by construction, and a wall-clock assertion would
--- be flaky. ('Shomei.Workflow.TimingSpec' asserts the complementary property: that every
+-- be flaky. ('Shomei.Session.Authentication.TimingSpec' asserts the complementary property: that every
 -- login path performs exactly one such operation.)
 testArgon2DummyHashTracksConfiguredParams :: TestTree
 testArgon2DummyHashTracksConfiguredParams =

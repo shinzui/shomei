@@ -38,31 +38,31 @@ library
   import:          warnings, shared
   hs-source-dirs:  src
   exposed-modules:
-    Shomei.Crypto
-    Shomei.Postgres.AuthEventPublisher
-    Shomei.Postgres.AuthEventReader
-    Shomei.Postgres.AuthUnitOfWork
-    Shomei.Postgres.Clock
-    Shomei.Postgres.Codec
-    Shomei.Postgres.CredentialStore
-    Shomei.Postgres.Database
-    Shomei.Postgres.LoginAttemptStore
-    Shomei.Postgres.Maintenance
-    Shomei.Postgres.OAuthClientStore
-    Shomei.Postgres.OAuthCodeStore
-    Shomei.Postgres.PasskeyStore
-    Shomei.Postgres.PasswordResetTokenStore
-    Shomei.Postgres.PendingCeremonyStore
-    Shomei.Postgres.Pool
-    Shomei.Postgres.RecoveryCodeStore
-    Shomei.Postgres.RefreshTokenStore
-    Shomei.Postgres.RoleStore
-    Shomei.Postgres.ServiceAccountStore
-    Shomei.Postgres.SessionStore
-    Shomei.Postgres.SigningKeyStore
-    Shomei.Postgres.TotpCredentialStore
-    Shomei.Postgres.UserStore
-    Shomei.Postgres.VerificationTokenStore
+    Shomei.Account.Credential.Postgres
+    Shomei.Account.Password.Hash.Postgres
+    Shomei.Account.PasswordReset.Postgres
+    Shomei.Account.User.Postgres
+    Shomei.Account.Verification.Postgres
+    Shomei.Audit.Publisher.Postgres
+    Shomei.Audit.Reader.Postgres
+    Shomei.Authorization.Role.Postgres
+    Shomei.Mfa.RecoveryCode.Postgres
+    Shomei.Mfa.Totp.Postgres
+    Shomei.OAuth.AuthorizationCode.Postgres
+    Shomei.OAuth.Client.Postgres
+    Shomei.Passkey.Ceremony.Postgres
+    Shomei.Passkey.Postgres
+    Shomei.Persistence.Codec.Postgres
+    Shomei.Persistence.Database.Postgres
+    Shomei.Persistence.Maintenance.Postgres
+    Shomei.Persistence.Pool.Postgres
+    Shomei.ServiceAccount.Postgres
+    Shomei.Session.LoginAttempt.Postgres
+    Shomei.Session.Postgres
+    Shomei.Session.RefreshToken.Postgres
+    Shomei.Session.UnitOfWork.Postgres
+    Shomei.SigningKey.Postgres
+    Shomei.Time.Postgres
 
   build-depends:
     , aeson

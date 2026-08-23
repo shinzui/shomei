@@ -1,0 +1,62 @@
+-- | PostgreSQL interpreter for the 'AuthEventPublisher' port. Each 'AuthEvent' arm is
+-- projected to (user_id?, session_id?, event_type, JSON payload, occurredAt) and inserted
+-- into @shomei_auth_events@.
+module Shomei.Audit.Publisher.Postgres
+  ( runAuthEventPublisherPostgres,
+
+    -- * Statement shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Session.UnitOfWork.Postgres@ can lift it into a transaction with
+    --     @Hasql.Transaction.statement@ instead of restating the SQL.
+    AuthEventRow,
+    insertAuthEventStmt,
+  )
+where
+
+import Contravariant.Extras (contrazip6)
+import Data.Aeson (Value)
+import Data.UUID (UUID)
+import Data.UUID.V4 qualified as UUIDv4
+import Effectful (Eff, IOE, (:>))
+import Effectful.Dispatch.Dynamic (interpret_)
+import Effectful.Error.Static (Error, throwError)
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+import Hasql.Session qualified as Session
+import Hasql.Statement (Statement, preparable)
+import Shomei.Audit.Event.Codec (projectAuthEvent)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher (..))
+import Shomei.Error (AuthError (..))
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Prelude
+
+type AuthEventRow = (UUID, Maybe UUID, Maybe UUID, Text, Value, UTCTime)
+
+runAuthEventPublisherPostgres ::
+  (Database :> es, IOE :> es, Error AuthError :> es) =>
+  Eff (AuthEventPublisher : es) a ->
+  Eff es a
+runAuthEventPublisherPostgres = interpret_ \case
+  PublishAuthEvent ev -> do
+    eid <- liftIO UUIDv4.nextRandom
+    let (mUser, mSession, etype, payload, ts) = projectAuthEvent ev
+    res <- runSession (Session.statement (eid, mUser, mSession, etype, payload, ts) insertAuthEventStmt)
+    either (throwError . postgresUnavailable) (const (pure ())) res
+
+insertAuthEventStmt :: Statement AuthEventRow ()
+insertAuthEventStmt =
+  preparable
+    """
+    INSERT INTO shomei.shomei_auth_events
+      (event_id, user_id, session_id, event_type, payload, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    """
+    ( contrazip6
+        (E.param (E.nonNullable E.uuid))
+        (E.param (E.nullable E.uuid))
+        (E.param (E.nullable E.uuid))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.jsonb))
+        (E.param (E.nonNullable E.timestamptz))
+    )
+    D.noResult

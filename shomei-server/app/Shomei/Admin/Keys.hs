@@ -3,7 +3,7 @@
 -- publishable-key read used to build a JWKS during rotation.
 --
 -- Key state is read and written with binary-local @hasql@ statements rather than the
--- 'Shomei.Effect.SigningKeyStore' effect, because (a) the effect's @ListActiveSigningKeys@ only
+-- 'Shomei.SigningKey.Store' effect, because (a) the effect's @ListActiveSigningKeys@ only
 -- returns @active@ keys, but rotation needs to publish @active@ AND @retired@ keys, and (b) a CLI
 -- benefits from one consistent, explicit SQL style with no effect-stack assembly. We deliberately
 -- do NOT reuse @shomei-jwt@'s MasterPlan-1 @rotateSigningKey@ (which inserts new keys directly as
@@ -33,15 +33,15 @@ import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
-import Shomei.Domain.SigningKey (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
-import Shomei.Jwt.Key (generateSigningKeyFor, toStoredSigningKeyFor)
-import Shomei.Jwt.KeyProtection
+import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText, tshow)
+import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
+import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.SigningKey.Protection.Jwt
   ( KeyEncryptionKey,
     decryptPrivateJwk,
     encryptPrivateJwk,
     protectStoredSigningKey,
   )
-import Shomei.Postgres.Codec (signingKeyStatusFromText, signingKeyStatusToText, tshow)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
@@ -176,7 +176,7 @@ rebuild r = either (\e -> die ("corrupt key row: " <> Text.unpack e)) pure (rebu
 rebuildMaybe :: Maybe KeyRow -> IO (Maybe StoredSigningKey)
 rebuildMaybe = traverse rebuild
 
--- Row mapping and statements (mirror Shomei.Postgres.SigningKeyStore) ---------
+-- Row mapping and statements (mirror Shomei.SigningKey.Postgres) ---------
 
 type KeyRow = (Text, Text, Text, Text, Text, UTCTime, Maybe UTCTime, Maybe UTCTime)
 

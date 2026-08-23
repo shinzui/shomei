@@ -1,8 +1,8 @@
 {-# LANGUAGE DataKinds #-}
 
--- | Pure tests for the in-memory 'Shomei.Effect.PasskeyStore' and
--- 'Shomei.Effect.PendingCeremonyStore' interpreters
--- ('Shomei.Effect.InMemory.runPasskeyStore' / 'runPendingCeremonyStore').
+-- | Pure tests for the in-memory 'Shomei.Passkey.Store' and
+-- 'Shomei.Passkey.Ceremony.Store' interpreters
+-- ('Shomei.Test.InMemory.runPasskeyStore' / 'runPendingCeremonyStore').
 --
 -- They prove the persistence contract EP-3/EP-4 build on, against the fake 'World':
 -- a credential can be created and found three ways (by user, by credential id, by user
@@ -17,7 +17,9 @@ import Data.IORef (IORef, newIORef)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
-import Shomei.Domain.Passkey
+import Shomei.Id (CeremonyId, PasskeyId, UserId, genCeremonyId, genUserId)
+import Shomei.Passkey.Ceremony.Store (putPendingCeremony, takePendingCeremony)
+import Shomei.Passkey.Domain
   ( CeremonyKind (..),
     NewPasskeyCredential (..),
     PasskeyCredential (..),
@@ -27,8 +29,7 @@ import Shomei.Domain.Passkey
     UserHandle (..),
     WebAuthnCredentialId (..),
   )
-import Shomei.Effect.InMemory (World, emptyWorld, runInMemory)
-import Shomei.Effect.PasskeyStore
+import Shomei.Passkey.Store
   ( countPasskeysByUser,
     createPasskey,
     deletePasskey,
@@ -37,8 +38,7 @@ import Shomei.Effect.PasskeyStore
     findPasskeysByUserHandle,
     updatePasskeySignCounter,
   )
-import Shomei.Effect.PendingCeremonyStore (putPendingCeremony, takePendingCeremony)
-import Shomei.Id (CeremonyId, PasskeyId, UserId, genCeremonyId, genUserId)
+import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 

@@ -1,8 +1,8 @@
 module Shomei.BreachSpec (tests) where
 
 import Data.Text qualified as Text
-import Shomei.Domain.Password (PlainPassword (..))
-import Shomei.Effect.PasswordBreachChecker (parseHibpResponse, sha1PrefixSuffix)
+import Shomei.Account.Password.Breach.Store (parseHibpResponse, sha1PrefixSuffix)
+import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Prelude
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))

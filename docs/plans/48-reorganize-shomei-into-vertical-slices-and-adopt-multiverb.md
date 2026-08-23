@@ -101,7 +101,12 @@ The finished behavior is visible without reading the implementation:
   cleanup effect, and their tests/documentation. Renamed MFA and machine-token configuration,
   made key encryption mandatory throughout server/admin/examples, regenerated the exact
   41-path/45-operation OpenAPI artifact, and passed the affected build and serial tests.
-- [ ] Milestone 2: reorganize `shomei-core`, `shomei-postgres`, and JWT support by concept.
+- [x] (2026-08-23) Milestone 2: moved the core domain, ports, workflows, PostgreSQL
+  interpreters, JWT mechanics, and their tests to concept-first modules with role-last leaf
+  names; removed every old layer-first module path; added typed PostgreSQL dependency failures;
+  preserved them through `runAppIO` and the Servant seam; retained internal errors only for
+  persisted-value reconstruction; and passed the full workspace build plus all 228 core, 56
+  PostgreSQL, and 44 JWT tests serially.
 - [ ] Milestone 3: split DTOs, handlers, and route records into vertical HTTP slices.
 - [ ] Milestone 4: introduce typed problem details and selective MultiVerb result types.
 - [ ] Milestone 5: update OpenAPI derivation, the Haskell client, assemblies, and examples.
@@ -243,6 +248,14 @@ The finished behavior is visible without reading the implementation:
   `shomei-jwt` in their test `build-depends`; production startup and admin key generation instead
   use the required `SHOMEI_KEY_ENCRYPTION_KEY` loader.
 
+- Observation: the previous IO-shaped Servant runner erased the distinction between a known
+  database failure and an unexpected process fault after the PostgreSQL interpreter had already
+  produced an `AuthError`.
+  Evidence: `runAppIO` already returned `IO (Either AuthError a)`, but `seamEnv` converted the
+  `Left` to `IOException`. The seam runner now retains `Either AuthError`, flattens workflow
+  errors explicitly, and allows ordinary handlers and readiness to distinguish
+  `DependencyUnavailable PostgreSQL` from `InternalAuthError` without exception recovery.
+
 
 ## Decision Log
 
@@ -251,6 +264,15 @@ The finished behavior is visible without reading the implementation:
   Rationale: this follows `haskell-jitsurei/patterns/api/servant-routes.md` without creating circular
   dependencies between domain, persistence, and transport.
   Date: 2026-07-24.
+
+- Decision: Name moved modules concept-first and role-last, including
+  `Shomei.Passkey.{Domain,Store,Workflow,Postgres}` and
+  `Shomei.SigningKey.{Sign,Verify,...}.Jwt`; use small `Shomei.Persistence.*.Postgres` and
+  `Shomei.Time.*` support modules for infrastructure that genuinely spans concepts.
+  Rationale: this makes ownership visible without inventing a broad concept re-export or moving
+  PostgreSQL/JWT dependencies into core, and it removes all old layer-first aliases while Cabal
+  continues to enforce the architectural dependency direction.
+  Date: 2026-08-23.
 
 - Decision: Replace the single flat `ShomeiAPI` record with a thin hierarchy of per-concept
   `NamedRoutes` records. Several fields may mount records under the same `"v1" :> "auth"` or

@@ -67,24 +67,47 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
+import Shomei.Account.Email.Domain (emailText, mkEmail)
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
+import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Account.User.Domain (User (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
+import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
+import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
-import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
-import Shomei.Domain.Command (SignupCommand (..))
-import Shomei.Domain.Email (emailText, mkEmail)
-import Shomei.Domain.LoginAttempt (AccountKey (..))
-import Shomei.Domain.LoginId (mkLoginId)
-import Shomei.Domain.Notification (Notification (..))
-import Shomei.Domain.OAuthClient (ClientType (..), NewOAuthClient (..))
-import Shomei.Domain.OneTimeToken (OneTimeToken (..))
-import Shomei.Domain.Passkey (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
-import Shomei.Domain.Password (PlainPassword (..))
-import Shomei.Domain.ServiceAccount (NewServiceAccount (..))
-import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
-import Shomei.Domain.Token (AccessToken (..))
-import Shomei.Domain.User (User (..))
-import Shomei.Effect.Clock (now)
-import Shomei.Effect.InMemory
+import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
+import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
+import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..))
+import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
+import Shomei.OAuth.Client.Store (createOAuthClient)
+import Shomei.OAuth.TokenExchange.Workflow (tokenExchangeSubjectScope)
+import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
+import Shomei.Passkey.Domain (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
+import Shomei.Prelude ((&), (.~), (^.))
+import Shomei.Servant.API (ShomeiRoutes)
+import Shomei.Servant.Auth (AuthUser, authHandler)
+import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
+import Shomei.Servant.DTO (UserResponse)
+import Shomei.Servant.Error (shomeiErrorFormatters)
+import Shomei.Servant.Handlers (shomeiRoutes)
+import Shomei.Servant.Middleware (problemMiddleware)
+import Shomei.Servant.Seam (AppEffects, Env (..))
+import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
+import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.ServiceAccount.Store (createServiceAccount)
+import Shomei.Session.Authentication.Workflow qualified as Wf
+import Shomei.Session.Command (SignupCommand (..))
+import Shomei.Session.Domain (Session (..), SessionStatus (SessionRevoked))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
+import Shomei.Session.Store (revokeAllUserSessions)
+import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.SigningKey.Jwks.Jwt (KeySet (..), jwksDocument, keySetPublicJwks)
+import Shomei.SigningKey.Key.Jwt (generateSigningKey)
+import Shomei.SigningKey.Sign.Jwt (runTokenSignerJwt, signAccessToken)
+import Shomei.SigningKey.Verify.Jwt (runTokenVerifierJwt)
+import Shomei.Test.InMemory
   ( World (..),
     emptyWorld,
     runAuthEventPublisher,
@@ -115,30 +138,7 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
-import Shomei.Effect.OAuthClientStore (createOAuthClient)
-import Shomei.Effect.RoleStore (allowPermission, defineRole, disallowPermission)
-import Shomei.Effect.ServiceAccountStore (createServiceAccount)
-import Shomei.Effect.SessionStore (revokeAllUserSessions)
-import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
-import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
-import Shomei.Jwt.Key (generateSigningKey)
-import Shomei.Jwt.Sign (runTokenSignerJwt, signAccessToken)
-import Shomei.Jwt.Verify (runTokenVerifierJwt)
-import Shomei.Prelude ((&), (.~), (^.))
-import Shomei.Servant.API (ShomeiRoutes)
-import Shomei.Servant.Auth (AuthUser, authHandler)
-import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.DTO (UserResponse)
-import Shomei.Servant.Error (shomeiErrorFormatters)
-import Shomei.Servant.Handlers (shomeiRoutes)
-import Shomei.Servant.Middleware (problemMiddleware)
-import Shomei.Servant.Seam (AppEffects, Env (..))
-import Shomei.ServiceAccount.Secret (sha256Hex)
-import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
-import Shomei.Workflow qualified as Wf
-import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
-import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
-import Shomei.Workflow.TokenExchange (tokenExchangeSubjectScope)
+import Shomei.Time.Store (now)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -252,7 +252,7 @@ parseUserId t =
 
 -- | Revoke every session of a user straight against the in-memory world the server is running on,
 -- without going through HTTP. This is what an administrator's suspend does
--- ('Shomei.Workflow.Admin.suspendUser' calls the very same port operation), so a scenario that
+-- ('Shomei.Account.Admin.Workflow.suspendUser' calls the very same port operation), so a scenario that
 -- uses it is reproducing the real incident, not an artificial one.
 revokeAllSessionsOf :: IORef World -> Text -> IO ()
 revokeAllSessionsOf ref userIdText = do
@@ -380,7 +380,7 @@ main = do
   -- its own env: tasty runs cases in parallel, so sharing one World IORef races.
   let mkEnvWith cfg' r =
         Env
-          { runPorts = runHybrid r jwk jwkset cfg',
+          { runPorts = fmap Right . runHybrid r jwk jwkset cfg',
             config = cfg',
             jwksJson = pure (fromMaybe (Object KM.empty) (decode (jwksDocument [jwk]))),
             accountKeyOf = AccountKey

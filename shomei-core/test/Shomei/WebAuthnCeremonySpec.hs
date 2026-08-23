@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 
 -- | Pure tests for the deterministic fake 'WebAuthnCeremony' interpreter
--- ('Shomei.Effect.InMemory.runWebAuthnCeremonyFake'). They prove the contract EP-3/EP-4
+-- ('Shomei.Test.InMemory.runWebAuthnCeremonyFake'). They prove the contract EP-3/EP-4
 -- rely on: a begin step emits an options blob carrying a deterministic challenge, and a
 -- complete step succeeds when the test echoes that challenge back inside a crafted
 -- credential JSON (and fails closed on a mismatch). No cryptography or database is
@@ -16,16 +16,9 @@ import Data.IORef (newIORef)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (runEff)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig, defaultWebAuthnConfig)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Passkey
-  ( PublicKeyBytes (..),
-    SignatureCounter (..),
-    UserHandle (..),
-    WebAuthnCredentialId (..),
-  )
-import Shomei.Effect.InMemory (emptyWorld, runWebAuthnCeremonyFake)
-import Shomei.Effect.WebAuthnCeremony
+import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
     StoredCredentialForVerify (..),
@@ -37,6 +30,13 @@ import Shomei.Effect.WebAuthnCeremony
     completeAuthenticationCeremony,
     completeRegistrationCeremony,
   )
+import Shomei.Passkey.Domain
+  ( PublicKeyBytes (..),
+    SignatureCounter (..),
+    UserHandle (..),
+    WebAuthnCredentialId (..),
+  )
+import Shomei.Test.InMemory (emptyWorld, runWebAuthnCeremonyFake)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 

@@ -29,12 +29,12 @@ library
   import:          warnings, shared
   hs-source-dirs:  src
   exposed-modules:
-    Shomei.Jwt.Jwks
-    Shomei.Jwt.Key
-    Shomei.Jwt.KeyProtection
-    Shomei.Jwt.Rotation
-    Shomei.Jwt.Sign
-    Shomei.Jwt.Verify
+    Shomei.SigningKey.Jwks.Jwt
+    Shomei.SigningKey.Key.Jwt
+    Shomei.SigningKey.Protection.Jwt
+    Shomei.SigningKey.Rotation.Jwt
+    Shomei.SigningKey.Sign.Jwt
+    Shomei.SigningKey.Verify.Jwt
 
   build-depends:
     , aeson
@@ -60,15 +60,15 @@ test-suite shomei-jwt-test
   hs-source-dirs: test
   main-is:        Main.hs
   other-modules:
-    Shomei.Jwt.IdTokenSpec
-    Shomei.Jwt.InterpreterSpec
-    Shomei.Jwt.JwksSpec
-    Shomei.Jwt.KeyProtectionSpec
-    Shomei.Jwt.KeySpec
-    Shomei.Jwt.RotationSpec
-    Shomei.Jwt.RsaCustomClaimSpec
-    Shomei.Jwt.SignVerifySpec
-    Shomei.Jwt.TestSupport
+    Shomei.SigningKey.Interpreter.JwtSpec
+    Shomei.SigningKey.Jwks.JwtSpec
+    Shomei.SigningKey.Key.JwtSpec
+    Shomei.SigningKey.Protection.JwtSpec
+    Shomei.SigningKey.Rotation.JwtSpec
+    Shomei.SigningKey.Sign.IdTokenSpec
+    Shomei.SigningKey.Sign.JwtSpec
+    Shomei.SigningKey.Sign.RsaCustomClaimSpec
+    Shomei.SigningKey.TestSupport
 
   build-depends:
     , aeson

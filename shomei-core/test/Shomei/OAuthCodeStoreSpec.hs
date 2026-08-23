@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 
--- | Pure tests for the in-memory 'Shomei.Effect.OAuthCodeStore' interpreter and for
--- 'Shomei.Workflow.OAuthAuthorize.authorize', the policy the authorize endpoint enforces.
+-- | Pure tests for the in-memory 'Shomei.OAuth.AuthorizationCode.Store' interpreter and for
+-- 'Shomei.OAuth.Authorize.Workflow.authorize', the policy the authorize endpoint enforces.
 --
 -- The store's contract is consume-once: a code is redeemable exactly once, never after it
 -- expires, and a replay is indistinguishable from an unknown code. Those three misses are what
@@ -22,27 +22,27 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Data.UUID qualified as UUID
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
-import Shomei.Domain.AuthorizationCode (AuthorizationCode (..), NewAuthorizationCode (..))
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.OAuthClient (ClientType (..), NewOAuthClient (..), OAuthClient (..))
-import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
-import Shomei.Effect.OAuthClientStore (createOAuthClient)
-import Shomei.Effect.OAuthCodeStore
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText, sessionIdFromUUID)
+import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
+import Shomei.OAuth.AuthorizationCode.Store
   ( consumeAuthorizationCode,
     deleteExpiredAuthorizationCodes,
     putAuthorizationCode,
   )
-import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText, sessionIdFromUUID)
-import Shomei.ServiceAccount.Secret (sha256Hex)
-import Shomei.Workflow.OAuthAuthorize
+import Shomei.OAuth.Authorize.Workflow
   ( AuthorizeError (..),
     AuthorizeParams (..),
     IssuedCode (..),
     authorize,
     isValidS256Challenge,
   )
+import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..), OAuthClient (..))
+import Shomei.OAuth.Client.Store (createOAuthClient)
+import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

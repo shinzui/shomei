@@ -1,6 +1,6 @@
 -- | @shomei-admin audit@ (EP-7, M3): read the append-only security audit trail without a
 -- @psql@ shell. The subcommands are thin wrappers over the shared
--- 'Shomei.Effect.AuthEventReader' query layer (the same one the HTTP @GET \/v1\/admin\/audit\/events@
+-- 'Shomei.Audit.Reader.Store' query layer (the same one the HTTP @GET \/v1\/admin\/audit\/events@
 -- endpoint uses), run through the PostgreSQL interpreter over the admin pool:
 --
 -- @
@@ -37,7 +37,8 @@ import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Options.Applicative
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Effect.AuthEventReader
+import Shomei.Audit.Reader.Postgres (runAuthEventReaderPostgres)
+import Shomei.Audit.Reader.Store
   ( AuditEventQuery (..),
     AuthEventReader,
     StoredAuthEvent (..),
@@ -46,8 +47,7 @@ import Shomei.Effect.AuthEventReader
     queryAuthEvents,
   )
 import Shomei.Error (AuthError)
-import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
-import Shomei.Postgres.Database (Database, runDatabasePool)
+import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

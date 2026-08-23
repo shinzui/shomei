@@ -47,7 +47,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Network.HTTP.Types.Status (Status, status400, status401, statusCode, statusMessage)
 import Servant (ServerError (..))
-import Shomei.Domain.Claims (Scope (..))
+import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Prelude
 import Web.FormUrlEncoded (Form, lookupUnique)
 

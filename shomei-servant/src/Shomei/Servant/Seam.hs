@@ -20,49 +20,48 @@ module Shomei.Servant.Seam
   )
 where
 
-import Control.Exception (SomeException, try)
 import Data.Aeson (Value)
 import Effectful (Eff, IOE)
 import Servant (Handler, throwError)
+import Shomei.Account.Credential.Store (CredentialStore)
+import Shomei.Account.Notification.Store (Notifier)
+import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
+import Shomei.Account.Password.Hash.Store (PasswordHasher)
+import Shomei.Account.PasswordReset.Store (PasswordResetTokenStore)
+import Shomei.Account.User.Store (UserStore)
+import Shomei.Account.Verification.Store (VerificationTokenStore)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher)
+import Shomei.Audit.Reader.Store (AuthEventReader)
+import Shomei.Authorization.Claims.Domain (AuthClaims)
+import Shomei.Authorization.Claims.Store (ClaimsEnricher)
+import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Config (ShomeiConfig)
-import Shomei.Domain.Claims (AuthClaims)
-import Shomei.Domain.LoginAttempt (AccountKey)
-import Shomei.Domain.Token (AccessToken (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
-import Shomei.Effect.AuthEventReader (AuthEventReader)
-import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
-import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
-import Shomei.Effect.Clock (Clock)
-import Shomei.Effect.CredentialStore (CredentialStore)
-import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
-import Shomei.Effect.Notifier (Notifier)
-import Shomei.Effect.OAuthClientStore (OAuthClientStore)
-import Shomei.Effect.OAuthCodeStore (OAuthCodeStore)
-import Shomei.Effect.PasskeyStore (PasskeyStore)
-import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
-import Shomei.Effect.PasswordHasher (PasswordHasher)
-import Shomei.Effect.PasswordResetTokenStore (PasswordResetTokenStore)
-import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
-import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
-import Shomei.Effect.RefreshTokenStore (RefreshTokenStore)
-import Shomei.Effect.RoleStore (RoleStore)
-import Shomei.Effect.ServiceAccountStore (ServiceAccountStore)
-import Shomei.Effect.SessionStore (SessionStore)
-import Shomei.Effect.SigningKeyStore (SigningKeyStore)
-import Shomei.Effect.TokenGen (TokenGen)
-import Shomei.Effect.TokenSigner (TokenSigner)
-import Shomei.Effect.TokenVerifier (TokenVerifier)
-import Shomei.Effect.TotpCredentialStore (TotpCredentialStore)
-import Shomei.Effect.UserStore (UserStore)
-import Shomei.Effect.VerificationTokenStore (VerificationTokenStore)
-import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError)
+import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
+import Shomei.Mfa.Totp.Store (TotpCredentialStore)
+import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore)
+import Shomei.OAuth.Client.Store (OAuthClientStore)
+import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
+import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
+import Shomei.Passkey.Store (PasskeyStore)
 import Shomei.Prelude
 import Shomei.Servant.Error (authErrorToServerError)
-import Shomei.Workflow qualified as Wf
+import Shomei.ServiceAccount.Store (ServiceAccountStore)
+import Shomei.Session.Authentication.Workflow qualified as Wf
+import Shomei.Session.LoginAttempt.Domain (AccountKey)
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.RefreshToken.Store (RefreshTokenStore)
+import Shomei.Session.Store (SessionStore)
+import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.Session.Token.Generator (TokenGen)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
+import Shomei.SigningKey.Signer (TokenSigner)
+import Shomei.SigningKey.Store (SigningKeyStore)
+import Shomei.SigningKey.Verifier (TokenVerifier)
+import Shomei.Time.Store (Clock)
 
 -- | The canonical, ordered Shōmei port stack. Its order matches EP-2's
--- @Shomei.Effect.InMemory.runInMemory@ so the same workflows run unchanged over the
+-- @Shomei.Test.InMemory.runInMemory@ so the same workflows run unchanged over the
 -- in-memory and the real (EP-6) interpreter assemblies.
 type AppEffects =
   '[ UserStore,
@@ -99,7 +98,7 @@ type AppEffects =
 -- | The runtime environment threaded to every handler.
 data Env = Env
   { -- | the port-interpreter runner (in-memory in tests; postgres+jwt in EP-6)
-    runPorts :: !(forall a. Eff AppEffects a -> IO a),
+    runPorts :: !(forall a. Eff AppEffects a -> IO (Either AuthError a)),
     config :: !ShomeiConfig,
     -- | the precomputed public JWKS document served at @\/.well-known\/jwks.json@. An
     --     'IO' getter rather than a 'Value' because the standalone server swaps its key
@@ -116,28 +115,31 @@ data Env = Env
 --
 -- This is the only way Shōmei's HTTP layer verifies a token, and it is derived rather than
 -- supplied: 'runPorts' already interprets 'TokenVerifier', 'SessionStore' and 'Clock', which is
--- exactly what 'Shomei.Workflow.verifyToken' needs. The session check requested by
+-- exactly what 'Shomei.Session.Authentication.Workflow.verifyToken' needs. The session check requested by
 -- @sessionCheckMode = VerifyTokenAndSession@ therefore runs against the same stores the login and
 -- refresh workflows write to.
 --
 -- Under the default @VerifyTokenOnly@ the workflow returns after the JWT check and issues no
 -- query. Under @VerifyTokenAndSession@ it performs one session lookup per authenticated request.
 verifyRequestToken :: Env -> Text -> IO (Either AuthError AuthClaims)
-verifyRequestToken env raw = runPorts env (Wf.verifyToken (config env) (AccessToken raw))
+verifyRequestToken env raw = do
+  result <- runPorts env (Wf.verifyToken (config env) (AccessToken raw))
+  pure (result >>= id)
 
 -- | Run a workflow that yields @Either AuthError a@: a 'Right' flows through; a
 -- 'Left' becomes the matching 'ServerError'.
 runAuth :: Env -> Eff AppEffects (Either AuthError a) -> Handler a
 runAuth env action = do
   result <- liftIO (runPorts env action)
-  either (throwError . authErrorToServerError) pure result
+  either (throwError . authErrorToServerError) pure (result >>= id)
 
 -- | Run a plain port action to its value; the caller branches on the result.
 runPort :: Env -> Eff AppEffects a -> Handler a
-runPort env action = liftIO (runPorts env action)
+runPort env action = do
+  result <- liftIO (runPorts env action)
+  either (throwError . authErrorToServerError) pure result
 
--- | Run a port action, catching an infrastructure failure (which 'runPorts' surfaces as an IO
--- exception) as a 'Left' instead of letting it become a 500. Used by the @/ready@ readiness
--- probe so a database outage yields a clean 503 rather than a 500.
-runPortChecked :: Env -> Eff AppEffects a -> Handler (Either SomeException a)
-runPortChecked env action = liftIO (try (runPorts env action))
+-- | Run a port action while retaining its typed dependency/internal failure for a
+-- route-local total mapping (currently used by readiness).
+runPortChecked :: Env -> Eff AppEffects a -> Handler (Either AuthError a)
+runPortChecked env action = liftIO (runPorts env action)

@@ -15,9 +15,9 @@ import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
-import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
 import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
 import Shomei.Server.Keys (loadKekFromEnv, loadNamedKekFromEnv)
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
 
 -- The command tree -----------------------------------------------------------
 

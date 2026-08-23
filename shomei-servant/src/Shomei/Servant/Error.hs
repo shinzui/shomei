@@ -83,6 +83,7 @@ module Shomei.Servant.Error
     pcRoleNotDefined,
     pcInvalidUserStatus,
     pcUserHasNoEmail,
+    pcDependencyUnavailable,
     pcInternal,
 
     -- * HTTP-layer specs (no 'AuthError' counterpart)
@@ -119,8 +120,9 @@ import Servant
     err405,
     err409,
     err500,
+    err503,
   )
-import Shomei.Domain.Claims (Role (..))
+import Shomei.Authorization.Claims.Domain (Role (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Prelude
 
@@ -291,9 +293,10 @@ pcImpersonationForbidden = ProblemSpec "impersonation_forbidden" err403 "Not all
 pcImpersonationTargetInvalid = ProblemSpec "impersonation_target_invalid" err400 "Invalid impersonation target"
 pcImpersonationActionBlocked = ProblemSpec "impersonation_action_blocked" err403 "This action is not permitted while impersonating"
 
-pcUserNotFound, pcRoleNotDefined, pcInternal :: ProblemSpec
+pcUserNotFound, pcRoleNotDefined, pcDependencyUnavailable, pcInternal :: ProblemSpec
 pcUserNotFound = ProblemSpec "user_not_found" err404 "User not found"
 pcRoleNotDefined = ProblemSpec "role_not_defined" err422 "Role not defined"
+pcDependencyUnavailable = ProblemSpec "dependency_unavailable" err503 "Required dependency unavailable"
 pcInternal = ProblemSpec "internal" err500 "Internal authentication error"
 
 -- | EP-2's admin lifecycle. Both are 409s: the request was well-formed and authorized, but the
@@ -390,6 +393,7 @@ problemCatalog =
     pcRoleNotDefined,
     pcInvalidUserStatus,
     pcUserHasNoEmail,
+    pcDependencyUnavailable,
     pcInternal,
     pcMissingToken,
     pcTokenInvalidAuth,
@@ -440,7 +444,7 @@ authErrorToServerError = \case
   ImpersonationForbidden -> plain pcImpersonationForbidden
   ImpersonationTargetInvalid -> plain pcImpersonationTargetInvalid
   ImpersonationActionBlocked -> plain pcImpersonationActionBlocked
-  -- EP-4's two OAuth errors are raised only by 'Shomei.Workflow.ClientCredentials', whose sole
+  -- EP-4's two OAuth errors are raised only by 'Shomei.ServiceAccount.ClientCredentials.Workflow', whose sole
   -- caller is @POST \/oauth\/token@ — and that handler renders them through
   -- 'Shomei.Servant.OAuth.oauthError' in the RFC 6749 §5.2 shape, never through this function
   -- (see the exemption in this module's header). These two arms exist so the @\case@ stays total,
@@ -448,7 +452,7 @@ authErrorToServerError = \case
   OAuthClientInvalid -> plain pcInvalidLogin
   OAuthScopeInvalid -> plain pcBadRequest
   -- EP-6's two token-exchange errors are, like EP-4's above, raised only by the
-  -- @POST \/oauth\/token@ dispatcher (via 'Shomei.Workflow.TokenExchange'), which renders them in
+  -- @POST \/oauth\/token@ dispatcher (via 'Shomei.OAuth.TokenExchange.Workflow'), which renders them in
   -- the RFC 6749 §5.2 shape, never through this function. These arms keep the @\case@ total and
   -- reuse existing catalog specs (400s) rather than minting codes no route can emit.
   OAuthGrantInvalid -> plain pcBadRequest
@@ -459,6 +463,7 @@ authErrorToServerError = \case
   RoleNotDefined (Role r) -> toProblemError pcRoleNotDefined (Just r)
   InvalidUserStatus -> plain pcInvalidUserStatus
   UserHasNoEmail -> plain pcUserHasNoEmail
+  DependencyUnavailable _ -> plain pcDependencyUnavailable
   InternalAuthError _ -> plain pcInternal
   where
     plain spec = toProblemError spec Nothing

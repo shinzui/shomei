@@ -1,0 +1,40 @@
+-- | Normalized login identifiers — the principal of an account.
+--
+-- A 'LoginId' is a free-form, case-insensitive, unique handle: it may be a username,
+-- an agent id like @agent-4815162342@, or an email-shaped identifier
+-- address. Unlike 'Shomei.Account.Email.Domain.Email' it does NOT require an @\@@ or a dot —
+-- that is the whole point: a principal need not be an email.
+--
+-- The raw 'LoginId' constructor is not exported: the only way to build one is
+-- 'mkLoginId', which trims whitespace, lowercases the handle, and rejects the empty
+-- string or any value containing internal whitespace. This makes invalid identifiers
+-- unrepresentable outside this module, mirroring 'Shomei.Account.Email.Domain'.
+module Shomei.Account.LoginId.Domain
+  ( LoginId,
+    mkLoginId,
+    loginIdText,
+  )
+where
+
+import Data.Char (isSpace)
+import Data.Text qualified as Text
+import Shomei.Error (AuthError (..))
+import Shomei.Prelude
+
+newtype LoginId = LoginId Text
+  deriving stock (Generic)
+  deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
+
+-- | Project the normalized identifier text.
+loginIdText :: LoginId -> Text
+loginIdText (LoginId t) = t
+
+-- | Trim leading/trailing whitespace; lowercase the handle (case-insensitive
+-- principal); reject the empty string and any value containing internal whitespace.
+-- Does NOT require an @\@@ or a dot — a username principal is valid.
+mkLoginId :: Text -> Either AuthError LoginId
+mkLoginId raw =
+  let t = Text.toLower (Text.strip raw)
+   in if Text.null t || Text.any isSpace t
+        then Left InvalidLoginId
+        else Right (LoginId t)

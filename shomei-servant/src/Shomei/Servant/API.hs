@@ -22,7 +22,7 @@ where
 
 import Data.Aeson (Value)
 import Servant.API
-import Shomei.Domain.User (User)
+import Shomei.Account.User.Domain (User)
 import Shomei.Id (PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
@@ -95,7 +95,7 @@ data ShomeiAPI mode = ShomeiAPI
           :> ReqBody '[JSON] RefreshRequest
           :> Post '[JSON] (WithCookies TokenPairResponse),
     -- | @202@, honestly: the reply says nothing about the address, and the mail leaves the
-    --     process later through the 'Shomei.Effect.Notifier.Notifier'. The unconditional
+    --     process later through the 'Shomei.Account.Notification.Store.Notifier'. The unconditional
     --     response is also the anti-enumeration contract — an unknown address gets the same
     --     @202@ as a known one.
     verifyEmailRequest ::

@@ -65,22 +65,22 @@ import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Data.UUID qualified as UUID
+import Shomei.Account.Email.Domain (emailText)
+import Shomei.Account.LoginId.Domain (loginIdText)
+import Shomei.Account.User.Domain (User (..), UserStatus (..))
+import Shomei.Account.User.Store (UserCursor (..))
+import Shomei.Audit.Reader.Store (AuditCursor (..), StoredAuthEvent (..))
+import Shomei.Authorization.Claims.Domain (Role (..))
 import Shomei.Config (ShomeiConfig (..), transportIncludesBodyTokens)
-import Shomei.Domain.Claims (Role (..))
-import Shomei.Domain.Email (emailText)
-import Shomei.Domain.LoginId (loginIdText)
-import Shomei.Domain.Passkey (PasskeyCredential (..))
-import Shomei.Domain.RefreshToken (RefreshToken (..))
-import Shomei.Domain.Session (Session (..), SessionStatus (..))
-import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
-import Shomei.Domain.User (User (..), UserStatus (..))
-import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
-import Shomei.Effect.UserStore (UserCursor (..))
 import Shomei.Id (idText, userIdFromUUID, userIdToUUID)
+import Shomei.Mfa.Totp.Workflow (TotpRemovalProof (..))
+import Shomei.Mfa.Workflow (MfaCompletion (..))
+import Shomei.Passkey.Domain (PasskeyCredential (..))
 import Shomei.Prelude
-import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
-import Shomei.Workflow.Mfa (MfaCompletion (..))
-import Shomei.Workflow.Totp (TotpRemovalProof (..))
+import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..))
+import Shomei.Session.Domain (Session (..), SessionStatus (..))
+import Shomei.Session.RefreshToken.Domain (RefreshToken (..))
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 
 -- | @POST /v1/auth/signup@ body. The principal is @loginId@; @email@ is optional.
 data SignupRequest = SignupRequest

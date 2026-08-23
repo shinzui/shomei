@@ -28,6 +28,10 @@ import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
+import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
+import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Admin.Audit (runAuditReader)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
@@ -44,30 +48,38 @@ import Shomei.Admin.Roles (GrantExpiry (..), RolesCommand (..), rolesParser, run
 import Shomei.Admin.ServiceAccounts (createAction, listAction, revokeAction, rotateSecretAction)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
 import Shomei.Admin.Users (createUserAction)
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Crypto (Argon2Params (..), sha256Hex)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.IdTokenClaims (IdToken (..))
-import Shomei.Domain.LoginId (LoginId, mkLoginId)
-import Shomei.Domain.OAuthClient (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
-import Shomei.Domain.ServiceAccount (ServiceAccount (..))
-import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
-import Shomei.Domain.Token (AccessToken (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.AuthEventReader
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
+import Shomei.Audit.Reader.Store
   ( AuditEventQuery (..),
     StoredAuthEvent (..),
     countAuthEvents,
     emptyAuditQuery,
     queryAuthEvents,
   )
-import Shomei.Effect.TokenSigner (TokenSigner (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError (OAuthClientInvalid))
 import Shomei.Id (genSessionId, genUserId)
-import Shomei.Jwt.Key (keyKid)
-import Shomei.Jwt.KeyProtection
+import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
+import Shomei.OAuth.IdToken.Domain (IdToken (..))
+import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.Persistence.Maintenance.Postgres (SweepReport (..))
+import Shomei.Persistence.Pool.Postgres (acquirePool)
+-- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
+
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
+import Shomei.Server.Keys qualified as Keys
+import Shomei.ServiceAccount.ClientCredentials.Workflow (ClientCredentialsGrant (..), GrantedToken (..), grantClientCredentials)
+import Shomei.ServiceAccount.Domain (ServiceAccount (..))
+import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
+import Shomei.Session.Postgres (runSessionStorePostgres)
+import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
+import Shomei.SigningKey.Key.Jwt (keyKid)
+import Shomei.SigningKey.Protection.Jwt
   ( KeyDecryptError (KeyDecryptFailed),
     KeyEncryptionKey,
     decryptStoredSigningKey,
@@ -75,22 +87,10 @@ import Shomei.Jwt.KeyProtection
     keyEncryptionKeyFromBase64,
     publicJwkFromStored,
   )
-import Shomei.Jwt.Sign (signAccessToken)
-import Shomei.Jwt.Verify (verifyToken)
-import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.Database (Database, runDatabasePool)
-import Shomei.Postgres.Maintenance (SweepReport (..))
-import Shomei.Postgres.Pool (acquirePool)
-import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
-import Shomei.Postgres.SessionStore (runSessionStorePostgres)
-import Shomei.Postgres.UserStore (runUserStorePostgres)
--- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
-
-import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
-import Shomei.Server.Keys qualified as Keys
-import Shomei.Workflow.ClientCredentials (ClientCredentialsGrant (..), GrantedToken (..), grantClientCredentials)
+import Shomei.SigningKey.Sign.Jwt (signAccessToken)
+import Shomei.SigningKey.Signer (TokenSigner (..))
+import Shomei.SigningKey.Verify.Jwt (verifyToken)
+import Shomei.Time.Postgres (runClockIO)
 import System.Exit (ExitCode (..))
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
@@ -447,7 +447,7 @@ testRolesLifecycle =
     grantEvents @?= 1
     revokeEvents @?= 1
 
--- | @users create@ drives the same 'Shomei.Workflow.signup' the HTTP route does, so a
+-- | @users create@ drives the same 'Shomei.Session.Authentication.Workflow.signup' the HTTP route does, so a
 -- CLI-created user must receive the configured default roles — audited, with no acting admin.
 -- (Regression: 'Shomei.Admin.Env.loadAdminEnv' builds its own 'ShomeiConfig' rather than running
 -- the server's loader, so it once ignored @SHOMEI_DEFAULT_ROLES@ entirely.)

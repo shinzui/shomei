@@ -53,34 +53,35 @@ import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Options.Applicative
+import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Crypto (generateOpaqueToken)
-import Shomei.Domain.Claims (Scope (..))
-import Shomei.Domain.Event qualified as Event
+import Shomei.Audit.Event.Domain qualified as Event
 -- Read by /record pattern/ only, never through @OverloadedRecordDot@: 'OAuthClient' shares
--- @clientId@ / @displayName@ / @createdAt@ / @status@ with 'Shomei.Domain.ServiceAccount'.
-import Shomei.Domain.OAuthClient
+-- @clientId@ / @displayName@ / @createdAt@ / @status@ with 'Shomei.ServiceAccount.Domain'.
+
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
+import Shomei.Authorization.Claims.Domain (Scope (..))
+import Shomei.Error (AuthError)
+import Shomei.Id (OAuthClientId, genOAuthClientId, idText)
+import Shomei.OAuth.Client.Domain
   ( ClientType (..),
     NewOAuthClient (..),
     OAuthClient (..),
     OAuthClientStatus (..),
   )
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.OAuthClientStore
+import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
+import Shomei.OAuth.Client.Store
   ( OAuthClientStore,
     createOAuthClient,
     findOAuthClientByClientId,
     listOAuthClients,
     revokeOAuthClient,
   )
-import Shomei.Error (AuthError)
-import Shomei.Id (OAuthClientId, genOAuthClientId, idText)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.Database (Database, runDatabasePool)
-import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
+import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Time.Postgres (runClockIO)
+import Shomei.Time.Store (Clock, now)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

@@ -20,15 +20,13 @@ import Network.HTTP.Client
   )
 import Network.HTTP.Types (statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
-import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
-import Shomei.Jwt.KeyProtection (KeyEncryptionKey, keyEncryptionKeyFromBase64)
+import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
-import Shomei.Postgres.Pool (acquirePool)
-import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
+import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Servant.DTO
   ( LoginRequest (..),
     LoginResponse (..),
@@ -37,6 +35,8 @@ import Shomei.Servant.DTO
   )
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
+import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 

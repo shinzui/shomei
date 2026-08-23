@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 
--- | Pure tests for the in-memory 'Shomei.Effect.ServiceAccountStore' interpreter
--- ('Shomei.Effect.InMemory.runServiceAccountStore').
+-- | Pure tests for the in-memory 'Shomei.ServiceAccount.Store' interpreter
+-- ('Shomei.Test.InMemory.runServiceAccountStore').
 --
 -- They prove the persistence contract EP-4's @client_credentials@ grant builds on, against the
 -- fake 'World': an account can be created and found by its client id; its secret can be rotated
@@ -21,21 +21,21 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
-import Shomei.Domain.Claims (Scope (..))
-import Shomei.Domain.ServiceAccount
+import Shomei.Authorization.Claims.Domain (Scope (..))
+import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, genUserId, idText)
+import Shomei.ServiceAccount.Domain
   ( NewServiceAccount (..),
     ServiceAccount (..),
     ServiceAccountStatus (..),
   )
-import Shomei.Effect.InMemory (World, emptyWorld, runInMemory)
-import Shomei.Effect.ServiceAccountStore
+import Shomei.ServiceAccount.Store
   ( createServiceAccount,
     findServiceAccountByClientId,
     listServiceAccounts,
     revokeServiceAccount,
     rotateServiceAccountSecret,
   )
-import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, genUserId, idText)
+import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 

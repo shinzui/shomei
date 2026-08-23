@@ -11,7 +11,7 @@
 -- a token signed moments before @shomei-admin keys activate@ keeps verifying until it
 -- expires, here and at every downstream that fetches the JWKS.
 --
--- Private key material is encrypted at rest (see "Shomei.Jwt.KeyProtection"). Only the
+-- Private key material is encrypted at rest (see "Shomei.SigningKey.Protection.Jwt"). Only the
 -- __signer__ is decrypted; the verifier key set and the published JWKS are built from the
 -- public column, so a missing or wrong key-encryption key can never break verification of
 -- outstanding tokens; runtime startup still requires the KEK so minting is always available.
@@ -44,18 +44,14 @@ import Data.Text qualified as Text
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack)
 import Hasql.Pool (Pool)
-import Shomei.Domain.SigningKey (SigningAlgorithm, SigningKeyStatus (KeyActive), StoredSigningKey (..))
-import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.SigningKeyStore
-  ( SigningKeyStore,
-    insertSigningKey,
-    listActiveSigningKeys,
-    listPublishableSigningKeys,
-  )
 import Shomei.Error (AuthError)
-import Shomei.Jwt.Jwks (KeySet (..), jwksDocument, keySetPublicJwks)
-import Shomei.Jwt.Key (generateSigningKeyFor, keyKid, toStoredSigningKeyFor)
-import Shomei.Jwt.KeyProtection
+import Shomei.Persistence.Database.Postgres (runDatabasePool)
+import Shomei.Prelude
+import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (KeyActive), StoredSigningKey (..))
+import Shomei.SigningKey.Jwks.Jwt (KeySet (..), jwksDocument, keySetPublicJwks)
+import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, keyKid, toStoredSigningKeyFor)
+import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
+import Shomei.SigningKey.Protection.Jwt
   ( KeyDecryptError (..),
     KeyEncryptionKey,
     decryptStoredSigningKey,
@@ -63,10 +59,14 @@ import Shomei.Jwt.KeyProtection
     protectStoredSigningKey,
     publicJwkFromStored,
   )
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.Database (runDatabasePool)
-import Shomei.Postgres.SigningKeyStore (runSigningKeyStorePostgres)
-import Shomei.Prelude
+import Shomei.SigningKey.Store
+  ( SigningKeyStore,
+    insertSigningKey,
+    listActiveSigningKeys,
+    listPublishableSigningKeys,
+  )
+import Shomei.Time.Postgres (runClockIO)
+import Shomei.Time.Store (Clock, now)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 

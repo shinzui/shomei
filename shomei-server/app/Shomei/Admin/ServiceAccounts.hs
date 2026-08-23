@@ -55,20 +55,28 @@ import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
 import Options.Applicative
-import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Crypto (generateOpaqueToken)
-import Shomei.Domain.Claims (Scope (..))
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.LoginId (mkLoginId)
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
 -- 'ServiceAccount' shares the field names @userId@ / @createdAt@ / @displayName@ with
--- 'Shomei.Domain.User.User'. Both are imported with @(..)@ and read by /record pattern/ only,
+-- 'Shomei.Account.User.Domain.User'. Both are imported with @(..)@ and read by /record pattern/ only,
 -- never through @OverloadedRecordDot@: a record pattern names its constructor and so is
 -- unambiguous, while @user.userId@ would not be.
-import Shomei.Domain.ServiceAccount (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
-import Shomei.Domain.User (NewUser (..), User (..))
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.ServiceAccountStore
+
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Postgres (runUserStorePostgres)
+import Shomei.Account.User.Store (UserStore, createUser)
+import Shomei.Admin.Env (AdminEnv (..))
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
+import Shomei.Authorization.Claims.Domain (Scope (..))
+import Shomei.Error (AuthError)
+import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, idText)
+import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
+import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
+import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.ServiceAccount.Store
   ( ServiceAccountStore,
     createServiceAccount,
     findServiceAccountByClientId,
@@ -76,15 +84,8 @@ import Shomei.Effect.ServiceAccountStore
     revokeServiceAccount,
     rotateServiceAccountSecret,
   )
-import Shomei.Effect.UserStore (UserStore, createUser)
-import Shomei.Error (AuthError)
-import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, idText)
-import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
-import Shomei.Postgres.Clock (runClockIO)
-import Shomei.Postgres.Database (Database, runDatabasePool)
-import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
-import Shomei.Postgres.UserStore (runUserStorePostgres)
-import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Time.Postgres (runClockIO)
+import Shomei.Time.Store (Clock, now)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

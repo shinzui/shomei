@@ -9,7 +9,7 @@
 -- Note that this is deliberately NOT the server's full loader: the CLI has no Dhall file and no
 -- listen port. But every field @shomei-admin@'s commands actually /use/ must be read here, or
 -- the CLI silently behaves differently from the running server. @defaultRoles@ is one such
--- field: @users create@ drives the same @Shomei.Workflow.signup@ the HTTP route does.
+-- field: @users create@ drives the same @Shomei.Session.Authentication.Workflow.signup@ the HTTP route does.
 module Shomei.Admin.Env
   ( AdminEnv (..),
     loadAdminEnv,
@@ -20,10 +20,10 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Hasql.Pool (Pool)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), defaultArgon2Params)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Postgres.Pool (acquirePool)
+import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.Config (defaultRolesFromEnv)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)

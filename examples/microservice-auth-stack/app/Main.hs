@@ -18,8 +18,8 @@ import Data.Text qualified as Text
 import Downstream.Service (downstreamApplication, newJwksCache)
 import Network.HTTP.Client qualified as HTTP
 import Network.Wai.Handler.Warp qualified as Warp
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import System.Environment (getEnv, lookupEnv)
 import Text.Read (readMaybe)
 

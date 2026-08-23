@@ -5,29 +5,9 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
-import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, emailText, mkEmail)
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, mkLoginId)
-import Shomei.Domain.Notification (Notification (..))
-import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
-import Shomei.Domain.Password (PasswordHash (..), PasswordPolicy (..), PlainPassword (..))
-import Shomei.Domain.PasswordResetToken (PersistedPasswordResetToken (..))
-import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
-import Shomei.Domain.Session (Session (..), SessionStatus (..))
-import Shomei.Domain.User (User (..))
-import Shomei.Domain.VerificationToken (PersistedVerificationToken (..))
-import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
-import Shomei.Error
-  ( AuthError (InvalidCredentials, PasswordResetTokenInvalid, VerificationTokenInvalid, WeakPassword),
-    PasswordPolicyViolation (PasswordBreached, PasswordResemblesIdentity, PasswordTooCommon),
-  )
-import Shomei.Workflow (login, signup)
-import Shomei.Workflow.Account
+import Shomei.Account.Credential.Domain (Credential (..))
+import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+import Shomei.Account.Lifecycle.Workflow
   ( ChangePassword (..),
     ConfirmEmailVerification (..),
     ConfirmPasswordReset (..),
@@ -39,6 +19,26 @@ import Shomei.Workflow.Account
     requestEmailVerification,
     requestPasswordReset,
   )
+import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
+import Shomei.Account.Password.Domain (PasswordHash (..), PasswordPolicy (..), PlainPassword (..))
+import Shomei.Account.PasswordReset.Domain (PersistedPasswordResetToken (..))
+import Shomei.Account.User.Domain (User (..))
+import Shomei.Account.Verification.Domain (PersistedVerificationToken (..))
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Error
+  ( AuthError (InvalidCredentials, PasswordResetTokenInvalid, VerificationTokenInvalid, WeakPassword),
+    PasswordPolicyViolation (PasswordBreached, PasswordResemblesIdentity, PasswordTooCommon),
+  )
+import Shomei.Session.Authentication.Workflow (login, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
+import Shomei.Session.Domain (Session (..), SessionStatus (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
+import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshTokenStatus (..))
+import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

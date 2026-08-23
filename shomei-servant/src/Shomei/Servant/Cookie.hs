@@ -30,9 +30,9 @@ import Data.Text.Encoding qualified as Text
 import Data.Time (secondsToDiffTime)
 import Servant (Header, Headers, addHeader, noHeader)
 import Shomei.Config (CookieConfig (..), SameSitePolicy (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.RefreshToken (RefreshToken (..))
-import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
 import Shomei.Prelude
+import Shomei.Session.RefreshToken.Domain (RefreshToken (..))
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Web.Cookie
   ( SameSiteOption,
     SetCookie,

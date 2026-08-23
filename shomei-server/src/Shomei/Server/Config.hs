@@ -23,7 +23,7 @@ module Shomei.Server.Config
   )
 where
 
--- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Crypto".
+-- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Account.Password.Hash.Postgres".
 
 import Data.Aeson (eitherDecodeStrict')
 import Data.Foldable (traverse_)
@@ -32,6 +32,9 @@ import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
+import Shomei.Account.Password.Domain (PasswordPolicy (..))
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), defaultArgon2Params)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config
   ( AttestationPolicy (..),
     CookieConfig (..),
@@ -55,10 +58,7 @@ import Shomei.Config
     WebhookConfig (..),
     defaultShomeiConfig,
   )
-import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
-import Shomei.Domain.Password (PasswordPolicy (..))
-import Shomei.Postgres.Maintenance (SweepConfig (..), defaultSweepConfig)
+import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
@@ -97,7 +97,7 @@ data ServerSettings = ServerSettings
 defaultHashingMaxConcurrency :: Int
 defaultHashingMaxConcurrency = 2
 
--- | Settings for the background expired-data sweeper (see 'Shomei.Postgres.Maintenance').
+-- | Settings for the background expired-data sweeper (see 'Shomei.Persistence.Maintenance.Postgres').
 --
 -- These live here rather than in the core 'ShomeiConfig' for the same reason the pool knobs
 -- do: retention is a deployment and storage concern with no domain meaning, and 'ShomeiConfig'
@@ -499,7 +499,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
           )
 
 -- | Overlay the @SHOMEI_ARGON2_*@ environment variables onto the Argon2 cost parameters.
--- These affect only newly hashed passwords; see 'Shomei.Crypto.hashPasswordArgon2id'.
+-- These affect only newly hashed passwords; see 'Shomei.Account.Password.Hash.Postgres.hashPasswordArgon2id'.
 overlayArgon2FromEnv :: Argon2Params -> IO Argon2Params
 overlayArgon2FromEnv base = do
   mem <- intEnvMaybe "SHOMEI_ARGON2_MEMORY_KIB"

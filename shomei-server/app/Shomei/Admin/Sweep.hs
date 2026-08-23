@@ -26,10 +26,10 @@ where
 
 import Data.Text qualified as Text
 import Data.Time (getCurrentTime)
-import Hasql.Pool (UsageError)
 import Options.Applicative
 import Shomei.Admin.Env (AdminEnv (..))
-import Shomei.Postgres.Maintenance
+import Shomei.Error (AuthError)
+import Shomei.Persistence.Maintenance.Postgres
   ( SweepConfig (..),
     SweepReport,
     defaultSweepConfig,
@@ -100,7 +100,7 @@ sweepOptionsToConfig o =
 
 -- | Run one sweep against the admin pool and hand back the report. Separated from 'runSweep'
 -- so tests can assert on the counts without capturing stdout or catching @exitFailure@.
-runSweepReport :: AdminEnv -> SweepOptions -> IO (Either UsageError SweepReport)
+runSweepReport :: AdminEnv -> SweepOptions -> IO (Either AuthError SweepReport)
 runSweepReport env opts = do
   now <- getCurrentTime
   sweepOnce env.pool (sweepOptionsToConfig opts) now

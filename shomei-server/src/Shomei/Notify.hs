@@ -14,7 +14,7 @@
 --
 -- Both delivering interpreters are __fire-and-forget and hardened__: every exception is caught
 -- inside the interpreter, a failed delivery logs one redacted line and publishes a
--- 'Shomei.Domain.Event.NotificationDeliveryFailed' audit event, and the triggering HTTP request
+-- 'Shomei.Audit.Event.Domain.NotificationDeliveryFailed' audit event, and the triggering HTTP request
 -- still succeeds. Their operational log lines never contain the one-time token. Operators who
 -- want a provider Shōmei does not ship supply their own 'Notifier' interpreter.
 module Shomei.Notify
@@ -64,16 +64,16 @@ import Network.Mail.SMTP
     sendMailWithLoginSTARTTLS',
     sendMailWithLoginTLS',
   )
+import Shomei.Account.Email.Domain (emailText)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.Notification.Store (Notifier (..))
+import Shomei.Account.OneTimeToken.Domain (OneTimeToken, oneTimeTokenText)
+import Shomei.Account.Password.Hash.Postgres (sha256Hex)
+import Shomei.Audit.Event.Domain (AuthEvent (NotificationDeliveryFailed), NotificationDeliveryFailedData (..))
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebhookConfig (..))
-import Shomei.Crypto (sha256Hex)
-import Shomei.Domain.Email (emailText)
-import Shomei.Domain.Event (AuthEvent (NotificationDeliveryFailed), NotificationDeliveryFailedData (..))
-import Shomei.Domain.Notification (Notification (..))
-import Shomei.Domain.OneTimeToken (OneTimeToken, oneTimeTokenText)
-import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
-import Shomei.Effect.Clock (Clock, now)
-import Shomei.Effect.Notifier (Notifier (..))
 import Shomei.Prelude
+import Shomei.Time.Store (Clock, now)
 import System.IO (hPutStrLn, stderr)
 import System.Timeout (timeout)
 

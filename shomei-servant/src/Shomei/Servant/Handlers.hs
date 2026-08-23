@@ -31,48 +31,16 @@ import Network.HTTP.Types.URI (renderSimpleQuery)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), OAuthConfig (..), ShomeiConfig (..), transportUsesCookies)
-import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
-import Shomei.Domain.Command
-  ( ClientContext (..),
-    LoginCommand (..),
-    LogoutCommand (..),
-    RefreshCommand (..),
-    SignupCommand (..),
-  )
-import Shomei.Domain.Email (emailText, mkEmail)
-import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.IdTokenClaims (IdToken (..))
-import Shomei.Domain.LoginAttempt (ClientIp (..))
-import Shomei.Domain.LoginId (loginIdText, mkLoginId)
-import Shomei.Domain.OAuthClient (OAuthClientStatus (..), isRegisteredRedirectUri)
-import Shomei.Domain.OAuthClient qualified as OAuthClient
-import Shomei.Domain.OneTimeToken (OneTimeToken (..))
-import Shomei.Domain.Password (PlainPassword (..))
-import Shomei.Domain.RefreshToken (RefreshToken (..), RefreshTokenStatus (RefreshTokenActive))
-import Shomei.Domain.ServiceAccount qualified as ServiceAccount
-import Shomei.Domain.Session qualified as Session
-import Shomei.Domain.Token (AccessToken (..))
-import Shomei.Domain.User (User (..), UserStatus (..))
-import Shomei.Effect.AuthEventPublisher (publishAuthEvent)
-import Shomei.Effect.AuthEventReader
-  ( AuditCursor (..),
-    AuditEventQuery (..),
-    StoredAuthEvent (..),
-    clampLimit,
-    emptyAuditQuery,
-    queryAuthEvents,
-  )
-import Shomei.Effect.Clock (now)
-import Shomei.Effect.OAuthClientStore (findOAuthClientByClientId)
-import Shomei.Effect.RecoveryCodeStore (countUnusedRecoveryCodes)
-import Shomei.Effect.RefreshTokenStore (findRefreshTokenByHash, revokeRefreshTokenFamily, revokeSessionRefreshTokens)
-import Shomei.Effect.ServiceAccountStore (findServiceAccountByClientId)
-import Shomei.Effect.SessionStore (findSessionById, listSessionsForUser, revokeSession)
-import Shomei.Effect.SigningKeyStore (listActiveSigningKeys)
-import Shomei.Effect.TokenGen (hashRefreshToken)
-import Shomei.Effect.TokenVerifier (verifyAccessToken)
-import Shomei.Effect.UserStore
+-- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
+
+import Shomei.Account.Admin.Workflow qualified as Admin
+import Shomei.Account.Email.Domain (emailText, mkEmail)
+import Shomei.Account.Lifecycle.Workflow qualified as Account
+import Shomei.Account.LoginId.Domain (loginIdText, mkLoginId)
+import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
+import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Account.User.Domain (User (..), UserStatus (..))
+import Shomei.Account.User.Store
   ( UserCursor (..),
     UserListQuery (..),
     clampUserLimit,
@@ -80,6 +48,19 @@ import Shomei.Effect.UserStore
     findUserById,
     listUsers,
   )
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Audit.Publisher.Store (publishAuthEvent)
+import Shomei.Audit.Reader.Store
+  ( AuditCursor (..),
+    AuditEventQuery (..),
+    StoredAuthEvent (..),
+    clampLimit,
+    emptyAuditQuery,
+    queryAuthEvents,
+  )
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Authorization.Role.Workflow qualified as Roles
+import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), OAuthConfig (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Error
   ( AuthError
       ( ImpersonationActionBlocked,
@@ -95,6 +76,17 @@ import Shomei.Error
       ),
   )
 import Shomei.Id (PasskeyId, SessionId, UserId, idText, parseId)
+import Shomei.Mfa.RecoveryCode.Store (countUnusedRecoveryCodes)
+import Shomei.Mfa.Totp.Workflow qualified as Totp
+import Shomei.Mfa.Workflow qualified as Mfa
+import Shomei.OAuth.Authorize.Workflow qualified as OAuthAuthorize
+import Shomei.OAuth.Client.Domain (OAuthClientStatus (..), isRegisteredRedirectUri)
+import Shomei.OAuth.Client.Domain qualified as OAuthClient
+import Shomei.OAuth.Client.Store (findOAuthClientByClientId)
+import Shomei.OAuth.IdToken.Domain (IdToken (..))
+import Shomei.OAuth.TokenExchange.Workflow qualified as TokenExchange
+import Shomei.OAuth.TokenGrant.Workflow qualified as OAuthTokenGrant
+import Shomei.Passkey.Workflow qualified as Passkey
 import Shomei.Prelude
 import Shomei.Servant.API (ShomeiAPI (..), ShomeiRoutes (..))
 import Shomei.Servant.Auth (AuthUser (..), csrfRejected, originHeaderAllowed, resolveAuthUser)
@@ -156,21 +148,30 @@ import Shomei.Servant.Error
   )
 import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Oidc qualified as Oidc
--- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
 import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
+import Shomei.ServiceAccount.ClientCredentials.Workflow qualified as ClientCredentials
+import Shomei.ServiceAccount.Domain qualified as ServiceAccount
 import Shomei.ServiceAccount.Secret qualified as ServiceAccountSecret
-import Shomei.Workflow qualified as Wf
-import Shomei.Workflow.Account qualified as Account
-import Shomei.Workflow.Admin qualified as Admin
-import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
-import Shomei.Workflow.Mfa qualified as Mfa
-import Shomei.Workflow.OAuthAuthorize qualified as OAuthAuthorize
-import Shomei.Workflow.OAuthTokenGrant qualified as OAuthTokenGrant
-import Shomei.Workflow.Passkey qualified as Passkey
-import Shomei.Workflow.Roles qualified as Roles
-import Shomei.Workflow.TokenExchange qualified as TokenExchange
-import Shomei.Workflow.Totp qualified as Totp
+import Shomei.ServiceAccount.Store (findServiceAccountByClientId)
+import Shomei.Session.Authentication.Workflow qualified as Wf
+import Shomei.Session.Command
+  ( ClientContext (..),
+    LoginCommand (..),
+    LogoutCommand (..),
+    RefreshCommand (..),
+    SignupCommand (..),
+  )
+import Shomei.Session.Domain qualified as Session
+import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
+import Shomei.Session.RefreshToken.Domain (RefreshToken (..), RefreshTokenStatus (RefreshTokenActive))
+import Shomei.Session.RefreshToken.Store (findRefreshTokenByHash, revokeRefreshTokenFamily, revokeSessionRefreshTokens)
+import Shomei.Session.Store (findSessionById, listSessionsForUser, revokeSession)
+import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.Session.Token.Generator (hashRefreshToken)
+import Shomei.SigningKey.Store (listActiveSigningKeys)
+import Shomei.SigningKey.Verifier (verifyAccessToken)
+import Shomei.Time.Store (now)
 import Web.FormUrlEncoded (Form)
 
 -- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
@@ -573,7 +574,7 @@ refreshTokenGrant env mAuthHeader form = do
   pure (addHeader "no-store" (addHeader "no-cache" body))
 
 -- | RFC 8693 token exchange (EP-6): the third grant on @POST \/oauth\/token@. Two modes selected by
--- the parameters (see "Shomei.Workflow.TokenExchange"):
+-- the parameters (see "Shomei.OAuth.TokenExchange.Workflow"):
 --
 --   * __impersonation__ — no client authentication; the operator's credential is the @actor_token@.
 --   * __service on-behalf-of__ — the service authenticates as an EP-4 service account (client_secret_
@@ -1156,7 +1157,7 @@ buildQuery mUser mSession types mSince mUntil mLimit mBefore = do
 -- 'denyUnderImpersonation', so an operator impersonating a customer cannot administer as that
 -- customer. Reads are allowed under impersonation: looking is not laundering.
 --
--- The workflows in "Shomei.Workflow.Admin" implement no policy of their own. The two policies
+-- The workflows in "Shomei.Account.Admin.Workflow" implement no policy of their own. The two policies
 -- that live here, and only here, are the admin gate and the self-target refusal.
 -- ---------------------------------------------------------------------------
 
@@ -1268,7 +1269,7 @@ adminRevokeSessionH env user sid = do
   pure NoContent
 
 -- | @POST \/v1\/admin\/users\/{userId}\/password-reset@: drive the ordinary reset flow — the same
--- token table, the same 'Shomei.Effect.Notifier.Notifier' delivery, the same audit event — for a
+-- token table, the same 'Shomei.Account.Notification.Store.Notifier' delivery, the same audit event — for a
 -- user named by id.
 --
 -- Answers @409 user_has_no_email@ honestly when the target has no address. The public endpoint's

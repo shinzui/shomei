@@ -7,9 +7,9 @@ module Main (main) where
 
 import Control.Exception (try)
 import Data.Text qualified as Text
+import Shomei.Account.Password.Domain (PasswordPolicy (..))
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
 import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
-import Shomei.Crypto (Argon2Params (..))
-import Shomei.Domain.Password (PasswordPolicy (..))
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
 import System.Environment (setEnv, unsetEnv)

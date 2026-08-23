@@ -1,28 +1,28 @@
 module Main (main) where
 
+import Shomei.Account.Admin.WorkflowSpec qualified
+import Shomei.Account.Password.DomainSpec qualified
+import Shomei.Account.Verification.WorkflowSpec qualified
 import Shomei.AccountSpec qualified
+import Shomei.Audit.Event.CodecSpec qualified
+import Shomei.Authorization.Role.WorkflowSpec qualified
 import Shomei.BreachSpec qualified
-import Shomei.Domain.EventCodecSpec qualified
-import Shomei.Domain.PasswordSpec qualified
+import Shomei.Delegation.WorkflowSpec qualified
 import Shomei.LockoutSpec qualified
+import Shomei.Mfa.Totp.AlgorithmSpec qualified
+import Shomei.Mfa.Totp.StoreSpec qualified
+import Shomei.Mfa.WorkflowSpec qualified
+import Shomei.OAuth.TokenExchange.WorkflowSpec qualified
 import Shomei.OAuthClientStoreSpec qualified
 import Shomei.OAuthCodeStoreSpec qualified
+import Shomei.Passkey.WorkflowSpec qualified
 import Shomei.PasskeyStoreSpec qualified
+import Shomei.ServiceAccount.ClientCredentials.WorkflowSpec qualified
 import Shomei.ServiceAccountStoreSpec qualified
-import Shomei.TotpSpec qualified
-import Shomei.TotpStoreSpec qualified
+import Shomei.Session.Authentication.ConcurrencySpec qualified
+import Shomei.Session.Authentication.TimingSpec qualified
+import Shomei.Session.Authentication.WorkflowSpec qualified
 import Shomei.WebAuthnCeremonySpec qualified
-import Shomei.Workflow.AdminSpec qualified
-import Shomei.Workflow.ClientCredentialsSpec qualified
-import Shomei.Workflow.ConcurrencySpec qualified
-import Shomei.Workflow.EmailVerificationSpec qualified
-import Shomei.Workflow.ImpersonationSpec qualified
-import Shomei.Workflow.MfaSpec qualified
-import Shomei.Workflow.PasskeySpec qualified
-import Shomei.Workflow.RolesSpec qualified
-import Shomei.Workflow.TimingSpec qualified
-import Shomei.Workflow.TokenExchangeSpec qualified
-import Shomei.WorkflowSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
@@ -30,28 +30,28 @@ main =
   defaultMain
     ( testGroup
         "shomei-core-test"
-        [ Shomei.WorkflowSpec.tests,
-          Shomei.TotpSpec.tests,
-          Shomei.TotpStoreSpec.tests,
+        [ Shomei.Session.Authentication.WorkflowSpec.tests,
+          Shomei.Mfa.Totp.AlgorithmSpec.tests,
+          Shomei.Mfa.Totp.StoreSpec.tests,
           Shomei.AccountSpec.tests,
           Shomei.BreachSpec.tests,
-          Shomei.Domain.EventCodecSpec.tests,
-          Shomei.Domain.PasswordSpec.tests,
+          Shomei.Audit.Event.CodecSpec.tests,
+          Shomei.Account.Password.DomainSpec.tests,
           Shomei.LockoutSpec.tests,
           Shomei.PasskeyStoreSpec.tests,
           Shomei.OAuthClientStoreSpec.tests,
           Shomei.OAuthCodeStoreSpec.tests,
           Shomei.ServiceAccountStoreSpec.tests,
           Shomei.WebAuthnCeremonySpec.tests,
-          Shomei.Workflow.MfaSpec.tests,
-          Shomei.Workflow.ImpersonationSpec.tests,
-          Shomei.Workflow.AdminSpec.tests,
-          Shomei.Workflow.RolesSpec.tests,
-          Shomei.Workflow.TimingSpec.tests,
-          Shomei.Workflow.EmailVerificationSpec.tests,
-          Shomei.Workflow.PasskeySpec.tests,
-          Shomei.Workflow.ClientCredentialsSpec.tests,
-          Shomei.Workflow.ConcurrencySpec.tests,
-          Shomei.Workflow.TokenExchangeSpec.tests
+          Shomei.Mfa.WorkflowSpec.tests,
+          Shomei.Delegation.WorkflowSpec.tests,
+          Shomei.Account.Admin.WorkflowSpec.tests,
+          Shomei.Authorization.Role.WorkflowSpec.tests,
+          Shomei.Session.Authentication.TimingSpec.tests,
+          Shomei.Account.Verification.WorkflowSpec.tests,
+          Shomei.Passkey.WorkflowSpec.tests,
+          Shomei.ServiceAccount.ClientCredentials.WorkflowSpec.tests,
+          Shomei.Session.Authentication.ConcurrencySpec.tests,
+          Shomei.OAuth.TokenExchange.WorkflowSpec.tests
         ]
     )

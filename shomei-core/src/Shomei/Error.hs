@@ -5,14 +5,15 @@
 -- in 'TokenInvalid'). 'PasswordPolicyViolation' is the reason a password failed the
 -- policy check.
 module Shomei.Error
-  ( AuthError (..),
+  ( AuthDependency (..),
+    AuthError (..),
     TokenError (..),
     PasswordPolicyViolation (..),
   )
 where
 
-import Shomei.Domain.Claims (Role)
-import Shomei.Effect.WebAuthnCeremony (WebAuthnError)
+import Shomei.Authorization.Claims.Domain (Role)
+import Shomei.Passkey.Ceremony.Port (WebAuthnError)
 import Shomei.Prelude
 
 data PasswordPolicyViolation
@@ -38,6 +39,14 @@ data TokenError
   | TokenIssuerInvalid
   | TokenAudienceInvalid
   | TokenOtherError Text
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | A required external dependency whose availability is part of an operation's
+-- typed outcome. Extend this closed vocabulary only when another dependency has
+-- an intentional operation-level availability contract.
+data AuthDependency
+  = PostgreSQL
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -72,7 +81,7 @@ data AuthError
     EmailNotVerified
   | -- | INTERNAL audit signal raised when a login hits a locked account; the HTTP layer
     --       maps it to the SAME generic 401 as 'InvalidCredentials' so a locked account is
-    --       indistinguishable from a wrong password. (The 'Shomei.Workflow.login' workflow itself
+    --       indistinguishable from a wrong password. (The 'Shomei.Session.Authentication.Workflow.login' workflow itself
     --       returns 'InvalidCredentials' for the locked case so even a direct core caller cannot
     --       distinguish; 'AccountLocked' exists for completeness and future internal use.)
     AccountLocked
@@ -157,6 +166,9 @@ data AuthError
     -- A real 409 leaks nothing here, unlike on the public reset endpoint: the caller is an
     -- authorized admin who named a user id, not a stranger probing an email.
     UserHasNoEmail
+  | -- | A required dependency could not execute an operation. Public adapters must
+    -- render this without exposing driver messages, SQL, or connection details.
+    DependencyUnavailable !AuthDependency
   | InternalAuthError Text
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

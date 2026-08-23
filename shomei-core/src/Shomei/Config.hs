@@ -51,10 +51,10 @@ where
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Time (NominalDiffTime)
-import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
-import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
-import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
+import Shomei.Account.Password.Domain (PasswordPolicy, defaultPasswordPolicy)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Prelude
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
 
 -- | How access and refresh tokens travel between Shōmei and its clients.
 --
@@ -131,10 +131,10 @@ data SigningKeyConfig = SigningKeyConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
--- | Which built-in 'Shomei.Effect.Notifier.Notifier' interpreter the standalone
+-- | Which built-in 'Shomei.Account.Notification.Store.Notifier' interpreter the standalone
 -- server uses.
 --
--- Shōmei emits a 'Shomei.Domain.Notification.Notification' (recipient, one-time link/token,
+-- Shōmei emits a 'Shomei.Account.Notification.Domain.Notification' (recipient, one-time link/token,
 -- expiry) through the 'Notifier' effect. The standalone server can interpret that three ways:
 --
 -- * 'LogNotifier' (the default) writes the link to the server log — ideal for development and
@@ -435,12 +435,12 @@ data ShomeiConfig = ShomeiConfig
     oauthConfig :: !OAuthConfig,
     totpConfig :: !TotpConfig,
     cookieConfig :: !CookieConfig,
-    -- | roles granted to every user created through @Shomei.Workflow.signup@ (the HTTP signup
+    -- | roles granted to every user created through @Shomei.Session.Authentication.Workflow.signup@ (the HTTP signup
     --     route and @shomei-admin users create@ alike), applied before the first token is minted
     --     so it already carries them. Empty by default.
     --
     --     Every name here must exist in the @shomei_roles@ registry. The standalone server
-    --     validates this at boot (see @Shomei.Workflow.Roles.undefinedDefaultRoles@) and refuses
+    --     validates this at boot (see @Shomei.Authorization.Role.Workflow.undefinedDefaultRoles@) and refuses
     --     to start otherwise; embedding hosts should call the same check where they assemble
     --     their ports.
     defaultRoles :: !(Set Role)

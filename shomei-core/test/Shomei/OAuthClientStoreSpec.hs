@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 
--- | Pure tests for the in-memory 'Shomei.Effect.OAuthClientStore' interpreter
--- ('Shomei.Effect.InMemory.runOAuthClientStore').
+-- | Pure tests for the in-memory 'Shomei.OAuth.Client.Store' interpreter
+-- ('Shomei.Test.InMemory.runOAuthClientStore').
 --
 -- They prove the persistence contract EP-5's authorization-code flow builds on, against the fake
 -- 'World': a client can be created and found by its client id; a public client stores no secret
@@ -21,22 +21,22 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
-import Shomei.Domain.Claims (Scope (..))
-import Shomei.Domain.OAuthClient
+import Shomei.Authorization.Claims.Domain (Scope (..))
+import Shomei.Id (OAuthClientId, genOAuthClientId, idText)
+import Shomei.OAuth.Client.Domain
   ( ClientType (..),
     NewOAuthClient (..),
     OAuthClient (..),
     OAuthClientStatus (..),
     isRegisteredRedirectUri,
   )
-import Shomei.Effect.InMemory (World, emptyWorld, runInMemory)
-import Shomei.Effect.OAuthClientStore
+import Shomei.OAuth.Client.Store
   ( createOAuthClient,
     findOAuthClientByClientId,
     listOAuthClients,
     revokeOAuthClient,
   )
-import Shomei.Id (OAuthClientId, genOAuthClientId, idText)
+import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
