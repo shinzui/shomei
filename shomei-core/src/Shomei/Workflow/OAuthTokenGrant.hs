@@ -64,8 +64,8 @@ import Shomei.Effect.UserStore (UserStore, findUserById)
 import Shomei.Error (AuthError)
 import Shomei.Id (SessionId)
 import Shomei.Prelude
+import Shomei.ServiceAccount.Secret (sha256Hex, verifyServiceSecret)
 import Shomei.Workflow qualified as Wf
-import Shomei.Workflow.ServiceToken (sha256Hex, verifyServiceSecret)
 import Shomei.Workflow.Session (SessionOptions (..), issueSessionWith)
 
 -- | The RFC 6749 §5.2 error codes these grants produce.

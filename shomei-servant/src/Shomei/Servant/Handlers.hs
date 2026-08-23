@@ -31,7 +31,7 @@ import Network.HTTP.Types.URI (renderSimpleQuery)
 import Network.Socket (SockAddr (..))
 import Servant (Handler, Header, Headers, NoContent (..), ServerError (..), addHeader, err503, errBody, errHeaders, noHeader, throwError)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), OAuthConfig (..), ServiceAccountId (..), ShomeiConfig (..), transportUsesCookies)
+import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), OAuthConfig (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Command
   ( ClientContext (..),
@@ -40,11 +40,11 @@ import Shomei.Domain.Command
     RefreshCommand (..),
     SignupCommand (..),
   )
-import Shomei.Domain.Email (Email, emailText, mkEmail)
+import Shomei.Domain.Email (emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginAttempt (ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
+import Shomei.Domain.LoginId (loginIdText, mkLoginId)
 import Shomei.Domain.OAuthClient (OAuthClientStatus (..), isRegisteredRedirectUri)
 import Shomei.Domain.OAuthClient qualified as OAuthClient
 import Shomei.Domain.OneTimeToken (OneTimeToken (..))
@@ -108,8 +108,6 @@ import Shomei.Servant.DTO
     ConfirmEmailVerificationRequest (..),
     ConfirmPasswordResetRequest (..),
     HealthResponse (..),
-    ImpersonateRequest (..),
-    ImpersonateResponse,
     LoginRequest (..),
     LoginResponse,
     MfaCompleteRequest (..),
@@ -123,8 +121,6 @@ import Shomei.Servant.DTO
     RecoveryCodesCountResponse (..),
     RecoveryCodesResponse (..),
     RefreshRequest (..),
-    ServiceTokenRequest (..),
-    ServiceTokenResponse,
     SessionResponse,
     SignupRequest (..),
     SignupResponse (..),
@@ -135,19 +131,17 @@ import Shomei.Servant.DTO
     UserResponse,
     VerifyEmailRequest (..),
     adminUserToResponse,
-    mfaCompletionOf,
-    totpRemovalProofOf,
     decodeCursor,
     decodeUserCursor,
     encodeCursor,
     encodeUserCursor,
-    impersonateToResponse,
     loginResultToResponse,
+    mfaCompletionOf,
     passkeyToResponse,
-    serviceTokenToResponse,
     sessionToResponse,
     storedToResponse,
     tokenPairToResponse,
+    totpRemovalProofOf,
     userToResponse,
   )
 import Shomei.Servant.Error
@@ -165,19 +159,18 @@ import Shomei.Servant.Oidc qualified as Oidc
 -- No cycle: "Shomei.Servant.OpenApi" imports only API/DTO/Authz/Id, never this module.
 import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Seam (Env (..), runAuth, runPort, runPortChecked)
+import Shomei.ServiceAccount.Secret qualified as ServiceAccountSecret
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.Account qualified as Account
 import Shomei.Workflow.Admin qualified as Admin
 import Shomei.Workflow.ClientCredentials qualified as ClientCredentials
-import Shomei.Workflow.Impersonation qualified as Imp
 import Shomei.Workflow.Mfa qualified as Mfa
-import Shomei.Workflow.Totp qualified as Totp
 import Shomei.Workflow.OAuthAuthorize qualified as OAuthAuthorize
 import Shomei.Workflow.OAuthTokenGrant qualified as OAuthTokenGrant
 import Shomei.Workflow.Passkey qualified as Passkey
 import Shomei.Workflow.Roles qualified as Roles
-import Shomei.Workflow.ServiceToken qualified as ServiceToken
 import Shomei.Workflow.TokenExchange qualified as TokenExchange
+import Shomei.Workflow.Totp qualified as Totp
 import Web.FormUrlEncoded (Form)
 
 -- | Assemble the served route tree: the application record mounted under @\/v1@, plus the
@@ -205,7 +198,6 @@ shomeiServer env =
     { signup = signupH env,
       login = loginH env,
       refresh = refreshH env,
-      serviceToken = serviceTokenH env,
       verifyEmailRequest = verifyEmailRequestH env,
       verifyEmailConfirm = verifyEmailConfirmH env,
       passwordResetRequest = passwordResetRequestH env,
@@ -226,8 +218,6 @@ shomeiServer env =
       mfaComplete = mfaCompleteH env,
       passkeyLoginBegin = passkeyLoginBeginH env,
       passkeyLoginComplete = passkeyLoginCompleteH env,
-      impersonate = impersonateH env,
-      stopImpersonate = stopImpersonateH env,
       auditEvents = auditEventsH env,
       adminListUsers = adminListUsersH env,
       adminGetUser = adminGetUserH env,
@@ -244,7 +234,8 @@ shomeiServer env =
 
 signupH :: Env -> SignupRequest -> Handler (WithCookies SignupResponse)
 signupH env req = do
-  (loginId, mEmail) <- resolvePrincipal req.loginId req.email
+  loginId <- either (throwError . authErrorToServerError) pure (mkLoginId req.loginId)
+  mEmail <- traverse (either (throwError . authErrorToServerError) pure . mkEmail) req.email
   let cmd =
         SignupCommand
           { loginId = loginId,
@@ -259,7 +250,7 @@ signupH env req = do
 
 loginH :: Env -> SockAddr -> LoginRequest -> Handler (WithCookies LoginResponse)
 loginH env peer req = do
-  (loginId, _mEmail) <- resolvePrincipal req.loginId req.email
+  loginId <- either (throwError . authErrorToServerError) pure (mkLoginId req.loginId)
   let cmd = LoginCommand {loginId = loginId, password = PlainPassword req.password}
       ctx =
         ClientContext
@@ -272,21 +263,6 @@ loginH env peer req = do
     Wf.LoginComplete _ pair ->
       applyCookies env.config (tokenCookies env.config pair) (loginResultToResponse env.config result)
     Wf.MfaRequired _ -> noHeader (noHeader (loginResultToResponse env.config result))
-
--- | Resolve the @(LoginId, optional Email)@ principal from a request's optional @loginId@/
--- @email@ fields (the SH-25 compatibility rule). A /present/ email is parsed through 'mkEmail'
--- (malformed → 400). The login id is the explicit @loginId@ parsed through 'mkLoginId'
--- (malformed → 400), or, when absent, defaults to the email text; with neither field present the
--- request is a 400.
-resolvePrincipal :: Maybe Text -> Maybe Text -> Handler (LoginId, Maybe Email)
-resolvePrincipal mLoginId mEmailText = do
-  mEmail <- traverse (either (throwError . authErrorToServerError) pure . mkEmail) mEmailText
-  loginId <- case mLoginId of
-    Just t -> either (throwError . authErrorToServerError) pure (mkLoginId t)
-    Nothing -> case mEmail of
-      Just e -> pure (loginIdFromEmail e)
-      Nothing -> throwError (toProblemError pcBadRequest (Just "loginId or email required"))
-  pure (loginId, mEmail)
 
 -- | The source IP of the request as text, used as the per-IP throttle key. Behind a reverse
 -- proxy this is the proxy's address; a trusted @X-Forwarded-For@ policy would be layered in a
@@ -507,7 +483,7 @@ clientCredentialsGrant env mAuthHeader form = do
   outcome <- runPort env (ClientCredentials.grantClientCredentials env.config grant)
   granted <- either (throwError . oauthErrorFor) pure outcome
   -- Read through lens labels: 'GrantedToken' shares @accessToken@/@expiresIn@/@sessionId@ with
-  -- 'Shomei.Workflow.ServiceToken.IssuedServiceToken', so @granted.accessToken@ is ambiguous.
+  -- Several grant result records share @accessToken@, so select the field through its label.
   let AccessToken token = granted ^. #accessToken
       body =
         OAuth.TokenResponse
@@ -834,7 +810,7 @@ authenticateOAuthCaller env mAuthHeader form = do
         Just client
           | Just h <- oauthClientSecretHash client,
             client ^. #status == OAuthClientActive ->
-              pure (ServiceToken.verifyServiceSecret h secret)
+              pure (ServiceAccountSecret.verifyServiceSecret h secret)
         _ -> do
           mAccount <- findServiceAccountByClientId clientId
           pure (maybe False (serviceAccountAuthenticates secret) mAccount)
@@ -844,7 +820,7 @@ authenticateOAuthCaller env mAuthHeader form = do
 -- patterns because 'ServiceAccount' shares field names with 'User'.
 serviceAccountAuthenticates :: Text -> ServiceAccount.ServiceAccount -> Bool
 serviceAccountAuthenticates secret account =
-  ServiceToken.verifyServiceSecret (saSecretHash account) secret
+  ServiceAccountSecret.verifyServiceSecret (saSecretHash account) secret
     && saStatus account == ServiceAccount.ServiceAccountActive
   where
     saSecretHash ServiceAccount.ServiceAccount {secretHash} = secretHash
@@ -896,26 +872,6 @@ oauthErrorFor = \case
   -- (a database outage surfacing as InternalAuthError) is a 500, still in the OAuth shape so a
   -- client's error parser does not itself fail while handling the failure.
   _ -> OAuth.oauthError status500 "server_error" "the authorization server encountered an unexpected condition"
-
-serviceTokenH :: Env -> ServiceTokenRequest -> Handler ServiceTokenResponse
-serviceTokenH env req = do
-  when (null req.scopes) (throwError (toProblemError pcBadRequest (Just "scopes must not be empty")))
-  actorId <- traverse parseActor req.actorId
-  serviceTokenToResponse
-    <$> runAuth
-      env
-      ( ServiceToken.issueServiceToken
-          env.config
-          ServiceToken.IssueServiceToken
-            { accountId = ServiceAccountId req.accountId,
-              secret = req.secret,
-              scopes = Set.fromList (Scope <$> req.scopes),
-              actorId = actorId
-            }
-      )
-  where
-    parseActor t =
-      either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid actorId"))) pure (parseId t)
 
 verifyEmailRequestH :: Env -> VerifyEmailRequest -> Handler NoContent
 verifyEmailRequestH env req = do
@@ -1118,33 +1074,6 @@ passkeyLoginCompleteH env req = do
   cid <- either (\_ -> throwError (toProblemError pcBadRequest (Just "invalid ceremonyId"))) pure (parseId req.ceremonyId)
   (_user, pair) <- runAuth env (Mfa.completePasswordlessLogin env.config cid req.assertion)
   pure (applyCookies env.config (tokenCookies env.config pair) (tokenPairToResponse env.config pair))
-
--- | @POST /v1/auth/impersonate@: exchange the caller's token for a short-lived delegated
--- token acting on behalf of 'req.userId'. A malformed target id is a 400 before the workflow
--- runs; the workflow enforces scope/freshness/target checks and audits the start.
-impersonateH :: Env -> AuthUser -> SockAddr -> ImpersonateRequest -> Handler ImpersonateResponse
-impersonateH env caller peer req = do
-  target <-
-    either (\_ -> throwError (authErrorToServerError ImpersonationTargetInvalid)) pure (parseId req.userId)
-  (session, access) <-
-    runAuth env $
-      Imp.startImpersonation
-        env.config
-        Imp.StartImpersonation
-          { actorClaims = caller.authClaims,
-            targetUserId = target,
-            reason = req.reason,
-            ticketId = req.ticketId,
-            clientIp = Just (clientIpText peer)
-          }
-  pure (impersonateToResponse session access)
-
--- | @DELETE /v1/auth/impersonate@: stop impersonating by revoking the delegated session named
--- by the presented token. A non-delegated token (no @act@ claim) is rejected by the workflow.
-stopImpersonateH :: Env -> AuthUser -> Handler NoContent
-stopImpersonateH env caller = do
-  runAuth env (Imp.stopImpersonation caller.authClaims)
-  pure NoContent
 
 -- | @GET /v1/admin/audit/events@ (EP-7): admin-gated, filtered, keyset-paginated audit-trail
 -- read. The query params arrive in route order.

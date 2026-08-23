@@ -7,8 +7,6 @@
 -- verifying until they expire (zero-downtime rotation).
 module Shomei.Jwt.Rotation
   ( rotateSigningKey,
-    rotateSigningKeyFor,
-    rotateSigningKeyForWith,
     currentJwks,
   )
 where
@@ -18,7 +16,7 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.Either (rights)
 import Effectful (Eff, IOE, (:>))
 import Shomei.Domain.SigningKey
-  ( SigningAlgorithm (ES256),
+  ( SigningAlgorithm,
     SigningKeyStatus (KeyRetired),
     StoredSigningKey (..),
   )
@@ -35,38 +33,18 @@ import Shomei.Jwt.Key (generateSigningKeyFor, toStoredSigningKeyFor)
 import Shomei.Jwt.KeyProtection (KeyEncryptionKey, protectStoredSigningKey, publicJwkFromStored)
 import Shomei.Prelude
 
--- | Generate a new active key and retire whatever was active. Returns the new
--- live 'JWK' (so the caller can sign with it immediately).
+-- | Generate and encrypt a new active key, then retire whatever was active. Returns the live
+-- 'JWK' so the caller can sign with it immediately.
 rotateSigningKey ::
   (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
-  Eff es JWK
-rotateSigningKey = rotateSigningKeyFor ES256
-
--- | Like 'rotateSigningKey' but generates a key for the requested algorithm, so an
--- operator can rotate onto RS256 (or back to ES256). 'rotateSigningKey' is the ES256
--- alias kept for back-compat.
---
--- Stores the new private key in __plaintext__. A deployment that encrypts signing keys at
--- rest must call 'rotateSigningKeyForWith' with its key-encryption key instead, or it will
--- write a plaintext row into an otherwise-encrypted table.
-rotateSigningKeyFor ::
-  (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
+  KeyEncryptionKey ->
   SigningAlgorithm ->
   Eff es JWK
-rotateSigningKeyFor = rotateSigningKeyForWith Nothing
-
--- | 'rotateSigningKeyFor', encrypting the new private key under @mKek@ before it is
--- persisted (see "Shomei.Jwt.KeyProtection"). 'Nothing' stores plaintext.
-rotateSigningKeyForWith ::
-  (IOE :> es, SigningKeyStore :> es, Clock :> es) =>
-  Maybe KeyEncryptionKey ->
-  SigningAlgorithm ->
-  Eff es JWK
-rotateSigningKeyForWith mKek alg = do
+rotateSigningKey kek alg = do
   t <- now
   priorActive <- listActiveSigningKeys
   newJwk <- liftIO (generateSigningKeyFor alg)
-  protected <- liftIO (protectStoredSigningKey mKek (toStoredSigningKeyFor alg t newJwk))
+  protected <- liftIO (protectStoredSigningKey kek (toStoredSigningKeyFor alg t newJwk))
   insertSigningKey protected
   forM_ priorActive \k -> updateSigningKeyStatus k.keyId KeyRetired t
   pure newJwk

@@ -96,7 +96,7 @@ toStoredSigningKeyFor alg t k =
 -- __Does not decrypt.__ A row whose private material is encrypted at rest (see
 -- "Shomei.Jwt.KeyProtection") will fail to parse here. Production code loading a signer must
 -- call 'Shomei.Jwt.KeyProtection.decryptStoredSigningKey', which handles both forms; this
--- function remains for tests and for callers that know their row is plaintext.
+-- function remains for tests and for callers converting an in-memory, unprotected record.
 fromStoredSigningKey :: StoredSigningKey -> Either Text JWK
 fromStoredSigningKey sk =
   case Aeson.eitherDecodeStrict (Text.encodeUtf8 sk.privateKeyJwk) of

@@ -15,9 +15,6 @@
 -- each ciphertext to its row: an attacker with database /write/ access cannot relabel an
 -- old compromised key as the active one, because decryption under the new @kid@ fails.
 --
--- Legacy plaintext rows are JWK JSON (they start with @{@) and are detected by the absence
--- of the @enc:v1:@ prefix, so encrypted and plaintext rows coexist during a backfill.
---
 -- Operators wanting KMS/HSM-managed keys inject the KEK from their secret manager; that
 -- integration sits above Shōmei and is out of scope here.
 module Shomei.Jwt.KeyProtection
@@ -73,9 +70,7 @@ keyEncryptionKeyFromBase64 raw =
 
 -- | Why a stored private key could not be turned back into a live 'JWK'.
 data KeyDecryptError
-  = -- | The row is encrypted but the process holds no KEK.
-    KeyEncryptedButNoKek
-  | -- | The @enc:v1:@ envelope is structurally broken (bad base64, wrong nonce length, …).
+  = -- | The @enc:v1:@ envelope is structurally broken (missing prefix, bad base64, …).
     MalformedEncryptedKey Text
   | -- | Authentication failed. Deliberately one constructor for a wrong KEK, a tampered
     -- ciphertext, and a ciphertext moved to another row: the caller learns only that it
@@ -104,25 +99,21 @@ encryptPrivateJwk (KeyEncryptionKey kek) kid jwkJson = do
           tag = BA.convert (AEAD.finalize st1) :: ByteString
       pure (envelopePrefix <> b64 nonceBytes <> ":" <> b64 (ciphertext <> tag))
 
--- | Recover the private JWK JSON from a stored column value.
---
--- A plaintext value passes through unchanged whether or not a KEK is held, which is what
--- lets a backfill encrypt rows one at a time under a live server.
-decryptPrivateJwk :: Maybe KeyEncryptionKey -> Text -> Text -> Either KeyDecryptError Text
-decryptPrivateJwk mKek kid stored
-  | not (isEncryptedPrivateJwk stored) = Right stored
-  | otherwise = case mKek of
-      Nothing -> Left KeyEncryptedButNoKek
-      Just (KeyEncryptionKey kek) -> do
-        (nonceBytes, body) <- parseEnvelope stored
-        when (BS.length body < 16) (Left (MalformedEncryptedKey "ciphertext is shorter than its authentication tag"))
-        let (ciphertext, tagBytes) = BS.splitAt (BS.length body - 16) body
-        st0 <- cryptoOr (MalformedEncryptedKey "bad nonce or key size") (aeadState kek nonceBytes kid)
-        expectedTag <- cryptoOr (MalformedEncryptedKey "bad authentication tag") (Poly1305.authTag tagBytes)
-        let (plaintext, st1) = AEAD.decrypt ciphertext st0
-        -- 'Auth's Eq is constant-time (Data.ByteArray.constEq).
-        unless (AEAD.finalize st1 == expectedTag) (Left KeyDecryptFailed)
-        first (KeyJsonInvalid . Text.pack . show) (TE.decodeUtf8' plaintext)
+-- | Recover private JWK JSON from the required encrypted envelope.
+decryptPrivateJwk :: KeyEncryptionKey -> Text -> Text -> Either KeyDecryptError Text
+decryptPrivateJwk (KeyEncryptionKey kek) kid stored
+  | not (isEncryptedPrivateJwk stored) =
+      Left (MalformedEncryptedKey "private key is not an enc:v1 envelope")
+  | otherwise = do
+      (nonceBytes, body) <- parseEnvelope stored
+      when (BS.length body < 16) (Left (MalformedEncryptedKey "ciphertext is shorter than its authentication tag"))
+      let (ciphertext, tagBytes) = BS.splitAt (BS.length body - 16) body
+      st0 <- cryptoOr (MalformedEncryptedKey "bad nonce or key size") (aeadState kek nonceBytes kid)
+      expectedTag <- cryptoOr (MalformedEncryptedKey "bad authentication tag") (Poly1305.authTag tagBytes)
+      let (plaintext, st1) = AEAD.decrypt ciphertext st0
+      -- 'Auth's Eq is constant-time (Data.ByteArray.constEq).
+      unless (AEAD.finalize st1 == expectedTag) (Left KeyDecryptFailed)
+      first (KeyJsonInvalid . Text.pack . show) (TE.decodeUtf8' plaintext)
 
 -- | Split @enc:v1:\<nonce\>:\<body\>@ into its decoded parts.
 parseEnvelope :: Text -> Either KeyDecryptError (ByteString, ByteString)
@@ -157,15 +148,12 @@ cryptoOr err = \case
 b64 :: ByteString -> Text
 b64 bs = TE.decodeUtf8 (convertToBase Base64URLUnpadded bs)
 
--- | Encrypt a key's private material before it is persisted. Idempotent: an
--- already-encrypted record is returned unchanged, so a backfill can re-run safely. Without
--- a KEK the record passes through, which is how a KEK-less deployment keeps working.
+-- | Encrypt a key's private material before it is persisted. Idempotent for an envelope.
 --
 -- @publicKeyJwk@ is never encrypted — publication and verification must not depend on the
 -- KEK.
-protectStoredSigningKey :: Maybe KeyEncryptionKey -> StoredSigningKey -> IO StoredSigningKey
-protectStoredSigningKey Nothing sk = pure sk
-protectStoredSigningKey (Just kek) sk
+protectStoredSigningKey :: KeyEncryptionKey -> StoredSigningKey -> IO StoredSigningKey
+protectStoredSigningKey kek sk
   | isEncryptedPrivateJwk sk.privateKeyJwk = pure sk
   | otherwise = do
       enc <- encryptPrivateJwk kek sk.keyId sk.privateKeyJwk
@@ -174,9 +162,9 @@ protectStoredSigningKey (Just kek) sk
 -- | The single stored→live conversion for __private__ key material: decrypt if needed, then
 -- parse. Every path that needs a signing key goes through here; nothing else may parse
 -- @private_key_jwk@.
-decryptStoredSigningKey :: Maybe KeyEncryptionKey -> StoredSigningKey -> Either KeyDecryptError JWK
-decryptStoredSigningKey mKek sk = do
-  jwkJson <- decryptPrivateJwk mKek sk.keyId sk.privateKeyJwk
+decryptStoredSigningKey :: KeyEncryptionKey -> StoredSigningKey -> Either KeyDecryptError JWK
+decryptStoredSigningKey kek sk = do
+  jwkJson <- decryptPrivateJwk kek sk.keyId sk.privateKeyJwk
   first (KeyJsonInvalid . Text.pack) (Aeson.eitherDecodeStrict (TE.encodeUtf8 jwkJson))
 
 -- | Parse a key's __public__ material. Needs no KEK, by construction: the published JWKS and

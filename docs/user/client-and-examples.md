@@ -35,7 +35,7 @@ main = do
 ```
 
 Convenience wrappers are exported for signup, login, refresh, logout, `me`, `session`, and the
-passkey/MFA flows. For newer endpoints such as service-token issuance, impersonation, and audit
+passkey/MFA flows. For newer endpoints such as OAuth machine-token issuance, delegation, and audit
 retrieval, use the exported `shomeiClient` record directly with selectors from
 `Shomei.Servant.API`, or add a small wrapper following the existing module pattern.
 

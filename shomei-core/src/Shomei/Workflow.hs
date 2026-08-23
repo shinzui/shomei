@@ -28,7 +28,7 @@ import Data.Aeson (Value)
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
-import Shomei.Config (NotifierConfig (..), RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..), WebAuthnConfig (..))
+import Shomei.Config (MfaConfig (..), NotifierConfig (..), RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
@@ -45,6 +45,7 @@ import Shomei.Domain.RefreshToken (NewRefreshToken (..), PersistedRefreshToken (
 import Shomei.Domain.RefreshToken qualified as RT
 import Shomei.Domain.Session (NewSession (..), Session (..), SessionStatus (SessionActive))
 import Shomei.Domain.Token (AccessToken, TokenPair (..))
+import Shomei.Domain.Totp (isTotpConfirmed)
 import Shomei.Domain.User (NewUser (..), User (..), UserStatus (UserActive))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher, publishAuthEvent)
 import Shomei.Effect.AuthUnitOfWork
@@ -67,12 +68,10 @@ import Shomei.Effect.LoginAttemptStore
     setAccountLockout,
   )
 import Shomei.Effect.PasskeyStore (PasskeyStore, countPasskeysByUser)
-import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
-import Shomei.Domain.Totp (isTotpConfirmed)
-import Shomei.Effect.TotpCredentialStore (TotpCredentialStore, findTotpByUser)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
 import Shomei.Effect.PasswordHasher (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Effect.PendingCeremonyStore (PendingCeremonyStore)
+import Shomei.Effect.RecoveryCodeStore (RecoveryCodeStore)
 import Shomei.Effect.RefreshTokenStore
   ( RefreshTokenStore,
     findRefreshTokenByHash,
@@ -84,6 +83,7 @@ import Shomei.Effect.SessionStore (SessionStore, findSessionById, revokeSession)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Effect.TokenSigner (TokenSigner, signAccessToken)
 import Shomei.Effect.TokenVerifier (TokenVerifier, verifyAccessToken)
+import Shomei.Effect.TotpCredentialStore (TotpCredentialStore, findTotpByUser)
 import Shomei.Effect.UserStore (UserStore, createUser, findUserById, findUserByLoginId)
 import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError (..))
@@ -95,7 +95,7 @@ import Shomei.Workflow.Roles (applyDefaultRoles)
 import Shomei.Workflow.Session (buildEnrichedClaims, ensureEmailVerified, issueSession)
 
 -- | The step-up challenge handed back when an account with any enrolled second factor logs in
--- with the correct password and @mfaRequired@ is on. 'ceremonyId' is the consume-once
+-- with the correct password and second-factor policy is on. 'ceremonyId' is the consume-once
 -- pending-MFA handle the client echoes to 'Shomei.Workflow.Mfa.completeMfa'; 'options' is the
 -- @navigator.credentials.get()@ options the browser runs (the empty object @{}@ for a TOTP-only
 -- user, who has no WebAuthn ceremony); 'methods' advertises which factors can complete it
@@ -107,8 +107,8 @@ data MfaChallenge = MfaChallenge
   }
   deriving stock (Generic, Eq, Show)
 
--- | The outcome of 'login'. 'LoginComplete' is the legacy success (user + tokens), returned
--- unchanged for accounts with no passkey or with @mfaRequired@ off. 'MfaRequired' means the
+-- | The outcome of 'login'. 'LoginComplete' contains the user and tokens and is returned
+-- unchanged for accounts with no second factor or with the MFA policy off. 'MfaRequired' means the
 -- password was correct but a second factor is now demanded; NO token is issued yet.
 data LoginResult
   = LoginComplete User TokenPair
@@ -273,7 +273,7 @@ login cfg ctx cmd = runErrorNoCallStack do
   passkeyCount <- countPasskeysByUser user.userId
   totpEnrolled <- maybe False isTotpConfirmed <$> findTotpByUser user.userId
   let hasSecondFactor = passkeyCount > 0 || totpEnrolled
-  if mfaRequired (webauthnConfig cfg) && hasSecondFactor
+  if requireSecondFactor (mfaConfig cfg) && hasSecondFactor
     then do
       (cid, optionsJson, methods) <- prepareMfaChallenge cfg user ts
       pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson, methods = methods})

@@ -35,7 +35,7 @@
 -- the downstream half of the token-exchange contract: a resource server that already verified the
 -- JWT reads both out of the claims it holds — no extra call — attributes writes to @sub@, and logs
 -- @act@ so its own audit trail records which service or operator acted. See
--- @docs\/user\/service-tokens.md@ (Acting on behalf of a user).
+-- @docs\/user\/machine-tokens.md@ (Acting on behalf of a user).
 module Downstream.Service
   ( JwksCache,
     newJwksCache,

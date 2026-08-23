@@ -35,6 +35,7 @@ import Shomei.Effect.OAuthCodeStore
     putAuthorizationCode,
   )
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText, sessionIdFromUUID)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Workflow.OAuthAuthorize
   ( AuthorizeError (..),
     AuthorizeParams (..),
@@ -42,7 +43,6 @@ import Shomei.Workflow.OAuthAuthorize
     authorize,
     isValidS256Challenge,
   )
-import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

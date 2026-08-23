@@ -11,10 +11,8 @@ and one lockout escape hatch:
 - **Recovery codes** — single-use codes that complete an MFA challenge when the user has lost
   their authenticator (or passkey).
 
-When `webauthnConfig.mfaRequired` is on (the default), an account that has **any** confirmed
-second factor — a passkey *or* a confirmed TOTP credential — must complete MFA at login. The
-field keeps its name for backward compatibility; its meaning is now "require the second factor
-for accounts that have one".
+When `mfaConfig.requireSecondFactor` is on (the default), an account that has **any** confirmed
+second factor — a passkey or a confirmed TOTP credential — must complete MFA at login.
 
 ## TOTP parameters
 
@@ -70,14 +68,14 @@ that user's factors.
 2. `POST /v1/auth/mfa/complete` with the ceremony id and the code:
 
    ```json
-   {"ceremonyId":"webauthn_ceremony_01…","totpCode":"719402"}
+   {"ceremonyId":"webauthn_ceremony_01…","proof":{"type":"totp","code":"719402"}}
    ```
 
    → `200` with the token pair `{"accessToken","refreshToken","expiresIn"}`.
 
-The completion body carries **exactly one** of `assertion` (passkey), `totpCode`, or
-`recoveryCode`; sending zero or more than one is `400`. The legacy `{"ceremonyId","assertion"}`
-shape is unchanged, so existing passkey-only clients keep working.
+The completion body carries exactly one tagged proof: `passkey` with `assertion`, `totp` with
+`code`, or `recovery_code` with `code`. Unknown tags, missing payloads, and extra proof fields are
+decoding failures.
 
 **One guess per challenge.** A failed completion spends the consume-once ceremony, exactly as
 the passkey flow does — the client logs in again to get a fresh one. Brute force is therefore
@@ -111,7 +109,8 @@ recently issued access token: if the presented token is older than
 hashes; `psql` shows `shomei_recovery_codes.code_hash` as hex, never a plaintext code.
 
 - `GET /v1/auth/recovery-codes` returns `{"remaining":9}` — how many are unused.
-- Any code completes an MFA challenge exactly once (`{"ceremonyId","recoveryCode":"…"}`), after
+- Any code completes an MFA challenge exactly once
+  (`{"ceremonyId":"…","proof":{"type":"recovery_code","code":"…"}}`), after
   which the count drops. A spent or unknown code is `401 recovery_code_invalid`.
 
 Recovery codes back up **any** second factor, including passkey-only users, so a user with a
@@ -144,7 +143,7 @@ export SHOMEI_TOTP_ENCRYPTION_KEY=$(openssl rand -base64 32)
 | enable TOTP | `totpEnabled` | `SHOMEI_TOTP_ENABLED` | `false` | enrollment + login challenge for the factor |
 | enrollment TTL | `totpEnrollmentTtlSeconds` | `SHOMEI_TOTP_ENROLLMENT_TTL` | `900` | how long an unconfirmed enrollment stays activatable |
 | encryption key | *(env only)* | `SHOMEI_TOTP_ENCRYPTION_KEY` | *(required when enabled)* | base64 of 32 bytes; encrypts stored secrets |
-| require MFA | `webauthnMfaRequired` | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | `true` | challenge accounts that have any enrolled factor |
+| require MFA | `mfaRequireSecondFactor` | `SHOMEI_MFA_REQUIRE_SECOND_FACTOR` | `true` | challenge accounts that have any enrolled factor |
 
 See [api.md](api.md#totp--recovery-codes-masterplan-7-ep-7) for the endpoint reference and
 [security.md](security.md) for how these fit the threat model.

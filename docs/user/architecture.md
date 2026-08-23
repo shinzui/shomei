@@ -44,7 +44,7 @@ interpreter (see [notifications.md](notifications.md)).
 behavioral heart: `signup`, `login` (with lockout/throttle gates), `refresh` (rotation with reuse
 detection), `logout`, `verifyToken`, account-lifecycle flows
 (`requestEmailVerification`/`confirm`, `requestPasswordReset`/`confirm`, `changePassword`),
-passkey/MFA ceremonies, impersonation/delegated-token exchange, and scoped service-token issuance.
+passkey/MFA ceremonies, delegated-token exchange, and scoped OAuth machine-token issuance.
 They short-circuit on the first `AuthError` and publish `AuthEvent`s for audit.
 
 ## The HTTP layer
@@ -70,6 +70,6 @@ timestamps are `timestamptz`.
 
 `Shomei.Config.ShomeiConfig` is the transport-agnostic runtime config (issuer, audience, TTLs,
 password policy, token transport, session-check mode, signing algorithm, notifier, rate-limit,
-observability, WebAuthn, impersonation, and service-token sub-records). `Shomei.Server.Config`
+observability, WebAuthn, delegation, and machine-token sub-records). `Shomei.Server.Config`
 assembles the standalone server subset from defaults, an optional typed Dhall file
 (`$SHOMEI_CONFIG`), and environment variables — see [deployment.md](deployment.md).

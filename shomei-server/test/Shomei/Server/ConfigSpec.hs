@@ -6,14 +6,12 @@
 module Main (main) where
 
 import Control.Exception (try)
-import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Shomei.Config (NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
+import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Crypto (Argon2Params (..))
-import Shomei.Domain.Claims (Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
-import Shomei.Id (UserId, genUserId, idText)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
+import Shomei.Server.Keys (loadKekFromEnv)
 import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isUserError)
 import Test.Tasty (TestTree, defaultMain)
@@ -23,8 +21,8 @@ configPath :: FilePath
 configPath = "/tmp/shomei-config-test.dhall"
 
 -- A partial config (FileConfig's fields are all optional, so absent keys fall back to defaults).
-dhallContents :: UserId -> String
-dhallContents serviceUserId =
+dhallContents :: String
+dhallContents =
   "{ issuer = \"shomei-prod\""
     <> ", databaseUrl = \"host=fromfile dbname=shomei\""
     <> ", port = 8080"
@@ -38,17 +36,14 @@ dhallContents serviceUserId =
     <> ", webauthnRpId = \"auth.fromfile.test\""
     <> ", webauthnOrigins = [ \"https://auth.fromfile.test\" ]"
     <> ", webauthnUserVerification = \"required\""
-    <> ", webauthnMfaRequired = False"
-    <> ", serviceToken = { enabled = True, ttlSeconds = 120, accounts = [ { accountId = \"connector:file\", userId = \""
-    <> Text.unpack (idText serviceUserId)
-    <> "\", secretSha256 = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", allowedScopes = [ \"kawa:ingest\" ] } ] }"
+    <> ", mfaRequireSecondFactor = False"
+    <> ", machineTokenTtlSeconds = 120"
     <> " }"
 
 main :: IO ()
 main = do
-  serviceUserId <- genUserId
-  writeFile configPath (dhallContents serviceUserId)
-  defaultMain (testLoadAndOverride serviceUserId)
+  writeFile configPath dhallContents
+  defaultMain testLoadAndOverride
 
 -- | With neither Dhall file nor pool env vars, the pool knobs reproduce the values that were
 -- hardcoded before they became configuration.
@@ -217,17 +212,15 @@ expectUserErrorNaming name = \case
       (isUserError e && Text.isInfixOf (Text.pack name) (Text.pack (show e)))
   Right _ -> assertFailure (name <> " out of range should have failed the config load")
 
-testLoadAndOverride :: UserId -> TestTree
-testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars override it" do
+testLoadAndOverride :: TestTree
+testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" do
   setEnv "SHOMEI_CONFIG" configPath
   setEnv "PG_CONNECTION_STRING" "host=fromenv dbname=shomei"
   unsetEnv "SHOMEI_PORT"
   unsetEnv "SHOMEI_ISSUER"
   unsetEnv "SHOMEI_WEBAUTHN_RP_ID"
-  unsetEnv "SHOMEI_WEBAUTHN_MFA_REQUIRED"
-  unsetEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
-  unsetEnv "SHOMEI_SERVICE_TOKEN_TTL"
-  unsetEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
+  unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
+  unsetEnv "SHOMEI_MACHINE_TOKEN_TTL"
   unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
   unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
@@ -249,59 +242,31 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   cfg.passwordPolicy.rejectCommonPasswords @?= False
   -- PG_CONNECTION_STRING (env) overrides the file's databaseUrl:
   settings.serverConnStr @?= "host=fromenv dbname=shomei"
-  -- WebAuthn fields load from the Dhall file (defaults are rpId="localhost", mfaRequired=True).
+  -- WebAuthn and MFA fields load from their respective Dhall settings.
   -- WebAuthnConfig is read via record destructuring, not value.field dot syntax (HasField is
   -- unreliable for it under DuplicateRecordFields — MasterPlan 3, EP-1 discovery).
-  let WebAuthnConfig {rpId = fileRpId, origins = fileOrigins, mfaRequired = fileMfa} =
-        webauthnConfig cfg
+  let WebAuthnConfig {rpId = fileRpId, origins = fileOrigins} = webauthnConfig cfg
   fileRpId @?= "auth.fromfile.test"
   fileOrigins @?= ["https://auth.fromfile.test"]
-  fileMfa @?= False
-  -- Service-token fields load from the Dhall file.
-  let ServiceTokenConfig {enabled = fileSvcEnabled, ttl = fileSvcTtl, accounts = fileSvcAccounts} =
-        serviceTokenConfig cfg
-  fileSvcEnabled @?= True
-  fileSvcTtl @?= 120
-  case fileSvcAccounts of
-    [ServiceAccountConfig {accountId = ServiceAccountId account, userId = uid, secretHash = secretHash, allowedScopes = scopes}] -> do
-      account @?= "connector:file"
-      uid @?= serviceUserId
-      secretHash @?= "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      Set.member (Scope "kawa:ingest") scopes @?= True
-    _ -> fail "expected one service account from file config"
+  cfg.mfaConfig.requireSecondFactor @?= False
+  cfg.machineTokenConfig.machineTokenTTL @?= 120
   -- An env var overrides the file's port:
   setEnv "SHOMEI_PORT" "9999"
   -- and the file's pool knobs (file says 25 / 2500):
   setEnv "SHOMEI_DB_POOL_SIZE" "33"
   setEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "2000"
-  -- SHOMEI_WEBAUTHN_* env vars override the file (twelve-factor precedence):
+  -- Concept-specific env vars override the file (twelve-factor precedence):
   setEnv "SHOMEI_WEBAUTHN_RP_ID" "auth.fromenv.test"
-  setEnv "SHOMEI_WEBAUTHN_MFA_REQUIRED" "true"
-  -- Service-token env vars override the file, including the account list JSON.
-  setEnv "SHOMEI_SERVICE_TOKEN_ENABLED" "false"
-  setEnv "SHOMEI_SERVICE_TOKEN_TTL" "60"
-  setEnv
-    "SHOMEI_SERVICE_ACCOUNTS_JSON"
-    ( "[{\"accountId\":\"connector:env\",\"userId\":\""
-        <> Text.unpack (idText serviceUserId)
-        <> "\",\"secretSha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"allowedScopes\":[\"signal:raise\"]}]"
-    )
+  setEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR" "true"
+  setEnv "SHOMEI_MACHINE_TOKEN_TTL" "60"
   (cfg2, settings2) <- loadConfig
   settings2.serverPort @?= 9999
   settings2.serverDbPoolSize @?= 33
   settings2.serverDbPoolAcquisitionTimeoutMs @?= 2000
-  let WebAuthnConfig {rpId = envRpId, mfaRequired = envMfa} = webauthnConfig cfg2
+  let WebAuthnConfig {rpId = envRpId} = webauthnConfig cfg2
   envRpId @?= "auth.fromenv.test"
-  envMfa @?= True
-  let ServiceTokenConfig {enabled = envSvcEnabled, ttl = envSvcTtl, accounts = envSvcAccounts} =
-        serviceTokenConfig cfg2
-  envSvcEnabled @?= False
-  envSvcTtl @?= 60
-  case envSvcAccounts of
-    [ServiceAccountConfig {accountId = ServiceAccountId account, allowedScopes = scopes}] -> do
-      account @?= "connector:env"
-      Set.member (Scope "signal:raise") scopes @?= True
-    _ -> fail "expected one service account from env JSON"
+  cfg2.mfaConfig.requireSecondFactor @?= True
+  cfg2.machineTokenConfig.machineTokenTTL @?= 60
   -- An env var overrides the file's password min length (file says 16):
   setEnv "SHOMEI_PASSWORD_MIN_LENGTH" "20"
   -- and the file's signing-key refresh interval (file says 15); 0 disables the reload:
@@ -321,10 +286,8 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "PG_CONNECTION_STRING"
   unsetEnv "SHOMEI_WEBAUTHN_RP_ID"
-  unsetEnv "SHOMEI_WEBAUTHN_MFA_REQUIRED"
-  unsetEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
-  unsetEnv "SHOMEI_SERVICE_TOKEN_TTL"
-  unsetEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
+  unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
+  unsetEnv "SHOMEI_MACHINE_TOKEN_TTL"
   -- Run inline rather than as sibling tasty test cases: each of these mutates process-wide
   -- environment variables, and tasty runs the members of a test group in parallel.
   poolDefaults
@@ -339,6 +302,19 @@ testLoadAndOverride serviceUserId = testCase "Dhall file is loaded and env vars 
   notifierSmtpMissingHostFails
   notifierSmtpUsernameWithoutPasswordFails
   notifierWebhookMissingSecretFails
+  kekIsRequired
+
+kekIsRequired :: Assertion
+kekIsRequired = do
+  unsetEnv "SHOMEI_KEY_ENCRYPTION_KEY"
+  missing <- try loadKekFromEnv
+  expectUserErrorNaming "SHOMEI_KEY_ENCRYPTION_KEY" missing
+  setEnv "SHOMEI_KEY_ENCRYPTION_KEY" "not-base64"
+  malformed <- try loadKekFromEnv
+  expectUserErrorNaming "SHOMEI_KEY_ENCRYPTION_KEY" malformed
+  setEnv "SHOMEI_KEY_ENCRYPTION_KEY" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  _ <- loadKekFromEnv
+  unsetEnv "SHOMEI_KEY_ENCRYPTION_KEY"
 
 -- EP-8 notifier transport ------------------------------------------------------
 

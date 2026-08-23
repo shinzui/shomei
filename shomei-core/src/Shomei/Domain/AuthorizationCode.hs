@@ -2,7 +2,7 @@
 -- decisions, carried through the user's browser to the client and redeemed at the token endpoint.
 --
 -- The code itself is never stored — only 'codeHash', its SHA-256 hex digest (see
--- 'Shomei.Workflow.ServiceToken.sha256Hex'). A database leak therefore leaks no usable codes,
+-- 'Shomei.ServiceAccount.Secret.sha256Hex'). A database leak therefore leaks no usable codes,
 -- exactly as for refresh tokens.
 --
 -- Every field below is a binding the exchange re-checks. A code is not a capability to mint /any/

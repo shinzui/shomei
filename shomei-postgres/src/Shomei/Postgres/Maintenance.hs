@@ -8,11 +8,7 @@
 -- Sweeping is an infrastructure maintenance concern rather than a domain operation — no
 -- workflow will ever call it — so the statements live here as plain @hasql@ statements
 -- instead of widening the seven core store ports (and every in-memory test interpreter) with
--- operations nothing else uses. One near-duplicate exists as a result:
--- @Shomei.Effect.PendingCeremonyStore.DeleteExpiredCeremonies@ (interpreted in
--- "Shomei.Postgres.PendingCeremonyStore") is an unbatched delete of the same rows
--- 'sweepOnce' handles with 'expiredCeremoniesStmt'. It is left in place for API
--- compatibility; it has no callers.
+-- operations nothing else uses. The sweeper is the sole bulk-delete path.
 --
 -- Definitions used throughout:
 --

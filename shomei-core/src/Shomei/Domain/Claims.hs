@@ -54,7 +54,7 @@ data AuthClaims = AuthClaims
     roles :: !(Set Role),
     -- | the capabilities the subject's roles imply (EP-9), resolved at mint time from the
     --     @shomei_role_permissions@ catalog and carried in the @permissions@ claim. Empty for
-    --     tokens minted before EP-9 (and for the service-token / impersonation paths, which do
+    --     tokens minted before EP-9 (and for OAuth machine/delegation flows, which do
     --     not go through role enrichment); a token with no @permissions@ claim verifies to the
     --     empty set, exactly as @roles@ does.
     permissions :: !(Set Permission),

@@ -32,7 +32,7 @@ library
   hs-source-dirs:  src
   exposed-modules: Shomei.Client
   build-depends:
-    , base                 >=4.18 && <5
+    , base                 >=4.18   && <5
     , base64
     , bytestring
     , http-api-data
@@ -60,6 +60,7 @@ test-suite shomei-client-test
     , servant-client
     , shomei-client
     , shomei-core
+    , shomei-jwt
     , shomei-migrations:test-support
     , shomei-postgres
     , shomei-servant

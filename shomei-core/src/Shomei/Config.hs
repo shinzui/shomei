@@ -22,17 +22,18 @@ module Shomei.Config
     ObservabilityConfig (..),
     LogFormat (..),
     WebAuthnConfig (..),
+    MfaConfig (..),
     UserVerificationPolicy (..),
     AttestationPolicy (..),
     ImpersonationConfig (..),
     ServiceAccountId (..),
-    ServiceAccountConfig (..),
-    ServiceTokenConfig (..),
+    MachineTokenConfig (..),
     OAuthConfig (..),
     TotpConfig (..),
     defaultWebAuthnConfig,
+    defaultMfaConfig,
     defaultImpersonationConfig,
-    defaultServiceTokenConfig,
+    defaultMachineTokenConfig,
     defaultOAuthConfig,
     defaultTotpConfig,
     defaultShomeiConfig,
@@ -53,7 +54,6 @@ import Data.Time (NominalDiffTime)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256), signingAlgorithmFromText)
-import Shomei.Id (UserId)
 import Shomei.Prelude
 
 -- | How access and refresh tokens travel between Shōmei and its clients.
@@ -266,8 +266,7 @@ data ObservabilityConfig = ObservabilityConfig
 -- | WebAuthn / passkey policy (MasterPlan 3, IP-3). Carries the Relying Party
 -- identity (the @rpId@ scope domain, the allowed @origins@, the human RP name) and
 -- ceremony policy. Every field has a default (see 'defaultWebAuthnConfig') so the
--- record stays append-only per IP-3; the @shomei-webauthn@ interpreter reads the RP
--- identity and 'EP-4' reads 'mfaRequired'.
+-- record stays append-only per IP-3; the @shomei-webauthn@ interpreter reads this identity.
 data UserVerificationPolicy = UVRequired | UVPreferred | UVDiscouraged
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -288,9 +287,14 @@ data WebAuthnConfig = WebAuthnConfig
     -- | browser-facing ceremony timeout
     ceremonyTimeout :: !NominalDiffTime,
     -- | how long a begun ceremony's options blob stays valid server-side
-    pendingCeremonyTTL :: !NominalDiffTime,
-    -- | whether accounts that have a passkey MUST complete MFA at login
-    mfaRequired :: !Bool
+    pendingCeremonyTTL :: !NominalDiffTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Policy shared by every second-factor mechanism.
+newtype MfaConfig = MfaConfig
+  { requireSecondFactor :: Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -314,19 +318,9 @@ newtype ServiceAccountId = ServiceAccountId Text
   deriving stock (Generic)
   deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
 
-data ServiceAccountConfig = ServiceAccountConfig
-  { accountId :: !ServiceAccountId,
-    userId :: !UserId,
-    secretHash :: !Text,
-    allowedScopes :: !(Set Scope)
-  }
-  deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
-
-data ServiceTokenConfig = ServiceTokenConfig
-  { enabled :: !Bool,
-    ttl :: !NominalDiffTime,
-    accounts :: ![ServiceAccountConfig]
+-- | Lifetime for refresh-less tokens minted by OAuth machine grants and token exchange.
+newtype MachineTokenConfig = MachineTokenConfig
+  { machineTokenTTL :: NominalDiffTime
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -403,13 +397,11 @@ defaultImpersonationConfig =
       actorFreshnessWindow = 5 * 60
     }
 
-defaultServiceTokenConfig :: ServiceTokenConfig
-defaultServiceTokenConfig =
-  ServiceTokenConfig
-    { enabled = False,
-      ttl = 5 * 60,
-      accounts = []
-    }
+defaultMachineTokenConfig :: MachineTokenConfig
+defaultMachineTokenConfig = MachineTokenConfig {machineTokenTTL = 5 * 60}
+
+defaultMfaConfig :: MfaConfig
+defaultMfaConfig = MfaConfig {requireSecondFactor = True}
 
 defaultWebAuthnConfig :: WebAuthnConfig
 defaultWebAuthnConfig =
@@ -420,8 +412,7 @@ defaultWebAuthnConfig =
       userVerification = UVPreferred,
       attestation = AttestationNone,
       ceremonyTimeout = 300,
-      pendingCeremonyTTL = 300,
-      mfaRequired = True
+      pendingCeremonyTTL = 300
     }
 
 data ShomeiConfig = ShomeiConfig
@@ -438,8 +429,9 @@ data ShomeiConfig = ShomeiConfig
     rateLimitConfig :: !RateLimitConfig,
     observabilityConfig :: !ObservabilityConfig,
     webauthnConfig :: !WebAuthnConfig,
+    mfaConfig :: !MfaConfig,
     impersonationConfig :: !ImpersonationConfig,
-    serviceTokenConfig :: !ServiceTokenConfig,
+    machineTokenConfig :: !MachineTokenConfig,
     oauthConfig :: !OAuthConfig,
     totpConfig :: !TotpConfig,
     cookieConfig :: !CookieConfig,
@@ -520,8 +512,9 @@ defaultShomeiConfig iss aud =
       rateLimitConfig = defaultRateLimitConfig,
       observabilityConfig = defaultObservabilityConfig,
       webauthnConfig = defaultWebAuthnConfig,
+      mfaConfig = defaultMfaConfig,
       impersonationConfig = defaultImpersonationConfig,
-      serviceTokenConfig = defaultServiceTokenConfig,
+      machineTokenConfig = defaultMachineTokenConfig,
       oauthConfig = defaultOAuthConfig,
       totpConfig = defaultTotpConfig,
       cookieConfig = defaultCookieConfig,

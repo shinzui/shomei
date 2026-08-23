@@ -79,10 +79,6 @@ module Shomei.Servant.Error
     pcImpersonationForbidden,
     pcImpersonationTargetInvalid,
     pcImpersonationActionBlocked,
-    pcServiceTokenDisabled,
-    pcServiceAccountInvalid,
-    pcServiceTokenScopeDenied,
-    pcServiceTokenActorInvalid,
     pcUserNotFound,
     pcRoleNotDefined,
     pcInvalidUserStatus,
@@ -295,12 +291,6 @@ pcImpersonationForbidden = ProblemSpec "impersonation_forbidden" err403 "Not all
 pcImpersonationTargetInvalid = ProblemSpec "impersonation_target_invalid" err400 "Invalid impersonation target"
 pcImpersonationActionBlocked = ProblemSpec "impersonation_action_blocked" err403 "This action is not permitted while impersonating"
 
-pcServiceTokenDisabled, pcServiceAccountInvalid, pcServiceTokenScopeDenied, pcServiceTokenActorInvalid :: ProblemSpec
-pcServiceTokenDisabled = ProblemSpec "service_token_disabled" err403 "Service-token issuance is disabled"
-pcServiceAccountInvalid = ProblemSpec "service_account_invalid" err403 "Service account is invalid"
-pcServiceTokenScopeDenied = ProblemSpec "service_token_scope_denied" err403 "Requested scopes are not allowed"
-pcServiceTokenActorInvalid = ProblemSpec "service_token_actor_invalid" err400 "Invalid service-token actor"
-
 pcUserNotFound, pcRoleNotDefined, pcInternal :: ProblemSpec
 pcUserNotFound = ProblemSpec "user_not_found" err404 "User not found"
 pcRoleNotDefined = ProblemSpec "role_not_defined" err422 "Role not defined"
@@ -326,10 +316,12 @@ pcTokenInvalidAuth = ProblemSpec "token_invalid" err401 "Token is invalid"
 pcMissingRole, pcMissingScope, pcMissingPermission, pcCsrfRejected :: ProblemSpec
 pcMissingRole = ProblemSpec "missing_role" err403 "Missing required role"
 pcMissingScope = ProblemSpec "missing_scope" err403 "Missing required scope"
+
 -- | EP-9: the @RequirePermission@ combinator's 403 — the token's @permissions@ claim does not
 -- contain the required capability. Distinct code from @missing_role@ so a client can tell a
 -- role-gated route from a permission-gated one.
 pcMissingPermission = ProblemSpec "missing_permission" err403 "Missing required permission"
+
 pcCsrfRejected = ProblemSpec "csrf_rejected" err403 "Origin not allowed for cookie-authenticated request"
 
 -- | A malformed or incomplete request the handler rejected; the @detail@ says what.
@@ -394,10 +386,6 @@ problemCatalog =
     pcImpersonationForbidden,
     pcImpersonationTargetInvalid,
     pcImpersonationActionBlocked,
-    pcServiceTokenDisabled,
-    pcServiceAccountInvalid,
-    pcServiceTokenScopeDenied,
-    pcServiceTokenActorInvalid,
     pcUserNotFound,
     pcRoleNotDefined,
     pcInvalidUserStatus,
@@ -452,19 +440,13 @@ authErrorToServerError = \case
   ImpersonationForbidden -> plain pcImpersonationForbidden
   ImpersonationTargetInvalid -> plain pcImpersonationTargetInvalid
   ImpersonationActionBlocked -> plain pcImpersonationActionBlocked
-  ServiceTokenDisabled -> plain pcServiceTokenDisabled
-  ServiceAccountNotFound -> plain pcServiceAccountInvalid
-  ServiceAccountSecretInvalid -> plain pcServiceAccountInvalid
-  ServiceTokenScopeDenied -> plain pcServiceTokenScopeDenied
-  ServiceTokenActorInvalid -> plain pcServiceTokenActorInvalid
   -- EP-4's two OAuth errors are raised only by 'Shomei.Workflow.ClientCredentials', whose sole
   -- caller is @POST \/oauth\/token@ — and that handler renders them through
   -- 'Shomei.Servant.OAuth.oauthError' in the RFC 6749 §5.2 shape, never through this function
   -- (see the exemption in this module's header). These two arms exist so the @\case@ stays total,
-  -- and reuse EXISTING catalog specs rather than adding codes no route can emit: were some
-  -- future non-OAuth route to surface them, it would still answer with a sane envelope.
-  OAuthClientInvalid -> plain pcServiceAccountInvalid
-  OAuthScopeInvalid -> plain pcServiceTokenScopeDenied
+  -- and map to generic application errors only to keep this conversion total.
+  OAuthClientInvalid -> plain pcInvalidLogin
+  OAuthScopeInvalid -> plain pcBadRequest
   -- EP-6's two token-exchange errors are, like EP-4's above, raised only by the
   -- @POST \/oauth\/token@ dispatcher (via 'Shomei.Workflow.TokenExchange'), which renders them in
   -- the RFC 6749 §5.2 shape, never through this function. These arms keep the @\case@ total and

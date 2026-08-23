@@ -20,7 +20,7 @@ import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.Command (SignupCommand (..))
 import Shomei.Domain.Email (mkEmail)
 import Shomei.Domain.IdTokenClaims (IdToken (..))
-import Shomei.Domain.LoginId (loginIdFromEmail, loginIdText)
+import Shomei.Domain.LoginId (loginIdText, mkLoginId)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
@@ -51,13 +51,14 @@ import System.IO (hPutStrLn, stderr)
 createUserAction :: AdminEnv -> Text -> Text -> Maybe Text -> IO ()
 createUserAction env emailArg pwArg mDisplay = do
   email <- either (\e -> die ("invalid email: " <> show e)) pure (mkEmail emailArg)
+  loginId <- either (\e -> die ("invalid login id: " <> show e)) pure (mkLoginId emailArg)
   -- The server validates 'defaultRoles' against the registry at boot; the CLI has no boot, so it
   -- checks here. Without this, a typo in SHOMEI_DEFAULT_ROLES surfaces as a raw foreign-key
   -- violation from deep inside 'signup', after the user row has already been written.
   checkDefaultRoles env
   let cmd =
         SignupCommand
-          { loginId = loginIdFromEmail email,
+          { loginId = loginId,
             email = Just email,
             password = PlainPassword pwArg,
             displayName = mDisplay

@@ -21,9 +21,9 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken)
 import Shomei.Domain.Password (PlainPassword (..))
@@ -80,7 +80,7 @@ tests =
 
 signupCmd :: Email -> SignupCommand
 signupCmd e =
-  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = strongPw, displayName = Nothing}
+  SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = strongPw, displayName = Nothing}
 
 -- | Sign up, then hand back the refresh token every racer will present.
 signupThenRace :: IORef World -> IO RefreshToken

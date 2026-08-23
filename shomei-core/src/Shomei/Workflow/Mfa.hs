@@ -1,7 +1,7 @@
 -- | The second-factor (MFA step-up) and passwordless passkey login workflows (EP-4).
 --
 -- 'prepareMfaChallenge' is the step-up branch of 'Shomei.Workflow.login': after a correct
--- password for an account that has a passkey (and @mfaRequired@), it begins a WebAuthn
+-- password for an account that has a second factor (and MFA is required), it begins a WebAuthn
 -- authentication ceremony restricted to the user's credentials, stashes it consume-once, and
 -- returns the ceremony id + browser options WITHOUT issuing a token. 'completeMfa' finishes
 -- that step-up: it consumes the pending ceremony, verifies the browser's assertion against the
@@ -74,7 +74,7 @@ import Shomei.Workflow.Session (ensureEmailVerified, issueSession)
 import Shomei.Workflow.Totp (recoveryCodeHash)
 
 -- | How a client completes an MFA challenge. Exactly one arm is populated by the HTTP layer's
--- 'Shomei.Servant.DTO.MfaCompleteRequest' decoder: 'MfaPasskey' is the legacy WebAuthn assertion,
+-- 'Shomei.Servant.DTO.MfaCompleteRequest' decoder: 'MfaPasskey' is a WebAuthn assertion,
 -- 'MfaTotp' a six-digit code, 'MfaRecoveryCode' a single-use recovery code.
 data MfaCompletion
   = MfaPasskey Value

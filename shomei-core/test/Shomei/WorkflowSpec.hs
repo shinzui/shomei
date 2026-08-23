@@ -15,10 +15,10 @@ import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Config (SessionCheckMode (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
+import Shomei.Domain.LoginId (LoginId, loginIdText, mkLoginId)
 import Shomei.Domain.Password (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
@@ -71,11 +71,11 @@ mkLoginId' t = case mkLoginId t of
 -- (the compatibility rule), and the optional email is carried through.
 signupEmail :: Email -> PlainPassword -> Maybe Text -> SignupCommand
 signupEmail e pw dn =
-  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = pw, displayName = dn}
+  SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = pw, displayName = dn}
 
 -- | An email-first login command keyed on the email-derived login id.
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = loginIdFromEmail e, password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
 
 -- | A fixed client context per login id: a constant test IP and the login-id text as the
 -- account key (mirroring how the HTTP layer derives the abuse key from the principal).
@@ -84,7 +84,7 @@ ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))
 
 -- | The email-keyed convenience: derive the login id from the email, then the context.
 ctxFor :: Email -> ClientContext
-ctxFor = ctxForLogin . loginIdFromEmail
+ctxFor email = ctxForLogin (either (error . show) id (mkLoginId (emailText email)))
 
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure

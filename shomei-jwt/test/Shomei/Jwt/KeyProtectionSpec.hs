@@ -1,12 +1,12 @@
 -- | Envelope encryption of stored private signing keys. The properties that matter:
 -- a round trip recovers the key; a wrong KEK, a tampered ciphertext, or a ciphertext moved
--- to another row's @kid@ all fail authentication indistinguishably; plaintext rows still
--- read (so a backfill can run under a live server); and encryption is idempotent.
+-- to another row's @kid@ all fail authentication indistinguishably; unencrypted rows are
+-- rejected; and independent encryptions use fresh nonces.
 module Shomei.Jwt.KeyProtectionSpec (tests) where
 
+import Data.ByteArray.Encoding (Base (Base64), convertToBase)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
-import Data.ByteArray.Encoding (Base (Base64), convertToBase)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
@@ -66,39 +66,36 @@ envelope =
       kek <- testKek 1
       enc <- encryptPrivateJwk kek "kid-a" plaintextJwk
       assertBool "is tagged as encrypted" (isEncryptedPrivateJwk enc)
-      decryptPrivateJwk (Just kek) "kid-a" enc @?= Right plaintextJwk,
-    testCase "plaintext passes through, with or without a KEK" do
+      decryptPrivateJwk kek "kid-a" enc @?= Right plaintextJwk,
+    testCase "unencrypted private material is rejected" do
       kek <- testKek 1
       assertBool "plaintext is not tagged" (not (isEncryptedPrivateJwk plaintextJwk))
-      decryptPrivateJwk Nothing "kid-a" plaintextJwk @?= Right plaintextJwk
-      decryptPrivateJwk (Just kek) "kid-a" plaintextJwk @?= Right plaintextJwk,
-    testCase "an encrypted row without a KEK is refused, not silently skipped" do
-      kek <- testKek 1
-      enc <- encryptPrivateJwk kek "kid-a" plaintextJwk
-      decryptPrivateJwk Nothing "kid-a" enc @?= Left KeyEncryptedButNoKek,
+      case decryptPrivateJwk kek "kid-a" plaintextJwk of
+        Left (MalformedEncryptedKey _) -> pure ()
+        other -> assertFailure ("expected MalformedEncryptedKey, got " <> show other),
     testCase "the wrong KEK fails authentication" do
       kek <- testKek 1
       other <- testKek 2
       enc <- encryptPrivateJwk kek "kid-a" plaintextJwk
-      decryptPrivateJwk (Just other) "kid-a" enc @?= Left KeyDecryptFailed,
+      decryptPrivateJwk other "kid-a" enc @?= Left KeyDecryptFailed,
     testCase "a flipped ciphertext byte fails authentication" do
       kek <- testKek 1
       enc <- encryptPrivateJwk kek "kid-a" plaintextJwk
-      decryptPrivateJwk (Just kek) "kid-a" (tamper enc) @?= Left KeyDecryptFailed,
+      decryptPrivateJwk kek "kid-a" (tamper enc) @?= Left KeyDecryptFailed,
     testCase "a ciphertext moved to another row's kid fails (the AAD binding)" do
       -- This is what stops an attacker with write access from relabeling an old,
       -- compromised key as the active one.
       kek <- testKek 1
       enc <- encryptPrivateJwk kek "kid-a" plaintextJwk
-      decryptPrivateJwk (Just kek) "kid-b" enc @?= Left KeyDecryptFailed,
+      decryptPrivateJwk kek "kid-b" enc @?= Left KeyDecryptFailed,
     testCase "a structurally broken envelope is distinguished from a failed tag" do
       kek <- testKek 1
-      case decryptPrivateJwk (Just kek) "kid-a" "enc:v1:nope" of
+      case decryptPrivateJwk kek "kid-a" "enc:v1:nope" of
         Left (MalformedEncryptedKey _) -> pure ()
         other -> assertFailure ("expected MalformedEncryptedKey, got " <> show other),
     testCase "a short nonce is rejected" do
       kek <- testKek 1
-      case decryptPrivateJwk (Just kek) "kid-a" "enc:v1:AAAA:AAAAAAAAAAAAAAAAAAAAAA" of
+      case decryptPrivateJwk kek "kid-a" "enc:v1:AAAA:AAAAAAAAAAAAAAAAAAAAAA" of
         Left (MalformedEncryptedKey msg) -> assertBool ("names the nonce: " <> Text.unpack msg) ("nonce" `Text.isInfixOf` msg)
         other -> assertFailure ("expected MalformedEncryptedKey, got " <> show other),
     testCase "encrypting the same plaintext twice yields different ciphertexts (fresh nonce)" do
@@ -106,8 +103,8 @@ envelope =
       a <- encryptPrivateJwk kek "kid-a" plaintextJwk
       b <- encryptPrivateJwk kek "kid-a" plaintextJwk
       assertBool "nonces must not repeat" (a /= b)
-      decryptPrivateJwk (Just kek) "kid-a" a @?= Right plaintextJwk
-      decryptPrivateJwk (Just kek) "kid-a" b @?= Right plaintextJwk
+      decryptPrivateJwk kek "kid-a" a @?= Right plaintextJwk
+      decryptPrivateJwk kek "kid-a" b @?= Right plaintextJwk
   ]
 
 storedKeys :: [TestTree]
@@ -117,20 +114,15 @@ storedKeys =
     testCase "protecting is idempotent: an encrypted row is returned unchanged" do
       kek <- testKek 1
       stored <- storedKeyFor ES256
-      once <- protectStoredSigningKey (Just kek) stored
-      twice <- protectStoredSigningKey (Just kek) once
+      once <- protectStoredSigningKey kek stored
+      twice <- protectStoredSigningKey kek once
       -- Not merely "still decrypts": the bytes must be identical, or a re-run of the
       -- backfill would rewrite every row (and burn a nonce) for nothing.
       twice.privateKeyJwk @?= once.privateKeyJwk,
-    testCase "protecting without a KEK leaves the row alone" do
-      stored <- storedKeyFor ES256
-      unprotected <- protectStoredSigningKey Nothing stored
-      unprotected.privateKeyJwk @?= stored.privateKeyJwk
-      assertBool "still plaintext" (not (isEncryptedPrivateJwk unprotected.privateKeyJwk)),
     testCase "the public column is never encrypted, and parses without a KEK" do
       kek <- testKek 1
       stored <- storedKeyFor ES256
-      protected <- protectStoredSigningKey (Just kek) stored
+      protected <- protectStoredSigningKey kek stored
       protected.publicKeyJwk @?= stored.publicKeyJwk
       assertBool "private material is encrypted" (isEncryptedPrivateJwk protected.privateKeyJwk)
       case publicJwkFromStored protected of
@@ -140,7 +132,7 @@ storedKeys =
       kek <- testKek 1
       stored <- storedKeyFor ES256
       enc <- encryptPrivateJwk kek stored.keyId "not json at all"
-      case decryptStoredSigningKey (Just kek) stored {privateKeyJwk = enc} of
+      case decryptStoredSigningKey kek stored {privateKeyJwk = enc} of
         Left (KeyJsonInvalid _) -> pure ()
         other -> assertFailure ("expected KeyJsonInvalid, got " <> show (() <$ other))
   ]
@@ -151,9 +143,9 @@ protectAndUse :: SigningAlgorithm -> IO ()
 protectAndUse alg = do
   kek <- testKek 1
   stored <- storedKeyFor alg
-  protected <- protectStoredSigningKey (Just kek) stored
+  protected <- protectStoredSigningKey kek stored
   assertBool "private material is encrypted at rest" (isEncryptedPrivateJwk protected.privateKeyJwk)
-  signer <- case decryptStoredSigningKey (Just kek) protected of
+  signer <- case decryptStoredSigningKey kek protected of
     Right jwk -> pure jwk
     Left err -> assertFailure ("decrypt failed: " <> show err)
   pub <- either (assertFailure . Text.unpack) pure (publicJwkFromStored protected)

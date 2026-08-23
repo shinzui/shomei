@@ -80,7 +80,7 @@ import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.OAuthClientStore (runOAuthClientStorePostgres)
-import Shomei.Workflow.ServiceToken (sha256Hex)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

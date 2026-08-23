@@ -77,15 +77,6 @@ defaultArgon2Params =
       parallelism = 1
     }
 
--- | The parameters implied by the legacy @argon2id$salt$hash@ format, which recorded none.
--- They are the only values that format was ever produced with, so a legacy hash re-derives
--- correctly with exactly these.
---
--- CRITICAL: crypton's 'Argon2.defaultOptions' is Argon2i with iterations = 1 — too weak and
--- the wrong variant for password storage. Set Argon2id and raise the cost explicitly.
-legacyArgonOptions :: Argon2.Options
-legacyArgonOptions = toOptions defaultArgon2Params
-
 toOptions :: Argon2Params -> Argon2.Options
 toOptions p =
   Argon2.Options
@@ -183,11 +174,10 @@ hashPasswordArgon2id params pw = do
 -- | Re-derive the hash with the parameters the stored string carries, and compare in constant
 -- time.
 --
--- Two formats are accepted. The PHC-style string produced by 'hashPasswordArgon2id' splits
--- into @["", "argon2id", "v=19", "m=…,t=…,p=…", salt, digest]@ and re-derives with its own
--- parameters. The legacy @argon2id$salt$digest@ string, which recorded no parameters, splits
--- into three parts and re-derives with 'legacyArgonOptions'. Anything else — including a
--- PHC-shaped string with unparseable parameters — is 'False'.
+-- Only the PHC-style string produced by 'hashPasswordArgon2id' is accepted. It splits into
+-- @["", "argon2id", "v=19", "m=…,t=…,p=…", salt, digest]@ and re-derives with its own
+-- parameters. Anything else, including an unparameterized three-part value or a PHC-shaped
+-- string with unparseable parameters, is 'False'.
 --
 -- A malformed hash therefore returns 'False' /without hashing/ (~9 µs versus ~100 ms). That
 -- is a timing oracle if a real credential can ever be malformed; it cannot, because only this
@@ -199,7 +189,6 @@ verifyPasswordArgon2id pw (PasswordHash stored) =
       | version == "v=" <> Text.pack (show phcVersion),
         Just params <- parsePhcParams paramsText ->
           check (toOptions params) saltB64 hashB64
-    ["argon2id", saltB64, hashB64] -> check legacyArgonOptions saltB64 hashB64
     _ -> False
   where
     check opts saltB64 hashB64

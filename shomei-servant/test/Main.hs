@@ -67,8 +67,7 @@ import Servant
     type (:>),
   )
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), ServiceAccountConfig (..), ServiceAccountId (..), ServiceTokenConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
-import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
+import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Domain.AuthorizationCode (AuthorizationCode (..))
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
@@ -84,6 +83,7 @@ import Shomei.Domain.ServiceAccount (NewServiceAccount (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Domain.Token (AccessToken (..))
 import Shomei.Domain.User (User (..))
+import Shomei.Effect.Clock (now)
 import Shomei.Effect.InMemory
   ( World (..),
     emptyWorld,
@@ -115,7 +115,6 @@ import Shomei.Effect.InMemory
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
-import Shomei.Effect.Clock (now)
 import Shomei.Effect.OAuthClientStore (createOAuthClient)
 import Shomei.Effect.RoleStore (allowPermission, defineRole, disallowPermission)
 import Shomei.Effect.ServiceAccountStore (createServiceAccount)
@@ -134,22 +133,17 @@ import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Handlers (shomeiRoutes)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Seam (AppEffects, Env (..))
+import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Totp (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
 import Shomei.Workflow qualified as Wf
 import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
 import Shomei.Workflow.Roles (grantRoleTo, revokeRoleFrom)
-import Shomei.Workflow.ServiceToken (sha256Hex)
 import Shomei.Workflow.TokenExchange (tokenExchangeSubjectScope)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
-serviceAccount :: ServiceAccountId
-serviceAccount = ServiceAccountId "connector:rei"
-
 serviceLoginId :: Text
 serviceLoginId = "connector-rei"
-
-serviceSecret :: Text
-serviceSecret = "test-secret"
 
 servicePassword :: Text
 servicePassword = "correct horse battery staple"
@@ -415,28 +409,8 @@ main = do
       bothCfg = cfg {tokenTransport = BearerAndCookie}
       freshCookieEnv = mkEnvWith cookieCfg <$> newIORef (emptyWorld t0)
       freshBothEnv = mkEnvWith bothCfg <$> newIORef (emptyWorld t0)
-      freshServiceEnv = do
-        r <- newIORef (emptyWorld t0)
-        serviceUser <- seedServiceUser r jwk jwkset cfg
-        let serviceCfg =
-              cfg
-                & #serviceTokenConfig
-                .~ ServiceTokenConfig
-                  { enabled = True,
-                    ttl = 300,
-                    accounts =
-                      [ ServiceAccountConfig
-                          { accountId = serviceAccount,
-                            userId = serviceUser ^. #userId,
-                            secretHash = sha256Hex serviceSecret,
-                            allowedScopes = Set.singleton ingestScope
-                          }
-                      ]
-                  }
-        pure (mkEnvWith serviceCfg r)
       -- EP-4: a database-backed service account (not a config-defined one) in its own World.
-      -- Returns its client_id, which the scenario authenticates with. Note this uses the plain
-      -- 'cfg': the DB path deliberately does not consult serviceTokenConfig.enabled.
+      -- Returns its client_id, which the scenario authenticates with.
       freshOAuthEnv = do
         r <- newIORef (emptyWorld t0)
         clientId <- seedOAuthAccount r jwk jwkset cfg t0
@@ -483,7 +457,7 @@ main = do
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -663,7 +637,7 @@ scenarioOAuthToken clientId port = do
 
   -- (10) ...and a grant this server does not implement is unsupported_grant_type. (EP-5 made
   -- authorization_code and refresh_token supported arms; `password` is the OAuth Security BCP's
-  -- deprecated grant, which Shōmei will never add.)
+  -- omitted grant, which Shōmei will never add.)
   password <-
     postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "password")]
   assertOAuthError "grant_type=password" 400 "unsupported_grant_type" password
@@ -675,7 +649,7 @@ scenarioOAuthScopeIsolation port = do
   mgr <- newManager defaultManagerSettings
   let email = "scopeisolation@example.com" :: Text
       pw = "correct horse battery staple" :: Text
-  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
   sStatus @?= 201
   doc <- must "signup body" sBody
   token <- must "signup access token" (dig ["token", "accessToken"] doc >>= asText)
@@ -700,7 +674,7 @@ scenarioRequirePermission ref port = do
   mgr <- newManager defaultManagerSettings
   let email = "perms@example.com" :: Text
       pw = "correct horse battery staple" :: Text
-      loginBody = object ["email" .= email, "password" .= pw]
+      loginBody = object ["loginId" .= email, "password" .= pw]
       projects tok = fst <$> getJSON mgr port "/host/projects" (bearer tok)
       loginAccess = do
         (st, body) <- postJSON mgr port "/v1/auth/login" loginBody
@@ -712,7 +686,7 @@ scenarioRequirePermission ref port = do
       writePerm = Permission "projects:write"
 
   -- Sign up and capture the user id (for the grants) and the first token (no roles yet).
-  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("P" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("P" :: Text)])
   sStatus @?= 201
   doc <- must "signup body" sBody
   uid <- must "signup user id" (dig ["user", "userId"] doc >>= asText)
@@ -756,7 +730,7 @@ scenarioRequirePermission ref port = do
 -- | Every failure, from every layer, is an RFC 7807 problem document.
 --
 -- Each assertion names the layer it exercises, because they fail for different reasons: the
--- auth handler and the authz combinator throw before any handler runs; @resolvePrincipal@
+-- auth handler and the authz combinator throw before any handler runs; principal parsing
 -- throws inside one; Servant's @ErrorFormatters@ handle its own request parsers; and the bare
 -- 405 a method mismatch raises sits below every Servant hook, converted by 'problemMiddleware'.
 scenarioProblemEnvelope :: Int -> IO ()
@@ -778,7 +752,8 @@ scenarioProblemEnvelope port = do
   --     WWW-Authenticate -- the credential itself was fine.
   let signupBody' =
         object
-          [ "email" .= ("envelope@example.com" :: Text),
+          [ "loginId" .= ("envelope@example.com" :: Text),
+            "email" .= ("envelope@example.com" :: Text),
             "password" .= ("correct horse battery staple" :: Text),
             "displayName" .= ("Envelope" :: Text)
           ]
@@ -789,10 +764,10 @@ scenarioProblemEnvelope port = do
   assertProblem "missing role" 403 "missing_role" r3
   headerValue "WWW-Authenticate" (headersOf r3) @?= Nothing
 
-  -- (4) A handler's own rejection, with the specific reason carried in `detail`.
+  -- (4) A structurally valid body missing the required loginId fails in Servant's decoder.
   r4 <- postRaw' mgr port "/v1/auth/login" [] (object ["password" .= ("x" :: Text)])
-  assertProblem "handler bad request" 400 "bad_request" r4
-  (bodyOf r4 >>= dig ["detail"] >>= asText) @?= Just "loginId or email required"
+  assertProblem "missing required loginId" 400 "body_parse_error" r4
+  assertBool "missing loginId carries a decoder detail" (isJust (bodyOf r4 >>= dig ["detail"]))
 
   -- (5) Servant's own body parser, via ErrorFormatters. The parse message rides in `detail`.
   r5 <- postRawBytes mgr port "/v1/auth/signup" "{"
@@ -856,7 +831,7 @@ scenarioStatusCodes port = do
       pw = "correct horse battery staple" :: Text
 
   -- Signup creates a user: 201, not 200.
-  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
   sStatus @?= 201
   sresp <- must "signup body" sBody
   access <- must "signup accessToken" (dig ["token", "accessToken"] sresp >>= asText)
@@ -878,7 +853,7 @@ scenarioStatusCodes port = do
 -- | Sign a user up over HTTP and return @(userId, accessToken)@.
 signupOver :: Manager -> Int -> Text -> IO (Text, Text)
 signupOver mgr port email = do
-  (status, body) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= adminPassword, "displayName" .= ("U" :: Text)])
+  (status, body) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= adminPassword, "displayName" .= ("U" :: Text)])
   status @?= 201
   resp <- must "signup body" body
   uid <- must "signup userId" (dig ["user", "userId"] resp >>= asText)
@@ -887,7 +862,7 @@ signupOver mgr port email = do
 
 loginOver :: Manager -> Int -> Text -> IO Text
 loginOver mgr port email = do
-  (status, body) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= adminPassword])
+  (status, body) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= adminPassword])
   status @?= 200
   resp <- must "login body" body
   must "login accessToken" (dig ["token", "accessToken"] resp >>= asText)
@@ -944,7 +919,7 @@ scenarioAdminLifecycle ref port = do
   -- Suspend: the account stops working and its sessions are dead.
   (susp, _) <- postAuthNoBody mgr port (target <> "/suspend") (bearer adminToken')
   susp @?= 204
-  (loginStatus, _) <- postJSON mgr port "/v1/auth/login" (object ["email" .= ("target@example.com" :: Text), "password" .= adminPassword])
+  (loginStatus, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ("target@example.com" :: Text), "password" .= adminPassword])
   loginStatus @?= 401
   (sessStatus, sessBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
   sessStatus @?= 200
@@ -960,7 +935,7 @@ scenarioAdminLifecycle ref port = do
   -- Reinstate: login works again.
   (rein, _) <- postAuthNoBody mgr port (target <> "/reinstate") (bearer adminToken')
   rein @?= 204
-  (loginAgain, _) <- postJSON mgr port "/v1/auth/login" (object ["email" .= ("target@example.com" :: Text), "password" .= adminPassword])
+  (loginAgain, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ("target@example.com" :: Text), "password" .= adminPassword])
   loginAgain @?= 200
 
   -- Soft delete: the row survives and is still listed, but refuses further transitions.
@@ -1261,7 +1236,7 @@ scenarioSessionCheckMode ref port = do
       pw = "correct horse battery staple" :: Text
 
   -- Sign up: we get a user id and a fresh, valid access token.
-  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("S" :: Text)])
   sStatus @?= 201
   sresp <- must "signup body" sBody
   uid <- must "signup userId" (dig ["user", "userId"] sresp >>= asText)
@@ -1298,8 +1273,8 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
   (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
   afterStatus @?= 200
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshServiceEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
   testGroup
     "HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "problem+json envelope from every layer (auth handler, authz, handler, servant formatters, method check)" $ do
@@ -1335,17 +1310,14 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "admin API: the user listing pages by keyset, disjoint and complete" $ do
         (r, e) <- freshAdminEnv
         testWithApplication (pure (app e)) (scenarioAdminPagination r),
-      testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless → impersonation" $
-        testWithApplication (pure (app env)) (scenario ref adminToken impToken),
+      testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless" $
+        testWithApplication (pure (app env)) (scenario ref adminToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioNoEmail,
-      testCase "email-only signup defaults loginId to the email (backward compat)" $ do
+      testCase "signup rejects a missing loginId" $ do
         e <- freshEnv
-        testWithApplication (pure (app e)) scenarioEmailDefaultsLoginId,
-      testCase "service token with allowed scope passes RequireScope while normal login token fails" $ do
-        e <- freshServiceEnv
-        testWithApplication (pure (app e)) scenarioServiceToken,
+        testWithApplication (pure (app e)) scenarioSignupRequiresLoginId,
       testCase "POST /oauth/token: client_credentials over both auth methods; RFC 6749 errors, not problem docs" $ do
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
@@ -1638,10 +1610,16 @@ scenarioTokenExchange jwk gateClientId noGateClientId impToken staleImpToken por
   introActiveDoc <- must "introspect (active) body" (bodyOf introActive)
   dig ["active"] introActiveDoc @?= Just (Bool True)
   assertBool "introspection reports the act member" (isJust (dig ["act", "sub"] introActiveDoc >>= asText))
-  -- DELETE /auth/impersonate remains the stop mechanism for an exchanged impersonation token; after
-  -- it, introspection flips to inactive — session revocation is observable.
-  (stopStatus, _) <- deleteAuth mgr port "/v1/auth/impersonate" (bearer impAccess)
-  stopStatus @?= 204
+  -- RFC 7009 revocation is the single stop mechanism for a delegated token. Afterwards,
+  -- introspection flips to inactive because the delegated session has been revoked.
+  (stopStatus, _, _) <-
+    postForm
+      mgr
+      port
+      "/oauth/revoke"
+      (Just (gateClientId, oauthClientSecret))
+      [("token", enc impAccess), ("token_type_hint", "access_token")]
+  stopStatus @?= 200
   introInactive <-
     postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
   introInactiveDoc <- must "introspect (inactive) body" (bodyOf introInactive)
@@ -2276,19 +2254,16 @@ scenarioNoEmail port = do
   lresp <- must "login body" lBody
   assertBool "login by identifier yields a token" (isJust (dig ["token", "accessToken"] lresp >>= asText))
 
--- | SH-25 M4 backward compatibility: an email-only signup (no @loginId@) yields a user whose
--- @loginId@ equals the email text.
-scenarioEmailDefaultsLoginId :: Int -> IO ()
-scenarioEmailDefaultsLoginId port = do
+-- | A signup principal is explicit: email is contact data and cannot stand in for @loginId@.
+scenarioSignupRequiresLoginId :: Int -> IO ()
+scenarioSignupRequiresLoginId port = do
   mgr <- newManager defaultManagerSettings
   let em = "grace@example.com" :: Text
       pw = "correct horse battery staple" :: Text
       signupB = object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)]
   (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" signupB
-  sStatus @?= 201
-  sresp <- must "signup body" sBody
-  (dig ["user", "loginId"] sresp >>= asText) @?= Just em
-  (dig ["user", "email"] sresp >>= asText) @?= Just em
+  sStatus @?= 400
+  (sBody >>= dig ["code"] >>= asText) @?= Just "body_parse_error"
 
 -- | With @emailVerificationRequired@ on, signup still hands out its initial pair (changing
 -- that would break the response shape), but the first re-login and the first refresh are
@@ -2300,7 +2275,7 @@ scenarioEmailVerificationRequired ref port = do
   let em = "unverified@example.com" :: Text
       pw = "correct horse battery staple" :: Text
       loginBody = object ["loginId" .= em, "password" .= pw]
-  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
+  (sStatus, sBody) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= em, "email" .= em, "password" .= pw, "displayName" .= ("" :: Text)])
   sStatus @?= 201
   sresp <- must "signup body" sBody
   refreshTok <- must "signup refreshToken" (dig ["token", "refreshToken"] sresp >>= asText)
@@ -2333,7 +2308,7 @@ cookiePassword :: Text
 cookiePassword = "correct horse battery staple"
 
 cookieSignupBody :: Value
-cookieSignupBody = object ["email" .= cookieEmail, "password" .= cookiePassword, "displayName" .= ("C" :: Text)]
+cookieSignupBody = object ["loginId" .= cookieEmail, "email" .= cookieEmail, "password" .= cookiePassword, "displayName" .= ("C" :: Text)]
 
 -- | The origin the default 'CookieConfig' allows.
 allowedOrigin :: Header
@@ -2439,7 +2414,7 @@ scenarioCsrfMatrix port = do
 -- | Sign up a distinct account in cookie mode.
 cookieSignupAs :: Manager -> Int -> Text -> IO (Text, Text, Maybe Value)
 cookieSignupAs mgr port email = do
-  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] (object ["email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
+  (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] (object ["loginId" .= email, "email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
   status @?= 201
   let cookies = setCookies hdrs
   sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
@@ -2504,59 +2479,8 @@ scenarioBothTransport port = do
   (meStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader sess]
   meStatus @?= 200
 
-scenarioServiceToken :: Int -> IO ()
-scenarioServiceToken port = do
-  mgr <- newManager defaultManagerSettings
-  let body =
-        object
-          [ "accountId" .= serviceAccountText,
-            "secret" .= serviceSecret,
-            "scopes" .= [scopeText ingestScope],
-            "actorId" .= Null
-          ]
-  (status, responseBody) <- postJSON mgr port "/v1/auth/service-token" body
-  status @?= 200
-  response <- must "service-token body" responseBody
-  access <- must "service-token accessToken" (dig ["accessToken"] response >>= asText)
-  assertBool "service-token response has no refreshToken" (isNothing (dig ["refreshToken"] response))
-  (ingestStatus, _) <- getJSON mgr port "/ingest" (bearer access)
-  ingestStatus @?= 200
-
-  (deniedStatus, _) <-
-    postJSON
-      mgr
-      port
-      "/v1/auth/service-token"
-      ( object
-          [ "accountId" .= serviceAccountText,
-            "secret" .= serviceSecret,
-            "scopes" .= ["channel:egress" :: Text],
-            "actorId" .= Null
-          ]
-      )
-  deniedStatus @?= 403
-
-  (loginStatus, loginBody) <-
-    postJSON
-      mgr
-      port
-      "/v1/auth/login"
-      (object ["loginId" .= serviceLoginId, "password" .= servicePassword])
-  loginStatus @?= 200
-  loginResp <- must "service login body" loginBody
-  normalAccess <- must "service login accessToken" (dig ["token", "accessToken"] loginResp >>= asText)
-  (normalIngestStatus, _) <- getJSON mgr port "/ingest" (bearer normalAccess)
-  normalIngestStatus @?= 403
-  where
-    serviceAccountText =
-      case serviceAccount of
-        ServiceAccountId t -> t
-    scopeText =
-      \case
-        Scope t -> t
-
-scenario :: IORef World -> Text -> Text -> Int -> IO ()
-scenario ref adminToken impToken port = do
+scenario :: IORef World -> Text -> Int -> IO ()
+scenario ref adminToken port = do
   mgr <- newManager defaultManagerSettings
 
   -- (a) signup
@@ -2652,7 +2576,7 @@ scenario ref adminToken impToken port = do
   revokedStatus @?= 403
 
   -- (g2) The RequireScope combinator enforces the same way. An ordinary login token carries no
-  --      scopes; only a service token holds 'kawa:ingest' (exercised in the service-token suite).
+  --      scopes; only an OAuth machine token holds 'kawa:ingest' (exercised in the OAuth suite).
   (noTokenIngestStatus, _) <- getJSON mgr port "/ingest" []
   noTokenIngestStatus @?= 401
   (ingestForbiddenStatus, _) <- getJSON mgr port "/ingest" (bearer revokedAccess)
@@ -2670,7 +2594,7 @@ scenario ref adminToken impToken port = do
       "/v1/auth/password-reset/confirm"
       (object ["token" .= resetToken, "newPassword" .= changedPassword])
   resetConfirmStatus @?= 200
-  (newLoginStatus, newLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= changedPassword])
+  (newLoginStatus, newLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= changedPassword])
   newLoginStatus @?= 200
   newLoginResp <- must "new login body" newLoginBody
   access2 <- must "new login accessToken" (dig ["token", "accessToken"] newLoginResp >>= asText)
@@ -2749,7 +2673,7 @@ scenario ref adminToken impToken port = do
   rcStatus @?= 200
 
   -- (m) the password login now returns an MFA challenge and NO token.
-  (mfaLoginStatus, mfaLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= changedPassword])
+  (mfaLoginStatus, mfaLoginBody) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= changedPassword])
   mfaLoginStatus @?= 200
   mfaLoginResp <- must "mfa login body" mfaLoginBody
   (dig ["status"] mfaLoginResp >>= asText) @?= Just "mfa_required"
@@ -2759,7 +2683,11 @@ scenario ref adminToken impToken port = do
 
   -- (n) completing MFA with a valid assertion yields a token pair.
   (mfaCompleteStatus, mfaCompleteBody) <-
-    postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    postJSON
+      mgr
+      port
+      "/v1/auth/mfa/complete"
+      (object ["ceremonyId" .= mfaCeremonyId, "proof" .= object ["type" .= ("passkey" :: Text), "assertion" .= credAssertion mfaChallenge]])
   mfaCompleteStatus @?= 200
   mfaCompleteResp <- must "mfa complete body" mfaCompleteBody
   mfaAccess <- must "mfa complete accessToken" (dig ["accessToken"] mfaCompleteResp >>= asText)
@@ -2770,7 +2698,11 @@ scenario ref adminToken impToken port = do
 
   -- (p) re-submitting the now-consumed ceremony is a 404.
   (mfaStaleStatus, _) <-
-    postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= mfaCeremonyId, "assertion" .= credAssertion mfaChallenge])
+    postJSON
+      mgr
+      port
+      "/v1/auth/mfa/complete"
+      (object ["ceremonyId" .= mfaCeremonyId, "proof" .= object ["type" .= ("passkey" :: Text), "assertion" .= credAssertion mfaChallenge]])
   mfaStaleStatus @?= 404
 
   -- (q) passwordless login: begin → complete → me, no password.
@@ -2787,54 +2719,7 @@ scenario ref adminToken impToken port = do
   (mePlStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer plAccess)
   mePlStatus @?= 200
 
-  -- (r) impersonation: an operator holding the impersonate scope exchanges for a
-  -- delegated token, sees the customer via /auth/me, is refused a credential change,
-  -- and can stop.
-  let impBody = object ["userId" .= adaUserId, "reason" .= ("Debugging support issue" :: Text), "ticketId" .= ("SUP-1234" :: Text)]
-  (impStatus, impRespBody) <- postJSONAuth mgr port "/v1/auth/impersonate" (bearer impToken) impBody
-  impStatus @?= 200
-  impResp <- must "impersonate body" impRespBody
-  (dig ["subjectUserId"] impResp >>= asText) @?= Just adaUserId
-  assertBool "actorUserId present" (isJust (dig ["actorUserId"] impResp >>= asText))
-  impAccess <- must "delegated accessToken" (dig ["accessToken"] impResp >>= asText)
-
-  -- the delegated token resolves the *customer's* identity on /auth/me
-  (meImpStatus, meImpBody) <- getJSON mgr port "/v1/auth/me" (bearer impAccess)
-  meImpStatus @?= 200
-  meImpResp <- must "me (delegated) body" meImpBody
-  (dig ["email"] meImpResp >>= asText) @?= Just email
-
-  -- a credential change under the delegated token is refused with 403
-  (impPwStatus, _) <-
-    postJSONAuth
-      mgr
-      port
-      "/v1/auth/password/change"
-      (bearer impAccess)
-      (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
-  impPwStatus @?= 403
-
-  -- the operator's OWN token is not impersonation-blocked: it reaches the normal
-  -- credential path (and fails there as invalid credentials, NOT 403).
-  (opPwStatus, _) <-
-    postJSONAuth
-      mgr
-      port
-      "/v1/auth/password/change"
-      (bearer impToken)
-      (object ["currentPassword" .= ("x" :: Text), "newPassword" .= ("y" :: Text)])
-  assertBool "operator's own token is not impersonation-blocked" (opPwStatus /= 403)
-
-  -- stop impersonating revokes the delegated session
-  (stopStatus, _) <- deleteAuth mgr port "/v1/auth/impersonate" (bearer impAccess)
-  stopStatus @?= 204
-  world <- readIORef ref
-  let delegated = filter (\s -> isJust s.actor) (Map.elems world.sessions)
-  case delegated of
-    [s] -> s.status @?= SessionRevoked
-    _ -> assertFailure ("expected exactly one delegated session, got " <> show (length delegated))
-
-  -- (s) EP-7 audit retrieval: admin reads the trail; non-admin/no-token are refused;
+  -- (r) EP-7 audit retrieval: admin reads the trail; non-admin/no-token are refused;
   -- filters and keyset pagination behave.
   (auditNoTokStatus, _) <- getJSON mgr port "/v1/admin/audit/events" []
   auditNoTokStatus @?= 401
@@ -2886,8 +2771,8 @@ scenario ref adminToken impToken port = do
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
-    signupBody = object ["email" .= email, "password" .= password, "displayName" .= ("Ada Lovelace" :: Text)]
-    loginBody = object ["email" .= email, "password" .= password]
+    signupBody = object ["loginId" .= email, "email" .= email, "password" .= password, "displayName" .= ("Ada Lovelace" :: Text)]
+    loginBody = object ["loginId" .= email, "password" .= password]
 
 latestVerificationToken :: IORef World -> IO Text
 latestVerificationToken ref = do
@@ -2912,11 +2797,11 @@ scenarioTotp r jwk cfg port = do
   mgr <- newManager defaultManagerSettings
   let email = "totp@example.com" :: Text
       pw = "correct horse battery staple totp" :: Text
-      login = postJSON mgr port "/v1/auth/login" (object ["email" .= email, "password" .= pw])
-      complete cid body = postJSON mgr port "/v1/auth/mfa/complete" (object (["ceremonyId" .= cid] <> body))
+      login = postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= pw])
+      complete cid proof = postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= cid, "proof" .= proof])
 
   -- signup, then a first (factor-free) login for a working token.
-  (suStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("T" :: Text)])
+  (suStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("T" :: Text)])
   suStatus @?= 201
   (liStatus, liBody) <- login
   liStatus @?= 200
@@ -2958,7 +2843,7 @@ scenarioTotp r jwk cfg port = do
 
   -- complete with the code for the current counter.
   let code1 = codeAt t1
-  (c1Status, c1Body) <- complete cid1 ["totpCode" .= code1]
+  (c1Status, c1Body) <- complete cid1 (object ["type" .= ("totp" :: Text), "code" .= code1])
   c1Status @?= 200
   totpAccess <- must "totp accessToken" (c1Body >>= dig ["accessToken"] >>= asText)
 
@@ -2966,13 +2851,18 @@ scenarioTotp r jwk cfg port = do
   (m2Status, m2Body) <- login
   m2Status @?= 200
   cid2 <- must "cid2" (m2Body >>= dig ["ceremonyId"] >>= asText)
-  (rStatus, rBody) <- complete cid2 ["totpCode" .= code1]
+  (rStatus, rBody) <- complete cid2 (object ["type" .= ("totp" :: Text), "code" .= code1])
   rStatus @?= 401
   (rBody >>= dig ["code"] >>= asText) @?= Just "totp_code_invalid"
 
-  -- a completion naming two arms is a 400 (the exactly-one rule) before any workflow runs.
-  (arityStatus, _) <- complete ("webauthn_ceremony_x" :: Text) ["totpCode" .= code1, "recoveryCode" .= ("7Q2FK-9XPRD" :: Text)]
-  arityStatus @?= 400
+  -- The removed flat compatibility shape fails before any workflow runs.
+  (oldShapeStatus, _) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/mfa/complete"
+      (object ["ceremonyId" .= ("webauthn_ceremony_x" :: Text), "totpCode" .= code1])
+  oldShapeStatus @?= 400
 
   -- generate recovery codes (the token is fresh: issued at the current clock).
   (gStatus, gBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
@@ -2990,7 +2880,7 @@ scenarioTotp r jwk cfg port = do
   assertBool "recovery_code advertised in methods" ("recovery_code" `elem` m3Methods)
   cid3 <- must "cid3" (m3Body >>= dig ["ceremonyId"] >>= asText)
   let firstRecovery = head codes
-  (rc1Status, rc1Body) <- complete cid3 ["recoveryCode" .= firstRecovery]
+  (rc1Status, rc1Body) <- complete cid3 (object ["type" .= ("recovery_code" :: Text), "code" .= firstRecovery])
   rc1Status @?= 200
   rcAccess <- must "recovery accessToken" (rc1Body >>= dig ["accessToken"] >>= asText)
   (cnt2Status, cnt2Body) <- getJSON mgr port "/v1/auth/recovery-codes" (bearer rcAccess)
@@ -3001,7 +2891,7 @@ scenarioTotp r jwk cfg port = do
   (m4Status, m4Body) <- login
   m4Status @?= 200
   cid4 <- must "cid4" (m4Body >>= dig ["ceremonyId"] >>= asText)
-  (rc2Status, rc2Body) <- complete cid4 ["recoveryCode" .= firstRecovery]
+  (rc2Status, rc2Body) <- complete cid4 (object ["type" .= ("recovery_code" :: Text), "code" .= firstRecovery])
   rc2Status @?= 401
   (rc2Body >>= dig ["code"] >>= asText) @?= Just "recovery_code_invalid"
 

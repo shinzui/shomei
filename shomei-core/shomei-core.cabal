@@ -87,15 +87,16 @@ library
     Shomei.Effect.SessionStore
     Shomei.Effect.SigningKeyStore
     Shomei.Effect.TokenGen
-    Shomei.Effect.TotpCredentialStore
     Shomei.Effect.TokenSigner
     Shomei.Effect.TokenVerifier
+    Shomei.Effect.TotpCredentialStore
     Shomei.Effect.UserStore
     Shomei.Effect.VerificationTokenStore
     Shomei.Effect.WebAuthnCeremony
     Shomei.Error
     Shomei.Id
     Shomei.Prelude
+    Shomei.ServiceAccount.Secret
     Shomei.Totp
     Shomei.Workflow
     Shomei.Workflow.Account
@@ -108,7 +109,6 @@ library
     Shomei.Workflow.OAuthTokenGrant
     Shomei.Workflow.Passkey
     Shomei.Workflow.Roles
-    Shomei.Workflow.ServiceToken
     Shomei.Workflow.Session
     Shomei.Workflow.TokenExchange
     Shomei.Workflow.Totp
@@ -159,7 +159,6 @@ test-suite shomei-core-test
     Shomei.Workflow.MfaSpec
     Shomei.Workflow.PasskeySpec
     Shomei.Workflow.RolesSpec
-    Shomei.Workflow.ServiceTokenSpec
     Shomei.Workflow.TimingSpec
     Shomei.Workflow.TokenExchangeSpec
     Shomei.WorkflowSpec

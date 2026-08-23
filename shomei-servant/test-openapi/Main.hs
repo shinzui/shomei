@@ -25,9 +25,10 @@
 -- only) so the production library carries no test dependency.
 module Main (main) where
 
-import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, encode, fromJSON)
+import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, eitherDecode, encode, fromJSON)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.Either (isLeft)
 import Data.Foldable (toList)
 import Data.List (nub, sort)
 import Data.Maybe (isJust)
@@ -69,14 +70,25 @@ spec = do
   describe "OpenAPI 3.1 schema: ToJSON matches ToSchema" $
     validateEveryToJSON (Proxy :: Proxy (NamedRoutes ShomeiRoutes))
 
+  describe "strict authentication request decoding" $ do
+    it "requires methods on the MFA login-response arm" $
+      (eitherDecode "{\"status\":\"mfa_required\",\"ceremonyId\":\"c\",\"options\":{}}" :: Either String LoginResponse)
+        `shouldSatisfy` isLeft
+
+    it "rejects the removed flat MFA completion shape" $
+      (eitherDecode "{\"ceremonyId\":\"c\",\"totpCode\":\"123456\"}" :: Either String MfaCompleteRequest)
+        `shouldSatisfy` isLeft
+
+    it "rejects extra proof arms in a tagged MFA proof" $
+      (eitherDecode "{\"type\":\"totp\",\"code\":\"123456\",\"assertion\":{}}" :: Either String MfaProof)
+        `shouldSatisfy` isLeft
+
   describe "shomeiOpenApi document" $ do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    -- 43 = 39 + EP-7's POST /auth/totp/enroll, POST /auth/totp/verify, DELETE /auth/totp,
-    --           and /auth/recovery-codes (GET + POST share one path).
-    it "covers exactly 43 paths" $
-      pathCount `shouldBe` 43
+    it "covers exactly 41 paths" $
+      pathCount `shouldBe` 41
 
     it "covers the exact served method and path inventory" $
       sort (map fst operations) `shouldBe` expectedOperations
@@ -219,7 +231,6 @@ spec = do
           "delete /v1/admin/users/{userId}",
           "delete /v1/admin/users/{userId}/roles/{role}",
           "delete /v1/admin/users/{userId}/sessions",
-          "delete /v1/auth/impersonate",
           "delete /v1/auth/passkeys/{passkeyId}",
           "delete /v1/auth/totp",
           "get /.well-known/jwks.json",
@@ -243,7 +254,6 @@ spec = do
           "post /v1/admin/users/{userId}/password-reset",
           "post /v1/admin/users/{userId}/reinstate",
           "post /v1/admin/users/{userId}/suspend",
-          "post /v1/auth/impersonate",
           "post /v1/auth/login",
           "post /v1/auth/login/passkey/begin",
           "post /v1/auth/login/passkey/complete",
@@ -256,7 +266,6 @@ spec = do
           "post /v1/auth/password/change",
           "post /v1/auth/recovery-codes",
           "post /v1/auth/refresh",
-          "post /v1/auth/service-token",
           "post /v1/auth/signup",
           "post /v1/auth/totp/enroll",
           "post /v1/auth/totp/verify",
@@ -401,6 +410,8 @@ deriving stock instance Show ReadyResponse
 
 deriving stock instance Show MfaCompleteRequest
 
+deriving stock instance Show MfaProof
+
 deriving stock instance Show TotpEnrollResponse
 
 deriving stock instance Show TotpVerifyRequest
@@ -420,14 +431,6 @@ deriving stock instance Show PasskeyResponse
 deriving stock instance Show PasskeyLoginBeginResponse
 
 deriving stock instance Show PasskeyLoginCompleteRequest
-
-deriving stock instance Show ImpersonateRequest
-
-deriving stock instance Show ImpersonateResponse
-
-deriving stock instance Show ServiceTokenRequest
-
-deriving stock instance Show ServiceTokenResponse
 
 deriving stock instance Show AuditEventResponse
 
@@ -450,7 +453,7 @@ instance Arbitrary SignupResponse where
   arbitrary = SignupResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary LoginRequest where
-  arbitrary = LoginRequest <$> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = LoginRequest <$> arbitrary <*> arbitrary
 
 instance Arbitrary LoginResponse where
   arbitrary =
@@ -478,7 +481,10 @@ instance Arbitrary ChangePasswordRequest where
   arbitrary = ChangePasswordRequest <$> arbitrary <*> arbitrary
 
 instance Arbitrary MfaCompleteRequest where
-  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary
+
+instance Arbitrary MfaProof where
+  arbitrary = oneof [PasskeyProof <$> arbitrary, TotpProof <$> arbitrary, RecoveryCodeProof <$> arbitrary]
 
 instance Arbitrary TotpEnrollResponse where
   arbitrary = TotpEnrollResponse <$> arbitrary <*> arbitrary
@@ -509,18 +515,6 @@ instance Arbitrary PasskeyLoginBeginResponse where
 
 instance Arbitrary PasskeyLoginCompleteRequest where
   arbitrary = PasskeyLoginCompleteRequest <$> arbitrary <*> arbitrary
-
-instance Arbitrary ImpersonateRequest where
-  arbitrary = ImpersonateRequest <$> arbitrary <*> arbitrary <*> arbitrary
-
-instance Arbitrary ImpersonateResponse where
-  arbitrary = ImpersonateResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-
-instance Arbitrary ServiceTokenRequest where
-  arbitrary = ServiceTokenRequest <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-
-instance Arbitrary ServiceTokenResponse where
-  arbitrary = ServiceTokenResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary TokenResponse where
   arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

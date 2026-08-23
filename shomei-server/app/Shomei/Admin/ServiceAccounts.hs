@@ -84,7 +84,7 @@ import Shomei.Postgres.Clock (runClockIO)
 import Shomei.Postgres.Database (Database, runDatabasePool)
 import Shomei.Postgres.ServiceAccountStore (runServiceAccountStorePostgres)
 import Shomei.Postgres.UserStore (runUserStorePostgres)
-import Shomei.Workflow.ServiceToken (sha256Hex)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

@@ -9,10 +9,10 @@ import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Domain.Password (PasswordHash (..), PasswordPolicy (..), PlainPassword (..))
@@ -71,11 +71,11 @@ mkEmail' t = case mkEmail t of
 -- | An email-first signup command: login id defaults to the email text, email carried through.
 signupEmail :: Email -> PlainPassword -> Maybe Text -> SignupCommand
 signupEmail e pw dn =
-  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = pw, displayName = dn}
+  SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = pw, displayName = dn}
 
 -- | An email-first login command keyed on the email-derived login id.
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = loginIdFromEmail e, password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
 
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure

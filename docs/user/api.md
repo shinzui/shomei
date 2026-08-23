@@ -107,10 +107,22 @@ mode. The same gate applies to `POST /v1/auth/refresh` when the refresh token co
 ## Account & session
 
 ### `POST /v1/auth/signup`
-Body `{"loginId"?,"email"?,"password","displayName"?}`. The principal is a free-form, case-insensitive **login identifier** (`loginId`); `email` is optional. At least one of `loginId`/`email` must be present (`400 "loginId or email required"` otherwise); when only `email` is supplied, `loginId` defaults to the normalized email text (backward-compatible for email-first callers). → `201 Created` `{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId` and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on policy/format failures. In cookie transport this response also sets the `shomei_session`/`shomei_refresh` cookies and omits the body token values (see [Token transport](#token-transport)).
+Body `{"loginId","email"?,"password","displayName"}`. The required principal is a free-form,
+case-insensitive login identifier; `email` is optional. → `201 Created`
+`{"user":{…},"token":{"accessToken","refreshToken","expiresIn"}}` where `user` carries `loginId`
+and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a
+supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on
+policy/format failures. In cookie transport this response also sets the
+`shomei_session`/`shomei_refresh` cookies and omits body token values.
 
 ### `POST /v1/auth/login`
-Body `{"loginId"?,"email"?,"password"}`. Identify by `loginId`; an `email`-only body resolves to the same default identifier as signup. → `200` with a **tagged** response: `{"status":"complete","user":{…},"token":{…}}` for an account with no passkey (unchanged behavior), or `{"status":"mfa_required","ceremonyId":"…","options":{…},"methods":[…]}` when the account has any enrolled second factor and `webauthnConfig.mfaRequired` is set — `methods` names the factors that can complete it (`"passkey"`, `"totp"`, `"recovery_code"`), which the client completes at `POST /v1/auth/mfa/complete` to obtain tokens (see [Passkeys & MFA](#passkeys--mfa-masterplan-3) and [mfa.md](mfa.md)). → `401 invalid_login` on any credential/lockout failure. → `429 too_many_requests` if the per-IP failure throttle has tripped. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. The `complete` arm sets the cookies in cookie transport; the `mfa_required` arm sets none (no token was issued).
+Body `{"loginId","password"}`. → `200` with a tagged response:
+`{"status":"complete","user":{…},"token":{…}}`, or
+`{"status":"mfa_required","ceremonyId":"…","options":{…},"methods":[…]}` when the account
+has an enrolled second factor and `mfaConfig.requireSecondFactor` is enabled. `methods` is required
+and names the factors that can complete the challenge: `passkey`, `totp`, or `recovery_code`.
+Credential and lockout failures are the same `401 invalid_login`; the per-IP failure throttle is
+`429 too_many_requests`; an enforced unverified email is `403 email_not_verified`.
 
 ### `POST /v1/auth/refresh`
 Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
@@ -149,7 +161,7 @@ token response):
 ```
 
 `scope` is always present and names exactly what was granted. The token has **no refresh token**:
-its session is refresh-less, so the credential cannot outlive its TTL (`serviceToken.ttlSeconds`,
+its session is refresh-less, so the credential cannot outlive its TTL (`machineTokenTtlSeconds`,
 default 300). Its `sub` is the service account's backing user id, its `scopes` claim carries the
 granted scopes, and it is signed by the same key and verifies against the same
 `GET /.well-known/jwks.json` as any other Shōmei token. A normal login token still carries empty
@@ -172,10 +184,10 @@ grants are part of the OIDC provider surface — see [oidc.md](oidc.md).
 
 Every successful `client_credentials` issuance writes a `service_token_issued` audit event whose
 `accountId` is the `client_id`. `/oauth/token` is **not** rate-limited; see
-[service-tokens.md](service-tokens.md#security-notes) for why.
+[machine-tokens.md](machine-tokens.md) for operating and security guidance.
 
 Manage accounts with `shomei-admin service-accounts create|rotate-secret|revoke|list`. See
-[service-tokens.md](service-tokens.md) for the full guide.
+[machine-tokens.md](machine-tokens.md) for the full guide.
 
 ### Token exchange (RFC 8693)
 
@@ -194,7 +206,7 @@ authenticates with its client credentials and presents a *user's* access token a
 in `act`. The account must hold the dedicated `token-exchange:subject` scope in its `allowed_scopes`,
 which is never itself copied into an issued token. This is the paved road for propagating user
 identity across service hops. Full guide and narrowing rules:
-[service-tokens.md](service-tokens.md#acting-on-behalf-of-a-user).
+[machine-tokens.md](machine-tokens.md#acting-on-behalf-of-a-user).
 
 ```bash
 curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
@@ -208,12 +220,10 @@ curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
 **Impersonation.** An operator holding the `impersonate:user` scope exchanges a bare user id — sent
 as the `subject_token` with the Shōmei-defined type
 `subject_token_type=urn:shomei:params:oauth:token-type:user-id` — plus their own access token as the
-`actor_token`, for a token whose `sub` is the target and `act` is the operator. This is the
-standards-based equivalent of the deprecated `POST /v1/auth/impersonate`; it enforces the same
-scope gate, freshness gate, and audit event (`impersonation_started`). The optional `reason` and
-`ticket_id` parameters feed the audit trail (`reason` defaults to `token_exchange`).
-`DELETE /v1/auth/impersonate` under the resulting token stops it, exactly as for the bespoke
-endpoint.
+`actor_token`, for a token whose `sub` is the target and `act` is the operator. The grant enforces
+the scope gate, freshness gate, and `impersonation_started` audit event. Optional `reason` and
+`ticket_id` parameters feed the audit trail (`reason` defaults to `token_exchange`). Revoke the
+result through `POST /oauth/revoke`.
 
 ```bash
 curl -s \
@@ -237,29 +247,6 @@ When `oidcEnabled` is set, Shōmei is a standards-consumable OpenID Connect prov
 `POST /oauth/revoke`. Stock middleware (Spring Security, ASP.NET Core, Envoy, oauth2-proxy)
 auto-configures from the discovery URL alone. The full guide, including the headless authorize
 contract and a worked oauth2-proxy configuration, is [oidc.md](oidc.md).
-
-### `POST /v1/auth/service-token` *(deprecated)*
-
-> **Deprecated.** Use [`POST /oauth/token`](#post-oauthtoken) with the `client_credentials` grant.
-> This endpoint and its config-defined accounts keep working unchanged; removal is a candidate for
-> the next major version boundary. [Migration recipe](service-tokens.md#migrating-from-config-accounts-to-oauthtoken).
-
-Body `{"accountId","secret","scopes","actorId"?}`. This endpoint is unauthenticated by bearer token:
-the configured service account id and shared secret in the JSON body are the credential. The
-server hashes `secret` with SHA-256, encodes the digest as lowercase hex, and compares it with the
-configured account `secretSha256` using constant-time byte comparison. A successful request returns
-`200 {"accessToken","expiresIn"}` with **no refresh token**. The access token's `sub` is the
-configured service-account user id, `scopes` contains exactly the requested allowed scopes, and
-`act` is set to `actorId` only when supplied and when that user exists and is active.
-
-Service-token issuance is disabled unless `serviceToken.enabled` or
-`SHOMEI_SERVICE_TOKEN_ENABLED=true` enables it and the account is configured. Unknown account ids,
-bad secrets, disabled issuance, and scopes outside the account allow-list return `403`; an empty
-`scopes` array or malformed `actorId` returns `400`. Normal `POST /v1/auth/login` tokens still carry
-empty scopes, so a host route guarded by `requireScope (Scope "kawa:ingest")` accepts a service
-token with that scope and rejects a normal login token with `403`.
-
-See [service-tokens.md](service-tokens.md) for configuration and operating guidance.
 
 ### `POST /v1/auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens. In cookie transport the response
@@ -321,7 +308,12 @@ Body `{"ceremonyId","credential","label"?}`. → `200` `{"passkeyId","label","tr
 → `204`. `404 passkey_not_found` if the passkey is not owned by the caller.
 
 ### `POST /v1/auth/mfa/complete`
-Completes a step-up after `POST /v1/auth/login` returned `mfa_required`. Body carries `ceremonyId` plus **exactly one** of `assertion` (passkey, the legacy shape), `totpCode`, or `recoveryCode`; sending zero or more than one is `400`. → `200` `{"accessToken","refreshToken","expiresIn"}`. `404 ceremony_not_found`; `401 mfa_failed` / `401 totp_code_invalid` / `401 recovery_code_invalid` on a failed factor; `400` if `ceremonyId` is malformed. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport. (There is no `/v1/auth/mfa/begin` — the challenge rides in the `mfa_required` arm of the login response, whose `methods` list names the factors that can complete it.)
+Completes a step-up after login returned `mfa_required`. Body carries `ceremonyId` and exactly one
+tagged `proof`: `{"type":"passkey","assertion":…}`, `{"type":"totp","code":"123456"}`, or
+`{"type":"recovery_code","code":"…"}`. Unknown tags, missing payloads, and extra proof fields
+are decoding failures. → `200` `{"accessToken","refreshToken","expiresIn"}`;
+`404 ceremony_not_found`; `401 mfa_failed` / `totp_code_invalid` / `recovery_code_invalid` on a
+failed factor; `403 email_not_verified` when email verification is enforced.
 
 ### `POST /v1/auth/login/passkey/begin`
 Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`.
@@ -333,7 +325,7 @@ Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","exp
 
 The TOTP second factor (RFC 6238) and single-use recovery codes. Enabled by `totpEnabled`; the
 login `mfa_required` arm's `methods` list advertises `"totp"` / `"recovery_code"` when the account
-has them, and `POST /v1/auth/mfa/complete` (above) accepts `totpCode` / `recoveryCode`. See
+has them, and `POST /v1/auth/mfa/complete` accepts a tagged `totp` or `recovery_code` proof. See
 [mfa.md](mfa.md) for the full guide.
 
 ### `POST /v1/auth/totp/enroll` *(authenticated)*
@@ -362,23 +354,7 @@ against delegated tokens; who-may-impersonate-whom policy and business-action ga
 embedding service, which reads `act`/`sub` from the verified token. See
 [security.md](security.md#impersonation--delegated-tokens).
 
-### `POST /v1/auth/impersonate` *(authenticated, deprecated)*
-
-> **Deprecated.** Use [`POST /oauth/token`](#token-exchange-rfc-8693) with
-> `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` in impersonation mode — the standard,
-> stock-tooling-consumable surface. Both paths share one workflow core, so behavior is identical: the
-> same scope gate, freshness gate, refresh-less delegated session, `impersonation_started` audit
-> event, and `denyUnderImpersonation` credential gating. This bespoke endpoint keeps working through a
-> deprecation window; removal is a candidate for the `/v1` major-version boundary.
-
-Body `{"userId","reason","ticketId"?}`. The caller must hold the `impersonate:user` scope and
-their own access token must have been issued within the freshness window (default 5 minutes). →
-`200` `{"accessToken","subjectUserId","actorUserId","expiresAt"}` — `accessToken` is the delegated
-token (`sub`=customer, `act`=operator). `403 impersonation_forbidden` if the caller lacks the
-scope or is not fresh enough; `400 impersonation_target_invalid` if the target is missing, not
-active, or is the caller themselves.
-
-The equivalent token-exchange call:
+Create delegated tokens with the [RFC 8693 token-exchange grant](#token-exchange-rfc-8693):
 
 ```bash
 curl -s \
@@ -391,12 +367,7 @@ curl -s \
   http://localhost:8080/oauth/token
 ```
 
-### `DELETE /v1/auth/impersonate` *(authenticated)*
-Presented with a delegated token. → `204`. Revokes the delegated session named by the token.
-`400 impersonation_target_invalid` if the presented token is not a delegated token (no `act`).
-This remains the stop mechanism for **both** the bespoke endpoint and the token-exchange grant:
-an exchanged impersonation token is an ordinary delegated session, so revoking it here ends it
-(and `POST /oauth/revoke` under a service account revokes it too).
+Revoke the delegated token or its session with `POST /oauth/revoke`.
 
 Credential-changing endpoints (`POST /v1/auth/password/change`, `POST /v1/auth/passkeys/register/begin`,
 `POST /v1/auth/passkeys/register/complete`, `DELETE /v1/auth/passkeys/{passkeyId}`) **refuse** any request

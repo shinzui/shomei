@@ -67,6 +67,7 @@ import Shomei.Effect.ServiceAccountStore (createServiceAccount)
 import Shomei.Effect.UserStore (createUser)
 import Shomei.Error (AuthError)
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, idText)
+import Shomei.Jwt.KeyProtection (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Shomei.Jwt.Sign (signAccessToken)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (webhookSignature)
@@ -80,11 +81,16 @@ import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Totp (base32ToSecret, totpCode, totpCounter)
 import Shomei.Workflow.OAuthTokenGrant (pkceChallengeFor)
-import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+e2eKek :: KeyEncryptionKey
+e2eKek =
+  either (error . Text.unpack) id $
+    keyEncryptionKeyFromBase64 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 tests :: TestTree
 tests =
@@ -93,43 +99,43 @@ tests =
     [ testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedServiceAccount pool
           testWithApplication (pure (application env)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           -- OIDC needs an http(s) issuer (it doubles as the endpoint base URL) and the provider on.
           let baseCfg = defaultShomeiConfig (Issuer "http://localhost") (Audience "shomei-clients")
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedOAuthClient pool
           testWithApplication (pure (application env)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keys <- bootstrapKeys Nothing ES256 pool
+          keys <- bootstrapKeys e2eKek ES256 pool
           keysRef <- newIORef keys
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedExchangeServiceAccount pool
           -- The operator token must verify against the server's own key material, so it is signed
           -- with the active signing key (scope granting is host-side; here the host is the test).
@@ -157,17 +163,17 @@ tests =
       testCase "EP-7: enroll TOTP → verify → login(mfa) → complete → recovery codes → audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env)) (totpScenario pool),
       testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           captured <- newMVar []
@@ -188,7 +194,7 @@ tests =
                       maxAttempts = 1
                     }
                 cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
-                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
             testWithApplication (pure (application env)) (webhookScenario captured whSecret)
     ]
 
@@ -200,7 +206,7 @@ webhookScenario captured whSecret port = do
   mgr <- newManager defaultManagerSettings
   let email = "webhook-user@example.com" :: Text
       pw = "correct horse battery staple" :: Text
-  (sStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["email" .= email, "password" .= pw, "displayName" .= ("" :: Text)])
+  (sStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("" :: Text)])
   sStatus @?= 201
   -- The delivery is synchronous inside the request handler, so the stub has captured it by 202.
   (reqStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= email])
@@ -618,7 +624,12 @@ totpScenario pool port = do
   methods <- must "methods" (mBody >>= dig ["methods"] >>= asTextArray)
   assertBool "totp advertised in methods" ("totp" `elem` methods)
   cid <- must "ceremonyId" (mBody >>= dig ["ceremonyId"] >>= asText)
-  (cStatus, cBody) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= cid, "totpCode" .= totpCode 6 secret (c + 1)])
+  (cStatus, cBody) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/mfa/complete"
+      (object ["ceremonyId" .= cid, "proof" .= object ["type" .= ("totp" :: Text), "code" .= totpCode 6 secret (c + 1)]])
   cStatus @?= 200
   mfaAccess <- must "mfa accessToken" (cBody >>= dig ["accessToken"] >>= asText)
   -- the MFA-issued token verifies against the running server's key material.
@@ -633,7 +644,12 @@ totpScenario pool port = do
   (m2Status, m2Body) <- login
   m2Status @?= 200
   cid2 <- must "cid2" (m2Body >>= dig ["ceremonyId"] >>= asText)
-  (rcStatus, rcBody) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= cid2, "recoveryCode" .= head codes])
+  (rcStatus, rcBody) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/mfa/complete"
+      (object ["ceremonyId" .= cid2, "proof" .= object ["type" .= ("recovery_code" :: Text), "code" .= head codes]])
   rcStatus @?= 200
   rcAccess <- must "recovery accessToken" (rcBody >>= dig ["accessToken"] >>= asText)
   (cntStatus, cntBody) <- getJSON mgr port "/v1/auth/recovery-codes" (bearer rcAccess)
@@ -721,8 +737,8 @@ scenario pool port = do
   where
     email = "ada@example.com" :: Text
     password = "correct horse battery staple" :: Text
-    signupBody = object ["email" .= email, "password" .= password, "displayName" .= ("Ada Lovelace" :: Text)]
-    loginBody = object ["email" .= email, "password" .= password]
+    signupBody = object ["loginId" .= email, "email" .= email, "password" .= password, "displayName" .= ("Ada Lovelace" :: Text)]
+    loginBody = object ["loginId" .= email, "password" .= password]
 
 -- HTTP helpers (parseRequest does not throw on non-2xx, so 401/404 come back as responses).
 

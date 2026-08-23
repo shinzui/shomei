@@ -137,52 +137,8 @@
                 ],
                 "type": "object"
             },
-            "ImpersonateRequest": {
-                "properties": {
-                    "reason": {
-                        "type": "string"
-                    },
-                    "ticketId": {
-                        "type": "string"
-                    },
-                    "userId": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "userId",
-                    "reason"
-                ],
-                "type": "object"
-            },
-            "ImpersonateResponse": {
-                "properties": {
-                    "accessToken": {
-                        "type": "string"
-                    },
-                    "actorUserId": {
-                        "type": "string"
-                    },
-                    "expiresAt": {
-                        "type": "string"
-                    },
-                    "subjectUserId": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "accessToken",
-                    "subjectUserId",
-                    "actorUserId",
-                    "expiresAt"
-                ],
-                "type": "object"
-            },
             "LoginRequest": {
                 "properties": {
-                    "email": {
-                        "type": "string"
-                    },
                     "loginId": {
                         "type": "string"
                     },
@@ -191,6 +147,7 @@
                     }
                 },
                 "required": [
+                    "loginId",
                     "password"
                 ],
                 "type": "object"
@@ -246,23 +203,79 @@
             },
             "MfaCompleteRequest": {
                 "properties": {
-                    "assertion": {
-                        "$ref": "#/components/schemas/AnyValue"
-                    },
                     "ceremonyId": {
                         "type": "string"
                     },
-                    "recoveryCode": {
-                        "type": "string"
-                    },
-                    "totpCode": {
-                        "type": "string"
+                    "proof": {
+                        "$ref": "#/components/schemas/MfaProof"
                     }
                 },
                 "required": [
-                    "ceremonyId"
+                    "ceremonyId",
+                    "proof"
                 ],
                 "type": "object"
+            },
+            "MfaProof": {
+                "oneOf": [
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "assertion": {
+                                "$ref": "#/components/schemas/AnyValue"
+                            },
+                            "type": {
+                                "enum": [
+                                    "passkey"
+                                ],
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "assertion"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": {
+                                "type": "string"
+                            },
+                            "type": {
+                                "enum": [
+                                    "totp"
+                                ],
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "code"
+                        ],
+                        "type": "object"
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": {
+                                "type": "string"
+                            },
+                            "type": {
+                                "enum": [
+                                    "recovery_code"
+                                ],
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "code"
+                        ],
+                        "type": "object"
+                    }
+                ]
             },
             "OAuthError": {
                 "description": "An RFC 6749 §5.2 error response. Endpoints under /oauth/* speak the OAuth2 wire protocol, so they answer with this shape rather than the RFC 7807 problem document every other Shōmei endpoint returns. Switch on `error`.",
@@ -469,48 +482,6 @@
                 },
                 "type": "object"
             },
-            "ServiceTokenRequest": {
-                "properties": {
-                    "accountId": {
-                        "type": "string"
-                    },
-                    "actorId": {
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array"
-                    },
-                    "secret": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "accountId",
-                    "secret",
-                    "scopes"
-                ],
-                "type": "object"
-            },
-            "ServiceTokenResponse": {
-                "properties": {
-                    "accessToken": {
-                        "type": "string"
-                    },
-                    "expiresIn": {
-                        "maximum": 9223372036854775807,
-                        "minimum": -9223372036854775808,
-                        "type": "integer"
-                    }
-                },
-                "required": [
-                    "accessToken",
-                    "expiresIn"
-                ],
-                "type": "object"
-            },
             "SessionResponse": {
                 "properties": {
                     "createdAt": {
@@ -557,6 +528,7 @@
                     }
                 },
                 "required": [
+                    "loginId",
                     "password",
                     "displayName"
                 ],
@@ -764,7 +736,7 @@
         }
     },
     "info": {
-        "description": "Authentication, session, passkey, MFA, impersonation, and token API for the Shōmei auth service.",
+        "description": "Authentication, session, passkey, MFA, delegation, and token API for the Shōmei auth service.",
         "title": "Shōmei Authentication API",
         "version": "0.1.0.0"
     },
@@ -2783,169 +2755,6 @@
                 ]
             }
         },
-        "/v1/auth/impersonate": {
-            "delete": {
-                "operationId": "deleteAuthImpersonate",
-                "responses": {
-                    "204": {
-                        "description": "Success; no response body."
-                    },
-                    "400": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "impersonation_target_invalid"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: impersonation_target_invalid."
-                    },
-                    "401": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "missing_token",
-                                                "token_invalid",
-                                                "session_expired",
-                                                "session_revoked"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
-                    }
-                },
-                "security": [
-                    {
-                        "bearerAuth": []
-                    }
-                ]
-            },
-            "post": {
-                "operationId": "createAuthImpersonate",
-                "requestBody": {
-                    "content": {
-                        "application/json;charset=utf-8": {
-                            "schema": {
-                                "$ref": "#/components/schemas/ImpersonateRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ImpersonateResponse"
-                                }
-                            }
-                        },
-                        "description": "Success."
-                    },
-                    "400": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "body_parse_error",
-                                                "impersonation_target_invalid"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, impersonation_target_invalid."
-                    },
-                    "401": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "missing_token",
-                                                "token_invalid",
-                                                "session_expired",
-                                                "session_revoked"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid, session_expired, session_revoked."
-                    },
-                    "403": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "impersonation_forbidden",
-                                                "impersonation_action_blocked"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: impersonation_forbidden, impersonation_action_blocked."
-                    }
-                },
-                "security": [
-                    {
-                        "bearerAuth": []
-                    }
-                ]
-            }
-        },
         "/v1/auth/login": {
             "post": {
                 "operationId": "createAuthLogin",
@@ -4208,81 +4017,6 @@
                             }
                         },
                         "description": "An RFC 7807 problem document. The `code` member is one of: too_many_requests."
-                    }
-                }
-            }
-        },
-        "/v1/auth/service-token": {
-            "post": {
-                "operationId": "createAuthServiceToken",
-                "requestBody": {
-                    "content": {
-                        "application/json;charset=utf-8": {
-                            "schema": {
-                                "$ref": "#/components/schemas/ServiceTokenRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json;charset=utf-8": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ServiceTokenResponse"
-                                }
-                            }
-                        },
-                        "description": "Success."
-                    },
-                    "400": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "body_parse_error",
-                                                "bad_request",
-                                                "service_token_actor_invalid"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: body_parse_error, bad_request, service_token_actor_invalid."
-                    },
-                    "403": {
-                        "content": {
-                            "application/problem+json": {
-                                "schema": {
-                                    "allOf": [
-                                        {
-                                            "$ref": "#/components/schemas/Problem"
-                                        }
-                                    ],
-                                    "properties": {
-                                        "code": {
-                                            "enum": [
-                                                "service_token_disabled",
-                                                "service_account_invalid",
-                                                "service_token_scope_denied"
-                                            ],
-                                            "type": "string"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "description": "An RFC 7807 problem document. The `code` member is one of: service_token_disabled, service_account_invalid, service_token_scope_denied."
                     }
                 }
             }

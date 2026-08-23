@@ -48,9 +48,9 @@ import Shomei.Effect.TotpCredentialStore
 import Shomei.Error (AuthError (..))
 import Shomei.Id (TotpCredentialId, genRecoveryCodeId, genTotpCredentialId)
 import Shomei.Prelude
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Totp (TotpSecret (..), secretToBase32, verifyTotp)
 import Shomei.Totp qualified as Totp
-import Shomei.Workflow.ServiceToken (sha256Hex)
 
 -- | The one-time enrollment payload: the Base32 secret to type/scan and the @otpauth://@ URI.
 data TotpEnrollment = TotpEnrollment

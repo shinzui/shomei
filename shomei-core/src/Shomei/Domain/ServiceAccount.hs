@@ -2,12 +2,8 @@
 -- revokes at runtime, authenticating at @POST \/oauth\/token@ with the OAuth2
 -- @client_credentials@ grant.
 --
--- Distinct from 'Shomei.Config.ServiceAccountConfig', the static config-defined account behind
--- the deprecated @POST \/v1\/auth\/service-token@ endpoint. Both mint the same shape of
--- short-lived, refresh-less machine token; only this one has a runtime lifecycle.
---
--- 'secretHash' is a lowercase 64-char SHA-256 hex digest, the same format the config accounts
--- use, so 'Shomei.Workflow.ServiceToken.verifyServiceSecret' verifies both.
+-- 'secretHash' is a lowercase 64-character SHA-256 hex digest verified in constant time by
+-- 'Shomei.ServiceAccount.Secret.verifyServiceSecret'.
 module Shomei.Domain.ServiceAccount
   ( ServiceAccountStatus (..),
     ServiceAccount (..),

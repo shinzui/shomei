@@ -4,17 +4,8 @@
 -- access token for its own identity — no user interaction, and deliberately no refresh token:
 -- the credential dies at its TTL and the client simply asks again.
 --
--- This is the runtime-managed sibling of 'Shomei.Workflow.ServiceToken.issueServiceToken',
--- which authenticates accounts declared in static configuration. Both mint the same shape of
--- token through the same signing path, share one secret-verification function
--- ('Shomei.Workflow.ServiceToken.verifyServiceSecret'), age on the same
--- @serviceTokenConfig.ttl@, and publish the same 'Shomei.Domain.Event.ServiceTokenIssued' audit
--- event, so a consumer of the audit trail sees one event type for "a machine token was minted"
--- regardless of which path minted it.
---
--- One deliberate asymmetry: this workflow does NOT consult @serviceTokenConfig.enabled@. That
--- flag gates the deprecated @POST \/v1\/auth\/service-token@ endpoint and its config-defined
--- accounts. A database-backed account is "enabled" by existing, and revoked by being revoked.
+-- A database-backed account is enabled by existing in active state and revoked by changing that
+-- state. Its refresh-less token ages according to 'MachineTokenConfig'.
 module Shomei.Workflow.ClientCredentials
   ( ClientCredentialsGrant (..),
     GrantedToken (..),
@@ -28,13 +19,13 @@ import Data.Set qualified as Set
 import Data.Time (NominalDiffTime, addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
-import Shomei.Config (ServiceAccountId (..), ServiceTokenConfig (..), ShomeiConfig (..))
+import Shomei.Config (MachineTokenConfig (..), ServiceAccountId (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (Scope)
 import Shomei.Domain.Event qualified as Event
 -- Imported WITHOUT (..): 'ServiceAccount' shares the field names @userId@ and @status@ with
 -- 'Shomei.Domain.User.User', and bringing both record's fields into scope defeats
 -- @OverloadedRecordDot@'s 'HasField' resolution (a MasterPlan-3 discovery). Every field below is
--- read through a generic-lens label instead, exactly as 'Shomei.Workflow.ServiceToken' does.
+-- read through a generic-lens label instead, exactly as 'Shomei.ServiceAccount.Secret' does.
 import Shomei.Domain.ServiceAccount (ServiceAccount, ServiceAccountStatus (..))
 import Shomei.Domain.Session (NewSession (..))
 import Shomei.Domain.Token (AccessToken)
@@ -48,7 +39,7 @@ import Shomei.Effect.UserStore (UserStore, findUserById)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId)
 import Shomei.Prelude
-import Shomei.Workflow.ServiceToken (verifyServiceSecret)
+import Shomei.ServiceAccount.Secret (verifyServiceSecret)
 import Shomei.Workflow.Session (buildClaims)
 
 data ClientCredentialsGrant = ClientCredentialsGrant
@@ -98,7 +89,7 @@ grantClientCredentials cfg cmd = runErrorNoCallStack do
     unless ((user ^. #status) == UserActive) (throwError OAuthClientInvalid)
     pure user
   ts <- now
-  let ttl = cfg ^. #serviceTokenConfig . #ttl
+  let ttl = cfg ^. #machineTokenConfig . #machineTokenTTL
       expires = addUTCTime ttl ts
   -- A refresh-less session: no NewRefreshToken is ever created for it, so the credential cannot
   -- outlive its TTL. Machine clients re-authenticate instead of refreshing.

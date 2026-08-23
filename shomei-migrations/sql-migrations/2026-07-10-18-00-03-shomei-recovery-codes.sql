@@ -6,7 +6,7 @@ SET search_path TO shomei, pg_catalog;
 -- authenticator or passkey. Ten per set; regeneration replaces the whole set.
 --
 -- code_hash is a lowercase SHA-256 hex digest of the normalized code (dash stripped, casefolded),
--- the same defensible pattern service-token secrets use. The plaintext is shown to the user once
+-- the same defensible pattern machine-credential secrets use. The plaintext is shown to the user once
 -- and never stored, so a database dump never yields a spendable code.
 --
 -- used_at NULL marks a code still spendable. Consumption is a compare-and-set

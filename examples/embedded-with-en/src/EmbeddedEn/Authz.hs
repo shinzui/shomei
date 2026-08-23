@@ -50,8 +50,6 @@ import Data.Text (Text)
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static qualified as Err
-import Servant (Handler, ServerError, err403, err503, errBody, errHeaders, throwError)
-
 import En.Check (CheckDecision (..), CheckOutcome (..), check)
 import En.Conformance.Kikan qualified as Kikan
 import En.Effect.ConsistencyStore
@@ -83,7 +81,7 @@ import En.Revision
 import En.Schema (ObjectType (..), RelationName (..), Schema)
 import En.Schema.Builder qualified as Schema
 import En.Tuple (CaveatContext (..), ObjectRef (..), Subject (..), Tuple (..))
-
+import Servant (Handler, ServerError, err403, err503, errBody, errHeaders, throwError)
 import Shomei.Id (idText)
 import Shomei.Servant.Auth (AuthUser (..))
 

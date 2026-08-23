@@ -116,7 +116,7 @@ claimsFromAuth ac =
 -- | The JWS algorithm to sign with for a given key, chosen directly from the key
 -- material so the header can never disagree with the key. Crucially we pick 'RS256'
 -- (RSASSA-PKCS1-v1_5) for RSA keys — NOT the RSASSA-PSS variant @jose@'s
--- @bestJWSAlg@/@makeJWSHeader@ would prefer (PS512), which the legacy gateway and
+-- @bestJWSAlg@/@makeJWSHeader@ would prefer (PS512), which existing JWT consumers and
 -- downstream verifiers reject. Our generators only ever produce EC or RSA keys.
 algForKey :: JWK -> Alg
 algForKey jwk = case view jwkMaterial jwk of

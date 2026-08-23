@@ -53,9 +53,10 @@ in    { issuer = "shomei"
       , webauthnAttestation = "none"
       , webauthnCeremonyTimeoutSeconds = 300
       , webauthnPendingCeremonyTtlSeconds = 300
-      , webauthnMfaRequired = True
+      , mfaRequireSecondFactor = True
       , totpEnabled = False
       , totpEnrollmentTtlSeconds = 900
+      , machineTokenTtlSeconds = 300
       -- Roles every new user receives at signup. Define them first with
       -- `shomei-admin roles define <name>`; the server refuses to start if a name here is not
       -- in the registry. The empty list (the default) grants nothing.
@@ -68,18 +69,5 @@ in    { issuer = "shomei"
       , oauthLoginUrl = None Text
       , oauthAuthorizationCodeTtlSeconds = 60
       , oauthIdTokenTtlSeconds = 900
-      -- Service-token issuance for machine callers. Keep disabled until you create a Shōmei
-      -- user for each account and replace the placeholder id/hash/scope values.
-      , serviceToken =
-          { enabled = False
-          , ttlSeconds = 300
-          , accounts =
-              [ { accountId = "connector:example"
-                , userId = "user_00000000000000000000000000"
-                , secretSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-                , allowedScopes = [ "kawa:ingest" ]
-                }
-              ]
-          }
       }
     : Schema

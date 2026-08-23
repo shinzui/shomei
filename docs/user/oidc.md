@@ -8,7 +8,7 @@ library — auto-configures itself and needs no Shōmei-specific code.
 
 This is a deliberate **subset**. Implemented: discovery, authorization code + PKCE, refresh, ID
 tokens, userinfo, introspection, revocation. Not implemented (and not planned): the implicit and
-hybrid flows (deprecated by the OAuth 2.0 Security BCP), dynamic client registration, request
+hybrid flows (discouraged by the OAuth 2.0 Security BCP), dynamic client registration, request
 objects, PAR, session management / front- and back-channel logout, `prompt`/`max_age`/ACR handling,
 and any consent or login UI. Shōmei is headless — **the host owns the login UI** — which is what the
 authorize contract below is built around.
@@ -48,7 +48,7 @@ Environment overrides: `SHOMEI_OIDC_ENABLED`, `SHOMEI_OAUTH_LOGIN_URL`, `SHOMEI_
 ## Registering clients
 
 Clients are registered from the CLI — there is no dynamic registration and no config-file source
-(that would recreate the dual-source problem [service accounts](service-tokens.md) are deprecating).
+(that would recreate the dual-source problem [service accounts](machine-tokens.md) are deprecating).
 
 ```bash
 # A confidential client (a server-side web app). Its secret is printed once.
@@ -129,7 +129,7 @@ family and the session.
 ## Introspection and revocation
 
 `POST /oauth/introspect` (RFC 7662) and `POST /oauth/revoke` (RFC 7009) are client-authenticated —
-by a confidential OAuth client or a [service account](service-tokens.md), via `client_secret_basic`
+by a confidential OAuth client or a [service account](machine-tokens.md), via `client_secret_basic`
 or `client_secret_post`. A public client cannot use them.
 
 Introspection is **session-aware**: a token is `active` only if it verifies *and* its session is

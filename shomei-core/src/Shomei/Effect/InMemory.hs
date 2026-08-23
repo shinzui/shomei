@@ -836,8 +836,6 @@ runPendingCeremonyStore ref = interpret_ \case
         -- clears the stale row; return it only if it is still live.
         modifyWorld ref (#pendingCeremonies %~ Map.delete cid)
         pure (if pcExpiresAt pc > now' then Just pc else Nothing)
-  DeleteExpiredCeremonies now' ->
-    liftIO (modifyWorld ref (#pendingCeremonies %~ Map.filter (\pc -> pcExpiresAt pc > now')))
 
 -- | Field accessors for the EP-4 service-account records. Both 'ServiceAccount' and
 -- 'NewServiceAccount' share field names with several other domain records, so read them with

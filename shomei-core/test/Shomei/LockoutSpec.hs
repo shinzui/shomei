@@ -18,7 +18,7 @@ import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..))
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Effect.InMemory (World (..), emptyWorld, runInMemory)
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore (..))
@@ -71,17 +71,17 @@ ctxOf :: ClientIp -> Email -> ClientContext
 ctxOf ip e = ClientContext ip (keyOf e)
 
 badLogin :: IORef World -> ClientIp -> Email -> IO (Either AuthError ())
-badLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (loginIdFromEmail e) wrongPw))
+badLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) wrongPw))
 
 goodLogin :: IORef World -> ClientIp -> Email -> IO (Either AuthError ())
-goodLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (loginIdFromEmail e) strongPw))
+goodLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw))
 
 advanceClock :: IORef World -> UTCTime -> IO ()
 advanceClock ref t = modifyIORef' ref (\w -> w {clock = t})
 
 seedAlice :: IORef World -> IO ()
 seedAlice ref = do
-  r <- runInMemory ref (signup cfg (SignupCommand {loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
+  r <- runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
   case r of
     Right _ -> pure ()
     Left e -> assertFailure ("seed signup failed: " <> show e)
@@ -114,7 +114,7 @@ tracedGoodLogin ref ip e = do
   r <-
     runInMemory
       ref
-      (recordAttemptOps traceRef (login cfg (ctxOf ip e) (LoginCommand (loginIdFromEmail e) strongPw)))
+      (recordAttemptOps traceRef (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw)))
   ops <- readIORef traceRef
   pure (fmap (const ()) r, ops)
 

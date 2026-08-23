@@ -46,7 +46,7 @@ import Data.Set qualified as Set
 import Data.Time (NominalDiffTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
-import Shomei.Config (ImpersonationConfig (..), ServiceTokenConfig (..), ShomeiConfig (..))
+import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), ShomeiConfig (..))
 import Shomei.Domain.Claims (AuthClaims (..), Scope (..))
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.ServiceAccount (ServiceAccount, ServiceAccountStatus (ServiceAccountActive))
@@ -221,7 +221,7 @@ onBehalfOfMode cfg req svc = do
         { subjectUserId = subjectClaims.subject,
           actorUserId = svc ^. #userId,
           scopes = granted,
-          ttl = cfg.serviceTokenConfig.ttl
+          ttl = cfg.machineTokenConfig.machineTokenTTL
         }
   let sid = session ^. #sessionId
   publishAuthEvent
@@ -238,7 +238,7 @@ onBehalfOfMode cfg req svc = do
   pure
     ExchangedToken
       { accessToken = access,
-        expiresIn = cfg.serviceTokenConfig.ttl,
+        expiresIn = cfg.machineTokenConfig.machineTokenTTL,
         grantedScopes = granted,
         sessionId = sid
       }

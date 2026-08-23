@@ -62,7 +62,7 @@ ensureEmailVerified cfg user
 
 -- | The /base/ claims for a freshly-authenticated session: no scopes, no roles. The standard
 -- workflows call 'buildEnrichedClaims', which fills those in from the role store and the host
--- hook. 'Shomei.Workflow.ServiceToken' uses this directly, because it sets @scopes@ itself from
+-- hook. 'Shomei.ServiceAccount.Secret' uses this directly, because it sets @scopes@ itself from
 -- the account's negotiated allow-list.
 buildClaims :: ShomeiConfig -> UserId -> SessionId -> UTCTime -> AuthClaims
 buildClaims cfg uid sid ts =

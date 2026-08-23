@@ -59,11 +59,10 @@ import Shomei.Servant.DTO
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
     HealthResponse,
-    ImpersonateRequest,
-    ImpersonateResponse,
     LoginRequest,
     LoginResponse,
     MfaCompleteRequest,
+    MfaProof,
     PasskeyLoginBeginResponse,
     PasskeyLoginCompleteRequest,
     PasskeyRegisterBeginResponse,
@@ -74,8 +73,6 @@ import Shomei.Servant.DTO
     RecoveryCodesCountResponse,
     RecoveryCodesResponse,
     RefreshRequest,
-    ServiceTokenRequest,
-    ServiceTokenResponse,
     SessionResponse,
     SignupRequest,
     SignupResponse,
@@ -96,8 +93,6 @@ import Shomei.Servant.Error
     pcEmailNotVerified,
     pcEmailTaken,
     pcImpersonationActionBlocked,
-    pcImpersonationForbidden,
-    pcImpersonationTargetInvalid,
     pcInvalidEmail,
     pcInvalidLogin,
     pcInvalidLoginId,
@@ -115,10 +110,6 @@ import Shomei.Servant.Error
     pcRoleNotDefined,
     pcRoleNotGranted,
     pcSelfTargetForbidden,
-    pcServiceAccountInvalid,
-    pcServiceTokenActorInvalid,
-    pcServiceTokenDisabled,
-    pcServiceTokenScopeDenied,
     pcSessionExpired,
     pcSessionNotFound,
     pcSessionRevoked,
@@ -195,14 +186,6 @@ instance ToSchema PasskeyResponse
 instance ToSchema PasskeyLoginBeginResponse
 
 instance ToSchema PasskeyLoginCompleteRequest
-
-instance ToSchema ImpersonateRequest
-
-instance ToSchema ImpersonateResponse
-
-instance ToSchema ServiceTokenRequest
-
-instance ToSchema ServiceTokenResponse
 
 instance ToSchema AuditEventResponse
 
@@ -315,6 +298,29 @@ instance ToSchema Value where
     pure $
       O.NamedSchema (Just "AnyValue") $
         mempty & O.additionalProperties ?~ O.AdditionalPropertiesAllowed True
+
+-- | 'MfaProof' uses a hand-written discriminator and flat payload fields. Keep its schema
+-- aligned with that exact representation rather than Generic's constructor encoding.
+instance ToSchema MfaProof where
+  declareNamedSchema _ = do
+    assertionRef <- O.declareSchemaRef (Proxy :: Proxy Value)
+    let stringProp = O.Inline stringSchema
+        tagged tag payloadName payloadSchema =
+          mempty
+            & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+            & O.properties
+              .~ IOHM.fromList
+                [ ("type", O.Inline (stringSchema & O.enum_ ?~ [String tag])),
+                  (payloadName, payloadSchema)
+                ]
+            & O.required .~ ["type", payloadName]
+            & O.additionalProperties ?~ O.AdditionalPropertiesAllowed False
+        passkeyBranch = tagged "passkey" "assertion" assertionRef
+        totpBranch = tagged "totp" "code" stringProp
+        recoveryBranch = tagged "recovery_code" "code" stringProp
+    pure $
+      O.NamedSchema (Just "MfaProof") $
+        mempty & O.oneOf ?~ map O.Inline [passkeyBranch, totpBranch, recoveryBranch]
 
 -- | 'LoginResponse' has a hand-written, @status@-tagged 'ToJSON' (a completed
 -- login vs. an MFA challenge), so its schema is hand-written to match: a @oneOf@
@@ -439,8 +445,7 @@ stringSchema :: O.Schema
 stringSchema = mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiString
 
 -- | The HTTP methods Shōmei's routes use, as a selector for the matching 'O.PathItem' field. A
--- route→codes table entry names one operation, and a path may carry several
--- (@\/v1\/auth\/impersonate@ has POST and DELETE).
+-- route→codes table entry names one operation, and a path may carry several methods.
 --
 -- 'allMethods' must list every constructor: 'withErrorResponses' folds over it, so a method
 -- missing here silently documents no errors at all for every route that uses it. EP-2's
@@ -490,10 +495,6 @@ routeErrors =
         pcTooManyRequests
       ]
     ),
-    ( "/v1/auth/service-token",
-      MPost,
-      [pcBadRequest, pcServiceTokenActorInvalid, pcServiceTokenDisabled, pcServiceAccountInvalid, pcServiceTokenScopeDenied]
-    ),
     ("/v1/auth/verify-email/request", MPost, [pcTooManyRequests]),
     ("/v1/auth/verify-email/confirm", MPost, [pcVerificationTokenInvalid, pcEmailAlreadyVerified]),
     ("/v1/auth/password-reset/request", MPost, [pcTooManyRequests]),
@@ -512,8 +513,6 @@ routeErrors =
     ("/v1/auth/recovery-codes", MPost, [pcReauthenticationRequired, pcImpersonationActionBlocked, pcUserNotFound]),
     ("/v1/auth/mfa/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
     ("/v1/auth/login/passkey/complete", MPost, [pcBadRequest, pcMfaFailed, pcEmailNotVerified, pcCeremonyNotFound]),
-    ("/v1/auth/impersonate", MPost, [pcImpersonationTargetInvalid, pcImpersonationForbidden, pcImpersonationActionBlocked]),
-    ("/v1/auth/impersonate", MDelete, [pcImpersonationTargetInvalid]),
     ("/v1/admin/audit/events", MGet, [pcBadRequest, pcMissingRole]),
     -- EP-2's admin surface. Every one of these is gated by 'Shomei.Servant.Authz.requireAdmin',
     -- whose refusal is the same @missing_role@ document 'RequireRole' raises, so 'pcMissingRole'
@@ -741,7 +740,7 @@ shomeiOpenApi =
     & O.info . O.title .~ "Shōmei Authentication API"
     & O.info . O.version .~ "0.1.0.0"
     & O.info . O.description
-      ?~ "Authentication, session, passkey, MFA, impersonation, and token API for the Shōmei auth service."
+      ?~ "Authentication, session, passkey, MFA, delegation, and token API for the Shōmei auth service."
     & O.servers .~ [localServer]
     & withOperationIds
     & withErrorResponses

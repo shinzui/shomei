@@ -18,11 +18,11 @@ import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Data.UUID qualified as UUID
 import Shomei.Config (ServiceAccountId (..))
 import Shomei.Domain.Claims (Role (..), Scope (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Id
   ( CeremonyId,
     PasskeyId,
@@ -70,7 +70,7 @@ aliceEmail = case mkEmail "alice@example.com" of
   Left err -> error ("bad test email: " <> show err)
 
 aliceLogin :: LoginId
-aliceLogin = loginIdFromEmail aliceEmail
+aliceLogin = either (error . show) id (mkLoginId (emailText aliceEmail))
 
 -- | Assert that the event survives @project → toJSON → reconstruct@.
 check :: (ToJSON a) => Text -> a -> AuthEvent -> TestTree

@@ -9,7 +9,7 @@
 -- So an OAuth client is never a token subject and has no user row.
 --
 -- 'secretHash' is a lowercase 64-char SHA-256 hex digest — the same format the service accounts
--- use, so 'Shomei.Workflow.ServiceToken.verifyServiceSecret' verifies both — and is 'Nothing' for
+-- use, so 'Shomei.ServiceAccount.Secret.verifyServiceSecret' verifies both — and is 'Nothing' for
 -- exactly the 'PublicClient's.
 module Shomei.Domain.OAuthClient
   ( ClientType (..),

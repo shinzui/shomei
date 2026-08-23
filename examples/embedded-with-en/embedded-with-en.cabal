@@ -1,7 +1,9 @@
 cabal-version: 3.0
 name:          embedded-with-en
 version:       0.1.0.0
-synopsis:      Demo: Shōmei authentication + en (ReBAC) authorization in one Servant process
+synopsis:
+  Demo: Shōmei authentication + en (ReBAC) authorization in one Servant process
+
 license:       MIT
 author:        Nadeem Bitar
 maintainer:    nadeem@gmail.com

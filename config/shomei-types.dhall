@@ -57,12 +57,13 @@
 , webauthnAttestation : Text                 -- "none" | "direct"
 , webauthnCeremonyTimeoutSeconds : Natural   -- browser ceremony timeout
 , webauthnPendingCeremonyTtlSeconds : Natural -- how long a begun ceremony stays valid server-side
-, webauthnMfaRequired : Bool                 -- require the second factor for accounts with any enrolled factor
+, mfaRequireSecondFactor : Bool              -- require a second factor for accounts with any enrolled factor
 -- TOTP second factor (MasterPlan 7 EP-7). Disabled by default. When enabled, the environment
 -- variable SHOMEI_TOTP_ENCRYPTION_KEY (base64 of 32 bytes) MUST be set — it is a secret and so is
 -- never in this file — or the server refuses to start. Generate one with: openssl rand -base64 32.
 , totpEnabled : Bool
 , totpEnrollmentTtlSeconds : Natural          -- how long an unconfirmed enrollment stays activatable
+, machineTokenTtlSeconds : Natural            -- client-credentials and token-exchange token lifetime
 -- OIDC provider surface (MasterPlan 7 EP-5). Disabled by default. When enabled, `issuer` above
 -- MUST be this deployment's public http(s) base URL: every endpoint in the published discovery
 -- document is derived from it, and the server refuses to start otherwise.
@@ -73,17 +74,4 @@
 , oauthLoginUrl : Optional Text
 , oauthAuthorizationCodeTtlSeconds : Natural  -- single-use authorization code lifetime
 , oauthIdTokenTtlSeconds : Natural            -- ID token lifetime
--- Service-token issuance. Disabled by default; each configured account maps an operator-chosen
--- account id to an existing Shōmei user id, a SHA-256 hex secret hash, and coarse allowed scopes.
-, serviceToken :
-    { enabled : Bool
-    , ttlSeconds : Natural
-    , accounts :
-        List
-          { accountId : Text
-          , userId : Text
-          , secretSha256 : Text
-          , allowedScopes : List Text
-          }
-    }
 }

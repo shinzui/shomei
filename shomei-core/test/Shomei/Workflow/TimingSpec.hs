@@ -27,13 +27,14 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText)
+import Shomei.Domain.LoginId (LoginId, loginIdText, mkLoginId)
 import Shomei.Domain.Password (PasswordHash (..), PlainPassword (..))
 import Shomei.Domain.User (User (..), UserStatus (UserSuspended))
 import Shomei.Effect.AuthEventPublisher (AuthEventPublisher)
 import Shomei.Effect.AuthUnitOfWork (AuthUnitOfWork)
+import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Clock (Clock)
 import Shomei.Effect.CredentialStore (CredentialStore)
 import Shomei.Effect.InMemory
@@ -41,30 +42,29 @@ import Shomei.Effect.InMemory
     emptyWorld,
     runAuthEventPublisher,
     runAuthUnitOfWork,
+    runClaimsEnricherNull,
     runClock,
     runCredentialStore,
     runLoginAttemptStore,
     runNotifier,
-    runClaimsEnricherNull,
     runPasskeyStore,
     runPasswordBreachCheckerFake,
     runPasswordResetTokenStore,
     runPendingCeremonyStore,
     runRecoveryCodeStore,
     runRefreshTokenStore,
+    runRoleStore,
     runSessionStore,
     runSigningKeyStore,
     runTokenGen,
     runTokenSigner,
     runTokenVerifier,
     runTotpCredentialStore,
-    runRoleStore,
     runUserStore,
     runVerificationTokenStore,
     runWebAuthnCeremonyFake,
   )
 import Shomei.Effect.LoginAttemptStore (LoginAttemptStore)
-import Shomei.Effect.ClaimsEnricher (ClaimsEnricher)
 import Shomei.Effect.Notifier (Notifier)
 import Shomei.Effect.PasskeyStore (PasskeyStore)
 import Shomei.Effect.PasswordBreachChecker (PasswordBreachChecker)
@@ -250,13 +250,13 @@ mkEmail' t = either (\e -> error ("bad test email: " <> show e)) id (mkEmail t)
 
 signupEmail :: Email -> PlainPassword -> SignupCommand
 signupEmail e pw =
-  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = pw, displayName = Nothing}
+  SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = pw, displayName = Nothing}
 
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = loginIdFromEmail e, password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
 
 ctxForLogin :: LoginId -> ClientContext
 ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))
 
 ctxFor :: Email -> ClientContext
-ctxFor = ctxForLogin . loginIdFromEmail
+ctxFor email = ctxForLogin (either (error . show) id (mkLoginId (emailText email)))

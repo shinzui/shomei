@@ -19,8 +19,8 @@ import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
-import Shomei.Domain.Email (Email, mkEmail)
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Passkey
   ( PasskeyCredential (..),
     PublicKeyBytes (..),
@@ -69,7 +69,7 @@ newWorld = newIORef (emptyWorld t0)
 
 seedUser :: IORef World -> IO UserId
 seedUser ref = runInMemory ref do
-  User {userId} <- createUser NewUser {loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, displayName = Just "Ada"}
+  User {userId} <- createUser NewUser {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, displayName = Just "Ada"}
   pure userId
 
 -- Field accessors (OverloadedRecordDot is unreliable for these EP-1 records).

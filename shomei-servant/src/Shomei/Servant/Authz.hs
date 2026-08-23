@@ -129,7 +129,7 @@ adminScope = Scope "shomei:admin"
 -- This is a guard function rather than a route-type combinator because the condition is a
 -- /disjunction/, and a single type-level symbol cannot express one. Both halves are needed: a
 -- human administrator carries a granted role, while a database-less service administers with a
--- service token, and @\/v1\/auth\/service-token@ mints scopes, not roles.
+-- OAuth machine tokens carry scopes, not roles.
 --
 -- The failure is the same @403 missing_role@ document 'requireRole' raises. It deliberately does
 -- not say "…or the @shomei:admin@ scope": telling an unauthorized caller exactly which of two

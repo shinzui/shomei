@@ -21,6 +21,17 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.IORef (IORef)
 import Data.Text (Text)
+import EmbeddedEn.Authz
+  ( EnEnv,
+    grantRelation,
+    mkEnEnv,
+    projectRef,
+    requireProjectPermission,
+    subjectForUser,
+  )
+import En.Revision (ConsistencyToken (..))
+import En.Schema (RelationName (..))
+import En.Tuple (Tuple)
 import GHC.Generics (Generic)
 import Network.Wai (Application)
 import Servant
@@ -42,19 +53,6 @@ import Servant
     throwError,
     type (:<|>) ((:<|>)),
     type (:>),
-  )
-
-import En.Revision (ConsistencyToken (..))
-import En.Schema (RelationName (..))
-import En.Tuple (Tuple)
-
-import EmbeddedEn.Authz
-  ( EnEnv,
-    grantRelation,
-    mkEnEnv,
-    projectRef,
-    requireProjectPermission,
-    subjectForUser,
   )
 import Shomei.Servant.API (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, Authenticated)

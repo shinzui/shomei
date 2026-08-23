@@ -135,10 +135,9 @@ data Env = Env
   { envPool :: !Pool,
     envConfig :: !ShomeiConfig,
     envKeys :: !(IORef LoadedKeys),
-    -- | the key-encryption key, when signing keys are encrypted at rest. Held so a reload
-    --     can decrypt the signer; deliberately not part of 'ShomeiConfig', which is 'Show'able
-    --     and serializable.
-    envKek :: !(Maybe KeyEncryptionKey),
+    -- | the key-encryption key used to decrypt the signer during reloads. It is deliberately
+    --     not part of 'ShomeiConfig', which is 'Show'able and serializable.
+    envKek :: !KeyEncryptionKey,
     -- | the AES-256-GCM key that encrypts stored TOTP secrets (EP-7), loaded from
     --     @SHOMEI_TOTP_ENCRYPTION_KEY@. Deliberately not part of 'ShomeiConfig' (a secret). When
     --     TOTP is disabled this is a dummy key: enrollment is refused, so the store is

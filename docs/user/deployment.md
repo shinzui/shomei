@@ -29,7 +29,7 @@ twelve-factor — env always wins):
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
-| `SHOMEI_KEY_ENCRYPTION_KEY` | 32 bytes, base64. Envelope-encrypts signing keys at rest. Unset means keys are stored in plaintext (a warning is logged) | unset |
+| `SHOMEI_KEY_ENCRYPTION_KEY` | **Required.** 32 bytes, base64; envelope-encrypts every signing key at rest | — |
 | `SHOMEI_KEY_ENCRYPTION_KEY_OLD` | the previous KEK; read only by `shomei-admin keys rewrap` | unset |
 | `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |
 | `SHOMEI_PASSWORD_REJECT_COMMON` | reject passwords from the built-in common-password dictionary | `true` |
@@ -43,10 +43,8 @@ twelve-factor — env always wins):
 | `SHOMEI_WEBAUTHN_USER_VERIFICATION` | `required` \| `preferred` \| `discouraged` | `preferred` |
 | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` \| `direct` | `none` |
 | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` / `SHOMEI_WEBAUTHN_PENDING_TTL` | ceremony timeout / pending-ceremony TTL (seconds) | `300` |
-| `SHOMEI_WEBAUTHN_MFA_REQUIRED` | require MFA for accounts that have a passkey | `true` |
-| `SHOMEI_SERVICE_TOKEN_ENABLED` | enable `POST /v1/auth/service-token` | `false` |
-| `SHOMEI_SERVICE_TOKEN_TTL` | service-token access-token lifetime, seconds | `300` |
-| `SHOMEI_SERVICE_ACCOUNTS_JSON` | JSON array of service account objects: `accountId`, `userId`, `secretSha256`, `allowedScopes` | unset |
+| `SHOMEI_MFA_REQUIRE_SECOND_FACTOR` | require MFA for accounts with an enrolled factor | `true` |
+| `SHOMEI_MACHINE_TOKEN_TTL` | `client_credentials` and token-exchange access-token lifetime, seconds | `300` |
 | `SHOMEI_SWEEP_ENABLED` | run the background expired-data sweeper in-process. Set `false` if you schedule `shomei-admin sweep` externally | `true` |
 | `SHOMEI_SWEEP_INTERVAL_SECONDS` | seconds between sweep cycles. Must be positive | `3600` |
 | `SHOMEI_SWEEP_BATCH_SIZE` | rows deleted per statement (sessions per statement, for refresh tokens). Must be positive | `1000` |
@@ -62,19 +60,6 @@ twelve-factor — env always wins):
 | `SHOMEI_RTS_OPTS` | GHC runtime options the container entrypoint passes as `+RTS … -RTS`. Empty string passes none. **Do not use `GHCRTS`** — it leaks into `dhall-to-json` and breaks config loading | `-N<cpu-quota> [-A64m] --nonmoving-gc` |
 | `SHOMEI_CGROUP_ROOT` | where the entrypoint looks for the CPU quota. A test seam; leave unset | `/sys/fs/cgroup` |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
-
-`SHOMEI_SERVICE_ACCOUNTS_JSON` replaces the configured service-account list when set. Example:
-
-```json
-[
-  {
-    "accountId": "connector:kawa",
-    "userId": "user_...",
-    "secretSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "allowedScopes": ["kawa:ingest"]
-  }
-]
-```
 
 ### Sizing the connection pool
 
@@ -163,13 +148,13 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPool
 `passwordBreachCheckTimeoutMs`, the WebAuthn keys `webauthnRpId`, `webauthnRpName`,
 `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
 `webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
-`webauthnMfaRequired`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
+`mfaRequireSecondFactor`, `machineTokenTtlSeconds`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
 `cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, the sweeper keys `sweepEnabled`,
 `sweepIntervalSeconds`, `sweepBatchSize`, `sweepDeadSessionGraceDays`,
 `sweepOneTimeTokenGraceDays`, `sweepCeremonyGraceMinutes`, `loginAttemptRetentionDays`,
 `authEventRetentionDays`, the hashing keys `argon2MemoryKiB`, `argon2Iterations`,
-`argon2Parallelism`, `hashingMaxConcurrency`, and `serviceToken` (see
-[passkeys.md](passkeys.md) for WebAuthn and [service-tokens.md](service-tokens.md) for service
+`argon2Parallelism`, and `hashingMaxConcurrency` (see
+[passkeys.md](passkeys.md) for WebAuthn and [machine-tokens.md](machine-tokens.md) for service
 accounts).
 
 > **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
@@ -193,7 +178,6 @@ shomei-admin keys activate <kid>                  # promote pending → active (
 shomei-admin keys retire <kid>                    # active → retired (still trusted in JWKS)
 shomei-admin keys revoke <kid>                    # → revoked (removed from JWKS, distrusted)
 shomei-admin keys list                            # kid / status / timestamps
-shomei-admin keys encrypt-at-rest                 # encrypt plaintext private keys (idempotent)
 shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
 shomei-admin users create --email … --password … [--display-name …]
 shomei-admin audit events|user|session|count …     # read the security audit trail
@@ -216,32 +200,21 @@ during the overlap). A running server applies the rotation at its next key reloa
 
 ## Encrypting signing keys at rest
 
-Without `SHOMEI_KEY_ENCRYPTION_KEY`, private signing keys sit in the database as plaintext, and
-anyone who can read the database can forge tokens for every downstream service. See
-[security.md](security.md#signing-key-encryption-at-rest) for the threat model and the scheme.
-
-**Enabling it on an existing deployment.** Encrypted rows cannot be read by a binary that has
-no KEK, so do the backfill *after* the binary you would roll back to is the one running:
+Shōmei requires `SHOMEI_KEY_ENCRYPTION_KEY` and stores every private signing key as an `enc:v1:`
+envelope. Missing or malformed KEK material is a startup error. Generate and store the KEK before
+the first server or `keys generate` invocation:
 
 ```bash
 # 1. Generate a KEK and store it in your secret manager. Back it up separately from the
 #    database — losing it loses the signing keys, with no recovery path.
 head -c 32 /dev/urandom | base64
 
-# 2. Set SHOMEI_KEY_ENCRYPTION_KEY in the server's environment and restart. Nothing changes
-#    yet: existing plaintext rows still read, and any NEW key is written encrypted.
-
-# 3. Backfill. Idempotent, and safe against the running server: each row is one atomic
-#    UPDATE, and a running server reads plaintext and encrypted rows alike.
-shomei-admin keys encrypt-at-rest      # → encrypted 3 key(s), skipped 0 already-encrypted
-
-# 4. Verify: no private scalar "d" is left anywhere in the table.
-psql -d "$PGDATABASE" -tAc \
-  "SELECT count(*) FROM shomei.shomei_signing_keys WHERE private_key_jwk LIKE '%\"d\"%'"   # → 0
+export SHOMEI_KEY_ENCRYPTION_KEY='<base64 value from the secret manager>'
+shomei-admin keys generate
 ```
 
-From here on, a server started **without** the KEK refuses to boot rather than run unable to
-sign. `shomei-admin` needs the KEK for `keys generate` (so the new key is written encrypted);
+The server and `shomei-admin keys generate` both require the KEK. The server rejects any signing
+key row without the encrypted envelope. The
 the pure status transitions — `activate`, `retire`, `revoke`, `list` — never touch key material
 and need nothing.
 
@@ -255,8 +228,7 @@ shomei-admin keys rewrap               # → rewrapped 3 key(s)
 
 `rewrap` decrypts every row in memory before writing any of them, so a wrong
 `SHOMEI_KEY_ENCRYPTION_KEY_OLD` aborts with `no rows were modified` — a half-rewrapped table
-would be readable by neither KEK. It also encrypts any row still in plaintext, so it subsumes
-`encrypt-at-rest`. Afterwards, deploy the new KEK to the servers and restart them; the public
+would be readable by neither KEK. Afterwards, deploy the new KEK to the servers and restart them; the public
 keys never changed, so **every outstanding token keeps verifying** across the rotation.
 
 ## Local development/test stack (`process-compose`)

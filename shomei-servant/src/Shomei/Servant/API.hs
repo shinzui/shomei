@@ -36,8 +36,6 @@ import Shomei.Servant.DTO
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
     HealthResponse,
-    ImpersonateRequest,
-    ImpersonateResponse,
     LoginRequest,
     LoginResponse,
     MfaCompleteRequest,
@@ -51,8 +49,6 @@ import Shomei.Servant.DTO
     RecoveryCodesCountResponse,
     RecoveryCodesResponse,
     RefreshRequest,
-    ServiceTokenRequest,
-    ServiceTokenResponse,
     SessionResponse,
     SignupRequest,
     SignupResponse,
@@ -98,12 +94,6 @@ data ShomeiAPI mode = ShomeiAPI
           :> Header "Referer" Text
           :> ReqBody '[JSON] RefreshRequest
           :> Post '[JSON] (WithCookies TokenPairResponse),
-    serviceToken ::
-      mode
-        :- "auth"
-          :> "service-token"
-          :> ReqBody '[JSON] ServiceTokenRequest
-          :> Post '[JSON] ServiceTokenResponse,
     -- | @202@, honestly: the reply says nothing about the address, and the mail leaves the
     --     process later through the 'Shomei.Effect.Notifier.Notifier'. The unconditional
     --     response is also the anti-enumeration contract — an unknown address gets the same
@@ -266,25 +256,6 @@ data ShomeiAPI mode = ShomeiAPI
           :> "complete"
           :> ReqBody '[JSON] PasskeyLoginCompleteRequest
           :> Post '[JSON] (WithCookies TokenPairResponse),
-    -- | @POST /v1/auth/impersonate@: exchange the caller's token for a short-lived delegated
-    --     token acting on behalf of a target user. Authenticated; 'RemoteHost' supplies the
-    --     client IP for the audit record.
-    impersonate ::
-      mode
-        :- "auth"
-          :> "impersonate"
-          :> Authenticated
-          :> RemoteHost
-          :> ReqBody '[JSON] ImpersonateRequest
-          :> Post '[JSON] ImpersonateResponse,
-    -- | @DELETE /v1/auth/impersonate@: stop impersonating by revoking the delegated session
-    --     named by the presented token. Authenticated.
-    stopImpersonate ::
-      mode
-        :- "auth"
-          :> "impersonate"
-          :> Authenticated
-          :> DeleteNoContent,
     -- | @GET /v1/admin/audit/events@ (EP-7): an admin-gated, filtered, keyset-paginated page
     --     of the audit trail. Repeated @?type=@ collects into a list; @?before=@ takes an
     --     opaque cursor from a previous page's @nextCursor@.

@@ -73,7 +73,7 @@ cabal run shomei-admin -- users create --email admin@example.com --password '…
 - [docs/user/architecture.md](docs/user/architecture.md) — design, package layering, the effects & workflows pattern.
 - [docs/user/api.md](docs/user/api.md) — every HTTP endpoint with request/response shapes and status codes.
 - [docs/user/passkeys.md](docs/user/passkeys.md) — passkeys & multi-factor login: the enroll, step-up, and passwordless ceremonies, the `webauthnConfig` settings, and the security model.
-- [docs/user/service-tokens.md](docs/user/service-tokens.md) — scoped machine-token issuance for connectors and agents.
+- [docs/user/machine-tokens.md](docs/user/machine-tokens.md) — OAuth machine-token issuance for connectors and agents.
 - [docs/user/security.md](docs/user/security.md) — hashing, token handling, key rotation, abuse protection, the no-leak guarantees.
 - [docs/user/authorization.md](docs/user/authorization.md) — the two-tier authorization story, and the conventions for composing Shōmei authentication with **en** (ReBAC) authorization.
 - [docs/user/notifications.md](docs/user/notifications.md) — sending account-lifecycle email through your own provider via a custom `Notifier` interpreter.

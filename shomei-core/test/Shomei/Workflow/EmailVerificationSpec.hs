@@ -13,9 +13,9 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
+import Shomei.Domain.LoginId (LoginId, loginIdText, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OneTimeToken (OneTimeToken)
 import Shomei.Domain.Passkey
@@ -176,17 +176,17 @@ mkLoginId' t = either (\e -> error ("bad test login id: " <> show e)) id (mkLogi
 
 signupEmail :: Email -> SignupCommand
 signupEmail e =
-  SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = strongPw, displayName = Nothing}
+  SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = strongPw, displayName = Nothing}
 
 signupLoginId :: LoginId -> SignupCommand
 signupLoginId l =
   SignupCommand {loginId = l, email = Nothing, password = strongPw, displayName = Nothing}
 
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = loginIdFromEmail e, password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
 
 ctxForLogin :: LoginId -> ClientContext
 ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))
 
 ctxFor :: Email -> ClientContext
-ctxFor = ctxForLogin . loginIdFromEmail
+ctxFor email = ctxForLogin (either (error . show) id (mkLoginId (emailText email)))

@@ -24,6 +24,7 @@ module Shomei.Servant.DTO
     PasskeyRegisterBeginResponse (..),
     PasskeyRegisterCompleteRequest (..),
     PasskeyResponse (..),
+    MfaProof (..),
     MfaCompleteRequest (..),
     mfaCompletionOf,
     TotpEnrollResponse (..),
@@ -34,10 +35,6 @@ module Shomei.Servant.DTO
     RecoveryCodesCountResponse (..),
     PasskeyLoginBeginResponse (..),
     PasskeyLoginCompleteRequest (..),
-    ImpersonateRequest (..),
-    ImpersonateResponse (..),
-    ServiceTokenRequest (..),
-    ServiceTokenResponse (..),
     AuditEventResponse (..),
     AuditEventsPage (..),
     AdminUserResponse (..),
@@ -48,8 +45,6 @@ module Shomei.Servant.DTO
     sessionToResponse,
     passkeyToResponse,
     loginResultToResponse,
-    impersonateToResponse,
-    serviceTokenToResponse,
     storedToResponse,
     encodeCursor,
     decodeCursor,
@@ -58,39 +53,38 @@ module Shomei.Servant.DTO
   )
 where
 
-import Data.Aeson (Value (Null), object, withObject, (.:), (.:?))
-import Data.Maybe (catMaybes, isJust)
+import Data.Aeson (Value, object, withObject, (.:), (.:?))
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Parser)
+import Data.List (sort)
+import Data.Maybe (catMaybes, isJust)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Data.UUID qualified as UUID
 import Shomei.Config (ShomeiConfig (..), transportIncludesBodyTokens)
+import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.Email (emailText)
 import Shomei.Domain.LoginId (loginIdText)
 import Shomei.Domain.Passkey (PasskeyCredential (..))
 import Shomei.Domain.RefreshToken (RefreshToken (..))
 import Shomei.Domain.Session (Session (..), SessionStatus (..))
 import Shomei.Domain.Token (AccessToken (..), TokenPair (..))
-import Data.List (sort)
-import Data.Set (Set)
-import Data.Set qualified as Set
-import Shomei.Domain.Claims (Role (..))
 import Shomei.Domain.User (User (..), UserStatus (..))
 import Shomei.Effect.AuthEventReader (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Effect.UserStore (UserCursor (..))
 import Shomei.Id (idText, userIdFromUUID, userIdToUUID)
-import Shomei.Workflow.Mfa (MfaCompletion (..))
-import Shomei.Workflow.Totp (TotpRemovalProof (..))
 import Shomei.Prelude
 import Shomei.Workflow (LoginResult (..), MfaChallenge (..))
-import Shomei.Workflow.ServiceToken (IssuedServiceToken (..))
+import Shomei.Workflow.Mfa (MfaCompletion (..))
+import Shomei.Workflow.Totp (TotpRemovalProof (..))
 
--- | @POST /v1/auth/signup@ body. The principal is @loginId@; @email@ is optional. For backward
--- compatibility either field may be omitted: an email-only caller (no @loginId@) defaults the
--- login id to the email text in the handler, and at least one of the two must be present.
+-- | @POST /v1/auth/signup@ body. The principal is @loginId@; @email@ is optional.
 data SignupRequest = SignupRequest
-  { loginId :: !(Maybe Text),
+  { loginId :: !Text,
     email :: !(Maybe Text),
     password :: !Text,
     displayName :: !Text
@@ -145,17 +139,15 @@ data SignupResponse = SignupResponse
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /v1/auth/login@ body. Log in by @loginId@ (the principal); @email@ is accepted for
--- backward compatibility and, when @loginId@ is omitted, the login id defaults to the email text.
+-- | @POST /v1/auth/login@ body. Log in by the required @loginId@ principal.
 data LoginRequest = LoginRequest
-  { loginId :: !(Maybe Text),
-    email :: !(Maybe Text),
+  { loginId :: !Text,
     password :: !Text
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- | @POST /v1/auth/login@ response. Either a completed login (user + token, the legacy shape
+-- | @POST /v1/auth/login@ response. Either a completed login (user + token
 -- under a @"complete"@ tag) or an MFA challenge (a ceremony id + WebAuthn @get()@ options, no
 -- token). The wire JSON is a flat, @status@-tagged object:
 --
@@ -195,54 +187,56 @@ instance FromJSON LoginResponse where
     status <- o .: "status" :: Parser Text
     case status of
       "complete" -> LoginCompleteResponse <$> o .: "user" <*> o .: "token"
-      -- A missing @methods@ decodes as @["passkey"]@, so pre-EP-7 recorded fixtures (which had no
-      -- such field, and could only ever be passkey challenges) still parse.
       "mfa_required" ->
         LoginMfaRequiredResponse
           <$> o .: "ceremonyId"
           <*> o .: "options"
-          <*> (o .:? "methods" Aeson..!= ["passkey"])
+          <*> o .: "methods"
       other -> fail ("unknown login status: " <> Text.unpack other)
 
--- | @POST /v1/auth/mfa/complete@ body: the ceremony id from the login challenge plus __exactly
--- one__ of @assertion@ (passkey), @totpCode@, or @recoveryCode@. The legacy two-field
--- @{ceremonyId, assertion}@ shape parses unchanged as the passkey arm.
-data MfaCompleteRequest = MfaCompleteRequest
-  { ceremonyId :: !Text,
-    assertion :: !(Maybe Value),
-    totpCode :: !(Maybe Text),
-    recoveryCode :: !(Maybe Text)
-  }
+-- | The proof used to complete an MFA challenge. Its wire representation is a tagged object.
+data MfaProof
+  = PasskeyProof {assertion :: !Value}
+  | TotpProof {code :: !Text}
+  | RecoveryCodeProof {code :: !Text}
   deriving stock (Generic)
 
-instance FromJSON MfaCompleteRequest where
-  parseJSON = withObject "MfaCompleteRequest" \o -> do
-    cid <- o .: "ceremonyId"
-    assertion <- o .:? "assertion"
-    totpCode <- o .:? "totpCode"
-    recoveryCode <- o .:? "recoveryCode"
-    case length (filter id [isJust assertion, isJust totpCode, isJust recoveryCode]) of
-      1 -> pure (MfaCompleteRequest cid assertion totpCode recoveryCode)
-      _ -> fail "exactly one of assertion, totpCode, recoveryCode must be present"
+instance FromJSON MfaProof where
+  parseJSON = withObject "MfaProof" \o -> do
+    proofType <- o .: "type" :: Parser Text
+    case proofType of
+      "passkey" -> requireProofKeys ["assertion", "type"] o >> PasskeyProof <$> o .: "assertion"
+      "totp" -> requireProofKeys ["code", "type"] o >> TotpProof <$> o .: "code"
+      "recovery_code" -> requireProofKeys ["code", "type"] o >> RecoveryCodeProof <$> o .: "code"
+      other -> fail ("unknown MFA proof type: " <> Text.unpack other)
+    where
+      requireProofKeys expected o =
+        let actual = sort (map Key.toText (KM.keys o))
+         in unless (actual == expected) $ fail "MFA proof contains missing or unexpected fields"
 
-instance ToJSON MfaCompleteRequest where
-  toJSON (MfaCompleteRequest cid a t r) =
-    object $
-      ("ceremonyId" Aeson..= cid)
-        : catMaybes
-          [ ("assertion" Aeson..=) <$> a,
-            ("totpCode" Aeson..=) <$> t,
-            ("recoveryCode" Aeson..=) <$> r
-          ]
+instance ToJSON MfaProof where
+  toJSON = \case
+    PasskeyProof assertion ->
+      object ["type" Aeson..= ("passkey" :: Text), "assertion" Aeson..= assertion]
+    TotpProof code ->
+      object ["type" Aeson..= ("totp" :: Text), "code" Aeson..= code]
+    RecoveryCodeProof code ->
+      object ["type" Aeson..= ("recovery_code" :: Text), "code" Aeson..= code]
 
--- | The core 'MfaCompletion' a decoded request maps to. The @FromJSON@ above guarantees exactly
--- one arm, so the final fallthrough is unreachable.
+-- | @POST /v1/auth/mfa/complete@ body: the ceremony id and one explicitly tagged proof.
+data MfaCompleteRequest = MfaCompleteRequest
+  { ceremonyId :: !Text,
+    proof :: !MfaProof
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Map the tagged wire proof to the core completion type.
 mfaCompletionOf :: MfaCompleteRequest -> MfaCompletion
-mfaCompletionOf (MfaCompleteRequest _ a t r) = case (a, t, r) of
-  (Just assertion, _, _) -> MfaPasskey assertion
-  (_, Just code, _) -> MfaTotp code
-  (_, _, Just code) -> MfaRecoveryCode code
-  _ -> MfaPasskey Null
+mfaCompletionOf MfaCompleteRequest {proof} = case proof of
+  PasskeyProof assertion -> MfaPasskey assertion
+  TotpProof code -> MfaTotp code
+  RecoveryCodeProof code -> MfaRecoveryCode code
 
 -- | @POST /v1/auth/totp/enroll@ response: the Base32 secret (shown once) and the @otpauth://@ URI.
 data TotpEnrollResponse = TotpEnrollResponse
@@ -458,67 +452,6 @@ loginResultToResponse cfg = \case
     LoginCompleteResponse {user = userToResponse user, token = tokenPairToResponse cfg pair}
   MfaRequired (MfaChallenge cid opts methods) ->
     LoginMfaRequiredResponse {ceremonyId = idText cid, options = opts, methods = methods}
-
--- | @POST /v1/auth/impersonate@ body: the target user id, a required reason, and an
--- optional support ticket id.
-data ImpersonateRequest = ImpersonateRequest
-  { userId :: !Text,
-    reason :: !Text,
-    ticketId :: !(Maybe Text)
-  }
-  deriving stock (Generic)
-  deriving anyclass (FromJSON, ToJSON)
-
--- | @POST /v1/auth/impersonate@ response: the delegated access token, the subject
--- (customer) and actor (operator) ids, and the token expiry as ISO-8601.
-data ImpersonateResponse = ImpersonateResponse
-  { accessToken :: !Text,
-    subjectUserId :: !Text,
-    actorUserId :: !Text,
-    expiresAt :: !Text
-  }
-  deriving stock (Generic)
-  deriving anyclass (FromJSON, ToJSON)
-
--- | @POST /v1/auth/service-token@ body: configured service account id, shared secret,
--- requested coarse scopes, and optional actor user id for @act@ attribution.
-data ServiceTokenRequest = ServiceTokenRequest
-  { accountId :: !Text,
-    secret :: !Text,
-    scopes :: ![Text],
-    actorId :: !(Maybe Text)
-  }
-  deriving stock (Generic)
-  deriving anyclass (FromJSON, ToJSON)
-
--- | @POST /v1/auth/service-token@ response: refresh-less access token and lifetime.
-data ServiceTokenResponse = ServiceTokenResponse
-  { accessToken :: !Text,
-    expiresIn :: !Int
-  }
-  deriving stock (Generic)
-  deriving anyclass (FromJSON, ToJSON)
-
--- | Render the @(Session, AccessToken)@ a successful impersonation returns into the
--- wire DTO. The session's @actor@ is always 'Just' for a delegated session; an empty
--- string is a defensive fallback that should never occur.
-impersonateToResponse :: Session -> AccessToken -> ImpersonateResponse
-impersonateToResponse s (AccessToken tok) =
-  ImpersonateResponse
-    { accessToken = tok,
-      subjectUserId = idText s.userId,
-      actorUserId = maybe "" idText s.actor,
-      expiresAt = Text.pack (iso8601Show s.expiresAt)
-    }
-
-serviceTokenToResponse :: IssuedServiceToken -> ServiceTokenResponse
-serviceTokenToResponse issued =
-  ServiceTokenResponse
-    { accessToken = unAccess issued.accessToken,
-      expiresIn = round (realToFrac issued.expiresIn :: Double)
-    }
-  where
-    unAccess (AccessToken t) = t
 
 -- | One audit-trail row as wire JSON. The envelope columns plus the raw event 'payload'
 -- (passed through verbatim — the read path never reshapes the stored JSON). Identifiers are

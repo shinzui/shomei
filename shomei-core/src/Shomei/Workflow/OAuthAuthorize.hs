@@ -45,7 +45,7 @@ import Shomei.Effect.Clock (Clock, now)
 import Shomei.Effect.OAuthCodeStore (OAuthCodeStore, putAuthorizationCode)
 import Shomei.Effect.TokenGen (TokenGen, generateOpaqueToken)
 import Shomei.Prelude
-import Shomei.Workflow.ServiceToken (sha256Hex)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 
 -- | The authorize request's parameters, after the HTTP layer has validated @client_id@ and
 -- @redirect_uri@ (which is why 'redirectUri' is a 'Text' and not a 'Maybe').

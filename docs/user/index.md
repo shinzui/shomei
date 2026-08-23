@@ -15,7 +15,7 @@ Haskell service, and integrating client applications.
 
 - [Passkeys & MFA](passkeys.md) covers passkey enrollment, password-plus-passkey step-up,
   passwordless login, WebAuthn configuration, and the browser demo.
-- [Service Tokens](service-tokens.md) covers machine-to-machine scoped token issuance for
+- [Service Tokens](machine-tokens.md) covers machine-to-machine scoped token issuance for
   connectors, agents, and downstream services.
 - [OpenID Connect](oidc.md) covers running Shōmei as an OIDC provider: discovery, the
   authorization-code flow with PKCE, ID tokens, userinfo, introspection, and revocation, plus the

@@ -32,9 +32,9 @@ import Shomei.Effect.UserStore (updateUserStatus)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, idText)
 import Shomei.Prelude
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Workflow (signup)
 import Shomei.Workflow.ClientCredentials (ClientCredentialsGrant (..), GrantedToken (..), grantClientCredentials)
-import Shomei.Workflow.ServiceToken (sha256Hex)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

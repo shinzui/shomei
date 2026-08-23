@@ -43,12 +43,12 @@ import Shomei.Domain.AuthorizationCode (AuthorizationCode (..), NewAuthorization
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Domain.Credential (Credential (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
 import Shomei.Domain.EventCodec (reconstructAuthEvent)
 import Shomei.Domain.IdTokenClaims (IdToken (..))
 import Shomei.Domain.LoginAttempt (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
-import Shomei.Domain.LoginId (LoginId, loginIdFromEmail, loginIdText, mkLoginId)
+import Shomei.Domain.LoginId (LoginId, loginIdText, mkLoginId)
 import Shomei.Domain.Notification (Notification (..))
 import Shomei.Domain.OAuthClient
   ( ClientType (..),
@@ -197,7 +197,6 @@ import Shomei.Effect.WebAuthnCeremony (WebAuthnCeremony)
 import Shomei.Error (AuthError (InternalAuthError, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
-import Shomei.Totp (TotpSecret (..))
 import Shomei.Postgres.AuthEventPublisher (runAuthEventPublisherPostgres)
 import Shomei.Postgres.AuthEventReader (runAuthEventReaderPostgres)
 import Shomei.Postgres.AuthUnitOfWork (runAuthUnitOfWorkPostgres)
@@ -231,6 +230,7 @@ import Shomei.Postgres.TotpCredentialStore
   )
 import Shomei.Postgres.UserStore (runUserStorePostgres)
 import Shomei.Postgres.VerificationTokenStore (runVerificationTokenStorePostgres)
+import Shomei.Totp (TotpSecret (..))
 import Shomei.Workflow (login, refresh, signup)
 import Shomei.Workflow.Account
   ( ConfirmEmailVerification (..),
@@ -401,10 +401,10 @@ bobEmail :: Email
 bobEmail = mkEmail' "bob@example.com"
 
 aliceLogin :: LoginId
-aliceLogin = loginIdFromEmail aliceEmail
+aliceLogin = either (error . show) id (mkLoginId (emailText aliceEmail))
 
 bobLogin :: LoginId
-bobLogin = loginIdFromEmail bobEmail
+bobLogin = either (error . show) id (mkLoginId (emailText bobEmail))
 
 strongPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
@@ -529,7 +529,7 @@ tests =
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
     testArgon2NewHashesArePhcFormatted,
-    testArgon2LegacyFixtureStillVerifies,
+    testArgon2RejectsUnparameterizedHashes,
     testArgon2ParamsChangeLeavesOldHashesVerifiable,
     testArgon2MalformedHashesVerifyFalse,
     testArgon2DummyHashTracksConfiguredParams,
@@ -1761,18 +1761,6 @@ testPendingCeremonyExpired = testCase "pending ceremony store: expired ceremony 
 
 -- Argon2 parameters ----------------------------------------------------------
 
--- | A hash produced by the pre-plan code, whose format recorded no parameters.
---
--- Captured from the interpreter before the PHC format landed, of the password
--- @"correct horse battery staple"@. It is the compatibility contract: if this test ever
--- fails, every user hashed by an older Shōmei is locked out. Do not regenerate it.
-legacyFixtureHash :: PasswordHash
-legacyFixtureHash =
-  PasswordHash "argon2id$4gw0llx5tfM4Dfi23hUsTA==$8zWIeRIFVtmuSuMdAv4MW13Fsw1BCjfREVf4eaHwp+I="
-
-legacyFixturePassword :: Text
-legacyFixturePassword = "correct horse battery staple"
-
 -- | Cheap parameters, so the parameter tests do not each pay the ~100 ms production cost.
 cheapParams :: Argon2Params
 cheapParams = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}
@@ -1787,11 +1775,12 @@ testArgon2NewHashesArePhcFormatted =
     verifyPasswordArgon2id "hunter2" (PasswordHash stored) @?= True
     verifyPasswordArgon2id "wrong" (PasswordHash stored) @?= False
 
-testArgon2LegacyFixtureStillVerifies :: TestTree
-testArgon2LegacyFixtureStillVerifies =
-  testCase "argon2: a legacy-format hash still verifies" do
-    verifyPasswordArgon2id legacyFixturePassword legacyFixtureHash @?= True
-    verifyPasswordArgon2id "wrong" legacyFixtureHash @?= False
+testArgon2RejectsUnparameterizedHashes :: TestTree
+testArgon2RejectsUnparameterizedHashes =
+  testCase "argon2: an unparameterized three-part hash is rejected" do
+    let unparameterized =
+          PasswordHash "argon2id$4gw0llx5tfM4Dfi23hUsTA==$8zWIeRIFVtmuSuMdAv4MW13Fsw1BCjfREVf4eaHwp+I="
+    verifyPasswordArgon2id "correct horse battery staple" unparameterized @?= False
 
 testArgon2ParamsChangeLeavesOldHashesVerifiable :: TestTree
 testArgon2ParamsChangeLeavesOldHashesVerifiable =
@@ -1804,8 +1793,6 @@ testArgon2ParamsChangeLeavesOldHashesVerifiable =
     -- Each verifies with the parameters IT carries, not with any ambient configuration.
     verifyPasswordArgon2id "hunter2" defaultHash @?= True
     verifyPasswordArgon2id "hunter2" cheapHash @?= True
-    -- ...and the legacy fixture still verifies alongside both.
-    verifyPasswordArgon2id legacyFixturePassword legacyFixtureHash @?= True
 
 testArgon2MalformedHashesVerifyFalse :: TestTree
 testArgon2MalformedHashesVerifyFalse =

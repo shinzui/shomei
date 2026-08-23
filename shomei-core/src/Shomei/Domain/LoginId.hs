@@ -1,7 +1,7 @@
 -- | Normalized login identifiers — the principal of an account.
 --
 -- A 'LoginId' is a free-form, case-insensitive, unique handle: it may be a username,
--- an agent id like @agent-4815162342@, or (for backward compatibility) an email
+-- an agent id like @agent-4815162342@, or an email-shaped identifier
 -- address. Unlike 'Shomei.Domain.Email.Email' it does NOT require an @\@@ or a dot —
 -- that is the whole point: a principal need not be an email.
 --
@@ -13,13 +13,11 @@ module Shomei.Domain.LoginId
   ( LoginId,
     mkLoginId,
     loginIdText,
-    loginIdFromEmail,
   )
 where
 
 import Data.Char (isSpace)
 import Data.Text qualified as Text
-import Shomei.Domain.Email (Email, emailText)
 import Shomei.Error (AuthError (..))
 import Shomei.Prelude
 
@@ -40,10 +38,3 @@ mkLoginId raw =
    in if Text.null t || Text.any isSpace t
         then Left InvalidLoginId
         else Right (LoginId t)
-
--- | Build a 'LoginId' from an already-validated 'Email' by taking its text. This is
--- the compatibility bridge — "identifier equals email by default". Since the email is
--- already normalized (trimmed, lowercased, no internal whitespace), this is total and
--- needs no re-validation.
-loginIdFromEmail :: Email -> LoginId
-loginIdFromEmail = LoginId . emailText

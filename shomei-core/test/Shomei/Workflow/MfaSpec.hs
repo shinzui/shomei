@@ -19,7 +19,7 @@ import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.LoginAttempt (AccountKey (..), ClientIp (..))
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Passkey
   ( NewPasskeyCredential (..),
     PublicKeyBytes (..),
@@ -44,7 +44,7 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 fixedTime :: UTCTime
 fixedTime = UTCTime (fromGregorian 2026 1 1) 0
 
--- | The default config has @webauthnConfig.mfaRequired = True@.
+-- | The default config requires a second factor when one is enrolled.
 cfg :: ShomeiConfig
 cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
 
@@ -76,7 +76,7 @@ expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show 
 -- | Sign a user up and seed one passkey for them (directly through 'createPasskey').
 seedUserWithPasskey :: IORef World -> IO ()
 seedUserWithPasskey ref = do
-  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
+  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
   let User {userId = uid} = user
   _ <-
     runInMemory
@@ -131,21 +131,21 @@ tests =
 testNoPasskeyComplete :: TestTree
 testNoPasskeyComplete = testCase "no-passkey login yields LoginComplete with a token" do
   ref <- newIORef (emptyWorld fixedTime)
-  _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = loginIdFromEmail aliceEmail, email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
+  _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
   case res of
     LoginComplete u pair -> assertTokenPresent (u, pair)
     MfaRequired _ -> assertFailure "expected LoginComplete (no passkey enrolled)"
 
 testMfaRequired :: TestTree
-testMfaRequired = testCase "passkey + mfaRequired login yields MfaRequired, no token" do
+testMfaRequired = testCase "passkey + required second factor yields MfaRequired, no token" do
   ref <- newIORef (emptyWorld fixedTime)
   seedUserWithPasskey ref
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
   case res of
     MfaRequired (MfaChallenge _cid opts _methods) ->
       assertBool "a challenge is present in the options" (challengeOf opts /= Nothing)
-    LoginComplete _ _ -> assertFailure "expected MfaRequired (passkey enrolled, mfaRequired on)"
+    LoginComplete _ _ -> assertFailure "expected MfaRequired (passkey enrolled, second factor required)"
 
 testCompleteMfa :: TestTree
 testCompleteMfa = testCase "completeMfa with a valid assertion yields a token pair" do
@@ -200,7 +200,7 @@ testPasswordless = testCase "passwordless login resolves the user and mints toke
 -- ceremony id and options.
 loginExpectingChallenge :: IORef World -> IO (CeremonyId, Value)
 loginExpectingChallenge ref = do
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (loginIdFromEmail aliceEmail) strongPw))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
   case res of
     MfaRequired (MfaChallenge cid opts _methods) -> pure (cid, opts)
     LoginComplete _ _ -> assertFailure "expected MfaRequired"

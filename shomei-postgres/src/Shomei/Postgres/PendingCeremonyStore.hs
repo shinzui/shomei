@@ -46,9 +46,6 @@ runPendingCeremonyStorePostgres = interpret_ \case
       Just r -> do
         pc <- rebuild r
         pure (if pcExpiresAt pc > now' then Just pc else Nothing)
-  DeleteExpiredCeremonies now' -> do
-    res <- runSession (Session.statement now' deleteExpiredStmt)
-    either dbFail (const (pure ())) res
   where
     dbFail e = throwError (InternalAuthError ("database error: " <> tshow e))
     rebuild r = either (throwError . InternalAuthError) pure (rebuildCeremony r)
@@ -132,12 +129,3 @@ takeStmt =
     )
     (E.param (E.nonNullable E.uuid))
     (D.rowMaybe ceremonyRowDecoder)
-
-deleteExpiredStmt :: Statement UTCTime ()
-deleteExpiredStmt =
-  preparable
-    """
-    DELETE FROM shomei.shomei_webauthn_pending_ceremonies WHERE expires_at <= $1
-    """
-    (E.param (E.nonNullable E.timestamptz))
-    D.noResult

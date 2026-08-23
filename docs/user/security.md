@@ -45,7 +45,7 @@ logs. The minimum-length / policy check runs before hashing.
 - **Service tokens** are short-lived access tokens minted through a separate machine-credential
   endpoint. Service account secrets are configured as SHA-256 hex digests, request secrets are
   compared in constant time, requested scopes must be a subset of the account allow-list, and no
-  refresh token is issued. See [service-tokens.md](service-tokens.md).
+  refresh token is issued. See [machine-tokens.md](machine-tokens.md).
 
 ## Signing-key rotation (zero downtime)
 
@@ -126,7 +126,7 @@ frontend to mirror a token into a header.
 
 **Bearer credentials are never CSRF-gated**, in any transport. A foreign page cannot set an
 `Authorization` header, so there is nothing to defend against — and gating them would break curl,
-native clients, and the service-token flow.
+native clients, and OAuth machine-token flows.
 
 **Bearer mode does not accept cookies.** A deployment configured for `bearer` ignores
 `shomei_session` entirely; presenting it yields `401`. (Before this was fixed, the cookie was read
@@ -136,14 +136,12 @@ nothing else implemented.)
 ## Signing-key encryption at rest
 
 **The threat.** The private signing key is the most powerful secret Shōmei holds: whoever has
-it can mint a valid token for any user of any downstream service that trusts the JWKS. By
-default it is stored as plaintext JWK JSON in `shomei_signing_keys.private_key_jwk`, so a
-database read — a dump, a backup, a misconfigured replica, a `SELECT` from a compromised
-reporting account — is enough to forge tokens indefinitely. Passwords and refresh tokens in
-this database are protected at rest; without the setting below, this key is not.
+it can mint a valid token for any user of any downstream service that trusts the JWKS. A database
+read must therefore never expose a raw private JWK.
 
-**The fix.** Set `SHOMEI_KEY_ENCRYPTION_KEY` to a 32-byte base64 key-encryption key (KEK) that
-lives outside the database, and Shōmei envelope-encrypts every private key under it:
+**The fix.** `SHOMEI_KEY_ENCRYPTION_KEY` is required and contains a 32-byte base64
+key-encryption key (KEK) that lives outside the database. Shōmei envelope-encrypts every private
+key under it:
 
 ```text
 private_key_jwk = "enc:v1:" <base64url nonce> ":" <base64url ciphertext+tag>
@@ -155,35 +153,20 @@ with database **write** access cannot relabel an old, compromised key as the act
 because it no longer authenticates under the new `kid`. Forging tokens now requires the
 database **and** the application environment.
 
-There is no schema change — the format is versioned inside the existing `text` column — so
-plaintext and encrypted rows coexist and a backfill can run against a live server.
+The format is versioned inside the existing `text` column. Only `enc:v1:` envelopes are accepted;
+an unencrypted row is a startup error.
 
 **Only signing depends on the KEK.** The published JWKS and the verifier's key set are built
 from the `public_key_jwk` column, which is never encrypted. A missing or wrong KEK can
 therefore stop Shōmei minting *new* tokens, but can never break verification of outstanding
 ones, and never changes what `/.well-known/jwks.json` serves.
 
-**Boot policy.**
+Missing, malformed, or wrong KEK material causes startup to fail. Refusing is the only safe
+response: the alternatives are a server that cannot sign or one that silently generates a
+replacement key and orphans every outstanding token.
 
-| Rows | KEK set? | Behavior |
-|------|----------|----------|
-| encrypted | no | **refuses to start**: `signing keys are encrypted at rest but SHOMEI_KEY_ENCRYPTION_KEY is not set` |
-| encrypted | wrong | **refuses to start**, naming the key that failed to decrypt |
-| encrypted | yes | starts; new keys are written encrypted |
-| plaintext | no | starts, with a warning recommending encryption (nothing breaks on upgrade) |
-| plaintext | yes | starts, warns, and writes all *new* keys encrypted; run `keys encrypt-at-rest` |
-
-Refusing is the only safe response to encrypted-rows-without-a-KEK: the alternatives are a
-server that cannot sign, or one that silently generates a replacement key and orphans every
-outstanding token.
-
-**Operating it.** See [deployment.md](deployment.md) for the migration and KEK-rotation
-runbooks. Two commands matter:
-
-- `shomei-admin keys encrypt-at-rest` — encrypt every plaintext row. Idempotent; safe to run
-  against a live server (each row is one atomic `UPDATE`, and a running server reads both
-  forms).
-- `shomei-admin keys rewrap` — rotate the KEK itself, decrypting with
+**Operating it.** See [deployment.md](deployment.md) for the initial setup and KEK-rotation
+runbooks. `shomei-admin keys rewrap` rotates the KEK itself, decrypting with
   `SHOMEI_KEY_ENCRYPTION_KEY_OLD` and re-encrypting with `SHOMEI_KEY_ENCRYPTION_KEY`. It runs
   the full decrypt pass in memory before its first write, so a wrong old KEK aborts having
   modified nothing.
@@ -285,7 +268,7 @@ returns `401 session_revoked`, and a token whose session id resolves to no row f
 - **Phishing-resistant second factor.** A passkey signs a server challenge bound to the page
   origin and the configured `rpId`; the signature cannot be replayed against another origin, so a
   phished password alone never yields a session. Accounts that have a passkey are challenged for
-  it at login when `webauthnConfig.mfaRequired` is set (the default).
+  it at login when `mfaConfig.requireSecondFactor` is set (the default).
 - **Consume-once challenge.** The pending-ceremony state (the challenge/options blob) is
   **PostgreSQL-backed** and consumed exactly once: a completion deletes the row, so a replayed or
   duplicated completion finds nothing and is rejected (`404 ceremony_not_found`). Ceremonies
@@ -298,7 +281,7 @@ returns `401 session_revoked`, and a token whose session id resolves to no row f
 - **No factor-failure leak.** A failed assertion returns a generic `401 mfa_failed`; the response
   never discloses why a factor failed.
 - **MFA enforcement policy.** Enforcement is gated on per-account enrollment *and*
-  `webauthnConfig.mfaRequired`: an account with no passkey (or with `mfaRequired = False`) logs in
+  `mfaConfig.requireSecondFactor`: an account with no factor (or with the policy disabled) logs in
   exactly as before. The password remains the first factor, so the existing password-reset flow
   still recovers an account whose passkey was lost. See [passkeys.md](passkeys.md).
 
@@ -335,15 +318,13 @@ without shedding their own identity.
 (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`), so stock tooling can drive it. In
 impersonation mode the operator sends the target as a bare user id
 (`subject_token_type=urn:shomei:params:oauth:token-type:user-id`) with their own access token as the
-`actor_token`; the grant enforces the *same* scope gate, freshness gate, refresh-less session, and
-`impersonation_started` audit event as `POST /v1/auth/impersonate`, because both share one workflow
-core (`mintDelegatedToken`) and cannot drift. The grant additionally offers a **service on-behalf-of**
+`actor_token`; the grant enforces the scope gate, freshness gate, refresh-less session, and
+`impersonation_started` audit event. The grant additionally offers a **service on-behalf-of**
 mode — a service account exchanges a user's access token for a narrowed token that acts for the user
 across service hops, gated by the dedicated `token-exchange:subject` scope (see
-[service-tokens.md](service-tokens.md#acting-on-behalf-of-a-user)). `POST /v1/auth/impersonate` is now
-deprecated in favor of the grant; it keeps working through a deprecation window, and
-`DELETE /v1/auth/impersonate` still stops an exchanged impersonation token. Chained exchanges are
-refused: a token already carrying `act` cannot be re-exchanged.
+[machine-tokens.md](machine-tokens.md#act-on-behalf-of-a-user-with-rfc-8693)). Revoke a delegated
+token through `POST /oauth/revoke`. Chained exchanges are refused: a token already carrying `act`
+cannot be re-exchanged.
 
 ## Logging hygiene
 
@@ -393,7 +374,7 @@ the runnable [`embedded-with-en`](../../examples/embedded-with-en/README.md) exa
 
 Within tier 1, permission indirection (so services never hard-code role names) and time-bound
 grants are **shipped** ([Permissions](#permissions-re-wireable-capabilities),
-[Time-bound grants](#time-bound-grants)). The built-in tier grows; it is not deprecated in favor
+[Time-bound grants](#time-bound-grants)). The built-in tier remains supported alongside
 of en. Knowing exactly [where tier 1 stops](#the-graduation-boundary-when-to-reach-for-en) is the
 most important thing on this page.
 

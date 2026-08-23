@@ -14,12 +14,12 @@ import Data.Text (Text)
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
-import Shomei.Config (ImpersonationConfig (..), ServiceTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Domain.Claims (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Domain.Command (SignupCommand (..))
-import Shomei.Domain.Email (Email, mkEmail)
+import Shomei.Domain.Email (Email, emailText, mkEmail)
 import Shomei.Domain.Event qualified as Event
-import Shomei.Domain.LoginId (loginIdFromEmail)
+import Shomei.Domain.LoginId (LoginId, mkLoginId)
 import Shomei.Domain.Password (PlainPassword (..))
 import Shomei.Domain.RefreshToken (PersistedRefreshToken (..))
 import Shomei.Domain.ServiceAccount (ServiceAccount (..), ServiceAccountStatus (..))
@@ -71,7 +71,7 @@ expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show 
 seedUser :: IORef World -> Text -> IO UserId
 seedUser ref email = do
   let e = mkEmail' email
-  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = loginIdFromEmail e, email = Just e, password = strongPw, displayName = Just "User"}))
+  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = strongPw, displayName = Just "User"}))
   pure user.userId
 
 -- | Build claims for a principal. The in-memory verifier accepts them verbatim.
@@ -283,7 +283,7 @@ testOnBehalfHappyPath = testCase "on-behalf-of: user sub + service act, narrowed
   claims.actor @?= Just svcUser
   claims.scopes @?= Set.singleton ingestScope
   result.grantedScopes @?= Set.singleton ingestScope
-  result.expiresIn @?= cfg.serviceTokenConfig.ttl
+  result.expiresIn @?= cfg.machineTokenConfig.machineTokenTTL
   assertNoRefresh ref result.sessionId
   world <- readIORef ref
   assertBool "ServiceOnBehalfIssued published" (any (behalfFor svcUser user) world.publishedEvents)

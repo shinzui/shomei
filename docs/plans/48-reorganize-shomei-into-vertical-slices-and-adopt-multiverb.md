@@ -95,7 +95,12 @@ The finished behavior is visible without reading the implementation:
   the same-typed handler families. The compile-time MultiVerb and operation-owned-503 witnesses
   are intentionally activated with the new route aliases in Milestone 4, when their assertions
   can be true.
-- [ ] Milestone 1: delete pre-adoption compatibility surfaces before moving live code.
+- [x] (2026-08-23) Milestone 1: removed email-derived login identifiers, permissive MFA
+  decoding, the bespoke service-token and impersonation operations, static machine accounts,
+  unparameterized Argon2 hashes, plaintext signing keys, optional KEKs, the redundant ceremony
+  cleanup effect, and their tests/documentation. Renamed MFA and machine-token configuration,
+  made key encryption mandatory throughout server/admin/examples, regenerated the exact
+  41-path/45-operation OpenAPI artifact, and passed the affected build and serial tests.
 - [ ] Milestone 2: reorganize `shomei-core`, `shomei-postgres`, and JWT support by concept.
 - [ ] Milestone 3: split DTOs, handlers, and route records into vertical HTTP slices.
 - [ ] Milestone 4: introduce typed problem details and selective MultiVerb result types.
@@ -224,6 +229,19 @@ The finished behavior is visible without reading the implementation:
   `cabal test all` passed; and the generated document still contains exactly 43 paths and 48
   method/path operations. The only committed-artifact drift was the already-recorded addition of
   `session_expired` and `session_revoked` to protected-route 401 responses.
+
+- Observation: making `loginId` a required DTO field moves the missing-field response from an
+  application handler rejection to Servant's request-decoding boundary.
+  Evidence: the HTTP conformance scenario now receives `400 body_parse_error` for a structurally
+  valid login object without `loginId`, while malformed JSON has the same envelope. This matches
+  the plan's rule that decoding failures are pre-handler outcomes and should not become
+  MultiVerb arms.
+
+- Observation: a mandatory KEK makes the dependency on `shomei-jwt` explicit in every test
+  component that constructs a standalone server environment.
+  Evidence: the client and both embedding examples now parse a fixed test KEK and declare
+  `shomei-jwt` in their test `build-depends`; production startup and admin key generation instead
+  use the required `SHOMEI_KEY_ENCRYPTION_KEY` loader.
 
 
 ## Decision Log

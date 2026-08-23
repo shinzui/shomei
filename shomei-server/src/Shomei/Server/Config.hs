@@ -10,7 +10,7 @@
 -- Dhall is rendered with the @dhall-to-json@ binary (provided by the toolchain / container) rather
 -- than the heavyweight @dhall@ Haskell library, and the rendered JSON is decoded with @aeson@ into
 -- a flat 'FileConfig' of optional scalar overrides — see EP-5's Decision Log. @loadConfigFromEnv@
--- remains as the env-only entry point EP-4's @shomei-admin@ and the legacy path use.
+-- remains as the env-only entry point used by EP-4's @shomei-admin@.
 module Shomei.Server.Config
   ( ServerSettings (..),
     SweepSettings (..),
@@ -26,7 +26,6 @@ where
 -- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Crypto".
 
 import Data.Aeson (eitherDecodeStrict')
-import Data.Char (isHexDigit)
 import Data.Foldable (traverse_)
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -36,15 +35,14 @@ import Data.Time (NominalDiffTime)
 import Shomei.Config
   ( AttestationPolicy (..),
     CookieConfig (..),
+    MachineTokenConfig (..),
+    MfaConfig (..),
     NotifierConfig (..),
     NotifierTransport (..),
     OAuthConfig (..),
     ObservabilityConfig (..),
     RateLimitConfig (..),
     SameSitePolicy (..),
-    ServiceAccountConfig (..),
-    ServiceAccountId (..),
-    ServiceTokenConfig (..),
     SessionCheckMode (..),
     ShomeiConfig (..),
     SigningKeyConfig (..),
@@ -60,7 +58,6 @@ import Shomei.Config
 import Shomei.Crypto (Argon2Params (..), defaultArgon2Params)
 import Shomei.Domain.Claims (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Domain.Password (PasswordPolicy (..))
-import Shomei.Id (parseId)
 import Shomei.Postgres.Maintenance (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
 import System.Environment (lookupEnv)
@@ -230,14 +227,14 @@ data FileConfig = FileConfig
     webauthnAttestation :: !(Maybe Text),
     webauthnCeremonyTimeoutSeconds :: !(Maybe Int),
     webauthnPendingCeremonyTtlSeconds :: !(Maybe Int),
-    webauthnMfaRequired :: !(Maybe Bool),
+    mfaRequireSecondFactor :: !(Maybe Bool),
     -- | EP-7: enable the TOTP second factor (enrollment + login challenge). The AES-256-GCM
     --     encryption key for stored secrets is NOT here — it is a secret, read from
     --     @SHOMEI_TOTP_ENCRYPTION_KEY@; the server refuses to boot when TOTP is on and it is
     --     absent or malformed.
     totpEnabled :: !(Maybe Bool),
     totpEnrollmentTtlSeconds :: !(Maybe Int),
-    serviceToken :: !(Maybe FileServiceTokenConfig),
+    machineTokenTtlSeconds :: !(Maybe Int),
     -- | enable the OIDC provider surface (discovery, @\/oauth\/authorize@). Requires @issuer@
     --     to be the deployment's public @http(s)@ base URL; the server refuses to boot otherwise.
     oidcEnabled :: !(Maybe Bool),
@@ -263,23 +260,6 @@ data FileConfig = FileConfig
   deriving stock (Show, Generic)
   deriving anyclass (FromJSON)
 
-data FileServiceTokenConfig = FileServiceTokenConfig
-  { enabled :: !(Maybe Bool),
-    ttlSeconds :: !(Maybe Int),
-    accounts :: !(Maybe [FileServiceAccount])
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass (FromJSON)
-
-data FileServiceAccount = FileServiceAccount
-  { accountId :: !Text,
-    userId :: !Text,
-    secretSha256 :: !Text,
-    allowedScopes :: ![Text]
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass (FromJSON)
-
 -- | The full loader: defaults → Dhall file (if @$SHOMEI_CONFIG@) → env.
 loadConfig :: IO (ShomeiConfig, ServerSettings)
 loadConfig = do
@@ -287,7 +267,7 @@ loadConfig = do
   (cfg0, settings0) <- baseFromFile mFile
   overlayFromEnvBoth cfg0 settings0
 
--- | The env-only loader (no Dhall file). Stable entry point for @shomei-admin@ and legacy use.
+-- | The env-only loader (no Dhall file). Stable entry point for @shomei-admin@.
 loadConfigFromEnv :: IO (ShomeiConfig, ServerSettings)
 loadConfigFromEnv = do
   (cfg, settings) <- baseDefaults
@@ -334,7 +314,6 @@ baseFromFile (Just fc) = do
   let iss = fromMaybe "shomei" fc.issuer
       aud = fromMaybe "shomei-clients" fc.audience
       cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
-  serviceTokenCfg <- mergeServiceToken "serviceToken (config file)" cfg0.serviceTokenConfig fc.serviceToken
   let cfg =
         cfg0
           { accessTokenTTL = maybe cfg0.accessTokenTTL fromIntegral fc.accessTokenTtlSeconds,
@@ -372,8 +351,15 @@ baseFromFile (Just fc) = do
                   gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                 },
             webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc,
+            mfaConfig =
+              cfg0.mfaConfig
+                { requireSecondFactor = fromMaybe cfg0.mfaConfig.requireSecondFactor fc.mfaRequireSecondFactor
+                },
             totpConfig = mergeTotp cfg0.totpConfig fc,
-            serviceTokenConfig = serviceTokenCfg,
+            machineTokenConfig =
+              cfg0.machineTokenConfig
+                { machineTokenTTL = maybe cfg0.machineTokenConfig.machineTokenTTL fromIntegral fc.machineTokenTtlSeconds
+                },
             oauthConfig = mergeOAuth cfg0.oauthConfig fc,
             signingKeyConfig =
               cfg0.signingKeyConfig
@@ -560,8 +546,9 @@ overlayCoreFromEnv base = do
   tr <- transportEnv
   sc <- sessionCheckEnv
   wa <- overlayWebAuthnFromEnv base.webauthnConfig
+  mfaRequired <- boolEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
   totpCfg <- overlayTotpFromEnv base.totpConfig
-  serviceTokenCfg <- overlayServiceTokenFromEnv base.serviceTokenConfig
+  machineTokenTtl <- ttlEnv "SHOMEI_MACHINE_TOKEN_TTL"
   oauthCfg <- overlayOAuthFromEnv base.oauthConfig
   pwMin <- intEnvMaybe "SHOMEI_PASSWORD_MIN_LENGTH"
   pwMax <- intEnvMaybe "SHOMEI_PASSWORD_MAX_LENGTH"
@@ -601,8 +588,15 @@ overlayCoreFromEnv base = do
             },
         sessionCheckMode = fromMaybe base.sessionCheckMode sc,
         webauthnConfig = wa,
+        mfaConfig =
+          base.mfaConfig
+            { requireSecondFactor = fromMaybe base.mfaConfig.requireSecondFactor mfaRequired
+            },
         totpConfig = totpCfg,
-        serviceTokenConfig = serviceTokenCfg,
+        machineTokenConfig =
+          base.machineTokenConfig
+            { machineTokenTTL = fromMaybe base.machineTokenConfig.machineTokenTTL machineTokenTtl
+            },
         oauthConfig = oauthCfg,
         passwordPolicy =
           base.passwordPolicy
@@ -895,79 +889,6 @@ validateNotifierConfig nc = case nc.notifierTransport of
       let u' = Text.toLower (Text.strip u)
        in Text.isPrefixOf "http://" u' || Text.isPrefixOf "https://" u'
 
-mergeServiceToken :: Text -> ServiceTokenConfig -> Maybe FileServiceTokenConfig -> IO ServiceTokenConfig
-mergeServiceToken _ base Nothing = pure base
-mergeServiceToken label base (Just fileCfg) = do
-  parsedAccounts <- traverse (parseServiceAccounts label) mAccounts
-  validateServiceTokenConfig
-    label
-    ServiceTokenConfig
-      { enabled = fromMaybe baseEnabled mEnabled,
-        ttl = maybe baseTtl fromIntegral mTtlSeconds,
-        accounts = fromMaybe baseAccounts parsedAccounts
-      }
-  where
-    ServiceTokenConfig {enabled = baseEnabled, ttl = baseTtl, accounts = baseAccounts} = base
-    FileServiceTokenConfig {enabled = mEnabled, ttlSeconds = mTtlSeconds, accounts = mAccounts} = fileCfg
-
-overlayServiceTokenFromEnv :: ServiceTokenConfig -> IO ServiceTokenConfig
-overlayServiceTokenFromEnv base = do
-  mEnabled <- boolEnv "SHOMEI_SERVICE_TOKEN_ENABLED"
-  mTtl <- ttlEnv "SHOMEI_SERVICE_TOKEN_TTL"
-  mAccounts <- serviceAccountsEnv
-  validateServiceTokenConfig
-    "service-token environment variables"
-    ServiceTokenConfig
-      { enabled = fromMaybe baseEnabled mEnabled,
-        ttl = fromMaybe baseTtl mTtl,
-        accounts = fromMaybe baseAccounts mAccounts
-      }
-  where
-    ServiceTokenConfig {enabled = baseEnabled, ttl = baseTtl, accounts = baseAccounts} = base
-
-serviceAccountsEnv :: IO (Maybe [ServiceAccountConfig])
-serviceAccountsEnv = do
-  m <- lookupEnv "SHOMEI_SERVICE_ACCOUNTS_JSON"
-  case m of
-    Nothing -> pure Nothing
-    Just "" -> pure Nothing
-    Just raw ->
-      case eitherDecodeStrict' (TE.encodeUtf8 (Text.pack raw)) of
-        Left err -> ioError (userError ("SHOMEI_SERVICE_ACCOUNTS_JSON must decode as a service-account JSON array: " <> err))
-        Right accounts -> Just <$> parseServiceAccounts "SHOMEI_SERVICE_ACCOUNTS_JSON" accounts
-
-parseServiceAccounts :: Text -> [FileServiceAccount] -> IO [ServiceAccountConfig]
-parseServiceAccounts label = traverse (parseServiceAccount label)
-
-parseServiceAccount :: Text -> FileServiceAccount -> IO ServiceAccountConfig
-parseServiceAccount label FileServiceAccount {accountId = rawAccountId, userId = rawUserId, secretSha256 = rawSecret, allowedScopes = rawScopes} = do
-  uid <- either (\err -> ioError (userError (Text.unpack label <> " has invalid userId " <> Text.unpack rawUserId <> ": " <> Text.unpack err))) pure (parseId rawUserId)
-  secretHash <- normalizeSha256Hex label rawSecret
-  pure
-    ServiceAccountConfig
-      { accountId = ServiceAccountId rawAccountId,
-        userId = uid,
-        secretHash = secretHash,
-        allowedScopes = Set.fromList (Scope <$> rawScopes)
-      }
-
-validateServiceTokenConfig :: Text -> ServiceTokenConfig -> IO ServiceTokenConfig
-validateServiceTokenConfig label cfg@ServiceTokenConfig {accounts = configuredAccounts} = do
-  traverse_ validateAccount configuredAccounts
-  pure cfg
-  where
-    validateAccount ServiceAccountConfig {accountId = ServiceAccountId rawAccountId, allowedScopes}
-      | Set.null allowedScopes =
-          ioError (userError (Text.unpack label <> " account " <> Text.unpack rawAccountId <> " must allow at least one scope"))
-      | otherwise = pure ()
-
-normalizeSha256Hex :: Text -> Text -> IO Text
-normalizeSha256Hex label raw =
-  let stripped = Text.toLower (Text.strip raw)
-   in if Text.length stripped == 64 && Text.all isHexDigit stripped
-        then pure stripped
-        else ioError (userError (Text.unpack label <> " service account secretSha256 must be a 64-character hex SHA-256 digest"))
-
 -- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
 -- 'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot
 -- syntax), which the new passkey/config records do not support under @DuplicateRecordFields@
@@ -981,8 +902,7 @@ mergeWebAuthn base fc =
       userVerification = maybe baseUv parseUserVerification fc.webauthnUserVerification,
       attestation = maybe baseAtt parseAttestation fc.webauthnAttestation,
       ceremonyTimeout = maybe baseTimeout fromIntegral fc.webauthnCeremonyTimeoutSeconds,
-      pendingCeremonyTTL = maybe baseTtl fromIntegral fc.webauthnPendingCeremonyTtlSeconds,
-      mfaRequired = fromMaybe baseMfa fc.webauthnMfaRequired
+      pendingCeremonyTTL = maybe baseTtl fromIntegral fc.webauthnPendingCeremonyTtlSeconds
     }
   where
     WebAuthnConfig
@@ -992,8 +912,7 @@ mergeWebAuthn base fc =
         userVerification = baseUv,
         attestation = baseAtt,
         ceremonyTimeout = baseTimeout,
-        pendingCeremonyTTL = baseTtl,
-        mfaRequired = baseMfa
+        pendingCeremonyTTL = baseTtl
       } = base
 
 -- | Overlay the @SHOMEI_WEBAUTHN_*@ environment variables onto the WebAuthn policy.
@@ -1006,7 +925,6 @@ overlayWebAuthnFromEnv base = do
   att <- attestationEnv
   timeout' <- ttlEnv "SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT"
   ttl' <- ttlEnv "SHOMEI_WEBAUTHN_PENDING_TTL"
-  mfa <- boolEnv "SHOMEI_WEBAUTHN_MFA_REQUIRED"
   pure
     base
       { rpId = rpId',
@@ -1015,8 +933,7 @@ overlayWebAuthnFromEnv base = do
         userVerification = fromMaybe baseUv uv,
         attestation = fromMaybe baseAtt att,
         ceremonyTimeout = fromMaybe baseTimeout timeout',
-        pendingCeremonyTTL = fromMaybe baseTtl ttl',
-        mfaRequired = fromMaybe baseMfa mfa
+        pendingCeremonyTTL = fromMaybe baseTtl ttl'
       }
   where
     WebAuthnConfig
@@ -1026,8 +943,7 @@ overlayWebAuthnFromEnv base = do
         userVerification = baseUv,
         attestation = baseAtt,
         ceremonyTimeout = baseTimeout,
-        pendingCeremonyTTL = baseTtl,
-        mfaRequired = baseMfa
+        pendingCeremonyTTL = baseTtl
       } = base
     -- A comma-separated list, e.g. "https://auth.example.com,https://www.example.com".
     originsEnv def = do

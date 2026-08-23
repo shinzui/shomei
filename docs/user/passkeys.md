@@ -36,8 +36,8 @@ List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{pa
 
 ## 2. Logging in with password + passkey (MFA step-up)
 
-1. POST `/v1/auth/login` with `{ "email", "password" }` as usual. If the account has a passkey
-   (and `mfaRequired` is on), the response is **not** tokens — it is
+1. POST `/v1/auth/login` with `{ "loginId", "password" }`. If the account has a passkey
+   (and `mfaConfig.requireSecondFactor` is on), the response is **not** tokens — it is
    `{ "status": "mfa_required", "ceremonyId": "...", "options": { ... }, "methods": [...] }`,
    where `options` is the WebAuthn *authentication options* (a fresh challenge plus the allowed
    credentials) and `methods` lists the factors that can complete the challenge — `"passkey"`
@@ -45,8 +45,9 @@ List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{pa
    An account *without* any enrolled factor still gets `{ "status": "complete", "user", "token" }`.
 2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`. The device
    signs the challenge with the passkey's private key.
-3. POST `/v1/auth/mfa/complete` with `{ "ceremonyId": "<from step 1>", "assertion": <the get()
-   output> }`. The server verifies the signature and returns the access/refresh token pair
+3. POST `/v1/auth/mfa/complete` with
+   `{ "ceremonyId": "<from step 1>", "proof": { "type": "passkey", "assertion": <the get() output> } }`.
+   The server verifies the signature and returns the access/refresh token pair
    `{ "accessToken", "refreshToken", "expiresIn" }`.
 
    In cookie transport (`SHOMEI_TOKEN_TRANSPORT=cookie`) this response sets the
@@ -84,7 +85,12 @@ wins). See [deployment.md](deployment.md) for the loader overview.
 | `attestation` | `webauthnAttestation` | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` | `none` \| `direct` |
 | `ceremonyTimeout` | `webauthnCeremonyTimeoutSeconds` | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` | `300` | browser ceremony timeout (seconds) |
 | `pendingCeremonyTTL` | `webauthnPendingCeremonyTtlSeconds` | `SHOMEI_WEBAUTHN_PENDING_TTL` | `300` | how long a begun ceremony stays valid server-side (seconds) |
-| `mfaRequired` | `webauthnMfaRequired` | `SHOMEI_WEBAUTHN_MFA_REQUIRED` | `true` | require the second factor for accounts that have **any** enrolled factor (passkey or confirmed TOTP) — see [mfa.md](mfa.md) |
+
+The cross-factor policy lives in `mfaConfig`, not `webauthnConfig`:
+
+| Field (`mfaConfig`) | Dhall key | Env var | Default | Meaning |
+|---|---|---|---|---|
+| `requireSecondFactor` | `mfaRequireSecondFactor` | `SHOMEI_MFA_REQUIRE_SECOND_FACTOR` | `true` | require a second factor for accounts with any enrolled factor |
 
 Dhall example (the keys are part of the schema in `config/shomei-types.dhall`; a full example is
 `config/shomei.example.dhall`):
@@ -98,7 +104,7 @@ Dhall example (the keys are part of the schema in `config/shomei-types.dhall`; a
 , webauthnAttestation = "none"             -- none | direct
 , webauthnCeremonyTimeoutSeconds = 300
 , webauthnPendingCeremonyTtlSeconds = 300
-, webauthnMfaRequired = True
+, mfaRequireSecondFactor = True
 }
 ```
 
@@ -112,7 +118,7 @@ SHOMEI_WEBAUTHN_USER_VERIFICATION=preferred
 SHOMEI_WEBAUTHN_ATTESTATION=none
 SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT=300
 SHOMEI_WEBAUTHN_PENDING_TTL=300
-SHOMEI_WEBAUTHN_MFA_REQUIRED=true
+SHOMEI_MFA_REQUIRE_SECOND_FACTOR=true
 ```
 
 ## Operator caveat: rpId and origins must match your real domain

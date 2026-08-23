@@ -25,6 +25,7 @@ import Shomei.Config (defaultShomeiConfig)
 import Shomei.Crypto (Argon2Params (..), newHashingLimiter)
 import Shomei.Domain.Claims (Audience (..), Issuer (..))
 import Shomei.Domain.SigningKey (SigningAlgorithm (ES256))
+import Shomei.Jwt.KeyProtection (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Postgres.Pool (acquirePool)
 import Shomei.Postgres.TotpCredentialStore (TotpEncryptionKey, totpEncryptionKeyFromBytes)
@@ -44,6 +45,9 @@ import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 dummyTotpKey :: TotpEncryptionKey
 dummyTotpKey = either (const (error "bad dummy totp key")) id (totpEncryptionKeyFromBytes (BS.replicate 32 0))
 
+testKek :: KeyEncryptionKey
+testKek = either (error . show) id (keyEncryptionKeyFromBase64 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+
 main :: IO ()
 main = defaultMain tests
 
@@ -54,11 +58,11 @@ tests =
     [ testCase "/projects is 401 without a token and 200 with one" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 connStr
-          keysRef <- newIORef =<< bootstrapKeys Nothing ES256 pool
+          keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = Nothing, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (embeddedApplication env)) \port -> do
             mgr <- newManager defaultManagerSettings
 
@@ -68,8 +72,8 @@ tests =
 
             -- Sign up + log in through the mounted /auth routes (via the real client).
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
-            _ <- expect "signup" =<< C.signup cenv SignupRequest {loginId = Nothing, email = Just email, password = password, displayName = "Dev"}
-            lr <- expect "login" =<< C.login cenv LoginRequest {loginId = Nothing, email = Just email, password = password}
+            _ <- expect "signup" =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "Dev"}
+            lr <- expect "login" =<< C.login cenv LoginRequest {loginId = email, password = password}
 
             -- /projects with the Bearer token → 200.
             withTok <- getProjects mgr port lr.token.accessToken

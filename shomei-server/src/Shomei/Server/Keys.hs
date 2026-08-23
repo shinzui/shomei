@@ -11,10 +11,10 @@
 -- a token signed moments before @shomei-admin keys activate@ keeps verifying until it
 -- expires, here and at every downstream that fetches the JWKS.
 --
--- Private key material may be encrypted at rest (see "Shomei.Jwt.KeyProtection"). Only the
+-- Private key material is encrypted at rest (see "Shomei.Jwt.KeyProtection"). Only the
 -- __signer__ is decrypted; the verifier key set and the published JWKS are built from the
 -- public column, so a missing or wrong key-encryption key can never break verification of
--- outstanding tokens — only the minting of new ones.
+-- outstanding tokens; runtime startup still requires the KEK so minting is always available.
 --
 -- Runs over a minimal stack — just 'SigningKeyStore' + 'Clock' + 'Database' +
 -- @Error AuthError@ + 'IOE' against the pool — because it must run /before/ the full
@@ -59,7 +59,6 @@ import Shomei.Jwt.KeyProtection
   ( KeyDecryptError (..),
     KeyEncryptionKey,
     decryptStoredSigningKey,
-    isEncryptedPrivateJwk,
     keyEncryptionKeyFromBase64,
     protectStoredSigningKey,
     publicJwkFromStored,
@@ -72,19 +71,17 @@ import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 
 -- | Read @SHOMEI_KEY_ENCRYPTION_KEY@ (32 bytes, base64).
-loadKekFromEnv :: IO (Maybe KeyEncryptionKey)
+loadKekFromEnv :: IO KeyEncryptionKey
 loadKekFromEnv = loadNamedKekFromEnv "SHOMEI_KEY_ENCRYPTION_KEY"
 
--- | Read a KEK from the named environment variable. Absent or empty yields 'Nothing';
--- present but malformed is fatal, because a half-configured secret is worse than none — the
--- process would start, fail to decrypt, and look like a database problem.
-loadNamedKekFromEnv :: String -> IO (Maybe KeyEncryptionKey)
+-- | Read a required KEK from the named environment variable.
+loadNamedKekFromEnv :: String -> IO KeyEncryptionKey
 loadNamedKekFromEnv name = do
   raw <- lookupEnv name
   case raw of
-    Nothing -> pure Nothing
-    Just "" -> pure Nothing
-    Just v -> either (fatal . Text.unpack) (pure . Just) (keyEncryptionKeyFromBase64 (Text.pack v))
+    Nothing -> fatal "is not set (32 bytes, base64: head -c 32 /dev/urandom | base64)"
+    Just "" -> fatal "is empty (32 bytes, base64: head -c 32 /dev/urandom | base64)"
+    Just v -> either (fatal . Text.unpack) pure (keyEncryptionKeyFromBase64 (Text.pack v))
   where
     fatal reason = ioError (userError (name <> " " <> reason))
 
@@ -101,12 +98,8 @@ data LoadedKeys = LoadedKeys
 -- stored JWK JSON does not parse, or whose ciphertext does not authenticate) fails the
 -- whole load rather than being skipped silently: publishing a key set that is missing a key
 -- downstreams may still hold tokens for is exactly the outage this module exists to prevent.
---
--- @mKek@ is needed only to decrypt the signer. Pass 'Nothing' when no
--- @SHOMEI_KEY_ENCRYPTION_KEY@ is configured; if any row is nonetheless encrypted, the load
--- fails with a message naming the variable rather than serving a server that cannot sign.
-loadKeyMaterial :: Maybe KeyEncryptionKey -> Pool -> IO (Either Text LoadedKeys)
-loadKeyMaterial mKek pool = do
+loadKeyMaterial :: KeyEncryptionKey -> Pool -> IO (Either Text LoadedKeys)
+loadKeyMaterial kek pool = do
   result :: Either AuthError [StoredSigningKey] <-
     runEff
       . runErrorNoCallStack
@@ -114,7 +107,7 @@ loadKeyMaterial mKek pool = do
       . runClockIO
       . runSigningKeyStorePostgres
       $ listPublishableSigningKeys
-  pure (either (Left . Text.pack . show) (assembleKeys mKek) result)
+  pure (either (Left . Text.pack . show) (assembleKeys kek) result)
 
 -- | Assemble the loaded rows. The signer is the active key with the greatest
 -- @activatedAt@ ('Nothing' sorting lowest) — several simultaneously-active keys are
@@ -123,11 +116,11 @@ loadKeyMaterial mKek pool = do
 --
 -- Public material comes from @public_key_jwk@ and needs no key-encryption key; only the
 -- signer's @private_key_jwk@ is decrypted.
-assembleKeys :: Maybe KeyEncryptionKey -> [StoredSigningKey] -> Either Text LoadedKeys
-assembleKeys mKek stored = do
+assembleKeys :: KeyEncryptionKey -> [StoredSigningKey] -> Either Text LoadedKeys
+assembleKeys kek stored = do
   publics <- traverse toPublic stored
   signerRow <- maybe (Left "no active signing key") Right (newestActive stored)
-  signerJwk <- first (decryptError signerRow) (decryptStoredSigningKey mKek signerRow)
+  signerJwk <- first (decryptError signerRow) (decryptStoredSigningKey kek signerRow)
   -- The signer's own row is in 'stored', so its public projection is in 'publics'.
   signerPub <-
     maybe (Left ("signing key " <> signerRow.keyId <> " has no public material")) Right $
@@ -143,8 +136,6 @@ assembleKeys mKek stored = do
     toPublic sk = (\jwk -> (sk, jwk)) <$> first (publicError sk) (publicJwkFromStored sk)
     publicError sk err = "signing key " <> sk.keyId <> " has unparseable public JWK JSON: " <> err
     decryptError sk = \case
-      KeyEncryptedButNoKek ->
-        "signing keys are encrypted at rest but SHOMEI_KEY_ENCRYPTION_KEY is not set"
       KeyDecryptFailed ->
         "signing key "
           <> sk.keyId
@@ -163,55 +154,29 @@ assembleKeys mKek stored = do
 -- first boot (guarded on "no active key", so restarts reuse the existing key and
 -- previously-issued tokens stay verifiable); then loads via 'loadKeyMaterial'. Unlike a
 -- reload, a failure here is fatal: there is no previous material to fall back on.
---
--- Also enforces the at-rest-encryption boot policy. Encrypted rows with no KEK abort the
--- boot (the load itself fails, naming the variable); plaintext rows only warn, so upgrading
--- an existing deployment never breaks — encryption stays opt-in until an operator runs
--- @shomei-admin keys encrypt-at-rest@.
-bootstrapKeys :: Maybe KeyEncryptionKey -> SigningAlgorithm -> Pool -> IO LoadedKeys
-bootstrapKeys mKek alg pool = do
-  result :: Either AuthError [StoredSigningKey] <-
+bootstrapKeys :: KeyEncryptionKey -> SigningAlgorithm -> Pool -> IO LoadedKeys
+bootstrapKeys kek alg pool = do
+  result :: Either AuthError () <-
     runEff
       . runErrorNoCallStack
       . runDatabasePool pool
       . runClockIO
       . runSigningKeyStorePostgres
-      $ ensureActiveKey mKek alg >> listPublishableSigningKeys
-  rows <- either (ioError . userError . show) pure result
-  warnAboutProtection mKek rows
-  loaded <- loadKeyMaterial mKek pool
+      $ ensureActiveKey kek alg
+  either (ioError . userError . show) pure result
+  loaded <- loadKeyMaterial kek pool
   either (ioError . userError . Text.unpack) pure loaded
 
--- | Nudge the operator toward at-rest encryption, in whichever direction they are missing.
--- (The dangerous case — encrypted rows and no KEK — is not a warning: 'loadKeyMaterial'
--- refuses outright.)
---
--- Only publishable rows are examined, because those are what the loader reads. A @pending@
--- or @revoked@ row could be encrypted without triggering the warning; it would surface at
--- the next @keys activate@.
-warnAboutProtection :: Maybe KeyEncryptionKey -> [StoredSigningKey] -> IO ()
-warnAboutProtection mKek rows = case mKek of
-  Nothing
-    | not (any encrypted rows) ->
-        warn "signing keys are stored unencrypted; set SHOMEI_KEY_ENCRYPTION_KEY and run 'shomei-admin keys encrypt-at-rest' to protect them"
-  Just _
-    | any (not . encrypted) rows ->
-        warn "some signing keys are still stored unencrypted; run 'shomei-admin keys encrypt-at-rest' to protect them"
-  _ -> pure ()
-  where
-    encrypted sk = isEncryptedPrivateJwk sk.privateKeyJwk
-    warn msg = hPutStrLn stderr ("[shomei] warning: " <> msg)
-
 -- | Generate and insert an active key for @alg@ when the store has no active key. The new
--- key is encrypted before it is persisted whenever a KEK is configured, so a fresh
--- deployment never writes a plaintext private key.
-ensureActiveKey :: (SigningKeyStore :> es, Clock :> es, IOE :> es) => Maybe KeyEncryptionKey -> SigningAlgorithm -> Eff es ()
-ensureActiveKey mKek alg = do
+-- key is encrypted before it is persisted, so a fresh
+-- deployment never writes an unencrypted private key.
+ensureActiveKey :: (SigningKeyStore :> es, Clock :> es, IOE :> es) => KeyEncryptionKey -> SigningAlgorithm -> Eff es ()
+ensureActiveKey kek alg = do
   active <- listActiveSigningKeys
   when (null active) do
     t <- now
     jwk <- liftIO (generateSigningKeyFor alg)
-    protected <- liftIO (protectStoredSigningKey mKek (toStoredSigningKeyFor alg t jwk))
+    protected <- liftIO (protectStoredSigningKey kek (toStoredSigningKeyFor alg t jwk))
     insertSigningKey protected
 
 -- | Reload key material and swap it in. On failure keep the last good material and log to
@@ -222,10 +187,10 @@ ensureActiveKey mKek alg = do
 --
 -- Safe from any thread: a plain 'writeIORef' of an immutable record, so a concurrent
 -- request sees the old or the new material in full, never a mixture.
-reloadKeys :: Maybe KeyEncryptionKey -> Pool -> IORef LoadedKeys -> IO ()
-reloadKeys mKek pool ref = do
+reloadKeys :: KeyEncryptionKey -> Pool -> IORef LoadedKeys -> IO ()
+reloadKeys kek pool ref = do
   before <- readIORef ref
-  loadKeyMaterial mKek pool >>= either warn (swap before)
+  loadKeyMaterial kek pool >>= either warn (swap before)
   where
     swap before after = do
       writeIORef ref after
