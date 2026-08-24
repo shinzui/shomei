@@ -50,7 +50,6 @@ in  Schema.Project::{
         , path = Some "shomei-migrations"
         , description = Some
             "pg-migrate PostgreSQL schema migrations, embedded from an ordered manifest and exposed as a composable MigrationComponent, plus a public test-support sublibrary (ephemeral-pg)"
-        , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
         }
       , Schema.Package::{
         , name = "shomei-postgres"
