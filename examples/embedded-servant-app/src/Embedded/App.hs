@@ -14,13 +14,11 @@ module Embedded.App
   )
 where
 
-import Data.Aeson (FromJSON, ToJSON)
 import Network.Wai (Application)
 import Servant
   ( Get,
     JSON,
     NamedRoutes,
-    Proxy (Proxy),
     Raw,
     serveWithContext,
     type (:<|>) ((:<|>)),

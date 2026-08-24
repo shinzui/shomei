@@ -10,6 +10,8 @@ Haskell service, and integrating client applications.
 - [Deployment](deployment.md) covers local development, production container startup,
   configuration, migrations, key rotation, and operational endpoints.
 - [HTTP API](api.md) lists every standalone server endpoint with request and response shapes.
+- [Problem Details](problem-details.md) catalogs every RFC 9457 application problem type and safe
+  client action.
 
 ## Feature Guides
 

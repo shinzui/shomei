@@ -8,9 +8,7 @@ import Data.ByteString qualified as BS
 import Data.IORef (newIORef)
 import Data.Text (Text)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (statusCode)
 import Network.Wai.Handler.Warp (testWithApplication)
-import Servant.Client (ClientError (FailureResponse), responseStatusCode)
 import Servant.Health (ProbeCheck, ProbeVerdict (Healthy))
 import Shomei.Account.Dto (SignupRequest (..), SignupResponse (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
@@ -122,9 +120,6 @@ expectApplicationSuccess label = \case
   Right (C.ApplicationSuccess value) -> pure value
   Right _ -> assertFailure (label <> ": expected success, got an application failure")
   Left err -> assertFailure (label <> ": transport failure: " <> show err)
-
-expect :: (Show e) => String -> Either e a -> IO a
-expect label = either (\e -> assertFailure (label <> " failed: " <> show e)) pure
 
 -- | Body tokens are optional on the wire (cookie transport omits them). This client runs in
 -- the default bearer mode, where they are always present.

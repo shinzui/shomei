@@ -260,8 +260,7 @@ spec = do
 
     -- The whole point of the exemption: a stock OAuth2 client parses `error`/`error_description`
     -- by field name. If any /oauth/token response ever carried application/problem+json, that
-    -- client would break — and `baselineSpecs` would happily add one, because the operation has a
-    -- request body. This pins the exclusion in `Shomei.Servant.OpenApi.oauthPaths`.
+    -- client would break. The protocol response lists are the sole source of these alternatives.
     it "documents no problem+json response on /oauth/token" $
       [ Key.toText status
       | (path, Object item) <- KM.toList paths,
@@ -277,7 +276,7 @@ spec = do
 
   describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
     -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling
-    -- parses. Pins the entry in `Shomei.Servant.OpenApi.oauthErrorResponsesByPath`.
+    -- parses. The OIDC route's protocol response list is the sole source of the alternative.
     it "documents no problem+json response on /.well-known/openid-configuration" $
       [ Key.toText status
       | (path, Object item) <- KM.toList paths,
@@ -290,6 +289,20 @@ spec = do
 
     it "documents the 404 it answers when the provider is disabled" $
       "404" `shouldSatisfy` (`elem` responseStatusesAt "/.well-known/openid-configuration")
+
+  describe "EP-5: /oauth/userinfo authenticates inside the OAuth envelope" $ do
+    it "requires bearer authentication" $
+      (requiresBearer <$> lookup "get /oauth/userinfo" operations) `shouldBe` Just True
+
+    it "documents only OAuth JSON failures, never application problems" $
+      [ Key.toText status
+      | (path, Object item) <- KM.toList paths,
+        path == "/oauth/userinfo",
+        (_, Object op) <- KM.toList item,
+        (status, resp) <- responsesOf op,
+        isProblemResponse resp
+      ]
+        `shouldBe` []
 
   describe "EP-5: /oauth/authorize speaks RFC 6749, and only its no-redirect failures are statuses" $ do
     it "documents no problem+json response on /oauth/authorize" $

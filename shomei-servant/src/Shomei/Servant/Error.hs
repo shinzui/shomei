@@ -117,12 +117,11 @@ module Shomei.Servant.Error
 where
 
 import Control.Lens
-import Data.Aeson (FromJSON (..), Options (..), ToJSON (..), defaultOptions, eitherDecode, genericParseJSON, genericToJSON)
+import Data.Aeson (eitherDecode)
 import Data.Aeson qualified as Aeson
 import Data.HashMap.Strict.InsOrd.Compat qualified as IOHM
 import Data.OpenApi (NamedSchema (..), ToSchema (..))
 import Data.OpenApi qualified as O
-import Data.Proxy (Proxy (..))
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Network.HTTP.Media (MediaType)
@@ -317,7 +316,7 @@ problemHeaders occurrence =
     encodeUtf8 = TextEncoding.encodeUtf8
     showBytes = encodeUtf8 . Text.pack . show
 
--- | Render a spec as an RFC 7807 'ServerError'. 'Nothing' omits the @detail@ member.
+-- | Render a spec as an RFC 9457 'ServerError'. 'Nothing' omits the @detail@ member.
 toProblemError :: ProblemSpec -> ProblemOccurrence -> ServerError
 toProblemError spec occurrence =
   spec.problemStatus
@@ -351,9 +350,8 @@ shomeiErrorFormatters =
 -- The catalog
 -- ---------------------------------------------------------------------------
 
--- Specs with an 'AuthError' counterpart. Every code/status/title triple below is the one the
--- pre-7807 mapping used, so a client that switched on the old @error@ key ports by reading
--- @code@ instead.
+-- Specs with an 'AuthError' counterpart. The code/status/title triple is the stable public
+-- identity used by both pre-handler rendering and typed handler results.
 
 pcInvalidEmail, pcInvalidLoginId, pcWeakPassword :: ProblemSpec
 pcInvalidEmail = problemSpec "invalid_email" err400 "Email is not valid"
@@ -366,7 +364,7 @@ pcLoginIdTaken = problemSpec "login_id_taken" err409 "Login identifier is alread
 
 -- | The single generic answer for a wrong password, an unknown account, and a locked account.
 pcInvalidLogin :: ProblemSpec
-pcInvalidLogin = problemSpec "invalid_login" err401 "Invalid email or password"
+pcInvalidLogin = problemSpec "invalid_login" err401 "Invalid login identifier or password"
 
 pcTooManyRequests :: ProblemSpec
 pcTooManyRequests = retryableProblemSpec "too_many_requests" err429 "Too many requests"

@@ -22,9 +22,9 @@ Then, from another shell:
 ```bash
 # 1. signup + login against the auth service
 curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
-  -d '{"email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
+  -d '{"loginId":"ms","email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
 TOKEN=$(curl -s -X POST localhost:8080/v1/auth/login -H 'content-type: application/json' \
-  -d '{"email":"ms@example.com","password":"correct horse battery staple"}' \
+  -d '{"loginId":"ms","password":"correct horse battery staple"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"]["accessToken"])')
 
 # 2. the downstream verifies the token locally against the JWKS — no call back to :8080
@@ -79,7 +79,7 @@ Shōmei signs into `sub`. The downstream already holds the claims, so no lookup 
 ```haskell
 import En.Tuple (ObjectRef (..), Subject (..))
 import En.Schema (ObjectType (..))
-import Shomei.Domain.Claims (AuthClaims (..))
+import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Id (idText)
 
 -- | THE convention: user:<TypeID text>, the string in the JWT `sub` claim. NEVER the bare

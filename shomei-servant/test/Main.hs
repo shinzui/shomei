@@ -84,14 +84,14 @@ import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InternalAuthError))
 import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
-import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), base32ToSecret, totpCode, totpCounter)
+import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..))
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenExchange.Workflow (tokenExchangeSubjectScope)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Passkey.Domain (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
-import Shomei.Prelude ((&), (.~), (^.))
+import Shomei.Prelude ((^.))
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
@@ -105,7 +105,6 @@ import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (SignupCommand (..))
-import Shomei.Session.Domain (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
 import Shomei.Session.Store (revokeAllUserSessions)
 import Shomei.Session.Token.Domain (AccessToken (..))
@@ -780,7 +779,7 @@ scenarioRequirePermission ref port = do
   rewired <- projects token3
   rewired @?= 200
 
--- | Every failure, from every layer, is an RFC 7807 problem document.
+-- | Every failure, from every layer, is an RFC 9457 problem document.
 --
 -- Each assertion names the layer it exercises, because they fail for different reasons: the
 -- auth handler and the authz combinator throw before any handler runs; principal parsing
@@ -2448,6 +2447,10 @@ scenarioCookieTransport port = do
   (meStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader sess]
   meStatus @?= 200
 
+  -- OIDC userinfo is an RFC 6750 bearer resource, even when application routes accept cookies.
+  cookieUserinfo <- getRaw mgr port "/oauth/userinfo" [sessionCookieHeader sess]
+  assertOAuthError "userinfo rejects cookie credentials" 401 "invalid_token" cookieUserinfo
+
   -- Logout clears both cookies: same names, empty values, Max-Age=0.
   (outStatus, outHdrs, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, allowedOrigin] Null
   outStatus @?= 204
@@ -2959,7 +2962,7 @@ scenarioTotp r jwk cfg port = do
   m3Methods <- must "m3 methods" (m3Body >>= dig ["methods"] >>= asTextArray)
   assertBool "recovery_code advertised in methods" ("recovery_code" `elem` m3Methods)
   cid3 <- must "cid3" (m3Body >>= dig ["ceremonyId"] >>= asText)
-  let firstRecovery = head codes
+  firstRecovery <- must "first recovery code" (listToMaybe codes)
   (rc1Status, rc1Body) <- complete cid3 (object ["type" .= ("recovery_code" :: Text), "code" .= firstRecovery])
   rc1Status @?= 200
   rcAccess <- must "recovery accessToken" (rc1Body >>= dig ["accessToken"] >>= asText)

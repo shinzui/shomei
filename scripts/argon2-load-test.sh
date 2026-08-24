@@ -2,14 +2,14 @@
 # Measure what concurrent logins do to the latency of the authenticated hot path.
 #
 # WHAT THIS MEASURES
-#   Verifying a JWT is pure in-memory work: `GET /auth/me` never touches the database and never
+#   Verifying a JWT is pure in-memory work: `GET /v1/auth/me` never touches the database and never
 #   hashes anything. Logging in costs one Argon2id verification (~100 ms at the default
 #   parameters), reached through an *unsafe* foreign call that pins its capability with no
 #   garbage-collection safepoint. GHC's stop-the-world collector must synchronize every
 #   capability, so a hash can stall requests that have nothing to do with passwords.
 #
-#   So: measure `GET /auth/me` latency while idle, then again while N clients hammer
-#   `POST /auth/login`, and report the ratio. The ratio is the acceptance criterion, not the
+#   So: measure `GET /v1/auth/me` latency while idle, then again while N clients hammer
+#   `POST /v1/auth/login`, and report the ratio. The ratio is the acceptance criterion, not the
 #   absolute milliseconds -- those vary wildly by machine.
 #
 # WHAT THIS CANNOT MEASURE
@@ -64,14 +64,16 @@ say() { printf '%s\n' "$*" >&2; }
 
 # --- preflight ---------------------------------------------------------------
 
-curl -sf -o /dev/null "$BASE/health" ||
-  { say "error: no server answering at $BASE/health"; exit 1; }
+curl -sf -o /dev/null "$BASE/health/live" ||
+  { say "error: no server answering at $BASE/health/live"; exit 1; }
 
 # The limiter's burst is 60 by default, so 70 rapid requests will trip it if it is enabled.
 throttled=0
 i=0
 while [ "$i" -lt 70 ]; do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/health")"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"loginId":"argon2-rate-limit-probe","password":"invalid-password"}')"
   [ "$code" = "429" ] && throttled=1 && break
   i=$((i + 1))
 done
@@ -84,16 +86,16 @@ fi
 # --- helpers -----------------------------------------------------------------
 
 signup() {
-  curl -sf -o /dev/null -X POST "$BASE/auth/signup" \
+  curl -sf -o /dev/null -X POST "$BASE/v1/auth/signup" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$1\",\"password\":\"$PASSWORD\",\"displayName\":\"loadtest\"}"
+    -d "{\"loginId\":\"$1\",\"email\":\"$1\",\"password\":\"$PASSWORD\",\"displayName\":\"loadtest\"}"
 }
 
 # Print the accessToken from a login response.
 login_token() {
-  curl -sf -X POST "$BASE/auth/login" \
+  curl -sf -X POST "$BASE/v1/auth/login" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"$1\",\"password\":\"$PASSWORD\"}" |
+    -d "{\"loginId\":\"$1\",\"password\":\"$PASSWORD\"}" |
     sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p'
 }
 
@@ -104,7 +106,7 @@ probe() {
   n=0
   while [ "$n" -lt "$PROBE_COUNT" ]; do
     curl -s -o /dev/null -w '%{time_total}\n' \
-      -H "Authorization: Bearer $TOKEN" "$BASE/auth/me" >>"$out"
+      -H "Authorization: Bearer $TOKEN" "$BASE/v1/auth/me" >>"$out"
     n=$((n + 1))
   done
 }
@@ -134,8 +136,8 @@ done
 
 TOKEN="$(login_token "probe-$RUN@example.test")"
 [ -n "$TOKEN" ] || { say "error: could not obtain an access token"; exit 1; }
-curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/auth/me" ||
-  { say "error: the access token does not authenticate against /auth/me"; exit 1; }
+curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/v1/auth/me" ||
+  { say "error: the access token does not authenticate against /v1/auth/me"; exit 1; }
 
 # --- idle phase --------------------------------------------------------------
 
@@ -152,9 +154,9 @@ while [ "$u" -lt "$LOAD_USERS" ]; do
   (
     count=0
     while [ "$(date +%s)" -lt "$deadline" ]; do
-      curl -s -o /dev/null -X POST "$BASE/auth/login" \
+      curl -s -o /dev/null -X POST "$BASE/v1/auth/login" \
         -H 'Content-Type: application/json' \
-        -d "{\"email\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true
+        -d "{\"loginId\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true
       count=$((count + 1))
     done
     printf '%s\n' "$count" >"$work/logins.$u"

@@ -219,7 +219,8 @@ own `Notifier` interpreter — a function `Eff (Notifier : es) a -> Eff es a` th
 two notification variants and calls your provider. This is the third option, alongside `smtp` and
 `webhook`.
 
-The contract — one effect, one operation (`shomei-core/src/Shomei/Effect/Notifier.hs`):
+The contract — one effect, one operation
+(`shomei-core/src/Shomei/Account/Notification/Store.hs`):
 
 ```haskell
 data Notifier :: Effect where
@@ -228,7 +229,7 @@ data Notifier :: Effect where
 sendNotification :: (Notifier :> es) => Notification -> Eff es ()
 ```
 
-The payload (`shomei-core/src/Shomei/Domain/Notification.hs`):
+The payload (`shomei-core/src/Shomei/Account/Notification/Domain.hs`):
 
 ```haskell
 data Notification
@@ -236,7 +237,8 @@ data Notification
     | PasswordResetRequested     { email :: !Email, token :: !OneTimeToken, expiresAt :: !UTCTime }
 ```
 
-Accessors: `Shomei.Domain.Email.emailText`, `Shomei.Domain.OneTimeToken.oneTimeTokenText`, and
+Accessors: `Shomei.Account.Email.Domain.emailText`,
+`Shomei.Account.OneTimeToken.Domain.oneTimeTokenText`, and
 `cfg.notifierConfig.publicBaseUrl` for the confirm-link base. The confirm links the user must
 reach (the same ones every built-in transport uses):
 
@@ -251,10 +253,10 @@ A minimal interpreter:
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 
-import Shomei.Domain.Email (emailText)
-import Shomei.Domain.Notification (Notification (..))
-import Shomei.Domain.OneTimeToken (oneTimeTokenText)
-import Shomei.Effect.Notifier (Notifier (..))
+import Shomei.Account.Email.Domain (emailText)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.Notification.Store (Notifier (..))
+import Shomei.Account.OneTimeToken.Domain (oneTimeTokenText)
 
 runNotifierMyProvider :: (IOE :> es) => MyClient -> Text -> Eff (Notifier : es) a -> Eff es a
 runNotifierMyProvider client baseUrl = interpret_ \case
@@ -286,6 +288,6 @@ a delivery failure propagate to the HTTP request.
 
 ## Testing
 
-`shomei-core/src/Shomei/Effect/InMemory.hs` provides `runNotifier`, a list-capturing interpreter
+`Shomei.Test.InMemory` provides `runNotifier`, a list-capturing interpreter
 that records each `Notification` in the `World` instead of sending it — use it to assert that a
 workflow emitted the expected notification with the expected token, with no network.

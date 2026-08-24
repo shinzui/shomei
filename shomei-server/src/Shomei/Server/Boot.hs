@@ -367,7 +367,7 @@ application env liveness readiness =
 
 -- | The Servant 'Context' carrying the @AuthProtect "shomei-jwt"@ 'AuthHandler' (built from the
 -- seam env itself) and the 'ErrorFormatters' that render Servant's own body-parse,
--- url-parse, header-parse, and not-found failures as RFC 7807 problem documents. A host app
+-- url-parse, header-parse, and not-found failures as RFC 9457 problem documents. A host app
 -- embedding 'ShomeiAPI' serves with this same context.
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
 authContext senv =

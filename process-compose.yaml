@@ -83,7 +83,7 @@ processes:
       http_get:
         host: 127.0.0.1
         port: 8080
-        path: /ready
+        path: /health/ready
       initial_delay_seconds: 3
       period_seconds: 2
     depends_on:

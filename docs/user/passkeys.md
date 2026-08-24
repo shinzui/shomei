@@ -192,16 +192,16 @@ served from the same warp process as `/auth`, so its origin matches the default
 
    ```bash
    curl -s -X POST http://localhost:8080/v1/auth/signup -H 'content-type: application/json' \
-     -d '{"email":"ada@example.com","password":"correct horse battery staple","displayName":"Ada"}'
+     -d '{"loginId":"ada","email":"ada@example.com","password":"correct horse battery staple","displayName":"Ada"}'
    ```
 
-4. On the page, log in with that email + password. Because the account has no passkey yet, you
+4. On the page, log in with that login identifier + password. Because the account has no passkey yet, you
    see "logged in (no passkey…)" and the Enroll button enables.
 
 5. Click "Enroll passkey", approve the device prompt (or the virtual authenticator), and see
    "passkey enrolled: passkey_…".
 
-6. Reload the page and log in again with the same email + password. This time the server returns
+6. Reload the page and log in again with the same login identifier + password. This time the server returns
    `mfa_required`, the page runs the assertion automatically, your device prompts, and you see
    "MFA complete — tokens issued." That is the second factor working: the password alone did not
    issue a token until the passkey signed the challenge. Abandoning the device prompt at this

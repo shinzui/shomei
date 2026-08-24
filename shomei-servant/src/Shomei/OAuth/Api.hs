@@ -13,13 +13,14 @@ import Servant.API
 import Servant.API.MultiVerb (MultiVerb)
 import Shomei.OAuth.Result
 import Shomei.Prelude
+import Shomei.Servant.Auth (OAuthAuthenticated)
 import Web.FormUrlEncoded (Form)
 
 type AuthorizeRoute = "authorize" :> Header "Authorization" Text :> Header "Cookie" Text :> QueryParam "response_type" Text :> QueryParam "client_id" Text :> QueryParam "redirect_uri" Text :> QueryParam "scope" Text :> QueryParam "state" Text :> QueryParam "nonce" Text :> QueryParam "code_challenge" Text :> QueryParam "code_challenge_method" Text :> MultiVerb 'GET '[JSON] AuthorizeResponses AuthorizeResult
 
 type TokenRoute = "token" :> Header "Authorization" Text :> RemoteHost :> ReqBody '[FormUrlEncoded] Form :> MultiVerb 'POST '[JSON] TokenResponses TokenResult
 
-type UserinfoRoute = "userinfo" :> Header "Authorization" Text :> Header "Cookie" Text :> MultiVerb 'GET '[JSON] UserinfoResponses UserinfoResult
+type UserinfoRoute = "userinfo" :> OAuthAuthenticated :> MultiVerb 'GET '[JSON] UserinfoResponses UserinfoResult
 
 type IntrospectRoute = "introspect" :> Header "Authorization" Text :> ReqBody '[FormUrlEncoded] Form :> MultiVerb 'POST '[JSON] IntrospectResponses IntrospectResult
 

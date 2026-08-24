@@ -82,7 +82,7 @@ import Shomei.Passkey.Dto
     PasskeyResponse,
   )
 import Shomei.Servant.Api (ShomeiRoutes)
-import Shomei.Servant.Auth (Authenticated)
+import Shomei.Servant.Auth (Authenticated, OAuthAuthenticated)
 import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.OAuth (TokenResponse)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
@@ -378,6 +378,11 @@ instance ToParamSchema UserPageCursor where
 -- sub-API.
 instance (HasOpenApi sub) => HasOpenApi (Authenticated :> sub) where
   toOpenApi _ = addTypedResponses (Proxy @AuthenticationPreHandlerResponses) (requireBearer (Proxy :: Proxy sub))
+
+-- The protocol result list already owns its OAuth-shaped 401. This combinator contributes only
+-- the bearer security requirement, never an application Problem Details response.
+instance (HasOpenApi sub) => HasOpenApi (OAuthAuthenticated :> sub) where
+  toOpenApi _ = requireBearer (Proxy :: Proxy sub)
 
 -- | 'RequireRole' and 'RequireScope' authenticate the caller themselves (they run the same
 -- 'Shomei.Servant.Auth.authHandler' 'Authenticated' does) and then check a claim. To a client

@@ -61,10 +61,7 @@ import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
 import Shomei.Servant.Middleware (problemResponse)
 
 -- | One bucket per client IP: current token level + last-refill time (POSIX seconds).
-data Bucket = Bucket
-  { tokens :: !Double,
-    lastRefill :: !Double
-  }
+data Bucket = Bucket !Double !Double
 
 data RateLimiter = RateLimiter
   { buckets :: !(TVar (HashMap ByteString Bucket)),
@@ -149,7 +146,8 @@ rateLimitMiddleware rl app req respond
       allowed <- takeToken rl (clientKey req) nowSecs
       if allowed then app req respond else respond tooMany
   where
-    -- The same RFC 7807 document every other error path returns, with @Retry-After@. This
+    -- The same RFC 9457 document every other application error path returns, with
+    -- @Retry-After@. This
     -- answers before Servant ever routes the request, so it cannot go through the handler
     -- error mapping — it shares the catalog constant instead.
     tooMany = problemResponse pcTooManyRequests (retryAfterOccurrence 60)

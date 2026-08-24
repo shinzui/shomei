@@ -55,7 +55,7 @@
       };
     in
     {
-      packages.default = haskellPackages.callCabal2nix "shomei" inputs.self { };
+      packages.default = lib.mkDefault (haskellPackages.callCabal2nix "shomei" inputs.self { });
 
       devShells.default = mkProjectShell "ghc9124";
       devShells."ghc9124" = mkProjectShell "ghc9124";

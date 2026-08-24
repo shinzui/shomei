@@ -262,14 +262,14 @@ foreground TUI (press `q`/Ctrl-C to stop).
    `PG_CONNECTION_STRING`.
 4. `shomei-server` — `cabal run exe:shomei-server` (`exe:` disambiguates from the `shomei-admin`
    executable in the same package), reachable at `http://localhost:8080`; its readiness probe
-   hits `/ready`.
+   hits `/health/ready`.
 
 The server reaches the database over `PG_CONNECTION_STRING` (the Unix socket), so there is no
 host/port to configure and nothing to clash with. Then, from another shell:
 
 ```bash
 curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
+  -d '{"loginId":"alice","email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
 ```
 
 To reset to a pristine database: stop the stack (press `q`/Ctrl-C in the process-compose TUI —
@@ -389,11 +389,13 @@ environment variable alone, without editing a config file.
 Set `SHOMEI_SWEEP_ENABLED=false` and restart. The system returns to its previous
 grow-forever behavior; nothing else depends on the sweeper. A sweep that fails — most often
 because PostgreSQL was briefly unreachable — logs the error and retries on the next cycle. It
-never takes the server down, and `GET /health` keeps answering throughout.
+never takes the server down, and `GET /health/live` keeps answering throughout.
 
 ## Operations
 
-- **Liveness** `GET /health` (restart decisions); **readiness** `GET /ready` (traffic gating).
+- **Liveness** `GET /health/live` (restart decisions); **readiness**
+  `GET /health/ready` (traffic gating). Both return the servant-health
+  `{"status","check","failingSince"}` shape at 200 or 503.
 - **Metrics** `GET /metrics` (Prometheus); scrape it from your monitoring stack.
 - **Logs** are one structured JSON line per request on stdout, each with an `X-Request-Id`
   correlation id that is also returned to the client. Background tasks (the sweeper, key

@@ -9,9 +9,9 @@
 #
 # Then, from another shell:
 #   curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
-#     -d '{"email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
+#     -d '{"loginId":"ms","email":"ms@example.com","password":"correct horse battery staple","displayName":"MS"}'
 #   TOKEN=$(curl -s -X POST localhost:8080/v1/auth/login -H 'content-type: application/json' \
-#     -d '{"email":"ms@example.com","password":"correct horse battery staple"}' \
+#     -d '{"loginId":"ms","password":"correct horse battery staple"}' \
 #     | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"]["accessToken"])')
 #   curl -i localhost:8090/projects -H "Authorization: Bearer $TOKEN"     # 200 (verified locally)
 #   curl -i localhost:8090/projects -H "Authorization: Bearer ${TOKEN%?}X" # 401 (tampered)
@@ -26,7 +26,7 @@ processes:
       http_get:
         host: 127.0.0.1
         port: 8080
-        path: /health
+        path: /health/ready
       initial_delay_seconds: 2
       period_seconds: 1
   example-project-service:

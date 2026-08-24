@@ -19,10 +19,10 @@ async function postJSON(path, body, auth) {
 // --- Step 1 + 3: log in with password; if MFA is required, run the assertion (step-up). ---
 document.getElementById("loginBtn").addEventListener("click", async () => {
   if (!supported()) { alert("WebAuthn is not supported on this device"); return; }
-  const email = document.getElementById("email").value;
+  const loginId = document.getElementById("loginId").value;
   const password = document.getElementById("password").value;
 
-  const r = await postJSON("/v1/auth/login", { email, password });
+  const r = await postJSON("/v1/auth/login", { loginId, password });
   if (!r.ok) { log("login failed: " + r.json); return; }
 
   if (r.json.status === "complete") {
@@ -33,7 +33,7 @@ document.getElementById("loginBtn").addEventListener("click", async () => {
     // r.json.options is the WebAuthn get() options the server chose.
     const assertion = await get({ publicKey: r.json.options.publicKey });
     const c = await postJSON("/v1/auth/mfa/complete",
-      { ceremonyId: r.json.ceremonyId, assertion });
+      { ceremonyId: r.json.ceremonyId, proof: { type: "passkey", assertion } });
     if (!c.ok) { log("mfa complete failed: " + c.json); return; }
     // /v1/auth/mfa/complete returns a token pair directly.
     accessToken = c.json.accessToken;

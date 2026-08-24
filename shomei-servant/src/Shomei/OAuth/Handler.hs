@@ -62,7 +62,7 @@ oauthServer env =
   OAuthApi
     { authorize = \a b c d e f g h i j -> typedOAuth (oauthAuthorizeH env a b c d e f g h i j),
       token = \authorization peer form -> typedOAuth (oauthTokenH env authorization peer form),
-      userinfo = \authorization cookie -> typedOAuth (oauthUserinfoH env authorization cookie),
+      userinfo = \user -> typedOAuth (oauthUserinfoH env user),
       introspect = \authorization form -> typedOAuth (oauthIntrospectH env authorization form),
       revoke = \authorization form -> typedOAuth (oauthRevokeH env authorization form)
     }
@@ -483,17 +483,16 @@ grantError e = case OAuthTokenGrant.grantErrorCode e of
   "invalid_client" -> OAuth.invalidClient
   code -> OAuth.oauthError status400 code (OAuthTokenGrant.grantErrorDescription e)
 
--- | @GET \/oauth\/userinfo@ (OIDC Core §5.3). Authentication happens inside the protocol
--- handler so a missing or invalid credential remains an OAuth @invalid_token@ response rather
--- than crossing into the application Problem Details envelope.
+-- | @GET \/oauth\/userinfo@ (OIDC Core §5.3). The protocol-specific authentication combinator
+-- turns a missing or invalid credential into OAuth @invalid_token@ rather than crossing into the
+-- application Problem Details envelope.
 --
 -- Returns @sub@ (always), @roles@ and @scopes@ (from the presented token's claims, possibly empty
 -- before EP-1's enrichment lands), and @email@\/@email_verified@ when the user row has them. The
 -- roles\/scopes come from the verified claims, not a fresh store read: userinfo reports what /this
 -- token/ carries, which is what a relying party correlating it with the ID token expects.
-oauthUserinfoH :: Env -> Maybe Text -> Maybe Text -> Handler Value
-oauthUserinfoH env authorization cookie = do
-  user <- liftIO (resolveAuthUser env authorization cookie) >>= maybe (throwError OAuth.invalidToken) pure
+oauthUserinfoH :: Env -> AuthUser -> Handler Value
+oauthUserinfoH env user = do
   mUser <- runOAuthPort env (findUserById user.authUserId)
   let base =
         [ "sub" Aeson..= idText user.authUserId,

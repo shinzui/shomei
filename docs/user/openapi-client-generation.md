@@ -2,7 +2,7 @@
 
 Shōmei publishes a machine-readable description of its HTTP contract as an
 **OpenAPI 3.1** document. It is generated *directly from the Servant API type*
-(`ShomeiRoutes` in `shomei-servant/src/Shomei/Servant/API.hs`), so it cannot drift
+(`ShomeiRoutes` in `shomei-servant/src/Shomei/Servant/Api.hs`), so it cannot drift
 from the running server. Point any standard OpenAPI code generator at it to get a
 typed client in your language — no Haskell toolchain required.
 
@@ -42,19 +42,18 @@ credential (`Authorization: Bearer <accessToken>`), exactly as the
 
 ## Errors in the generated client
 
-Every error response references the `Problem` schema (RFC 7807) with
-`Content-Type: application/problem+json`, and narrows it to the codes that operation
-can actually return:
+Application error alternatives reference the RFC 9457 `ProblemDetails` schema with
+`Content-Type: application/problem+json`. The `type` URI and its short `code` identify the
+specific problem occurrence:
 
 ```json
 {
   "401": {
-    "description": "An RFC 7807 problem document. The `code` member is one of: missing_token, token_invalid.",
+    "description": "Authentication failed",
     "content": {
       "application/problem+json": {
         "schema": {
-          "allOf": [{"$ref": "#/components/schemas/Problem"}],
-          "properties": {"code": {"type": "string", "enum": ["missing_token", "token_invalid"]}}
+          "$ref": "#/components/schemas/ProblemDetails"
         }
       }
     }
@@ -62,8 +61,10 @@ can actually return:
 }
 ```
 
-Generators that understand `enum` will give you a closed set of error codes per
-operation rather than an opaque string. Switch on `code`; see [Errors](api.md#errors).
+Application MultiVerb operations declare the shared fixed status vocabulary in their route type.
+Inspect `type` (the RFC primary identifier) or `code` (its stable short alias); the complete
+catalog and client actions are in [Problem Details](problem-details.md). OAuth/OIDC errors and
+servant-health probe reports retain their protocol-specific schemas rather than using this one.
 
 ## Token transport and generated clients
 

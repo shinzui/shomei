@@ -1,7 +1,7 @@
 # Shōmei HTTP API
 
 All routes are defined by the `ShomeiRoutes` `NamedRoutes` record in
-`shomei-servant/src/Shomei/Servant/API.hs` and served by `shomei-server` (default port
+`shomei-servant/src/Shomei/Servant/Api.hs` and served by `shomei-server` (default port
 `8080`). Request and response bodies are JSON. Authenticated routes require an
 `Authorization: Bearer <access-token>` header — or, in cookie transport, the `shomei_session`
 cookie (see below).
@@ -16,7 +16,7 @@ consume them look:
 |---|---|
 | `GET /.well-known/jwks.json` | OAuth2/OIDC verifiers auto-configure from the conventional location |
 | `GET /openapi.json` | describes the whole server, including the non-`/v1` surface |
-| `GET /health`, `GET /ready` | deployment contracts a load balancer is configured against |
+| `GET /health/live`, `GET /health/ready` | Kubernetes restart and traffic-gating probes |
 | `GET /metrics` | scrape target (a WAI middleware; it never reaches the router) |
 | `POST /oauth/token` | OAuth2 clients expect the token endpoint at a conventional location |
 | `GET /.well-known/openid-configuration` | OIDC relying parties auto-configure from this exact path |
@@ -30,41 +30,52 @@ CHANGELOG for the migration.
 
 ## Errors
 
-Every error — from a handler, a workflow, the token verifier, an authorization combinator,
-Servant's own request parser, or the rate limiter — is an [RFC 7807][rfc7807] problem document
-served as `Content-Type: application/problem+json`:
+Application failures — from a handler, workflow, token verifier, authorization combinator,
+Servant request parser, or rate limiter — use the [RFC 9457][rfc9457] Problem Details profile and
+`Content-Type: application/problem+json`:
 
 ```json
-{"type":"about:blank","title":"Token is invalid","status":401,"code":"token_invalid"}
+{"type":"https://github.com/shinzui/shomei/blob/master/docs/user/problem-details.md#token_invalid","title":"Token is invalid","status":401,"code":"token_invalid","retryable":false}
 ```
 
 | Member | Meaning |
 |---|---|
-| `code` | the machine key. **Switch on this.** These are the same strings the old `{"error":…}` shape carried |
+| `type` | stable HTTPS identity; this is the primary problem kind and links to [the catalog](problem-details.md) |
 | `title` | stable human text for the error kind |
 | `status` | mirrors the HTTP status |
-| `type` | always `about:blank` — Shōmei hosts no error-documentation URLs |
+| `code` | short, stable Shōmei alias for `type` |
+| `retryable` | whether retrying later can succeed without changing the request |
 | `detail` | *optional*; explains this occurrence (a parse message, the offending role name) |
+| `instance` | *optional* opaque occurrence URI; currently omitted |
 
-A `401` carries `WWW-Authenticate: Bearer`; a `429` carries `Retry-After`.
+A `401` carries `WWW-Authenticate` only when the response is an authentication challenge. A
+`429` carries `Retry-After`; a `503` carries it only when the server knows an honest interval.
+Clients must ignore unknown extension members.
 
-Which codes a given endpoint can return is machine-readable in the OpenAPI document
-(`GET /openapi.json`, or the committed `docs/api/openapi.json`): each error response narrows the
-`Problem` schema with `properties.code.enum`.
+The OpenAPI document (`GET /openapi.json`, or `docs/api/openapi.json`) derives declared statuses,
+media types, and headers from the exact served route types. Application MultiVerb routes share a
+closed error tail (400, 401, 403, 404, 409, 422, 429, 500, and 503), so their Haskell client calls
+return named result sums. A declared error is a normal result value, not a transport failure.
 
 Authentication errors are deliberately **generic** — a wrong password, an unknown account, and a
 locked account all return the same `401` with `code: "invalid_login"`, so the API never discloses
 which emails are registered (see [security.md](security.md)).
 
-Two responses are exempt from the envelope. `GET /ready` answers `503` with a
-`{"status","database","signingKey"}` probe document — a status report, not an error. And
-everything under **`/oauth/*`** answers with RFC 6749 §5.2's
+Two protocol surfaces are exempt. Both health probes use servant-health's
+`{"status","check","failingSince"}` report at 200 and 503. Everything under **`/oauth/*`**
+answers with RFC 6749 §5.2's
 `{"error":"invalid_client","error_description":"…"}` shape, served as `application/json`, because
 that is what every stock OAuth2 client parses by field name. The boundary is exact and permanent:
-`/oauth/*` speaks the OAuth2 wire protocol; everything else speaks the problem-details envelope.
-The OpenAPI document declares a separate `OAuthError` schema for it.
+the OAuth/OIDC routes (including `/.well-known/openid-configuration`) speak their protocol wire
+format; health speaks its package-owned format; application routes speak the Problem Details
+envelope. The OpenAPI document declares a separate `OAuthErrorResponse` schema for OAuth failures.
 
-[rfc7807]: https://www.rfc-editor.org/rfc/rfc7807
+[rfc9457]: https://www.rfc-editor.org/rfc/rfc9457
+
+The only ordinary JSON terminal routes are the in-process, single-status
+`GET /.well-known/jwks.json` and `GET /openapi.json`. Application and OAuth/OIDC operations use
+MultiVerb result sums because they own non-success outcomes; health uses servant-health's
+package-owned MultiVerb sum. Shōmei intentionally does not use `MultiVerb1`.
 
 ## Token transport
 
@@ -97,7 +108,7 @@ request** (anything but `GET`/`HEAD`/`OPTIONS`) must carry an allow-listed `Orig
 if `Origin` is absent, a `Referer` under an allowed origin. Otherwise:
 
 ```text
-403 {"type":"about:blank","title":"Origin not allowed for cookie-authenticated request","status":403,"code":"csrf_rejected"}
+403 {"type":"https://github.com/shinzui/shomei/blob/master/docs/user/problem-details.md#csrf_rejected","title":"Origin not allowed for cookie-authenticated request","status":403,"code":"csrf_rejected","retryable":false}
 ```
 
 Configure the allow-list with `SHOMEI_CSRF_ALLOWED_ORIGINS` (comma-separated). Requests with
@@ -246,7 +257,9 @@ When `oidcEnabled` is set, Shōmei is a standards-consumable OpenID Connect prov
 `refresh_token` grants at `POST /oauth/token`, `GET /oauth/userinfo`, `POST /oauth/introspect`, and
 `POST /oauth/revoke`. Stock middleware (Spring Security, ASP.NET Core, Envoy, oauth2-proxy)
 auto-configures from the discovery URL alone. The full guide, including the headless authorize
-contract and a worked oauth2-proxy configuration, is [oidc.md](oidc.md).
+contract and a worked oauth2-proxy configuration, is [oidc.md](oidc.md). Userinfo requires a
+bearer token; missing or invalid credentials produce OAuth `invalid_token` JSON with an RFC 6750
+`WWW-Authenticate: Bearer` challenge, never an application problem document.
 
 ### `POST /v1/auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens. In cookie transport the response
@@ -495,16 +508,21 @@ matches the deployment rather than a spec file someone remembered to commit. Ide
 to `docs/api/openapi.json` for the same build. See
 [openapi-client-generation.md](openapi-client-generation.md).
 
-### `GET /health`  (liveness)
-→ `200 {"status":"ok"}` as long as the process is alive. Dependency-free.
+### `GET /health/live` (liveness)
+→ `200 {"status":"ok","check":"all","failingSince":null}` while the in-process liveness check
+passes. It is dependency-free and drives restart decisions.
 
-### `GET /ready`  (readiness)
-→ `200 {"status":"ready","database":true,"signingKey":true}` only when PostgreSQL is reachable **and** an active signing key exists; otherwise `503` with the failing check. Use this to gate traffic; use `/health` to decide restarts.
+### `GET /health/ready` (readiness)
+→ the same healthy 200 body only when PostgreSQL is reachable and an active signing key exists.
+Otherwise it returns `503 {"status":"failed","check":"postgres|signing-key","failingSince":"…"}`.
+`failingSince` preserves the onset of the current failure run. Use readiness to gate traffic and
+liveness to decide restarts. Bare `/health` and `/ready` do not exist.
 
 ### `GET /metrics`
 → `200` Prometheus text exposition (raw WAI, bypassing the typed API): `http_requests_total{method,status}`, `http_requests_in_flight`, the `http_request_duration_seconds` histogram, and the domain counters `shomei_logins_succeeded_total` / `shomei_logins_failed_total` / `shomei_tokens_issued_total`.
 
 ## Correlation ids
 
-Every response carries an `X-Request-Id` header (echoed from the request if supplied, else
-generated). The same id appears in the server's structured JSON log line for that request.
+Every non-probe response carries an `X-Request-Id` header (echoed from the request if supplied,
+else generated). The same id appears in the server's structured JSON log line. Health probes
+bypass request logging and request-id decoration to avoid per-probe noise.

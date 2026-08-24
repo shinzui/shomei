@@ -3,7 +3,7 @@
 -- in "Shomei.OAuth.Handler" uses.
 --
 -- __This endpoint does not speak Shōmei's error envelope.__ Everywhere else, a failure is an
--- RFC 7807 problem document (see "Shomei.Servant.Error"). Under @\/oauth\/*@ a failure is
+-- RFC 9457 problem document (see "Shomei.Servant.Error"). Under @\/oauth\/*@ a failure is
 -- RFC 6749 §5.2's @{"error":"invalid_grant","error_description":"…"}@, because that is the shape
 -- every stock OAuth2 client — Spring, ASP.NET, Go's @clientcredentials@, @oauth2-proxy@ — parses
 -- by field name. Wrapping it would break them, which would defeat the entire point of speaking

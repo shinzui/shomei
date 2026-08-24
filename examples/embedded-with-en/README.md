@@ -46,10 +46,10 @@ en owns authorization (the `403`s, and the `403→200` flip after a relation tup
 ```console
 $ # 1. signup + login through the MOUNTED shomei API (same process)
 $ curl -s -XPOST localhost:8085/v1/auth/signup -H 'Content-Type: application/json' \
-    -d '{"email":"ann@example.com","password":"Str0ng-Pass-123!","displayName":"Ann"}' -o /dev/null -w '%{http_code}\n'
+    -d '{"loginId":"ann","email":"ann@example.com","password":"Str0ng-Pass-123!","displayName":"Ann"}' -o /dev/null -w '%{http_code}\n'
 201
 $ TOK=$(curl -s -XPOST localhost:8085/v1/auth/login -H 'Content-Type: application/json' \
-    -d '{"email":"ann@example.com","password":"Str0ng-Pass-123!"}' | jq -r .token.accessToken)
+    -d '{"loginId":"ann","password":"Str0ng-Pass-123!"}' | jq -r .token.accessToken)
 
 $ # 2. no tuples yet: en fails closed on both routes
 $ curl -s -o /dev/null -w '%{http_code}\n' localhost:8085/projects/roadmap -H "Authorization: Bearer $TOK"

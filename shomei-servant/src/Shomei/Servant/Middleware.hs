@@ -4,7 +4,7 @@
 -- through 'Servant.ErrorFormatters'. It does __not__ let you format a method mismatch: a request
 -- to a known path with the wrong verb raises a hardcoded @err405@ with an empty body from
 -- @Servant.Server.Internal.methodCheck@, below any hook. This middleware converts that response
--- into the same RFC 7807 problem document every other failure carries.
+-- into the same RFC 9457 problem document every other failure carries.
 --
 -- Shōmei never returns 405 from a handler, so rewriting the status unconditionally is safe.
 module Shomei.Servant.Middleware
@@ -18,7 +18,6 @@ import Data.ByteString.Char8 qualified as BS8
 import Network.HTTP.Types (Status, mkStatus, statusCode)
 import Network.Wai (Middleware, Response, responseLBS, responseStatus)
 import Servant (ServerError (..))
-import Shomei.Prelude
 import Shomei.Servant.Error (ProblemOccurrence, ProblemSpec (..), noProblemOccurrence, pcMethodNotAllowed, problemBody, problemHeaders)
 
 -- | Build a WAI response carrying a problem document. Used by this module and by the

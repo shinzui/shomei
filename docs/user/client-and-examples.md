@@ -4,7 +4,7 @@ Shōmei ships a typed Haskell client and three runnable example applications.
 
 ## Typed Haskell Client
 
-The `shomei-client` package derives its client record from the same Servant `ShomeiAPI` type that
+The `shomei-client` package derives its client record from the same Servant `ShomeiRoutes` type that
 the server serves. Authenticated calls take a `Token`, which adds
 `Authorization: Bearer <access-token>`.
 
@@ -17,27 +17,33 @@ are accepted in every transport, so it works against a cookie-mode server too. N
 {-# LANGUAGE OverloadedStrings #-}
 
 import Shomei.Client qualified as Shomei
-import Shomei.Servant.DTO (LoginRequest (..), SignupRequest (..))
+import Shomei.Account.Dto (SignupRequest (..))
 
 main :: IO ()
 main = do
   env <- Shomei.shomeiClientEnv "http://localhost:8080"
-  signedUp <-
+  result <-
     Shomei.signup
       env
       SignupRequest
-        { loginId = Nothing,
+        { loginId = "ada",
           email = Just "ada@example.com",
           password = "correct horse battery staple",
           displayName = "Ada"
         }
-  print signedUp
+  case result of
+    Left transportFailure -> print transportFailure
+    Right (Shomei.ApplicationSuccess created) -> print created
+    Right expectedFailure -> print expectedFailure
 ```
 
-Convenience wrappers are exported for signup, login, refresh, logout, `me`, `session`, and the
-passkey/MFA flows. For newer endpoints such as OAuth machine-token issuance, delegation, and audit
-retrieval, use the exported `shomeiClient` record directly with selectors from
-`Shomei.Servant.API`, or add a small wrapper following the existing module pattern.
+Every application wrapper returns a named route result inside `Either ClientError`: a declared
+HTTP outcome such as `ApplicationConflict` or `ApplicationUnavailable` is a `Right` value, while
+`ClientError` is reserved for transport, decoding, or contract violations. OAuth wrappers return
+the corresponding `OAuthResult` protocol sum. Convenience wrappers cover account, session,
+passkey/MFA, OAuth client credentials, and administration flows. For other fields, use the
+exported `shomeiRoutesClient`/`shomeiClient` records with selectors from `Shomei.Servant.Api` and
+the owning concept's `Api` module.
 
 ## Embedded Servant App
 

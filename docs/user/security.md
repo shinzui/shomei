@@ -81,7 +81,7 @@ matters.
 If a reload fails (the database is unreachable, or an operator retired the only active key so
 there is nothing left to sign with), the server logs the failure and **keeps the last good key
 material** rather than crashing or serving an empty JWKS. It keeps signing and verifying
-meanwhile; the `/ready` probe, which checks for an active key, starts failing so orchestration
+meanwhile; the `/health/ready` probe, which checks for an active key, starts failing so orchestration
 notices. Fix the key table with `shomei-admin` and send `SIGHUP` (or wait one interval) to
 recover.
 
@@ -259,7 +259,8 @@ tokens are short-lived (15 minutes by default) precisely to bound this window. T
 semantics of a stateless-JWT provider; it is documented rather than hidden. Deployments that need
 immediate access-token rejection set `VerifyTokenAndSession` and pay one session read per
 authenticated request. Shōmei's HTTP auth handler performs that lookup through
-`Shomei.Workflow.verifyToken`: an expired session returns `401 session_expired`, a revoked session
+`Shomei.Session.Authentication.Workflow.verifyToken`: an expired session returns
+`401 session_expired`, a revoked session
 returns `401 session_revoked`, and a token whose session id resolves to no row fails closed as
 `401 token_invalid`.
 
@@ -639,7 +640,7 @@ until then the design is in
 Every security-significant action is written as one row in the append-only
 `shomei_auth_events` table (`event_id`, denormalized `user_id`/`session_id`, an `event_type`
 string, a JSONB `payload`, and `created_at`). There are two ways to read it back; both sit on
-the same query layer (`Shomei.Effect.AuthEventReader`), so filtering, ordering, and pagination
+the same query layer (`Shomei.Audit.Reader.Store.AuthEventReader`), so filtering, ordering, and pagination
 behave identically.
 
 The trail is **retained forever by default.** Shōmei's background sweeper deletes expired rows

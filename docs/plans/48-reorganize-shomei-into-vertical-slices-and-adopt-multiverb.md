@@ -114,9 +114,24 @@ The finished behavior is visible without reading the implementation:
   `/health/live` and `/health/ready`, injected independently tracked checks into every host,
   added the released testkit contract matrix plus production readiness/onset tests, and passed
   the full workspace build and focused OpenAPI/health/dispatch tests.
-- [ ] Milestone 4: introduce typed problem details and selective MultiVerb result types.
-- [ ] Milestone 5: update OpenAPI derivation, the Haskell client, assemblies, and examples.
-- [ ] Milestone 6: update documentation and complete every validation gate.
+- [x] (2026-08-23) Milestone 4: replaced the application error envelope with an RFC 9457
+  `ProblemDetails` profile and a documented 47-entry stable problem-type catalog; added one
+  exhaustive shared application-error tail plus concept-owned result sums with manual `AsUnion`
+  instances; converted every fallible application operation and every OAuth/OIDC operation to
+  typed `MultiVerb`; retained only JWKS and OpenAPI as ordinary typed routes; and proved every
+  store-backed application route owns 503 at compile time.
+- [x] (2026-08-23) Milestone 5: derived all handler-owned OpenAPI responses from the exact served
+  proxy; removed the path-indexed handler-error catalog; taught the generated client to return
+  the typed operation sums and preserve route-specific response headers; regenerated a
+  deterministic 41-path/45-operation OpenAPI artifact; and passed the focused 62-example OpenAPI,
+  35-example runtime, typed-client, health, and assembly suites.
+- [x] (2026-08-23) Milestone 6: rewrote current user, deployment, example, browser-demo, and
+  operator material for `loginId`, tagged MFA proofs, RFC 9457, typed client results, and
+  `/health/live` plus `/health/ready`; added a bearer-only OAuth userinfo authentication
+  combinator and protocol-boundary coverage; corrected every current RFC 7807 comment to RFC
+  9457; made the multi-package Nix server closure reproducible on the 2026-08-22
+  `nixpkgs-unstable` snapshot; and passed deterministic artifact comparison, source audits,
+  formatting, the full Cabal build and test suite, `nix build .#default`, and `nix flake check`.
 
 
 ## Surprises & Discoveries
@@ -276,6 +291,53 @@ The finished behavior is visible without reading the implementation:
   independently reaches `/shared/account`, `/shared/session`, and `/shared/audit`; the production
   `ApplicationApi` uses the same composition for the `/v1/auth` and `/v1/admin` slices.
 
+- Observation: Servant's generic MultiVerb client decoder cannot recover optional headers for
+  every route-specific result shape without help, even though the server-side response mapping is
+  unambiguous.
+  Evidence: the typed client initially lost cookie and location metadata while decoding shared
+  response arms. Route-specific `ServantHeaders` instances now pair each success constructor with
+  exactly the headers declared by its response alternative, and the client suite round-trips both
+  bearer and cookie modes.
+
+- Observation: content negotiation for MultiVerb must distinguish the terminal problem media type
+  from ordinary JSON successes.
+  Evidence: declaring the response list under plain `JSON` caused client dispatch to treat
+  `application/problem+json` responses as an unsupported content type. Application failures now
+  use `RespondAs ProblemJSON`, while successes use `RespondAs JSON`; runtime and generated-client
+  tests exercise both paths.
+
+- Observation: OAuth userinfo authentication is itself part of the OAuth wire protocol and cannot
+  reuse the application-session combinator without changing error media, body, and challenge
+  semantics.
+  Evidence: the dedicated `OAuthAuthenticated` combinator requires a bearer token even when the
+  surrounding server runs in cookie mode and returns RFC 6750-style `invalid_token` plus
+  `WWW-Authenticate`; tests prove that it never emits `ProblemDetails` and rejects an otherwise
+  valid session cookie.
+
+- Observation: `cabal run shomei-openapi > file` can put Cabal rebuild progress on standard output
+  before the executable's JSON and thereby produce an invalid artifact.
+  Evidence: invoking the already-built executable directly produced byte-identical documents on
+  two runs, while the rebuilding wrapper contaminated its redirected output. Final generation
+  therefore builds first and executes the `cabal list-bin` result directly.
+
+- Observation: the generated Nix package definition assumed a single root Cabal package, but this
+  repository is a multi-package Cabal project with no root `.cabal` file.
+  Evidence: the first `nix flake check` evaluated `callCabal2nix "shomei" inputs.self` and failed
+  before building Shōmei. The generated default is now `mkDefault`, and the project module defines
+  the explicit local-package graph, locked source-repository inputs, and server executable output.
+  During validation, the June nixpkgs snapshot also carried stale Haskell package revisions; with
+  user approval the project package snapshot was advanced to `nixpkgs-unstable` revision
+  `a831408e6378bc02ebf8cc09b52c96ca86f6bab4` from 2026-08-22 while the reusable dev toolchain
+  remains independently pinned. That snapshot still carries Hackage revision 1 of
+  `smtp-mail-0.5.0.1`, whose `ram <0.22` bound predates current Hackage revision 2's verified
+  `ram <0.23`; the package therefore has one narrow metadata-only jailbreak.
+
+- Observation: the browser demo had preserved wire assumptions that were no longer exercised by
+  the Haskell assemblies.
+  Evidence: its JavaScript still sent `email` as the login principal and the old flat MFA proof.
+  Updating it alongside the example READMEs exposed and removed the last current-user examples of
+  both compatibility formats.
+
 
 ## Decision Log
 
@@ -421,22 +483,72 @@ The finished behavior is visible without reading the implementation:
   loss during the intermediate refactor.
   Date: 2026-08-23.
 
+- Decision: Implement application route results as concept-owned success sums followed by one
+  fixed, exhaustive application-error tail, with a single `AuthError` conversion and explicit
+  manual `AsUnion` mappings.
+  Rationale: this keeps each concept's success vocabulary local while ensuring every newly
+  reachable closed-domain error remains representable, including the typed 503, without partial
+  conversions or repeated same-body mappings.
+  Date: 2026-08-23.
+
+- Decision: Model application failures as `RespondAs ProblemJSON` and successful JSON bodies as
+  `RespondAs JSON` in each MultiVerb list, and specialize `ServantHeaders` only where a route owns
+  response headers.
+  Rationale: media type is part of the typed response contract, and route-specific header
+  recovery is narrower and safer than weakening client decoding globally.
+  Date: 2026-08-23.
+
+- Decision: Protect OAuth userinfo with a dedicated bearer-only `OAuthAuthenticated` combinator.
+  Rationale: reusing application cookie/session authentication would leak RFC 9457 responses into
+  an OAuth resource endpoint and would incorrectly make cookie mode change the endpoint's
+  protocol. The dedicated combinator keeps RFC 6750 errors and challenges at the pre-handler
+  boundary.
+  Date: 2026-08-23.
+
+- Decision: Make the generated Nix package default overridable and define Shōmei's multi-package
+  server closure in `flake.module.nix`, with source-repository inputs locked in `flake.lock` and
+  the project package set on the current `nixpkgs-unstable` snapshot.
+  Rationale: the repository has no root Cabal file, and Cabal's source-repository pins are not
+  visible to `callCabal2nix`. Explicit composition gives `packages.default`, the OCI image, and
+  `nix flake check` the same reproducible server closure without changing the independently cached
+  development toolchain.
+  Date: 2026-08-23.
+
 
 ## Outcomes & Retrospective
 
-The plan was comprehensively rewritten on 2026-07-24 after comparison with the live code and
-the current `haskell-jitsurei` standards. A subsequent RFC review corrected the application
-error profile to RFC 9457, stable custom type URIs, and an explicit separation between error-body
-format and handler return modelling. The 2026-07-26 standards refresh tightened the ordinary-route
-exemption to genuinely in-process one-status routes and replaced Shōmei's bespoke probes with
-`servant-health` 0.1.0.0. The revised design validates the vertical-slice refactor, avoids both
-meaningless `MultiVerb1` wrappers and under-modelled store failures, and makes the lack of existing
-adopters an explicit reason to delete compatibility code and old probe paths. Implementation has
-not started.
+Implementation completed on 2026-08-23. The existing Cabal package boundaries remain intact, but
+domain, workflow, store, PostgreSQL, JWT, HTTP API, DTO, result, handler, and test modules now use
+recognizable concept prefixes. The root Servant modules are thin `NamedRoutes` compositions, and
+runtime witnesses prove sibling concepts sharing `/v1/auth` and `/v1/admin` dispatch to the right
+handler. No old layer-first re-export modules remain.
 
-At implementation completion, replace this paragraph with the delivered module layout, the
-final plain-versus-MultiVerb inventory, dependency versions selected by the solver, validation
-transcripts, deviations from this plan, and lessons learned.
+The final served proxy contains 41 paths and 45 method/path operations. Every normal fallible
+application operation and every OAuth/OIDC operation uses `MultiVerb`; the only ordinary typed
+routes are `GET /.well-known/jwks.json` and `GET /openapi.json`, while `/metrics` remains a WAI
+boundary. Application handlers return concept-owned sums backed by one exhaustive RFC 9457 error
+tail with typed 503. OAuth routes retain OAuth-shaped errors, `/oauth/userinfo` is bearer-only at
+its protocol boundary, and the imported `servant-health` API owns `/health/live` and
+`/health/ready`. The generated client exposes those typed results and preserves operation-owned
+headers. The obsolete service-token, impersonation, bare-probe, email-login fallback, flat MFA,
+plaintext-key, optional-KEK, and legacy Argon2 surfaces are absent.
+
+The released API cohort is Servant 0.20.3.0, `openapi-hs` 5.0.0,
+`servant-openapi-hs` 5.1.0, and `servant-health` 0.1.0.0. Nix now composes the multi-package server
+closure explicitly, locks Cabal source-repository dependencies as non-flake inputs, and uses
+`nixpkgs-unstable` revision `a831408e6378bc02ebf8cc09b52c96ca86f6bab4` for project packages.
+The reusable development toolchain remains independently pinned. The only metadata workaround is
+the verified Hackage-revision relaxation for `smtp-mail-0.5.0.1` described above.
+
+Final validation passed `nix fmt -- --fail-on-change`, `nix develop --command cabal build all`,
+the complete serial `cabal test all --test-show-details=direct` run, byte-for-byte OpenAPI
+regeneration, the 41-path/45-operation invariant query, `nix build .#default --no-link`,
+`nix flake check`, source-hygiene audits, and `git diff --check`. Highlighted coverage includes
+228 core tests, 56 PostgreSQL tests, 44 JWT tests, 35 Servant runtime tests, and 62 OpenAPI
+examples. The principal lessons were to model response media types as part of the MultiVerb
+contract, specialize client header decoding at the route result, keep OAuth authentication errors
+out of the application envelope, and execute an already-built generator when standard output is
+the artifact.
 
 
 ## Context and Orientation

@@ -116,7 +116,7 @@ import Shomei.Passkey.Result
 import Shomei.Prelude
 import Shomei.Servant.Api (ApplicationApi, ShomeiRoutes)
 import Shomei.Servant.Api qualified as Api
-import Shomei.Servant.Auth (Authenticated)
+import Shomei.Servant.Auth (Authenticated, OAuthAuthenticated)
 import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.Error (ProblemDetails (..))
 import Shomei.Servant.OAuth (TokenResponse (..))
@@ -161,6 +161,11 @@ instance (HasClient m api) => HasClient m (RequirePermission p :> api) where
 
 instance (HasClient m api) => HasClient m (Authenticated :> api) where
   type Client m (Authenticated :> api) = Client m (AuthProtect "shomei-jwt" :> api)
+  clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+  hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
+
+instance (HasClient m api) => HasClient m (OAuthAuthenticated :> api) where
+  type Client m (OAuthAuthenticated :> api) = Client m (AuthProtect "shomei-jwt" :> api)
   clientWithRoute pm _ = clientWithRoute pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
   hoistClientMonad pm _ = hoistClientMonad pm (Proxy :: Proxy (AuthProtect "shomei-jwt" :> api))
 
@@ -387,10 +392,9 @@ adminPasswordReset env tok uid =
 -- service account is allowed. Passing scopes narrows the token to that subset; a scope outside
 -- the account's allow-list is rejected with @invalid_scope@.
 --
--- The failure channel is 'ClientError' as everywhere else in this module, but note that the
--- endpoint's error /body/ is an RFC 6749 object (@{"error":…,"error_description":…}@), not the
--- problem document the rest of the API returns — @\/oauth\/*@ speaks the OAuth2 wire protocol.
--- A caller that wants the code inspects the 'ClientError''s response body.
+-- Declared protocol failures are constructors of 'OAuthResult' inside @Right@. 'ClientError' is
+-- reserved for transport, decoding, or an undeclared response. The result body uses RFC 6749's
+-- @{"error":…,"error_description":…}@ shape because @\/oauth\/*@ speaks the OAuth2 protocol.
 --
 -- Get a @client_id@ and secret with @shomei-admin service-accounts create@.
 oauthToken :: ClientEnv -> Text -> Text -> [Text] -> IO (Either ClientError TokenResult)

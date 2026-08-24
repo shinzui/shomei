@@ -1,5 +1,9 @@
 # Shōmei / 証明 — Technical Specification
 
+> This is the original design sketch. The implemented wire contract is documented in
+> [api.md](api.md) and generated in [`docs/api/openapi.json`](../api/openapi.json); where this
+> sketch differs, those current sources are authoritative.
+
 ## Overview
 
 **Shōmei** is a Haskell authentication toolkit designed to support two deployment modes:
@@ -519,26 +523,28 @@ For monoliths, checking the session store on protected routes can be configurabl
 ## Standalone HTTP API
 
 ```text
-POST /auth/signup
-POST /auth/login
-POST /auth/refresh
-POST /auth/logout
-GET  /auth/me
-GET  /auth/session
+POST /v1/auth/signup
+POST /v1/auth/login
+POST /v1/auth/refresh
+POST /v1/auth/logout
+GET  /v1/auth/me
+GET  /v1/auth/session
 GET  /.well-known/jwks.json
-GET  /health
+GET  /health/live
+GET  /health/ready
 ```
 
 ### Signup
 
 ```http
-POST /auth/signup
+POST /v1/auth/signup
 ```
 
 Request:
 
 ```json
 {
+  "loginId": "nadeem",
   "email": "nadeem@example.com",
   "password": "correct horse battery staple",
   "displayName": "Nadeem"
@@ -566,14 +572,14 @@ Response:
 ### Login
 
 ```http
-POST /auth/login
+POST /v1/auth/login
 ```
 
 Request:
 
 ```json
 {
-  "email": "nadeem@example.com",
+  "loginId": "nadeem",
   "password": "correct horse battery staple"
 }
 ```
@@ -599,7 +605,7 @@ Response:
 ### Refresh
 
 ```http
-POST /auth/refresh
+POST /v1/auth/refresh
 ```
 
 Request:
@@ -623,7 +629,7 @@ Response:
 ### Logout
 
 ```http
-POST /auth/logout
+POST /v1/auth/logout
 Authorization: Bearer <access-token>
 ```
 
@@ -636,14 +642,14 @@ Response:
 ### Current User
 
 ```http
-GET /auth/me
+GET /v1/auth/me
 Authorization: Bearer <access-token>
 ```
 
 ### Current Session
 
 ```http
-GET /auth/session
+GET /v1/auth/session
 Authorization: Bearer <access-token>
 ```
 
@@ -687,7 +693,7 @@ type ShomeiAPI =
           :> Get '[JSON] JWKS
 
   :<|> "health"
-          :> Get '[JSON] HealthResponse
+          :> NamedRoutes HealthApi
 ```
 
 Embedded app usage:
@@ -1205,4 +1211,3 @@ Application-specific authorization should live outside Shōmei.
 ## One-line Summary
 
 **Shōmei** is a Haskell authentication toolkit that can run as a standalone auth service or embed directly into Servant applications, with password login, sessions, refresh token rotation, JWT verification, JWKS publishing, and PostgreSQL persistence.
-

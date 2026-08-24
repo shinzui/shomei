@@ -26,7 +26,7 @@ Each effect interface lives in `shomei-core/src/Shomei/Effect/*` as a GADT of op
 
 There are two interpreter assemblies for the same canonical effect stack (`AppEffects`):
 
-- **In-memory** (`shomei-core/src/Shomei/Effect/InMemory.hs`) — a single mutable `World` in an
+- **In-memory** (`shomei-core/src/Shomei/Test/InMemory.hs`) — a single mutable `World` in an
   `IORef`, used by the pure test suites. No database, JWT library, or network.
 - **Production** (`shomei-server`/`runAppIO`) — the `hasql` PostgreSQL interpreters plus the real
   `jose` signer/verifier (ES256 by default, RS256 selectable). The servant in-process test uses a
@@ -40,19 +40,22 @@ interpreter (see [notifications.md](notifications.md)).
 
 ## The workflows
 
-`shomei-core/src/Shomei/Workflow.hs` and the focused `Shomei.Workflow.*` modules hold the
-behavioral heart: `signup`, `login` (with lockout/throttle gates), `refresh` (rotation with reuse
-detection), `logout`, `verifyToken`, account-lifecycle flows
-(`requestEmailVerification`/`confirm`, `requestPasswordReset`/`confirm`, `changePassword`),
-passkey/MFA ceremonies, delegated-token exchange, and scoped OAuth machine-token issuance.
-They short-circuit on the first `AuthError` and publish `AuthEvent`s for audit.
+Concept-first workflow modules hold the behavioral heart: for example,
+`Shomei.Session.Authentication.Workflow`, `Shomei.Account.Lifecycle.Workflow`,
+`Shomei.Passkey.Workflow`, `Shomei.Mfa.Workflow`, and `Shomei.OAuth.TokenGrant.Workflow`.
+They implement signup/login, refresh rotation and reuse detection, lifecycle flows, passkey/MFA
+ceremonies, token exchange, and OAuth machine-token issuance. They short-circuit on the first
+`AuthError` and publish audit events. There is intentionally no aggregate `Shomei.Workflow`
+re-export.
 
 ## The HTTP layer
 
-`shomei-servant` defines `ShomeiAPI` as a Servant `NamedRoutes` record and the handlers that map
-DTOs to workflow commands through a thin **seam** (`Shomei.Servant.Seam`) that runs a workflow in
-the `AppEffects` stack and maps a `Left AuthError` to a `ServerError`. The `Authenticated`
-combinator guards protected routes; `RequireRole`/`RequireScope` express authorization.
+`shomei-servant` composes concept-owned `Api`, `Dto`, `Result`, and `Handler` modules into the thin
+`ShomeiRoutes` `NamedRoutes` root. The seam (`Shomei.Servant.Seam`) preserves
+`Either AuthError`; each application handler maps expected failures to a typed `ApplicationResult`
+constructor, while OAuth handlers use their protocol result sum. The `Authenticated` combinator
+guards protected routes; `RequireRole`/`RequireScope`/`RequirePermission`/`RequireAdmin` express
+authorization and contribute their pre-handler responses to OpenAPI.
 
 `shomei-server` assembles the warp `Application` and wraps it in the WAI middleware stack, in this
 order (outermost first): **request-id + structured logging → HTTP metrics → `/metrics` endpoint →

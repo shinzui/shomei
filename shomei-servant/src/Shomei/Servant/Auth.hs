@@ -23,6 +23,7 @@
 module Shomei.Servant.Auth
   ( AuthUser (..),
     Authenticated,
+    OAuthAuthenticated,
     CookiePolicy (..),
     cookiePolicyFromConfig,
     TokenSource (..),
@@ -70,6 +71,7 @@ import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.Error (bearerOccurrence, noProblemOccurrence, pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
+import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Seam (Env (..), verifyRequestToken)
 import Web.Cookie (parseCookies)
 
@@ -108,6 +110,33 @@ instance
       authenticate req = do
         outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
         either delayedFailFatal pure outcome
+
+-- | OAuth/OIDC bearer authentication. It enforces the same verification and session policy as
+-- 'Authenticated', accepts only the RFC 6750 bearer transport, and rejects with @invalid_token@
+-- instead of an application problem.
+type OAuthAuthenticated :: Type
+data OAuthAuthenticated
+
+instance
+  ( HasServer api ctx,
+    HasContextEntry ctx (AuthHandler Request AuthUser)
+  ) =>
+  HasServer (OAuthAuthenticated :> api) ctx
+  where
+  type ServerT (OAuthAuthenticated :> api) m = AuthUser -> ServerT api m
+
+  hoistServerWithContext _ pc nt srv =
+    hoistServerWithContext (Proxy :: Proxy api) pc nt . srv
+
+  route _ ctx subserver =
+    route (Proxy :: Proxy api) ctx (subserver `addAuthCheck` withRequest authenticate)
+    where
+      authenticate req = do
+        case extractToken BearerToken req of
+          Nothing -> delayedFailFatal OAuth.invalidToken
+          Just _ -> do
+            outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
+            either (const (delayedFailFatal OAuth.invalidToken)) pure outcome
 
 -- | Where a presented credential came from. Cookie-sourced credentials are subject to the
 -- CSRF origin gate; bearer credentials never are.
