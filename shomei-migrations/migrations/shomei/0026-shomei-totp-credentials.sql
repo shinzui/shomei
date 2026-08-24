@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- A user's TOTP (RFC 6238) second-factor credential (EP-7). One per user (UNIQUE (user_id)):

@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 CREATE TABLE IF NOT EXISTS shomei_login_attempts (

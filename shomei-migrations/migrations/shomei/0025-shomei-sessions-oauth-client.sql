@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- The OAuth client that minted this session, for sessions created by the authorization-code grant.

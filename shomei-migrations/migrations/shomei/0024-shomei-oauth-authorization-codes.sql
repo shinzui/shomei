@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Single-use OAuth2 authorization codes (RFC 6749 §4.1), issued by GET /oauth/authorize and

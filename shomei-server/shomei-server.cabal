@@ -62,6 +62,7 @@ library
     , jose
     , mime-mail
     , network
+    , pg-migrate            >=1.1    && <1.2
     , process
     , ram
     , servant-health        >=0.1    && <0.2
@@ -120,6 +121,7 @@ executable shomei-admin
     , hasql
     , hasql-pool
     , optparse-applicative
+    , pg-migrate            >=1.1  && <1.2
     , shomei-core
     , shomei-jwt
     , shomei-migrations

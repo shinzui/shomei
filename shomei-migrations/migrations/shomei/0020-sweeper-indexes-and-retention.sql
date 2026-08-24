@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Sweep-supporting indexes (EP-2 of the operational-hardening MasterPlan,

@@ -70,12 +70,27 @@ Use a checklist to summarize granular steps. Every stopping point must be docume
 even if it requires splitting a partially completed task into two ("done" vs. "remaining").
 This section must always reflect the actual current state of the work.
 
-- [ ] M1: restructure migration sources — rename 28 files into `shomei-migrations/migrations/shomei/`, strip `-- codd: in-txn` headers, write the manifest
-- [ ] M2: rewrite `Shomei.Migrations` on top of `pg-migrate` and `pg-migrate-embed`; update `shomei-migrations.cabal`
-- [ ] M3: replace the `shomei-migrate` executable with the `pg-migrate-cli` mount; rewrite the `migrate` and `new-migration` Justfile recipes
-- [ ] M4: move `Shomei.Migrations.TestSupport`, `Shomei.Server.Boot`, and `shomei-admin` onto the new API; make migration failure fatal at startup
-- [ ] M5: drop the `codd` and `ephemeral-pg` pins from `cabal.project`, the Nix wiring, `mori.dhall`, `README.md`, `docs/user/`, and the release skill
-- [ ] Final: `cabal build all` and `cabal test all` green; Hackage-only sdist solve for `shomei-migrations` succeeds
+- [x] Baseline captured before any change (2026-08-24): 20 tables in schema `shomei`;
+      43 rows in `codd.sql_migrations` for 28 files; SHA-256 of all 28 header-stripped
+      SQL bodies recorded for the post-rename integrity check.
+- [x] M1: restructure migration sources — rename 28 files into `shomei-migrations/migrations/shomei/`, strip `-- codd: in-txn` headers, write the manifest (2026-08-24)
+- [x] M2: rewrite `Shomei.Migrations` on top of `pg-migrate` and `pg-migrate-embed`; update `shomei-migrations.cabal` (2026-08-24)
+- [x] M3: replace the `shomei-migrate` executable with the `pg-migrate-cli` mount; rewrite the `migrate` and `new-migration` Justfile recipes (2026-08-24).
+      Verified against a freshly created database: `plan` → 1 component / 28 migrations;
+      `list` → 28 rows, all `kind=sql transaction=transactional`; `check` → exit 0;
+      `status` → 28 pending; `up` → 28 `applied_now`; second `up` → 28 `already_applied`;
+      `verify` → `verification ok`, exit 0. Ledger `pgmigrate.migrations` holds 28 applied
+      rows; `\dn` shows exactly `pgmigrate`, `public`, `shomei` and **no** codd schema.
+- [x] M4: move `Shomei.Migrations.TestSupport`, `Shomei.Server.Boot`, and `shomei-admin` onto the new API; make migration failure fatal at startup (2026-08-24)
+- [x] M5 (part): drop the `codd` and `ephemeral-pg` `source-repository-package` pins and the
+      `package codd` stanza from `cabal.project`. Pulled forward ahead of M4's build — see
+      Surprises & Discoveries; M4 cannot link without it.
+- [x] `cabal build all` clean and `cabal test all` green — all 13 suites PASS, exit 0
+      (2026-08-24), including `shomei-postgres` (56), `shomei-server` (30),
+      `shomei-admin` (25), `shomei-client`, and both examples, all of which provision real
+      databases through `withShomeiMigratedDatabase`.
+- [ ] M5 (rest): Nix wiring, `mori.dhall`, `README.md`, `docs/user/`, `Dockerfile`, and the release skill
+- [ ] Final: Hackage-only sdist solve for `shomei-migrations` and `shomei-postgres` succeeds
 
 
 ## Surprises & Discoveries
@@ -83,7 +98,47 @@ This section must always reflect the actual current state of the work.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet — the entries below were found during plan research, before implementation began.)
+(Entries marked *plan research* were found before implementation began; the rest during
+implementation.)
+
+- **[implementation] The dev shell provides PostgreSQL 17.10, not 18.6.** The plan's
+  Context section states "The development shell in this repository provides PostgreSQL
+  18.6 (`psql --version`)". The actual shell provides 17.10 (`PostgreSQL 17.10 on
+  aarch64-apple-darwin25.4.0`). This is still inside `pg-migrate`'s supported range
+  (17 and 18 only), so nothing is blocked, but the plan's stated evidence was wrong.
+
+- **[implementation] The local codd ledger carried 15 stale rows — direct evidence for
+  the migration away from filename-keyed history.** `codd.sql_migrations` held **43** rows
+  against only 28 migration files. The 15 extras are entries from a previous filename
+  convention (`2026-06-03-00-00-00-shomei-schema.sql` and siblings with sentinel
+  `00-00-00` timestamps) that were later renamed to real timestamps. Because codd keys
+  applied migrations by *filename*, the rename orphaned the old rows and re-applied the
+  same SQL under new names. This is precisely the fragility the manifest-plus-component
+  model removes, and it is why the database is dropped and recreated in M3 rather than
+  imported.
+
+- **[implementation] `cabal build` can short-circuit the manifest safety net; GHC itself
+  cannot.** The plan's M2 acceptance predicted that adding an unlisted `.sql` file beside
+  the manifest makes `cabal build` fail, and that a *successful* build proves the
+  `RecompilePlugin` pragma is missing. Both halves are imprecise. With the pragma
+  correctly in place, adding an unlisted file and running `cabal build` with no other
+  change reports `Up to date`: cabal's own up-to-date check runs *before* GHC is invoked,
+  and an unlisted `.sql` file is not a tracked dependency of anything, so GHC — and
+  therefore the plugin and the splice — never run. As soon as anything causes cabal to
+  invoke GHC for that package, the plugin fires and the check is enforced:
+
+  ```text
+  [1 of 1] Compiling Shomei.Migrations ... [Impure plugin forced recompilation]
+      • invalid pg-migrate manifest: UnlistedSqlFiles ["9999-not-in-manifest.sql"]
+  ```
+
+  `pg-migrate`'s own recompilation test (`pg-migrate-embed/test/recompilation/Main.hs`)
+  drives `cabal exec -- ghc --make` directly rather than `cabal build`, which is why
+  upstream does not see this. The safety net is real and strictly better than `embedDir`
+  — it just fires on the next compile of the module, not necessarily on the very next
+  `cabal build`. `shomei-migrate check --manifest ...` is the way to force the audit on
+  demand, and the `new` command appends to the manifest atomically so the gap is hard to
+  reach in practice.
 
 - **The `embedDir` staleness hazard disappears.** `shomei-migrations/src/Shomei/Migrations.hs`
   carries a 25-line comment block whose entire purpose is to force recompilation, because
@@ -118,6 +173,32 @@ implementation. Provide concise evidence.
   `cabal list --simple ephemeral-pg` shows `0.2.2.0` on Hackage. The pin can simply be
   deleted in favour of a Hackage bound.
 
+- **[implementation] M5's `cabal.project` edit is a hard prerequisite of M4's build, not a
+  follow-on step.** The plan orders the pin removal after M4, but M4 raises `test-support`'s
+  bound to `ephemeral-pg >=0.2.2 && <0.3` while the `source-repository-package` pin still
+  forces `==0.2.1.0`. The solver rejects the workspace outright:
+
+  ```text
+  [__0] rejecting: ephemeral-pg-0.2.2.0 (constraint from user target requires ==0.2.1.0)
+  [__1] rejecting: shomei-migrations-0.1.0.0 (conflict: ephemeral-pg==0.2.1.0,
+        shomei-migrations => ephemeral-pg>=0.2.2 && <0.3)
+  ```
+
+  The `cabal.project` pin removal was therefore pulled forward and applied before M4's
+  build. Anyone replaying this plan must do the same.
+
+- **[implementation] `shomei-server` needs a direct `pg-migrate` dependency to read the
+  report.** GHC only solves `HasField` — and therefore `OverloadedRecordDot` accessors like
+  `report.results` — when the record's field selector is *in scope*. Because `Boot.hs` and
+  `Admin.hs` only imported `Shomei.Migrations`, `report.results` failed with
+  `No instance for HasField "results" MigrationReport ...` even though the type was
+  available transitively. Two follow-on notes: `length report.results` additionally leaves
+  the container ambiguous (`HasField ... (t0 a0)`), so it needs `NonEmpty.length`; and the
+  fix requires importing `Database.PostgreSQL.Migrate (MigrationReport (..))`, which makes
+  `pg-migrate >=1.1 && <1.2` a direct dependency of both the `shomei-server` library and the
+  `shomei-admin` executable. This is honest rather than incidental — that code genuinely
+  branches on `pg-migrate`'s error and report types.
+
 - **The working tree already contains an unrelated, in-flight Nix change.** `git status`
   shows uncommitted modifications to `flake.nix`, `flake.lock`, `nix/haskell.nix`,
   `nix/pre-commit.nix`, `flake.module.nix.example`, and `process-compose.yaml` from a
@@ -128,6 +209,14 @@ implementation. Provide concise evidence.
   already broken in the working tree, independently of this plan. M5 must not try to repair
   that refresh; it must only remove the two lines this plan is responsible for and note the
   remaining breakage.
+
+  **[implementation] This no longer holds.** That refresh was committed as `3a282bf`
+  ("chore(nix): upgrade nix-haskell-flake 0.11.1 -> 0.13.2") before implementation started,
+  and it did **not** remove the `*-src` inputs: `flake.nix` still declares `codd-src` and
+  `ephemeral-pg-src`, matching `flake.module.nix`'s references. The working tree at the
+  start of M1 was clean apart from `agents/skills/release/SKILL.md` and an untracked
+  `assets/`. There is therefore no pre-existing breakage to route around, and M5 removes the
+  now-dead `codd-src` / `ephemeral-pg-src` **inputs** as well as the two overlay lines.
 
 
 ## Decision Log

@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Expand: add the new principal column, nullable for now so old and new code coexist.

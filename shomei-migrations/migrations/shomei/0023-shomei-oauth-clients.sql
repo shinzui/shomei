@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- OAuth2 / OIDC clients: the relying parties that drive the authorization-code flow.

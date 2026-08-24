@@ -14,7 +14,8 @@ in  Schema.Project::{
       , domains = [ "Backend", "Security" ]
       , owners = [ "shinzui" ]
       }
-    , repos = [ Schema.Repo::{ name = "shomei", github = Some "shinzui/shomei" } ]
+    , repos =
+      [ Schema.Repo::{ name = "shomei", github = Some "shinzui/shomei" } ]
     , packages =
       [ Schema.Package::{
         , name = "shomei-core"
@@ -132,17 +133,176 @@ in  Schema.Project::{
         }
       ]
     , dependencies =
-      [ "haskell-servant/servant"
-      , "hasql/hasql"
-      , "mzabani/codd"
-      , "haskell-hvr/uuid"
-      , "haskell/time"
-      , "kazu-yamamoto/crypton"
-      , "system-f/validation"
-      , "MMZK1526/mmzk-typeid"
-      , "frasertweedale/hs-jose"
-      , "jappeace/ram"
-      , "tweag/webauthn"
+      [ "haskell-servant/servant:servant"
+      , "haskell-servant/servant:servant-server"
+      , "haskell-servant/servant:servant-client"
+      , "haskell-servant/servant:servant-client-core"
+      , "hasql/hasql:hasql"
+      , "hasql/hasql:hasql-pool"
+      , "hasql/hasql:hasql-transaction"
+      , "haskell-hvr/uuid:uuid"
+      , "haskell/time:time"
+      , "kazu-yamamoto/crypton:crypton"
+      , "system-f/validation:validation"
+      , "MMZK1526/mmzk-typeid:mmzk-typeid"
+      , "frasertweedale/hs-jose:jose"
+      , "jappeace/ram:ram"
+      , "tweag/webauthn:webauthn"
+      , "effectful/effectful:effectful"
+      , "effectful/effectful:effectful-core"
+      , "shinzui/pg-migrate:pg-migrate"
+      , "shinzui/pg-migrate:pg-migrate-embed"
+      , "shinzui/pg-migrate:pg-migrate-cli"
+      , "shinzui/ephemeral-pg:ephemeral-pg"
+      , "shinzui/servant-health:servant-health"
+      , "shinzui/openapi-hs:openapi-hs"
+      , "shinzui/servant-openapi-hs:servant-openapi-hs"
+      ]
+    , dependencyRefs =
+      [ Schema.MoriRef::{
+        , namespace = "haskell-servant"
+        , name = "servant"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant"
+        }
+      , Schema.MoriRef::{
+        , namespace = "haskell-servant"
+        , name = "servant"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant-server"
+        }
+      , Schema.MoriRef::{
+        , namespace = "haskell-servant"
+        , name = "servant"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant-client"
+        }
+      , Schema.MoriRef::{
+        , namespace = "haskell-servant"
+        , name = "servant"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant-client-core"
+        }
+      , Schema.MoriRef::{
+        , namespace = "hasql"
+        , name = "hasql"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "hasql"
+        }
+      , Schema.MoriRef::{
+        , namespace = "hasql"
+        , name = "hasql"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "hasql-pool"
+        }
+      , Schema.MoriRef::{
+        , namespace = "hasql"
+        , name = "hasql"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "hasql-transaction"
+        }
+      , Schema.MoriRef::{
+        , namespace = "haskell-hvr"
+        , name = "uuid"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "uuid"
+        }
+      , Schema.MoriRef::{
+        , namespace = "haskell"
+        , name = "time"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "time"
+        }
+      , Schema.MoriRef::{
+        , namespace = "kazu-yamamoto"
+        , name = "crypton"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "crypton"
+        }
+      , Schema.MoriRef::{
+        , namespace = "system-f"
+        , name = "validation"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "validation"
+        }
+      , Schema.MoriRef::{
+        , namespace = "MMZK1526"
+        , name = "mmzk-typeid"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "mmzk-typeid"
+        }
+      , Schema.MoriRef::{
+        , namespace = "frasertweedale"
+        , name = "hs-jose"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "jose"
+        }
+      , Schema.MoriRef::{
+        , namespace = "jappeace"
+        , name = "ram"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "ram"
+        }
+      , Schema.MoriRef::{
+        , namespace = "tweag"
+        , name = "webauthn"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "webauthn"
+        }
+      , Schema.MoriRef::{
+        , namespace = "effectful"
+        , name = "effectful"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "effectful"
+        }
+      , Schema.MoriRef::{
+        , namespace = "effectful"
+        , name = "effectful"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "effectful-core"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "pg-migrate"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "pg-migrate"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "pg-migrate"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "pg-migrate-embed"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "pg-migrate"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "pg-migrate-cli"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "ephemeral-pg"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "ephemeral-pg"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "servant-health"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant-health"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "openapi-hs"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "openapi-hs"
+        }
+      , Schema.MoriRef::{
+        , namespace = "shinzui"
+        , name = "servant-openapi-hs"
+        , kind = Some Schema.MoriArtifactKind.Package
+        , key = Some "servant-openapi-hs"
+        }
       ]
     , okfBundles =
       [ Schema.OkfBundle::{

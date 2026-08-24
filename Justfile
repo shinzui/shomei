@@ -16,31 +16,27 @@ create-database:
     just migrate
 
 # Apply all embedded migrations to $PGDATABASE via the shomei-migrate executable.
-#
-# NOTE: a newly added .sql file is only re-embedded when shomei-migrations/src/Shomei/Migrations.hs
-# is RECOMPILED (embedDir is a compile-time Template Haskell splice). Touching the .cabal, as the
-# line below does, does NOT force that under cabal >= 3.16, which detects changes by content hash
-# rather than mtime. After adding a migration, append a line to the comment block above
-# `embeddedFiles` in that module — that is what every migration wave has actually relied on.
-# CODD_MIGRATION_DIRS / CODD_EXPECTED_SCHEMA_DIR are read unconditionally by getCoddSettings even
-# though we override migrations and skip verification, so we pass harmless placeholders.
+# Idempotent: already-applied migrations are reported and skipped.
 migrate:
-    touch shomei-migrations/shomei-migrations.cabal
-    CODD_CONNECTION="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
-    CODD_MIGRATION_DIRS=unused-for-embedded-migrations \
-    CODD_EXPECTED_SCHEMA_DIR=unused-for-unverified-embedded-migrations \
-    CODD_SCHEMAS=shomei \
-    cabal run shomei-migrate
+    DATABASE_URL="$PG_CONNECTION_STRING" cabal run -v0 shomei-migrate -- up
+
+# Show which migrations are applied and which are pending, without changing anything.
+migration-status:
+    DATABASE_URL="$PG_CONNECTION_STRING" cabal run -v0 shomei-migrate -- status
+
+# Validate the manifest against the SQL files on disk (syntax, membership, checksums).
+migration-check:
+    cabal run -v0 shomei-migrate -- check --manifest shomei-migrations/migrations/shomei/manifest
 
 # The slug is positional: `just new-migration name=x` passes "name=x" AS the slug and is rejected.
-# After adding one, append a line to the comment block above `embeddedFiles` in
-# shomei-migrations/src/Shomei/Migrations.hs, or the new .sql file is never re-embedded.
+# `shomei-migrate new` creates the .sql file and appends it to the manifest in one step, so
+# there is no separate "remember to wire it in" action. Rebuild afterwards to re-embed it.
 
 # Scaffold a new migration: just new-migration add-something
 new-migration name:
     @echo "{{name}}" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "Invalid slug: {{name}}"; exit 1; }
-    @ts=$(date -u '+%Y-%m-%d-%H-%M-%S'); \
-    f="shomei-migrations/sql-migrations/$ts-{{name}}.sql"; \
-    if [ -e "$f" ]; then echo "Refusing to overwrite $f"; exit 1; fi; \
-    printf -- '-- codd: in-txn\n\nSET search_path TO shomei, pg_catalog;\n\n' > "$f"; \
-    echo "Wrote $f"
+    @next=$(printf '%04d' $(( $(sed -n '$p' shomei-migrations/migrations/shomei/manifest | cut -c1-4 | sed 's/^0*//') + 1 ))); \
+    cabal run -v0 shomei-migrate -- new \
+      --manifest shomei-migrations/migrations/shomei/manifest \
+      --name "$next-{{name}}" \
+      --description "{{name}}"

@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- public_key_jwk / private_key_jwk are opaque JWK-JSON text (IP-4: the core and

@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- The role registry: the catalog of roles an operator has declared grantable. Seeded with

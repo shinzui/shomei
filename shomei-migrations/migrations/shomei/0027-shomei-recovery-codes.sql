@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Single-use MFA recovery codes (EP-7): the lockout escape hatch when a user loses their TOTP

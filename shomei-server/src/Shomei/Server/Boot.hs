@@ -26,9 +26,11 @@ import Data.Aeson.Key qualified as Key
 import Data.ByteString qualified as BS
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
+import Database.PostgreSQL.Migrate (MigrationReport (..))
 import Effectful (Eff, inject, runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -46,18 +48,17 @@ import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
 import Shomei.Authorization.Claims.Domain (Issuer (..), Role (..))
 import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
--- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
--- we mean aeson's JSON pair constructor here.
-
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
 import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
 import Shomei.Error (AuthError)
 import Shomei.Health.Server (buildHealthChecks)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
-import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
+import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+-- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
+-- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.Api (shomeiRoutesApi)
 import Shomei.Servant.Auth (AuthUser, authHandler)
@@ -280,7 +281,14 @@ installSweeper settings env =
 -- @shomei-migrate@ out-of-band is also supported for production.
 buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
-  _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString settings.serverConnStr) (secondsToDiffTime 60)
+  applyShomeiMigrations settings.serverConnStr >>= \case
+    Left migrationError -> do
+      hPutStrLn stderr ("[shomei] FATAL: schema migration failed: " <> show migrationError)
+      exitFailure
+    Right report ->
+      hPutStrLn
+        stderr
+        ("[shomei] schema migrations applied: " <> show (NonEmpty.length report.results) <> " migrations")
   hPutStrLn
     stderr
     ( "[shomei] db pool: size "

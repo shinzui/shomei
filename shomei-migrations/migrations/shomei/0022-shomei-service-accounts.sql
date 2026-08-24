@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Database-backed service accounts: machine credentials an operator creates, rotates, and

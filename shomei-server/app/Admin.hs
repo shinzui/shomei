@@ -3,9 +3,10 @@
 -- HTTP server running. See @shomei-admin --help@.
 module Main (main) where
 
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Time (secondsToDiffTime)
+import Database.PostgreSQL.Migrate (MigrationReport (..))
 import Options.Applicative
 import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
@@ -15,9 +16,11 @@ import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
-import Shomei.Migrations (coddSettingsFromConnString, runShomeiMigrationsNoCheck)
+import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Server.Keys (loadKekFromEnv, loadNamedKekFromEnv)
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
+import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr)
 
 -- The command tree -----------------------------------------------------------
 
@@ -102,8 +105,20 @@ run :: Command -> IO ()
 run = \case
   Migrate -> do
     env <- loadAdminEnv
-    _ <- runShomeiMigrationsNoCheck (coddSettingsFromConnString env.connStr) (secondsToDiffTime 5)
-    putStrLn "migrations applied"
+    applyShomeiMigrations env.connStr >>= \case
+      Left migrationError -> do
+        hPutStrLn stderr ("shomei-admin: schema migration failed: " <> show migrationError)
+        exitFailure
+      Right report ->
+        putStrLn
+          ( "migrations applied: "
+              <> show (NonEmpty.length report.results)
+              <> " in plan (started "
+              <> show report.startedAt
+              <> ", finished "
+              <> show report.finishedAt
+              <> "); run `shomei-migrate status` for per-migration detail"
+          )
   Keys kc -> do
     env <- loadAdminEnv
     case kc of

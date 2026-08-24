@@ -1,5 +1,3 @@
--- codd: in-txn
-
 SET search_path TO shomei, pg_catalog;
 
 -- Role→permission definitions (EP-9): a role implies a set of flat verb-noun capability
