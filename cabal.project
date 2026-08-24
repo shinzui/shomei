@@ -23,16 +23,14 @@ packages:
 -- Removing both pins is what makes shomei-migrations and shomei-postgres publishable.
 
 -- ============================================================
--- EP-4 (JWT): jose pinned to PR #137 (jose 0.13; crypton >= 1.1.0 + ram,
--- NOT the Hackage memory-based 0.12 — memory is deprecated/forbidden here).
--- The PR #137 head commit lives on refs/pull/137/head upstream (not fetchable
--- by a plain clone); the sumo/hs-jose fork carries it as its master HEAD, so
--- cabal can check it out.
+-- EP-4 (JWT): jose resolves from Hackage, so there is no source-repository-package
+-- pin here. The pin tracked upstream PR #137 (crypton >= 1.1.0 + ram, replacing the
+-- deprecated memory) via the sumo/hs-jose fork, because the PR head lived only on
+-- refs/pull/137/head. That PR merged on 2026-06-06 and jose 0.13 was published the
+-- same day carrying exactly it — the changelog records no functional change over
+-- 0.12 — and 0.13 lists GHC 9.12.4 in tested-with. Removing the pin is what keeps
+-- shomei-jwt, shomei-servant, and shomei-server publishable.
 -- ============================================================
-source-repository-package
-  type: git
-  location: https://github.com/sumo/hs-jose.git
-  tag: 4726d077a13b24cd1d78fb94b2db5a86c79e3f0f
 
 -- ============================================================
 -- MasterPlan 2 / EP-4 (operational CLI): optparse-applicative for shomei-admin.
@@ -44,7 +42,7 @@ source-repository-package
 -- ============================================================
 -- MasterPlan 3 / EP-1 (WebAuthn): the tweag/webauthn library is tested with
 -- GHC 9.10.3 and constrains crypton < 1.1 and jose < 0.12; Shōmei builds with
--- GHC 9.12.4 and carries crypton >= 1.1.0 + a pinned jose 0.13. The
+-- GHC 9.12.4 and carries crypton >= 1.1.0 + jose 0.13 from Hackage. The
 -- shinzui/webauthn fork (a fork of tweag/webauthn, library at repo root) carries
 -- a single patch on top of upstream master that builds the library against that
 -- set (memory -> ram, jose 0.13 RequiredProtection header param, SignedJWT
@@ -62,6 +60,16 @@ package webauthn
 
 allow-newer:
   webauthn:*
+
+-- Relaxing webauthn's bounds above also removes its crypton-x509-validation ceiling
+-- (< 1.7), leaving only its floor (>= 1.6.12) — so the solver is free to drift onto a
+-- version affected by CVE-2026-9648: crypton-x509-validation before 1.9.1 does not
+-- enforce X.509 NameConstraints, letting a compromised name-constrained sub-CA issue
+-- certificates for names outside its permitted subtrees. 1.9.1 implements the extension
+-- (crypton-certificate PR #30). The solve picks 1.9.1 today only because it is newest;
+-- this constraint is what keeps it from silently sliding back.
+constraints:
+  crypton-x509-validation >= 1.9.1
 
 -- ============================================================
 -- EP-27 (OpenAPI): generate an OpenAPI 3.1 schema from the Servant types.
