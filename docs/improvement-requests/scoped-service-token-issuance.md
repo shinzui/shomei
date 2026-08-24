@@ -3,6 +3,9 @@ type: Improvement Request
 title: Add scoped service-token issuance
 description: Issue service tokens with bounded coarse scopes for authenticated Kikan service hops.
 timestamp: "2026-07-30T01:00:00Z"
+generated:
+  by: human:nadeem
+  at: "2026-07-30T01:00:00Z"
 requestId: IR-1
 status: proposed
 origin: mori://shinzui/kikan

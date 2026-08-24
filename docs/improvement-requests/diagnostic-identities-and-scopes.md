@@ -3,6 +3,9 @@ type: Improvement Request
 title: Add diagnostic broker and probe identities and coarse scopes to Shomei
 description: Authenticate diagnostic protocol participants and bound broker and per-cluster probe capabilities.
 timestamp: "2026-07-30T01:01:00Z"
+generated:
+  by: human:nadeem
+  at: "2026-07-30T01:01:00Z"
 requestId: IR-2
 status: proposed
 origin: mori://shinzui/kikan
