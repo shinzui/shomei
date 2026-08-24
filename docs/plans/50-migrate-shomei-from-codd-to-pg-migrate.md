@@ -217,6 +217,15 @@ implementation.)
   `shomei-admin` executable. This is honest rather than incidental — that code genuinely
   branches on `pg-migrate`'s error and report types.
 
+- **[implementation] `cabal test all` is flaky under load, for reasons unrelated to this
+  change.** One full run failed a single `shomei-admin-test` case with
+  `Failed to start ephemeral PostgreSQL: TimeoutError (ConnectionTimeout {durationSeconds = 60})`.
+  That is `ephemeral-pg` failing to bring a server up within 60 seconds under contention —
+  the suite provisions a fresh PostgreSQL per test — not a migration or schema failure. The
+  same suite passed in two earlier full runs and passes in isolation in **4.7 s** versus
+  **62.8 s** in the contended run. Worth knowing before reading a single red run as a
+  regression; re-run the suite alone to tell the two apart.
+
 - **The working tree already contains an unrelated, in-flight Nix change.** `git status`
   shows uncommitted modifications to `flake.nix`, `flake.lock`, `nix/haskell.nix`,
   `nix/pre-commit.nix`, `flake.module.nix.example`, and `process-compose.yaml` from a
