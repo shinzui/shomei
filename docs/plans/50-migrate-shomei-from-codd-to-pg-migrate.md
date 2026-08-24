@@ -85,10 +85,12 @@ This section must always reflect the actual current state of the work.
 - [x] M5 (part): drop the `codd` and `ephemeral-pg` `source-repository-package` pins and the
       `package codd` stanza from `cabal.project`. Pulled forward ahead of M4's build — see
       Surprises & Discoveries; M4 cannot link without it.
-- [x] `cabal build all` clean and `cabal test all` green — all 13 suites PASS, exit 0
-      (2026-08-24), including `shomei-postgres` (56), `shomei-server` (30),
-      `shomei-admin` (25), `shomei-client`, and both examples, all of which provision real
-      databases through `withShomeiMigratedDatabase`.
+- [x] `cabal build all` clean (no warnings) and `cabal test all -j1` green — all 13 suites
+      PASS, exit 0 (2026-08-24), including `shomei-core` (228), `shomei-postgres` (56),
+      `shomei-servant-openapi` (44), `shomei-servant` (35), `shomei-server` (30),
+      `shomei-admin` (25), `shomei-client`, and both examples; every database-backed suite
+      provisions real PostgreSQL through `withShomeiMigratedDatabase`. Use `-j1` on a loaded
+      machine — see Surprises & Discoveries for why the parallel run is unreliable.
 - [x] M5 (rest): Nix wiring, `mori.dhall`, `README.md`, `docs/user/`, `Dockerfile`, and the
       release skill (2026-08-24). Also updated three files the plan did not enumerate but
       which carried live `codd` references: `examples/embedded-with-en/cabal.project` (it
@@ -217,14 +219,26 @@ implementation.)
   `shomei-admin` executable. This is honest rather than incidental — that code genuinely
   branches on `pg-migrate`'s error and report types.
 
-- **[implementation] `cabal test all` is flaky under load, for reasons unrelated to this
-  change.** One full run failed a single `shomei-admin-test` case with
-  `Failed to start ephemeral PostgreSQL: TimeoutError (ConnectionTimeout {durationSeconds = 60})`.
-  That is `ephemeral-pg` failing to bring a server up within 60 seconds under contention —
-  the suite provisions a fresh PostgreSQL per test — not a migration or schema failure. The
-  same suite passed in two earlier full runs and passes in isolation in **4.7 s** versus
-  **62.8 s** in the contended run. Worth knowing before reading a single red run as a
-  regression; re-run the suite alone to tell the two apart.
+- **[implementation] `cabal test all` starves `ephemeral-pg` on a loaded machine; use
+  `-j1`. Unrelated to this change.** Every test provisions its own PostgreSQL cluster, and
+  `cabal test all` runs suites in parallel. On a busy machine the two heaviest database
+  suites — `shomei-postgres-test` and `shomei-admin-test` — reliably lose one or more cases
+  to:
+
+  ```text
+  Failed to start ephemeral PostgreSQL:
+    TimeoutError (ConnectionTimeout {durationSeconds = 60, ...})
+  ```
+
+  Every observed failure was this and only this — never a schema, migration, or assertion
+  failure. The signature is unmistakable: each affected suite reports ~**63 s**, which is
+  the 60-second timeout plus the real work, against **9.3 s** and **4.4 s** when it can
+  actually start PostgreSQL.
+
+  `cabal test all -j1` is the reliable green: **all 13 suites PASS, exit 0**, roughly 26 s
+  of test time total. Two earlier parallel runs also passed cleanly, before machine load
+  rose. Prefer `-j1` when the machine is busy, and never read one of these timeouts as a
+  regression — re-run the suite alone or serially to tell the two apart.
 
 - **The working tree already contains an unrelated, in-flight Nix change.** `git status`
   shows uncommitted modifications to `flake.nix`, `flake.lock`, `nix/haskell.nix`,
