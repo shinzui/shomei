@@ -2,7 +2,7 @@
 # the Nix flake: `nix build .#dockerImage`; see flake.module.nix). This runtime-only image
 # expects the `shomei-server` and `shomei-admin` binaries plus `dhall-to-json` to be provided
 # by a build stage or bind-mount; building the Haskell workspace here would not reproduce the
-# flake's pinned source-repository-packages (jose PR, codd, ephemeral-pg).
+# flake's pinned source-repository-packages (the jose PR and the webauthn fork).
 #
 # GHC runtime tuning is NOT set here. `deploy/entrypoint.sh` computes it at start-up, because
 # the right value depends on the cgroup CPU quota the container is actually given, which is

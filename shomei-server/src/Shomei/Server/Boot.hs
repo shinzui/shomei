@@ -29,7 +29,7 @@ import Data.IORef (newIORef, readIORef)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Data.Time (DiffTime, picosecondsToDiffTime, secondsToDiffTime)
+import Data.Time (DiffTime, picosecondsToDiffTime)
 import Database.PostgreSQL.Migrate (MigrationReport (..))
 import Effectful (Eff, inject, runEff)
 import Effectful.Error.Static (runErrorNoCallStack)

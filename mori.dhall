@@ -49,7 +49,7 @@ in  Schema.Project::{
         , language = Schema.Language.Haskell
         , path = Some "shomei-migrations"
         , description = Some
-            "codd-managed PostgreSQL schema migrations (embedded SQL) plus a public test-support sublibrary (ephemeral-pg)"
+            "pg-migrate PostgreSQL schema migrations, embedded from an ordered manifest and exposed as a composable MigrationComponent, plus a public test-support sublibrary (ephemeral-pg)"
         , dependencies = [ Schema.Dependency.ByName "shomei-core" ]
         }
       , Schema.Package::{
@@ -302,6 +302,46 @@ in  Schema.Project::{
         , name = "servant-openapi-hs"
         , kind = Some Schema.MoriArtifactKind.Package
         , key = Some "servant-openapi-hs"
+        }
+      ]
+    , apis =
+      [ Schema.Api::{
+        , name = "shomei-auth"
+        , type = Schema.ApiType.OpenAPI
+        , specPath = "docs/api/openapi.json"
+        , owner = "shomei-servant"
+        , ownerRef = Some Schema.MoriRef::{
+          , namespace = "shinzui"
+          , name = "shomei"
+          , kind = Some Schema.MoriArtifactKind.Package
+          , key = Some "shomei-servant"
+          }
+        , dependencies =
+          [ Schema.ApiDependency::{
+            , package = "shomei-client"
+            , packageRef = Some Schema.MoriRef::{
+              , namespace = "shinzui"
+              , name = "shomei"
+              , kind = Some Schema.MoriArtifactKind.Package
+              , key = Some "shomei-client"
+              }
+            , role = Schema.ApiDependencyRole.Client
+            }
+          , Schema.ApiDependency::{
+            , package = "microservice-auth-stack"
+            , packageRef = Some Schema.MoriRef::{
+              , namespace = "shinzui"
+              , name = "shomei"
+              , kind = Some Schema.MoriArtifactKind.Package
+              , key = Some "microservice-auth-stack"
+              }
+            , role = Schema.ApiDependencyRole.Consumer
+            }
+          ]
+        , updatePolicy = Some Schema.ApiUpdatePolicy::{
+          , strategy = Schema.ApiUpdateStrategy.ClientFirst
+          , consumerBatching = Schema.ConsumerBatching.Sequential
+          }
         }
       ]
     , okfBundles =

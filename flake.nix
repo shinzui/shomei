@@ -22,14 +22,6 @@
     # NOTE: flake inputs can only be declared here in the top-level flake.nix, which
     # nix-haskell-flake generates. This is the one seihou-managed edit that has no home in
     # the unmanaged flake.module.nix; re-apply it after any future `seihou run` of this module.
-    codd-src = {
-      url = "github:mzabani/codd/c32d365b56a7da482647410e68ed763e73fe4442";
-      flake = false;
-    };
-    ephemeral-pg-src = {
-      url = "github:shinzui/ephemeral-pg/304c160f25570ea5e225baf5024778c93f434b56";
-      flake = false;
-    };
     jose-src = {
       url = "github:sumo/hs-jose/4726d077a13b24cd1d78fb94b2db5a86c79e3f0f";
       flake = false;

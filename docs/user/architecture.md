@@ -64,8 +64,10 @@ configuration loader.
 
 ## Persistence and migrations
 
-All state lives in the `shomei` PostgreSQL schema, managed by timestamped `codd` migrations under
-`shomei-migrations/sql-migrations/` (embedded at compile time). Identifiers are TypeID-style
+All state lives in the `shomei` PostgreSQL schema, managed by `pg-migrate` migrations under
+`shomei-migrations/migrations/shomei/`, ordered by the `manifest` file beside them and embedded at
+compile time. `pg-migrate` records what it has applied in its own `pgmigrate` schema, so the
+`shomei` schema holds application tables only. Identifiers are TypeID-style
 prefixed UUIDv7 values (`mmzk-typeid`) stored in native `uuid` columns; statuses are `text`;
 timestamps are `timestamptz`.
 

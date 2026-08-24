@@ -1,5 +1,5 @@
 -- | Integration tests for the PostgreSQL adapters, run against throwaway databases
--- provisioned by @shomei-migrations:test-support@ (ephemeral-pg + codd). Each test gets a
+-- provisioned by @shomei-migrations:test-support@ (ephemeral-pg + pg-migrate). Each test gets a
 -- fresh migrated database, acquires a hasql pool, runs the real interpreters, and asserts
 -- behavior — first port-by-port round-trips, then EP-2's workflows driven through the
 -- PostgreSQL interpreters with database-state assertions.

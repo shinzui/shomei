@@ -46,23 +46,10 @@ source-repository-package
 -- shomei packages above need to solve; keep them in sync with the root file.
 -- ============================================================
 
--- codd + ephemeral-pg are not on Hackage; pin them by commit (root lines ~22-34).
-source-repository-package
-  type: git
-  location: https://github.com/shinzui/ephemeral-pg.git
-  tag: 304c160f25570ea5e225baf5024778c93f434b56
-
-source-repository-package
-  type: git
-  location: https://github.com/mzabani/codd.git
-  tag: c32d365b56a7da482647410e68ed763e73fe4442
-
-package codd
-  tests: False
-  benchmarks: False
-
-allow-newer:
-  haxl:time
+-- Persistence dependencies now resolve from Hackage, so there is nothing to mirror here:
+-- codd was replaced by pg-migrate (all six packages published) and the ephemeral-pg pin
+-- was dropped for Hackage ephemeral-pg 0.2.2.0. See
+-- docs/plans/50-migrate-shomei-from-codd-to-pg-migrate.md.
 
 -- jose pinned to PR #137 (jose 0.13; crypton + ram) via the sumo/hs-jose fork.
 source-repository-package

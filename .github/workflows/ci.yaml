@@ -38,8 +38,8 @@ jobs:
 
       # magic-nix-cache only caches the Nix store (GHC/cabal/HLS). It does NOT
       # cache the Hackage index, cabal's build store, or dist-newstyle, so the
-      # git-pinned dependencies (codd, webauthn, jose, ephemeral-pg) get
-      # recompiled from scratch on every run. Cache them here.
+      # git-pinned dependencies (webauthn, jose) and the heavier Hackage
+      # dependencies get recompiled from scratch on every run. Cache them here.
       - name: Cache cabal store
         uses: actions/cache@v4
         with:

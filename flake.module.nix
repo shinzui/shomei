@@ -28,7 +28,7 @@
     # cabal.project. Dependency sources and compatibility pins were verified through:
     #
     #   mori://shinzui/haskell-nix/repos/haskell-nix
-    #   mori://mzabani/codd/repos/codd
+    #   mori://shinzui/pg-migrate/repos/pg-migrate
     #   mori://shinzui/ephemeral-pg/repos/ephemeral-pg
     #   mori://frasertweedale/hs-jose/repos/hs-jose
     #   mori://tweag/webauthn/repos/webauthn-shomei-fork
@@ -50,7 +50,6 @@
             hasql = hsuper.hasql_1_10_3;
             hasql-pool = hsuper.hasql-pool_1_4_2;
             hasql-transaction = hsuper.hasql-transaction_1_2_2;
-            haxl = haskellLib.dontCheck (haskellLib.doJailbreak hsuper.haxl);
             hpke = haskellLib.dontCheck (haskellLib.doJailbreak hsuper.hpke_0_1_0);
             http-client-tls = hsuper.http-client-tls_0_4_0;
             mlkem = haskellLib.markUnbroken (haskellLib.dontCheck (haskellLib.doJailbreak hsuper.mlkem));
@@ -60,8 +59,38 @@
             tls = haskellLib.dontCheck hsuper.tls_2_4_1;
             validation = haskellLib.dontCheck hsuper.validation_1_2_2;
 
-            codd = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "codd" inputs.codd-src { }));
-            ephemeral-pg = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "ephemeral-pg" inputs.ephemeral-pg-src { }));
+            # pg-migrate 1.1.0.0 is on Hackage but not yet in the pinned nixpkgs ghc9124 set,
+            # and nixpkgs still carries ephemeral-pg 0.2.1.0 while shomei-migrations needs
+            # >= 0.2.2. Pull all four straight from Hackage so the Nix closure matches the
+            # Hackage-only solve that cabal.project now performs.
+            ephemeral-pg = haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "ephemeral-pg";
+                ver = "0.2.2.0";
+                sha256 = "0zngw352m61z2sf588d717flh2szlxaz0bblzwnvf06p8z31dfzl";
+              }
+              { });
+            pg-migrate = haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "pg-migrate";
+                ver = "1.1.0.0";
+                sha256 = "1mdb7khr1aj302v6inal1ljikp61959w6saqr2n59r8zwi2lvpr3";
+              }
+              { });
+            pg-migrate-embed = haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "pg-migrate-embed";
+                ver = "1.1.0.0";
+                sha256 = "1246jslwdm59r11q24c18iinmi067f2pbamm9giiq0kgh6iqskji";
+              }
+              { });
+            pg-migrate-cli = haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "pg-migrate-cli";
+                ver = "1.1.0.0";
+                sha256 = "0d6fycj9s4427bynbz344pfijh6g1arzv08af1vdx5l135f62fm2";
+              }
+              { });
             jose = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "jose" inputs.jose-src { }));
             openapi-hs = haskellLib.dontCheck (hself.callCabal2nix "openapi-hs" inputs.openapi-hs-src { });
             servant-health = haskellLib.dontCheck (hself.callCabal2nix "servant-health" inputs.servant-health-src { });

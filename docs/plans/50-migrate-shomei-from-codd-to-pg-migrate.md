@@ -89,8 +89,26 @@ This section must always reflect the actual current state of the work.
       (2026-08-24), including `shomei-postgres` (56), `shomei-server` (30),
       `shomei-admin` (25), `shomei-client`, and both examples, all of which provision real
       databases through `withShomeiMigratedDatabase`.
-- [ ] M5 (rest): Nix wiring, `mori.dhall`, `README.md`, `docs/user/`, `Dockerfile`, and the release skill
-- [ ] Final: Hackage-only sdist solve for `shomei-migrations` and `shomei-postgres` succeeds
+- [x] M5 (rest): Nix wiring, `mori.dhall`, `README.md`, `docs/user/`, `Dockerfile`, and the
+      release skill (2026-08-24). Also updated three files the plan did not enumerate but
+      which carried live `codd` references: `examples/embedded-with-en/cabal.project` (it
+      mirrors the root pins and would otherwise hit the same `ephemeral-pg` conflict),
+      `.github/workflows/ci.yaml`, and a stale comment in `shomei-postgres/test/Main.hs`.
+- [x] Final: Hackage-only sdist solve verified (2026-08-24). `shomei-migrations` solves
+      **completely from Hackage** with `--enable-tests`; the tarball ships all 28 `.sql`
+      files and the `manifest`. `shomei-postgres` has no third-party blocker left and fails
+      only on `unknown package: shomei-core`, which upload order resolves.
+- [x] Migration failure proven fatal (2026-08-24) — Validation step 4, tested rather than
+      assumed. Against a database whose ledger checksum was hand-corrupted:
+      `shomei-migrate verify` exits **2**, `shomei-admin migrate` exits **1**, and
+      `shomei-server` exits **1** printing
+      `[shomei] FATAL: schema migration failed: PlanVerificationFailed ...` to stderr,
+      never reaching `listening on`. Probe database dropped; the dev database still reports
+      28 applied migrations and 20 tables.
+- [x] `just` recipes exercised (2026-08-24): `migration-check`, `migrate` (idempotent
+      re-run), `migration-status`, and `new-migration` — which derived `0029` from the
+      manifest, created the file, appended to the manifest atomically, and still rejects a
+      non-conforming slug. Probe migration reverted.
 
 
 ## Surprises & Discoveries
@@ -292,6 +310,47 @@ Record every decision made while working on the plan.
   Date: 2026-08-24
 
 
+- Decision: Provide `pg-migrate`, `pg-migrate-embed`, `pg-migrate-cli`, and `ephemeral-pg`
+  to the Nix overlay with `callHackageDirect` rather than `callCabal2nix` on a flake input.
+  Rationale: `nix eval` confirmed the pinned nixpkgs `ghc9124` set has none of the
+  `pg-migrate` packages and carries only `ephemeral-pg` 0.2.1.0, below the `>=0.2.2` bound.
+  A flake input would reintroduce a git source for dependencies that are now on Hackage and
+  would contradict the whole point of the change; `callHackageDirect` with pinned tarball
+  hashes keeps the Nix closure aligned with the Hackage-only solve `cabal.project` performs.
+  Date: 2026-08-24
+
+- Decision: Also remove the dead `haxl` overlay entry from `flake.module.nix` and the
+  `allow-newer: haxl:time` stanza from `cabal.project`.
+  Rationale: both existed solely to make `codd` build. A fresh solve confirms `haxl` no
+  longer appears anywhere in the build plan. The plan said to remove "only these two lines",
+  but leaving a dead override for a package no longer in the closure is exactly the trap
+  this plan removes elsewhere.
+  Date: 2026-08-24
+
+- Decision: Add `pg-migrate >=1.1 && <1.2` as a direct dependency of the `shomei-server`
+  library and the `shomei-admin` executable.
+  Rationale: forced by GHC's `HasField` rule — see Surprises & Discoveries. Both call sites
+  branch on `pg-migrate`'s `MigrationError` and read `MigrationReport`, so the direct
+  dependency is honest rather than incidental.
+  Date: 2026-08-24
+
+- Decision: Report a plan-level summary from `shomei-admin migrate` rather than a
+  per-migration `AppliedNow`/`AlreadyApplied` breakdown.
+  Rationale: the breakdown needs `MigrationOutcome (..)` and a `toList` over the report,
+  and `shomei-migrate status` already renders per-migration detail properly. The admin
+  command points at it instead of duplicating it.
+  Date: 2026-08-24
+
+- Decision: Rewrite `docs/user/authorization.md`'s reason 1 to say Shōmei *can* now share a
+  ledger but en cannot yet, rather than claiming shared-ledger operation is now supported.
+  Rationale: the plan warned against overselling. `pg-migrate`'s component model genuinely
+  makes one-plan/one-ledger a supported arrangement on Shōmei's side, but `en` still runs on
+  codd, so today the two projects would still bring mutually unaware bookkeeping into one
+  database. Reason 2 (en's per-database consistency machinery) remains the stronger argument
+  and is unchanged.
+  Date: 2026-08-24
+
+
 ## Outcomes & Retrospective
 
 Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
@@ -299,7 +358,65 @@ Compare the result against the original purpose. Before marking the plan complet
 distill durable project context from the Decision Log, Surprises & Discoveries, and
 this section into docs/adr/. Keep task-local execution details here.
 
-(To be filled during and after implementation.)
+**The purpose was met, and the central claim is verified rather than argued.** Before this
+change the release runbook concluded that "only `shomei-core` can actually be published."
+After it, a Hackage-only solve of the `shomei-migrations` sdist — run with `--enable-tests`
+in a scratch directory with no `cabal.project`, so no `source-repository-package` pin
+applies — resolves every dependency from Hackage:
+
+```text
+ - ephemeral-pg-0.2.2.0 (lib) (requires build)
+ - pg-migrate-1.1.0.0 (lib) (requires build)
+ - pg-migrate-embed-1.1.0.0 (lib) (requires build)
+ - shomei-migrations-0.1.0.0 (lib) (first run)
+ - pg-migrate-cli-1.1.0.0 (lib) (requires build)
+ - shomei-migrations-0.1.0.0 (lib:test-support) (first run)
+```
+
+`shomei-postgres` has no third-party blocker left either; its sdist solve fails only on
+`unknown package: shomei-core`, which is upload ordering, not a blocker. The releasable set
+goes from one package to three. `jose` 0.13 and the `webauthn` fork are now the only
+remaining upstream blockers, and they gate a different set of packages.
+
+**The other two goals also landed.** `shomei-migrate` is a real CLI (`plan`, `list`,
+`check`, `status`, `verify`, `up`, `repair`, `new`, each with `--json`) that reports before
+it changes anything. And `shomeiMigrationComponent` is exported, so a host application can
+compose Shōmei's schema with its own into one plan and one ledger.
+
+**Schema integrity was proven three independent ways**, which matters because M1 renamed
+every file and rewrote its first two bytes:
+
+1. SHA-256 of all 28 header-stripped bodies, captured before M1, matched byte-for-byte
+   after.
+2. `shomei-migrate list` printed checksums identical to those recorded hashes — so what
+   `pg-migrate` embedded is exactly what was verified.
+3. The `shomei` schema contains **20 tables** after a from-scratch apply, the same count as
+   the pre-change database, and all 13 test suites pass.
+
+**What went differently from the plan.** Four things, all recorded in Surprises &
+Discoveries: the `cabal.project` pin removal is a *prerequisite* of M4 rather than a
+follow-on; `cabal build` can short-circuit the manifest safety net that the plan expected it
+to trip (the net is real, but it fires on the next compile of the module, not necessarily
+the next `cabal build`); `shomei-server` needs a direct `pg-migrate` dependency because GHC
+only solves `HasField` for fields in scope; and the in-flight Nix breakage the plan told the
+implementer to route around had already been committed and did not exist.
+
+**Loose ends, stated plainly.**
+
+- The Nix `packages.default` / `dockerImage` outputs were **not** built end-to-end. The
+  overlay was updated with `callHackageDirect` entries pinned to verified Hackage tarball
+  hashes and `nix flake lock` prunes cleanly, but building that closure compiles the whole
+  Haskell dependency tree from source and was out of proportion to this plan's acceptance
+  criteria, which are all Cabal-side. Anyone touching the Nix image path should build it
+  once before relying on it.
+- No ADR was created. This repository has no `docs/adr/` corpus and the plan explicitly
+  forbids introducing one as an incidental edit, so the durable context — the component
+  model, the ledger-in-`pgmigrate` decision, the `HasField` gotcha, and the manifest
+  recompilation nuance — stays in this file's Decision Log and Surprises & Discoveries.
+- The connection-timeout behaviour noted in M4 is unchanged: `RunOptions` has no connection
+  timeout, so the old codd call's 60-second bound has no equivalent. Nothing observed during
+  implementation suggested this matters, but it has not been exercised against a slow or
+  unreachable database.
 
 
 ## Context and Orientation

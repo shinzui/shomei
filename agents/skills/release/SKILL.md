@@ -118,19 +118,16 @@ gate per package:
 
 | pin (cabal.project)             | not on Hackage because                | blocks (until upstream lands)                          |
 | ------------------------------- | ------------------------------------- | ------------------------------------------------------ |
-| `mzabani/codd`                  | `codd` is not published on Hackage    | `shomei-migrations`, `shomei-postgres`, `shomei-server`|
 | `sumo/hs-jose` (jose 0.13, PR#137)| jose 0.13 not yet released          | `shomei-jwt`, `shomei-server`                          |
 | `shinzui/webauthn` (fork)       | upstream constrains crypton<1.1, jose<0.12 at GHC 9.12 | `shomei-webauthn`, `shomei-server`        |
-| `shinzui/ephemeral-pg` (fork)   | fork not published on Hackage         | `shomei-migrations` (its **public** `test-support` sublibrary depends on it) |
 
-> **`ephemeral-pg` is not "tests only".** `shomei-migrations`' `test-support`
-> sublibrary is declared `visibility: public` and depends on both
-> `ephemeral-pg` and `codd`, so it ships in the tarball and its deps must
-> resolve from Hackage. `shomei-migrations` is therefore blocked twice over.
-> If you want `shomei-migrations` releasable before those land upstream, the
-> options are: drop `test-support` from the released tarball, make it private
-> (`visibility: private`) and move the consumers off it, or split it into its
-> own unpublished package — a design change, not a release-time decision.
+> **The persistence pins are gone.** `codd` was replaced by `pg-migrate`
+> (`docs/plans/50-migrate-shomei-from-codd-to-pg-migrate.md`), whose six packages
+> are all on Hackage, and the `shinzui/ephemeral-pg` pin was dropped in favour of
+> Hackage `ephemeral-pg` 0.2.2.0. `shomei-migrations`' `test-support` sublibrary is
+> still `visibility: public` and still ships in the tarball, so its dependencies
+> still have to resolve from Hackage — they now do. Keep verifying it with
+> `--enable-tests` (step 8) rather than assuming.
 
 Before uploading a package, verify a **clean Hackage-only solve** for it (see
 step 8). If a package is still blocked, **publish the unblocked packages and
@@ -142,20 +139,29 @@ don't assume:
 
 | package             | releasable? | blocked by                                                                          |
 | ------------------- | ----------- | ----------------------------------------------------------------------------------- |
-| `shomei-core`       | ✅ yes      | — the only package with no blocked dependency in any component                        |
+| `shomei-core`       | ✅ yes      | — no blocked dependency in any component                                              |
+| `shomei-migrations` | ✅ yes      | — **verified** by a Hackage-only `--enable-tests` solve of its sdist (see below)       |
+| `shomei-postgres`   | ✅ yes\*    | no third-party blocker left; needs `shomei-core` + `shomei-migrations` **uploaded first** |
 | `shomei-jwt`        | ❌          | jose 0.13 (library)                                                                   |
 | `shomei-webauthn`   | ❌          | webauthn fork (library)                                                               |
-| `shomei-migrations` | ❌          | codd + ephemeral-pg (library **and** the public `test-support` sublibrary)             |
-| `shomei-postgres`   | ❌          | codd (library); test-suite also pulls `shomei-migrations:test-support`                 |
 | `shomei-servant`    | ❌          | library is clean, but its **test-suite depends on `shomei-jwt`**, which is blocked     |
-| `shomei-server`     | ❌          | codd, jose 0.13, webauthn fork                                                         |
-| `shomei-client`     | ❌          | library is clean, but its **test-suite depends on `shomei-server`/`shomei-postgres`/`shomei-jwt`/`shomei-migrations:test-support`**, all blocked |
+| `shomei-server`     | ❌          | jose 0.13, webauthn fork                                                               |
+| `shomei-client`     | ❌          | library is clean, but its **test-suite depends on `shomei-server`/`shomei-jwt`**, which are blocked |
 
-So the honest answer today is: **only `shomei-core` can actually be published.**
-`shomei-servant` and `shomei-client` have clean libraries and would become
-releasable if their test-suites were dropped from the tarball or their blocked
-test dependencies removed — otherwise they wait on the same upstreams as
-everything else.
+\* `shomei-postgres` has no *third-party* blocker: its only unresolvable
+dependencies are the sibling packages `shomei-core` and
+`shomei-migrations:test-support`. Uploading in dependency order —
+`shomei-core`, then `shomei-migrations`, then `shomei-postgres` — clears it. A
+Hackage-only solve of its sdist run before those uploads fails with
+`unknown package: shomei-core`, which is expected and is **not** a blocker.
+
+So the honest answer today is: **`shomei-core`, `shomei-migrations`, and
+`shomei-postgres` can be published**, in that order — up from only
+`shomei-core` before the pg-migrate migration. `shomei-servant` and
+`shomei-client` have clean libraries and would become releasable if their
+test-suites were dropped from the tarball or their blocked test dependencies
+removed — otherwise they wait on `jose` 0.13 and the `webauthn` fork, which are
+now the only remaining upstreams.
 
 ---
 
@@ -371,11 +377,14 @@ table**, one at a time:
    ```
 
    `--enable-tests` matters: test-suites ship in the tarball, and they are what
-   pull `shomei-migrations:test-support` (and therefore `codd` /
-   `ephemeral-pg`) into the solve.
+   pull `shomei-migrations:test-support` (and therefore `ephemeral-pg` and the
+   `pg-migrate` packages) into the solve.
 
-   If the solve fails because of a pinned, not-yet-on-Hackage dependency
-   (`codd`, jose 0.13, the webauthn fork), **skip this package and every
+   Distinguish the two failure modes. A solve that fails on a **sibling**
+   package (`unknown package: shomei-core`) just means you have not uploaded it
+   yet — upload in dependency order and re-run. A solve that fails on a
+   **pinned, not-yet-on-Hackage third-party** dependency (jose 0.13, the
+   webauthn fork) is a real blocker: **skip this package and every
    package that depends on it**, note it as blocked, and continue only with
    independent unblocked packages.
 

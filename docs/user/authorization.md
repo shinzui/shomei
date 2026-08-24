@@ -125,8 +125,14 @@ arrangement. Shōmei's migrations create everything in the `shomei` schema; en's
 create `relation_tuple`/`en_transaction` in the `public` schema. They do not collide by name —
 but they still should not share a database, for two reasons:
 
-1. **Two codd migration ledgers in one database is unverified.** codd tracks applied migrations
-   in its own bookkeeping, and neither project has tested cohabitation.
+1. **Shōmei can now share a ledger, but en cannot yet.** Shōmei's migrations run on
+   `pg-migrate`, which is built for exactly this: `shomei-migrations` exports
+   `shomeiMigrationComponent`, and a host application can compose it with any other
+   `pg-migrate` component into a single ordered `MigrationPlan` tracked by a single ledger.
+   That is a supported arrangement rather than an unverified one. **But it takes two.** en
+   has not moved to `pg-migrate`, so today the two projects would still bring separate,
+   mutually unaware migration bookkeeping into one database. Reason 2 below is the stronger
+   and more durable argument regardless.
 2. **en's consistency machinery is inherently per-database.** en's revisions are built on
    PostgreSQL's `pg_current_snapshot()` / `pg_current_xact_id()` (xid8) arithmetic, so sharing a
    database with Shōmei buys **no** cross-system transactional consistency — there is none to be

@@ -1,39 +1,5 @@
 {
   "nodes": {
-    "codd-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1777919078,
-        "narHash": "sha256-F1Jx+GhzlJmEhJE41K/WHYW+7FZ4a/e2XHwafaJ2GqA=",
-        "owner": "mzabani",
-        "repo": "codd",
-        "rev": "c32d365b56a7da482647410e68ed763e73fe4442",
-        "type": "github"
-      },
-      "original": {
-        "owner": "mzabani",
-        "repo": "codd",
-        "rev": "c32d365b56a7da482647410e68ed763e73fe4442",
-        "type": "github"
-      }
-    },
-    "ephemeral-pg-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1779567219,
-        "narHash": "sha256-qIVw/d+XiuOwzkN9vCvZrgkJUZQB0Yy6Y4vzsNPOg2g=",
-        "owner": "shinzui",
-        "repo": "ephemeral-pg",
-        "rev": "304c160f25570ea5e225baf5024778c93f434b56",
-        "type": "github"
-      },
-      "original": {
-        "owner": "shinzui",
-        "repo": "ephemeral-pg",
-        "rev": "304c160f25570ea5e225baf5024778c93f434b56",
-        "type": "github"
-      }
-    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -219,8 +185,6 @@
     },
     "root": {
       "inputs": {
-        "codd-src": "codd-src",
-        "ephemeral-pg-src": "ephemeral-pg-src",
         "flake-parts": "flake-parts",
         "haskell-nix-dev": "haskell-nix-dev",
         "jose-src": "jose-src",

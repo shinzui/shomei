@@ -28,7 +28,7 @@ signing-key rotation).
 | `shomei-core` | Transport-agnostic heart: domain types, the `effectful` effect interfaces, the auth workflows, and an in-memory interpreter. No database/HTTP/JWT dependency. |
 | `shomei-jwt` | ES256/RS256 JWT signing/verification and the JWKS document (`jose`). |
 | `shomei-postgres` | `hasql` adapters: a PostgreSQL interpreter for each effect, plus Argon2id hashing and SHA-256 token hashing (`crypton`/`ram`). |
-| `shomei-migrations` | `codd`-managed SQL schema in the `shomei` PostgreSQL schema. |
+| `shomei-migrations` | `pg-migrate` SQL schema in the `shomei` PostgreSQL schema, embedded from an ordered manifest and exported as a composable `MigrationComponent`. Ships the `shomei-migrate` CLI. |
 | `shomei-servant` | The `ShomeiAPI` `NamedRoutes` record, request/response DTOs, handlers, and the `Authenticated`/`RequireRole` combinators. |
 | `shomei-server` | The warp executable (`shomei-server`), the `shomei-admin` operations CLI, the WAI middleware stack (logging, metrics, rate limiting), and the config loader. |
 | `shomei-client` | A typed Haskell client derived from `ShomeiAPI`. |
