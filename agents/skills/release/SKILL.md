@@ -60,20 +60,37 @@ on it must have its **internal dependency bound** updated (see below).
 
 ## Packages
 
-All publishable packages are libraries in the cabal workspace
-(`cabal.project`, GHC 9.12.4). Publish to Hackage in this **dependency order**
-(dependencies first):
+The eight publishable packages are the `shomei-*` entries in the cabal
+workspace (`cabal.project`, GHC 9.12.4). Note that several ship **executables
+and a public sublibrary** as well as a library — those components are part of
+the uploaded tarball and their dependencies must resolve on Hackage too.
 
-| # | package            | directory          | depends on (internal)                                  |
-| - | ------------------ | ------------------ | ------------------------------------------------------ |
-| 1 | `shomei-core`      | `shomei-core/`     | —                                                      |
-| 2 | `shomei-migrations`| `shomei-migrations/`| —                                                     |
-| 3 | `shomei-jwt`       | `shomei-jwt/`      | `shomei-core`                                          |
-| 4 | `shomei-webauthn`  | `shomei-webauthn/` | `shomei-core`                                          |
-| 5 | `shomei-postgres`  | `shomei-postgres/` | `shomei-core`                                          |
-| 6 | `shomei-servant`   | `shomei-servant/`  | `shomei-core`                                          |
-| 7 | `shomei-client`    | `shomei-client/`   | `shomei-core`, `shomei-servant`                        |
-| 8 | `shomei-server`    | `shomei-server/`   | `shomei-core`, `shomei-jwt`, `shomei-migrations`, `shomei-postgres`, `shomei-servant`, `shomei-webauthn` |
+Publish in this **dependency order** (dependencies first). The "depends on"
+column lists internal deps across **all** components, because step 4 bounds all
+of them:
+
+| # | package             | directory            | library deps                                                    | other-component deps (exe / test-suite)                                              |
+| - | ------------------- | -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 1 | `shomei-core`       | `shomei-core/`       | —                                                               | test: `shomei-core`                                                                    |
+| 2 | `shomei-migrations` | `shomei-migrations/` | —                                                               | exe `shomei-migrate`, **public sublib `test-support`** → `shomei-migrations`            |
+| 3 | `shomei-jwt`        | `shomei-jwt/`        | `shomei-core`                                                     | test: `shomei-core`                                                                    |
+| 4 | `shomei-webauthn`   | `shomei-webauthn/`   | `shomei-core`                                                     | test: `shomei-core`                                                                    |
+| 5 | `shomei-postgres`   | `shomei-postgres/`   | `shomei-core`                                                     | test: `shomei-core`, `shomei-migrations:test-support`                                  |
+| 6 | `shomei-servant`    | `shomei-servant/`    | `shomei-core`                                                     | exe `shomei-openapi`; test: `shomei-core`, `shomei-jwt`                                |
+| 7 | `shomei-server`     | `shomei-server/`     | `shomei-core`, `shomei-jwt`, `shomei-migrations`, `shomei-postgres`, `shomei-servant`, `shomei-webauthn` | exes `shomei-server`, `shomei-admin`; tests also use `shomei-migrations:test-support`  |
+| 8 | `shomei-client`     | `shomei-client/`     | `shomei-core`, `shomei-servant`                                   | test: `shomei-core`, `shomei-jwt`, `shomei-postgres`, `shomei-server`, `shomei-migrations:test-support` |
+
+> **`shomei-client` goes last, after `shomei-server`.** Its *library* only needs
+> `shomei-core` + `shomei-servant`, but its **test-suite depends on
+> `shomei-server`**. Since step 4 bounds test-suites too, uploading
+> `shomei-client` before the matching `shomei-server` version is live would
+> publish a tarball whose test-suite cannot resolve on Hackage.
+
+> **`shomei-migrations:test-support` is a `visibility: public` sublibrary**, not
+> a private test helper. It ships in the `shomei-migrations` tarball and is
+> depended on by the test-suites of `shomei-postgres`, `shomei-server`, and
+> `shomei-client`. Its own dependencies therefore gate the
+> `shomei-migrations` upload (see the blocker table).
 
 Within a release, always restrict to the subset that actually changed, but
 **preserve this relative order** for the ones you do publish.
@@ -82,6 +99,11 @@ Within a release, always restrict to the subset that actually changed, but
 
 - `examples/embedded-servant-app` — example/demo app, not a library.
 - `examples/microservice-auth-stack` — example/demo app, not a library.
+- `examples/embedded-with-en` — example/demo app, not a library. It is also
+  **absent from `cabal.project`'s `packages:` list** (it depends on `en-core`
+  and `servant-health`, which the workspace does not pin), so `cabal build all`
+  and `cabal test all` never touch it. Do not add it to the release set, and do
+  not treat its absence from the workspace build as a regression.
 
 These are excluded from versioning, tagging, and upload entirely.
 
@@ -99,14 +121,41 @@ gate per package:
 | `mzabani/codd`                  | `codd` is not published on Hackage    | `shomei-migrations`, `shomei-postgres`, `shomei-server`|
 | `sumo/hs-jose` (jose 0.13, PR#137)| jose 0.13 not yet released          | `shomei-jwt`, `shomei-server`                          |
 | `shinzui/webauthn` (fork)       | upstream constrains crypton<1.1, jose<0.12 at GHC 9.12 | `shomei-webauthn`, `shomei-server`        |
-| `shinzui/ephemeral-pg` (fork)   | test-only pin                         | (tests only — not a runtime/upload blocker)            |
+| `shinzui/ephemeral-pg` (fork)   | fork not published on Hackage         | `shomei-migrations` (its **public** `test-support` sublibrary depends on it) |
+
+> **`ephemeral-pg` is not "tests only".** `shomei-migrations`' `test-support`
+> sublibrary is declared `visibility: public` and depends on both
+> `ephemeral-pg` and `codd`, so it ships in the tarball and its deps must
+> resolve from Hackage. `shomei-migrations` is therefore blocked twice over.
+> If you want `shomei-migrations` releasable before those land upstream, the
+> options are: drop `test-support` from the released tarball, make it private
+> (`visibility: private`) and move the consumers off it, or split it into its
+> own unpublished package — a design change, not a release-time decision.
 
 Before uploading a package, verify a **clean Hackage-only solve** for it (see
-step 7). If a package is still blocked, **publish the unblocked packages and
-stop** at the first blocked one; record what was skipped. As of the first
-release, only `shomei-core` (and `shomei-servant` / `shomei-client`, assuming
-their non-internal deps are all on Hackage) are candidates — verify, don't
-assume.
+step 8). If a package is still blocked, **publish the unblocked packages and
+stop** at the first blocked one; record what was skipped.
+
+As of this writing the repo has **no tags and every package is still at
+`0.1.0.0`**, so nothing has shipped yet. Blocker status by package — verify,
+don't assume:
+
+| package             | releasable? | blocked by                                                                          |
+| ------------------- | ----------- | ----------------------------------------------------------------------------------- |
+| `shomei-core`       | ✅ yes      | — the only package with no blocked dependency in any component                        |
+| `shomei-jwt`        | ❌          | jose 0.13 (library)                                                                   |
+| `shomei-webauthn`   | ❌          | webauthn fork (library)                                                               |
+| `shomei-migrations` | ❌          | codd + ephemeral-pg (library **and** the public `test-support` sublibrary)             |
+| `shomei-postgres`   | ❌          | codd (library); test-suite also pulls `shomei-migrations:test-support`                 |
+| `shomei-servant`    | ❌          | library is clean, but its **test-suite depends on `shomei-jwt`**, which is blocked     |
+| `shomei-server`     | ❌          | codd, jose 0.13, webauthn fork                                                         |
+| `shomei-client`     | ❌          | library is clean, but its **test-suite depends on `shomei-server`/`shomei-postgres`/`shomei-jwt`/`shomei-migrations:test-support`**, all blocked |
+
+So the honest answer today is: **only `shomei-core` can actually be published.**
+`shomei-servant` and `shomei-client` have clean libraries and would become
+releasable if their test-suites were dropped from the tarball or their blocked
+test dependencies removed — otherwise they wait on the same upstreams as
+everything else.
 
 ---
 
@@ -133,6 +182,28 @@ dependents too (a changed bound is itself a release-worthy change).
 
 ---
 
+## Hackage metadata pre-flight (blocks the first release)
+
+The cabal files were written for a workspace build, not for distribution. Run
+`cabal check` in each package directory and fix what it reports **before** the
+first upload of that package. The gaps as of this writing:
+
+| gap | packages affected | why it matters |
+| --- | ----------------- | -------------- |
+| no `synopsis:` | `shomei-core`, `shomei-postgres`, `shomei-servant`, `shomei-webauthn` | Hackage lists the package with a blank one-liner |
+| no `description:` | all except `shomei-core`, `shomei-migrations` | `cabal check`: *"will likely cause trouble when distributing"* |
+| no `license-file:`, and **no LICENSE file exists anywhere in the repo** | all 8 (they declare `license: MIT` or `BSD-3-Clause`) | the tarball ships a license claim with no license text |
+| no `homepage:` / `bug-reports:` | all 8 | should point at `https://github.com/shinzui/shomei` |
+| no `extra-doc-files: CHANGELOG.md` | all 8 | **the per-package changelogs created in step 5 would not ship in the sdist** |
+| missing **upper bounds** on nearly every external dependency | all 8 | a PVP release without upper bounds is exactly what PVP exists to prevent; `cabal check` flags `[missing-upper-bounds]` on every library |
+| no `tested-with:` | all 8 | optional, but the project is GHC-9.12.4-only in practice |
+
+Fixing these is a normal `chore(release):`-scoped change; it is a **`D` bump**
+(metadata only, no API change) for any package that has already shipped, and
+folds into the first release for those that have not.
+
+---
+
 ## Release steps
 
 > The project build/format/check commands used below:
@@ -141,6 +212,7 @@ dependents too (a changed bound is itself a release-worthy change).
 > - test:   `cabal test all`
 > - gate:   `nix flake check` (runs the treefmt check; add `--no-build` only if a
 >   full rebuild is impractical, but prefer the full check before a release)
+> - dist:   `cabal check` (per package directory — distribution-readiness)
 >
 > Commit messages follow **Conventional Commits** (see the repo's global
 > guidance): `feat`, `fix`, `docs`, `refactor`, `chore`, etc., with a `!` /
@@ -224,6 +296,13 @@ Also update the **root `CHANGELOG.md`** "Unreleased" section: convert the
 relevant entries into a dated roundup that names each package and its new
 version (the root changelog stays the project-level overview).
 
+> The root `CHANGELOG.md` header currently says versioning "will move to
+> semantic versioning (`MAJOR.MINOR.PATCH`) and git tags (`vMAJOR.MINOR.PATCH`)
+> at the first tagged release". That contradicts this skill: Shōmei versions
+> **each package independently under PVP** with `<pkg>-<version>` tags, and
+> there is no repo-wide `vX.Y.Z` tag. Rewrite that header as part of the first
+> release.
+
 ### 6. Format, build, test, and run the check gate
 
 Run, in order, and **stop on any failure**:
@@ -234,6 +313,19 @@ cabal build all
 cabal test all       # all packages except shomei-migrations ship test-suites
 nix flake check      # treefmt check (+ flake checks)
 ```
+
+Then run `cabal check` **in each package-to-release's directory** and stop on
+anything under *"will likely cause trouble when distributing"*:
+
+```bash
+for p in shomei-core shomei-migrations shomei-jwt shomei-webauthn \
+         shomei-postgres shomei-servant shomei-server shomei-client; do
+  echo "### $p"; (cd "$p" && cabal check)
+done
+```
+
+Note `cabal build all` / `cabal test all` cover only the packages listed in
+`cabal.project` — `examples/embedded-with-en` is deliberately not among them.
 
 ### 7. Commit, tag, and push
 
@@ -264,16 +356,23 @@ git push --tags
 For each package-to-release, **in the dependency order from the Packages
 table**, one at a time:
 
-1. **Verify a Hackage-only solve** (the non-Hackage blocker gate). From a
-   temporary location *outside* this workspace's `cabal.project` overrides, or
-   with an isolated project, confirm the package resolves against Hackage only:
+1. **Verify a Hackage-only solve** (the non-Hackage blocker gate). Build the
+   sdist in a scratch directory that has **no `cabal.project`**, so none of the
+   `source-repository-package` pins apply and the solver must find every
+   dependency on Hackage:
 
    ```bash
-   cabal sdist <pkg>                       # produces dist-newstyle/sdist/<pkg>-<version>.tar.gz
-   # sanity-check resolution against Hackage (no source-repository-package pins):
-   cabal build <pkg> --package-db=clear --package-db=global \
-     --project-file=/dev/null 2>&1 | tail -n 20   # or build the sdist in a scratch dir
+   cabal sdist <pkg>        # -> dist-newstyle/sdist/<pkg>-<version>.tar.gz
+
+   scratch=$(mktemp -d)
+   tar -xzf dist-newstyle/sdist/<pkg>-<version>.tar.gz -C "$scratch"
+   ( cd "$scratch/<pkg>-<version>" \
+     && cabal build --dry-run --enable-tests all )   # must solve with no local project
    ```
+
+   `--enable-tests` matters: test-suites ship in the tarball, and they are what
+   pull `shomei-migrations:test-support` (and therefore `codd` /
+   `ephemeral-pg`) into the solve.
 
    If the solve fails because of a pinned, not-yet-on-Hackage dependency
    (`codd`, jose 0.13, the webauthn fork), **skip this package and every
@@ -338,10 +437,12 @@ why (blockers), the tags created, the Hackage URLs, and the GitHub releases.
 - **Confirm the per-package version bumps and changelog entries with the user
   (AskUserQuestion) before committing.** Nothing is written until ratified.
 - **Always publish in dependency order** (`shomei-core` first; `shomei-server`
-  last). Never upload a dependent before its dependency's new version is live on
-  Hackage.
-- **Never skip the gates.** `nix fmt`, `cabal build all`, `cabal test all`, and
-  `nix flake check` must all pass before any tag or upload.
+  then `shomei-client` last — see the Packages table note on why `shomei-client`
+  trails `shomei-server`). Never upload a dependent before its dependency's new
+  version is live on Hackage.
+- **Never skip the gates.** `nix fmt`, `cabal build all`, `cabal test all`,
+  `nix flake check`, and per-package `cabal check` must all pass before any tag
+  or upload.
 - **Respect the non-Hackage blockers.** Verify each package resolves against
   Hackage-only before `cabal upload --publish`. Skip blocked packages (and their
   dependents) rather than forcing an upload that can't resolve.
