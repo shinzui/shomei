@@ -1,11 +1,41 @@
 # Changelog
 
 All notable changes to Shōmei are documented here. The format loosely follows
-[Keep a Changelog](https://keepachangelog.com/); versioning is date-based pre-1.0 and will move
-to semantic versioning (`MAJOR.MINOR.PATCH`) and git tags (`vMAJOR.MINOR.PATCH`) at the first
-tagged release.
+[Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+Shōmei does **not** carry a single repo-wide version. Each package is versioned
+independently under the Haskell [PVP](https://pvp.haskell.org/) (`A.B.C.D`) and tagged
+`<package>-<version>` — for example `shomei-core-0.1.0.0`. There is no `vX.Y.Z` tag.
+Per-package detail lives in each package's own `CHANGELOG.md`; this file is the
+project-level roundup of what shipped together.
+
+## 2026-08-24 — first Hackage release
+
+The first packages published to Hackage, all at `0.1.0.0`:
+
+| package | version | notes |
+| --- | --- | --- |
+| [`shomei-core`](shomei-core/CHANGELOG.md) | 0.1.0.0 | transport-agnostic domain, ports, and workflows |
+| [`shomei-migrations`](shomei-migrations/CHANGELOG.md) | 0.1.0.0 | `pg-migrate` schema component, `shomei-migrate` CLI, `test-support` sublibrary |
+| [`shomei-jwt`](shomei-jwt/CHANGELOG.md) | 0.1.0.0 | ES256/RS256 signing, JWKS, key rotation and envelope encryption |
+| [`shomei-postgres`](shomei-postgres/CHANGELOG.md) | 0.1.0.0 | `hasql` interpreters, Argon2id hashing, unit of work, sweeper |
+| [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.1.0.0 | `ShomeiAPI`, handlers, auth combinators, OpenAPI 3.1 document |
+
+Not published in this batch:
+
+| package | blocked by |
+| --- | --- |
+| `shomei-webauthn` | its library needs a `webauthn` release compatible with GHC 9.12.4, `crypton >= 1.1`, and `jose 0.13`; Hackage `webauthn` 0.11.0.0 constrains `base < 4.20` and `jose < 0.12`, so the build uses a fork |
+| `shomei-server` | depends on `shomei-webauthn` |
+| `shomei-client` | its library is clean, but its test-suite depends on `shomei-server` |
+
+All eight packages gained the distribution metadata a Hackage release requires: an MIT
+`LICENSE` file (`shomei-migrations` and `shomei-postgres` moved from BSD-3-Clause to MIT
+to match the rest), `description`, `homepage`, `bug-reports`, `tested-with`, a
+`source-repository head` stanza, per-package changelogs, and PVP upper bounds on every
+dependency, with `^>=` caret bounds on the internal ones.
+
+The changes that make up this first release follow.
 
 ### Fixed — security: `sessionCheckMode = VerifyTokenAndSession` was a no-op on authenticated routes
 

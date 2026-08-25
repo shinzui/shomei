@@ -1,11 +1,30 @@
-cabal-version: 3.0
-name:          shomei-server
-version:       0.1.0.0
-synopsis:      Standalone Shōmei authentication service
-license:       MIT
-author:        Nadeem Bitar
-maintainer:    nadeem@gmail.com
-category:      Web, Security
+cabal-version:   3.0
+name:            shomei-server
+version:         0.1.0.0
+synopsis:        Standalone Shōmei authentication service
+description:
+  The standalone deployment of Shōmei: a warp executable that serves ShomeiAPI
+  against PostgreSQL, the WAI middleware stack (structured logging, Prometheus
+  metrics, rate limiting, body limits), health and readiness probes, the
+  environment-driven config loader, signing-key bootstrap and rotation, and
+  breach-password checking. Also ships shomei-admin, an operations CLI for
+  user administration and zero-downtime signing-key rotation. Other services
+  verify its tokens by fetching its published JWKS.
+
+homepage:        https://github.com/shinzui/shomei
+bug-reports:     https://github.com/shinzui/shomei/issues
+license:         MIT
+license-file:    LICENSE
+author:          Nadeem Bitar
+maintainer:      nadeem@gmail.com
+copyright:       2026 Nadeem Bitar
+category:        Web, Security
+tested-with:     GHC ==9.12.4
+extra-doc-files: CHANGELOG.md
+
+source-repository head
+  type:     git
+  location: https://github.com/shinzui/shomei.git
 
 common warnings
   ghc-options:
@@ -48,40 +67,40 @@ library
     Shomei.Server.Supervisor
 
   build-depends:
-    , aeson
-    , base                  >=4.18   && <5
-    , bytestring
-    , containers
-    , crypton
-    , effectful
-    , effectful-core
-    , hasql-pool
-    , http-client
-    , http-client-tls
-    , http-types
-    , jose
-    , mime-mail
-    , network
-    , pg-migrate            >=1.1    && <1.2
-    , process
-    , ram
-    , servant-health        >=0.1    && <0.2
-    , servant-server        >=0.20.3 && <0.21
-    , shomei-core
-    , shomei-jwt
-    , shomei-migrations
-    , shomei-postgres
-    , shomei-servant
-    , shomei-webauthn
-    , smtp-mail             >=0.5
-    , stm
-    , text
-    , time
-    , unix
-    , unordered-containers
-    , uuid
-    , wai
-    , warp
+    , aeson                 >=2.1      && <2.3
+    , base                  >=4.18     && <5
+    , bytestring            >=0.11     && <0.13
+    , containers            >=0.6      && <0.9
+    , crypton               >=1.1      && <1.2
+    , effectful             >=2.5      && <2.8
+    , effectful-core        >=2.5      && <2.8
+    , hasql-pool            >=1.4      && <1.5
+    , http-client           >=0.7      && <0.8
+    , http-client-tls       >=0.3      && <0.5
+    , http-types            >=0.12     && <0.13
+    , jose                  >=0.13     && <0.14
+    , mime-mail             >=0.5      && <0.6
+    , network               >=3.1      && <3.3
+    , pg-migrate            >=1.1      && <1.2
+    , process               >=1.6      && <1.7
+    , ram                   >=0.22     && <0.23
+    , servant-health        >=0.1      && <0.2
+    , servant-server        >=0.20.3   && <0.21
+    , shomei-core           ^>=0.1.0.0
+    , shomei-jwt            ^>=0.1.0.0
+    , shomei-migrations     ^>=0.1.0.0
+    , shomei-postgres       ^>=0.1.0.0
+    , shomei-servant        ^>=0.1.0.0
+    , shomei-webauthn       ^>=0.1.0.0
+    , smtp-mail             >=0.5      && <0.6
+    , stm                   >=2.5      && <2.6
+    , text                  >=2.0      && <2.2
+    , time                  >=1.12     && <1.15
+    , unix                  >=2.8      && <2.9
+    , unordered-containers  >=0.2      && <0.3
+    , uuid                  >=1.3      && <1.4
+    , wai                   >=3.2      && <3.3
+    , warp                  >=3.3      && <3.5
 
 executable shomei-server
   import:         warnings, shared
@@ -89,8 +108,8 @@ executable shomei-server
   main-is:        Main.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-    , base
-    , shomei-server
+    , base           >=4.18     && <5
+    , shomei-server  ^>=0.1.0.0
 
 -- EP-4: the operational CLI. A second executable in this package (MasterPlan 2 default;
 -- avoids registering a new mori.dhall package). It reuses the same pool/config/key/interpreter
@@ -111,25 +130,25 @@ executable shomei-admin
     Shomei.Admin.Users
 
   build-depends:
-    , aeson
-    , base                  >=4.18 && <5
-    , bytestring
-    , containers
-    , contravariant-extras
-    , effectful
-    , effectful-core
-    , hasql
-    , hasql-pool
-    , optparse-applicative
-    , pg-migrate            >=1.1  && <1.2
-    , shomei-core
-    , shomei-jwt
-    , shomei-migrations
-    , shomei-postgres
-    , shomei-server
-    , text
-    , time
-    , uuid
+    , aeson                 >=2.1      && <2.3
+    , base                  >=4.18     && <5
+    , bytestring            >=0.11     && <0.13
+    , containers            >=0.6      && <0.9
+    , contravariant-extras  >=0.3      && <0.4
+    , effectful             >=2.5      && <2.8
+    , effectful-core        >=2.5      && <2.8
+    , hasql                 >=1.10     && <1.11
+    , hasql-pool            >=1.4      && <1.5
+    , optparse-applicative  >=0.19     && <0.20
+    , pg-migrate            >=1.1      && <1.2
+    , shomei-core           ^>=0.1.0.0
+    , shomei-jwt            ^>=0.1.0.0
+    , shomei-migrations     ^>=0.1.0.0
+    , shomei-postgres       ^>=0.1.0.0
+    , shomei-server         ^>=0.1.0.0
+    , text                  >=2.0      && <2.2
+    , time                  >=1.12     && <1.15
+    , uuid                  >=1.3      && <1.4
 
 test-suite shomei-server-config-test
   import:         warnings, shared
@@ -138,14 +157,14 @@ test-suite shomei-server-config-test
   main-is:        Shomei/Server/ConfigSpec.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-    , base
-    , containers
-    , shomei-core
-    , shomei-postgres
-    , shomei-server
-    , tasty
-    , tasty-hunit
-    , text
+    , base             >=4.18     && <5
+    , containers       >=0.6      && <0.9
+    , shomei-core      ^>=0.1.0.0
+    , shomei-postgres  ^>=0.1.0.0
+    , shomei-server    ^>=0.1.0.0
+    , tasty            >=1.4      && <1.6
+    , tasty-hunit      >=0.10     && <0.11
+    , text             >=2.0      && <2.2
 
 test-suite shomei-admin-test
   import:         warnings, shared
@@ -164,29 +183,29 @@ test-suite shomei-admin-test
     Shomei.Admin.Users
 
   build-depends:
-    , aeson
-    , base
-    , bytestring
-    , containers
-    , contravariant-extras
-    , effectful
-    , effectful-core
-    , hasql
-    , hasql-pool
-    , jose
-    , optparse-applicative
-    , ram
-    , shomei-core
-    , shomei-jwt
-    , shomei-migrations
+    , aeson                           >=2.1      && <2.3
+    , base                            >=4.18     && <5
+    , bytestring                      >=0.11     && <0.13
+    , containers                      >=0.6      && <0.9
+    , contravariant-extras            >=0.3      && <0.4
+    , effectful                       >=2.5      && <2.8
+    , effectful-core                  >=2.5      && <2.8
+    , hasql                           >=1.10     && <1.11
+    , hasql-pool                      >=1.4      && <1.5
+    , jose                            >=0.13     && <0.14
+    , optparse-applicative            >=0.19     && <0.20
+    , ram                             >=0.22     && <0.23
+    , shomei-core                     ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.1.0.0
+    , shomei-migrations               ^>=0.1.0.0
     , shomei-migrations:test-support
-    , shomei-postgres
-    , shomei-server
-    , tasty
-    , tasty-hunit
-    , text
-    , time
-    , uuid
+    , shomei-postgres                 ^>=0.1.0.0
+    , shomei-server                   ^>=0.1.0.0
+    , tasty                           >=1.4      && <1.6
+    , tasty-hunit                     >=0.10     && <0.11
+    , text                            >=2.0      && <2.2
+    , time                            >=1.12     && <1.15
+    , uuid                            >=1.3      && <1.4
 
 test-suite shomei-server-test
   import:         warnings, shared
@@ -201,32 +220,32 @@ test-suite shomei-server-test
 
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-    , aeson
-    , base
-    , base64
-    , bytestring
-    , containers
-    , directory
-    , effectful
-    , effectful-core
-    , hasql
-    , hasql-pool
-    , http-client
-    , http-types
-    , network
-    , servant-health
+    , aeson                           >=2.1      && <2.3
+    , base                            >=4.18     && <5
+    , base64                          >=1.0      && <1.1
+    , bytestring                      >=0.11     && <0.13
+    , containers                      >=0.6      && <0.9
+    , directory                       >=1.3      && <1.4
+    , effectful                       >=2.5      && <2.8
+    , effectful-core                  >=2.5      && <2.8
+    , hasql                           >=1.10     && <1.11
+    , hasql-pool                      >=1.4      && <1.5
+    , http-client                     >=0.7      && <0.8
+    , http-types                      >=0.12     && <0.13
+    , network                         >=3.1      && <3.3
+    , servant-health                  >=0.1      && <0.2
     , servant-health:testkit
-    , shomei-core
-    , shomei-jwt
-    , shomei-migrations:test-support
-    , shomei-postgres
-    , shomei-server
-    , tasty
-    , tasty-hunit
-    , text
-    , time
-    , wai
-    , warp
+    , shomei-core                     ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.1.0.0
+    , shomei-migrations:test-support  ^>=0.1.0.0
+    , shomei-postgres                 ^>=0.1.0.0
+    , shomei-server                   ^>=0.1.0.0
+    , tasty                           >=1.4      && <1.6
+    , tasty-hunit                     >=0.10     && <0.11
+    , text                            >=2.0      && <2.2
+    , time                            >=1.12     && <1.15
+    , wai                             >=3.2      && <3.3
+    , warp                            >=3.3      && <3.5
 
 test-suite shomei-health-test
   import:         warnings, shared
@@ -235,16 +254,16 @@ test-suite shomei-health-test
   main-is:        Main.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-    , base
-    , bytestring
-    , hasql-pool
-    , http-client
-    , servant-health
+    , base                            >=4.18     && <5
+    , bytestring                      >=0.11     && <0.13
+    , hasql-pool                      >=1.4      && <1.5
+    , http-client                     >=0.7      && <0.8
+    , servant-health                  >=0.1      && <0.2
     , servant-health:testkit
-    , shomei-core
-    , shomei-jwt
-    , shomei-migrations:test-support
-    , shomei-postgres
-    , shomei-server
-    , tasty
-    , tasty-hunit
+    , shomei-core                     ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.1.0.0
+    , shomei-migrations:test-support  ^>=0.1.0.0
+    , shomei-postgres                 ^>=0.1.0.0
+    , shomei-server                   ^>=0.1.0.0
+    , tasty                           >=1.4      && <1.6
+    , tasty-hunit                     >=0.10     && <0.11
