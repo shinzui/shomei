@@ -10,6 +10,7 @@ import Control.Exception (evaluate)
 import Control.Monad (forM_, replicateM, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.Either (isLeft)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (sort, tails)
@@ -52,6 +53,7 @@ import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Domain (PasswordHash (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres
   ( Argon2Params (..),
+    argon2HardFloor,
     defaultArgon2Params,
     dummyHashFor,
     hashPasswordArgon2id,
@@ -59,6 +61,7 @@ import Shomei.Account.Password.Hash.Postgres
     peakHashingConcurrency,
     runPasswordHasherCrypto,
     runTokenGenCrypto,
+    trialArgon2Derivation,
     verifyPasswordArgon2id,
     withHashingPermit,
   )
@@ -567,6 +570,7 @@ tests =
     testArgon2ParamsChangeLeavesOldHashesVerifiable,
     testArgon2MalformedHashesVerifyFalse,
     testArgon2DummyHashTracksConfiguredParams,
+    testArgon2HardFloorMatchesTheImplementation,
     testHashingLimiterBoundsConcurrency 1,
     testHashingLimiterBoundsConcurrency 2,
     testInterpreterForcesTheHashInsideThePermit,
@@ -2296,6 +2300,18 @@ testArgon2DummyHashTracksConfiguredParams =
     costFields (PasswordHash t) = case Text.splitOn "$" t of
       ("" : "argon2id" : version : params : _) -> Just (version, params)
       _ -> Nothing
+
+testArgon2HardFloorMatchesTheImplementation :: TestTree
+testArgon2HardFloorMatchesTheImplementation =
+  testCase "argon2: the boot hard floor matches the implementation" do
+    let rejected = Argon2Params 64 1 16
+        boundary = Argon2Params 128 1 16
+    assertBool "m=64,p=16 must be below the hard floor" (isJust (argon2HardFloor rejected))
+    trialArgon2Derivation rejected >>= assertBool "the implementation must reject m=64,p=16" . isLeft
+    argon2HardFloor boundary @?= Nothing
+    trialArgon2Derivation boundary >>= \case
+      Right () -> pure ()
+      Left failure -> assertFailure ("the hard-floor boundary must derive: " <> show failure)
 
 -- Hashing limiter -------------------------------------------------------------
 

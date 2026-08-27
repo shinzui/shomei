@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- The server and `shomei-admin` refuse Argon2 costs that the implementation cannot represent or
+  accept; server startup also performs one real derivation before acquiring a database pool.
 - **Breaking:** configuration adds `allowedClockSkewSeconds` and validates issuer and audience as
   RFC 7519 StringOrURI values at boot.
 - The admin CLI activates and rewraps signing keys transactionally, stamps `revoked_at`, and lists

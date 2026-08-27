@@ -26,14 +26,14 @@ where
 -- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Account.Password.Hash.Postgres".
 
 import Data.Aeson (eitherDecodeStrict')
-import Data.Foldable (traverse_)
+import Data.Foldable (for_)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
 import Shomei.Account.Password.Domain (PasswordPolicy (..))
-import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), defaultArgon2Params)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor, defaultArgon2Params)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config
   ( AttestationPolicy (..),
@@ -469,6 +469,15 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_ARGON2_MEMORY_KIB" "argon2MemoryKiB" argon2.memoryKiB
   requirePositive "SHOMEI_ARGON2_ITERATIONS" "argon2Iterations" argon2.iterations
   requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
+  for_ (argon2HardFloor argon2) \why ->
+    ioError
+      ( userError
+          ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
+              <> "(Dhall fields argon2MemoryKiB/argon2Iterations/argon2Parallelism) are rejected "
+              <> "by the Argon2 implementation: "
+              <> Text.unpack why
+          )
+      )
   -- Zero permits would block every login forever.
   requirePositive "SHOMEI_HASHING_MAX_CONCURRENCY" "hashingMaxConcurrency" hashingConcurrency
   requireNonNegative

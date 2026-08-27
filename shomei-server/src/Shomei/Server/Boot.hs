@@ -45,7 +45,7 @@ import Servant
   )
 import Servant.Health (ProbeCheck)
 import Servant.Server.Experimental.Auth (AuthHandler)
-import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex)
+import Shomei.Account.Password.Hash.Postgres (Argon2Failure (..), Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex, trialArgon2Derivation)
 import Shomei.Authorization.Claims.Domain (Issuer (..), Role (..))
 import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
@@ -95,6 +95,21 @@ main = do
   traverse_
     (\w -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack w))
     (argon2WarningFloor settings.serverArgon2)
+  trialArgon2Derivation settings.serverArgon2 >>= \case
+    Right () -> pure ()
+    Left (Argon2Failure why) -> do
+      hPutStrLn
+        stderr
+        ( "[shomei] FATAL: the Argon2 implementation rejected the configured parameters (m="
+            <> show settings.serverArgon2.memoryKiB
+            <> "KiB,t="
+            <> show settings.serverArgon2.iterations
+            <> ",p="
+            <> show settings.serverArgon2.parallelism
+            <> "): "
+            <> Text.unpack why
+        )
+      exitFailure
   validateOidcIssuer cfg
   env <- buildEnv cfg settings
   (liveness, readiness) <- buildHealthChecks env

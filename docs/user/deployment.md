@@ -57,9 +57,9 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES` | grace before expired WebAuthn ceremonies are deleted | `60` |
 | `SHOMEI_LOGIN_ATTEMPT_RETENTION_DAYS` | maximum age of `shomei_login_attempts` rows. Must be positive | `90` |
 | `SHOMEI_AUTH_EVENT_RETENTION_DAYS` | maximum age of audit events. **Unset, `0`, or negative retains the audit trail forever** | unset |
-| `SHOMEI_ARGON2_MEMORY_KIB` | Argon2id memory cost, KiB, for **newly hashed** passwords. Must be positive | `65536` (64 MiB) |
-| `SHOMEI_ARGON2_ITERATIONS` | Argon2id time cost for newly hashed passwords. Must be positive | `3` |
-| `SHOMEI_ARGON2_PARALLELISM` | Argon2id lanes for newly hashed passwords. Must be positive | `1` |
+| `SHOMEI_ARGON2_MEMORY_KIB` | Argon2id memory cost, KiB, for **newly hashed** passwords. Must be at least `max(8, 8 × parallelism)` and fit in 32 bits | `65536` (64 MiB) |
+| `SHOMEI_ARGON2_ITERATIONS` | Argon2id time cost for newly hashed passwords. Must be at least 1 and fit in 32 bits | `3` |
+| `SHOMEI_ARGON2_PARALLELISM` | Argon2id lanes for newly hashed passwords. Must be at least 1, fit in 32 bits, and have at least 8 KiB of memory per lane | `1` |
 | `SHOMEI_HASHING_MAX_CONCURRENCY` | how many Argon2 hashes may run at once, process-wide. Must be positive | `2` |
 | `SHOMEI_RTS_OPTS` | GHC runtime options the container entrypoint passes as `+RTS … -RTS`. Empty string passes none. **Do not use `GHCRTS`** — it leaks into `dhall-to-json` and breaks config loading | `-N<cpu-quota> [-A64m] --nonmoving-gc` |
 | `SHOMEI_CGROUP_ROOT` | where the entrypoint looks for the CPU quota. A test seam; leave unset | `/sys/fs/cgroup` |
@@ -97,6 +97,12 @@ passwords only: every stored hash records the parameters it was made with, so re
 never invalidates an existing credential, and old and new hashes coexist indefinitely. Below
 19 MiB / 2 iterations the server logs a prominent warning at boot but still starts — test rigs
 legitimately want cheap hashing.
+
+The server validates the implementation's hard limits before opening its database pool, then runs
+one real trial derivation. A setting rejected by crypton's C core or by the machine's allocator
+therefore stops the boot with the configured `m`, `t`, and `p` values instead of turning every later
+signup or password change into a server error. `shomei-admin users create` applies the same pure
+limits before it acquires its pool.
 
 `SHOMEI_HASHING_MAX_CONCURRENCY` (default 2) bounds how many hashes run at once, and it matters
 more than it looks. The Argon2 implementation is reached through an *unsafe* foreign call, which

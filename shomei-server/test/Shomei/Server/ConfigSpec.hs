@@ -184,6 +184,16 @@ argon2Settings = do
   overridden.serverHashingMaxConcurrency @?= 4
   mapM_ unsetEnv argon2EnvVars
 
+  setEnv "SHOMEI_ARGON2_MEMORY_KIB" "64"
+  setEnv "SHOMEI_ARGON2_PARALLELISM" "16"
+  hardFloorResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" hardFloorResult
+
+  setEnv "SHOMEI_ARGON2_MEMORY_KIB" "128"
+  (_, boundary) <- loadConfigFromEnv
+  boundary.serverArgon2 @?= Argon2Params 128 3 16
+  mapM_ unsetEnv argon2EnvVars
+
   -- crypton would reject these deep inside a login; the loader names the variable instead.
   -- A zero permit count would block every login forever.
   setEnv "SHOMEI_ARGON2_MEMORY_KIB" "0"

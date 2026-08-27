@@ -6,8 +6,10 @@ module Shomei.Account.Password.Hash.Postgres
   ( Argon2Failure (..),
     Argon2Params (..),
     defaultArgon2Params,
+    argon2HardFloor,
     argon2WarningFloor,
     hashPasswordArgon2id,
+    trialArgon2Derivation,
     verifyPasswordArgon2id,
     dummyHashFor,
     HashingLimiter,
@@ -34,7 +36,7 @@ import Control.Concurrent.STM
     readTVarIO,
     writeTVar,
   )
-import Control.Exception (ErrorCall (..), Exception, Handler (..), bracket_, catches, evaluate, throw, throwIO)
+import Control.Exception (ErrorCall (..), Exception, Handler (..), bracket_, catches, evaluate, throw, throwIO, try)
 import Crypto.Error (CryptoError, CryptoFailable (..))
 import Crypto.Hash (SHA256 (..), hashWith)
 import Crypto.KDF.Argon2 qualified as Argon2
@@ -85,6 +87,31 @@ defaultArgon2Params =
       iterations = 3,
       parallelism = 1
     }
+
+-- | @Nothing@ when crypton's Argon2 implementation can represent and accepts the configured
+-- costs, otherwise a precise hard-floor failure. These are implementation limits, not the
+-- stronger password-storage recommendation reported by 'argon2WarningFloor'.
+argon2HardFloor :: Argon2Params -> Maybe Text
+argon2HardFloor p
+  | any ((> maxWord32) . toInteger) [p.memoryKiB, p.iterations, p.parallelism] =
+      Just "every Argon2 parameter must fit in 32 bits"
+  | p.iterations < 1 = Just "iterations must be at least 1"
+  | p.parallelism < 1 = Just "parallelism must be at least 1"
+  | p.memoryKiB < requiredMemory =
+      Just
+        ( "memoryKiB must be at least 8 × parallelism and at least 8; got m="
+            <> tshow p.memoryKiB
+            <> " KiB for p="
+            <> tshow p.parallelism
+            <> " (needs "
+            <> tshow requiredMemory
+            <> ")"
+        )
+  | otherwise = Nothing
+  where
+    maxWord32 = 4294967295
+    requiredMemory = max 8 (8 * p.parallelism)
+    tshow = Text.pack . show
 
 toOptions :: Argon2Params -> Argon2.Options
 toOptions p =
@@ -186,6 +213,12 @@ hashPasswordArgon2id params pw = do
                   Handler \(e :: CryptoError) -> throwIO (Argon2Failure (Text.pack (show e)))
                 ]
   evaluate (PasswordHash (phcEncode params salt digest))
+
+-- | Exercise one real derivation with the configured costs. Startup uses this before acquiring
+-- a database pool so implementation or allocation failures become boot errors, not a @500@ on
+-- every signup. It also warms the Argon2 arena.
+trialArgon2Derivation :: Argon2Params -> IO (Either Argon2Failure ())
+trialArgon2Derivation params = try (void (hashPasswordArgon2id params "shomei boot trial"))
 
 -- | Re-derive the hash with the parameters the stored string carries, and compare in constant
 -- time.

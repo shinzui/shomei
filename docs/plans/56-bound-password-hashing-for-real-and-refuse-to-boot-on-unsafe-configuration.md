@@ -52,8 +52,8 @@ and the sweeper runs on its own connection.
 - [x] (2026-08-27T20:30:00Z) M1: `hashPasswordArgon2id` forces the digest; `HashPassword` arm
       evaluates like the `Verify*` arms; `Argon2Failure`; rewritten limiter test (pre-fix false
       pass and regression failure recorded); load-test `SIGNUP_LOOPS`.
-- [ ] M2: `argon2HardFloor` in the loader and `shomei-admin`; `trialArgon2Derivation` in `Boot.main`
-      before the pool is acquired.
+- [x] (2026-08-27T20:34:00Z) M2: `argon2HardFloor` in the loader and `shomei-admin`;
+      `trialArgon2Derivation` in `Boot.main` before the pool is acquired.
 - [ ] M3: `FileConfig` rejects unknown keys (silent acceptance observed first); strict WebAuthn enums
       on the Dhall path; `configSigningAlgorithm` returns `Either`; empty origins refused at boot and
       `originsOf` uses `NE.nonEmpty`; `SHOMEI_EMAIL_VERIFICATION_REQUIRED`.
@@ -106,6 +106,13 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   pre-fix:  signups/s=37.3  signup_503s=0  peak_rss=626MB
   post-fix: signups/s=20.2  signup_503s=0  peak_rss=237MB
   ```
+
+- **The pure hard floor and real implementation agree at the lane boundary.** The new PostgreSQL
+  test observes both rejection for `Argon2Params 64 1 16` and success at
+  `Argon2Params 128 1 16`; the suite now has 74 passing cases. With the rejected values supplied
+  to the executable, configuration exits 1 with the `m ≥ 8 × p` rule and emits no `[shomei] db
+  pool` line, proving the refusal happens before pool acquisition. `shomei-server-config-test`
+  passes and `shomei-admin` rebuilds against the same check.
 
 
 ## Decision Log

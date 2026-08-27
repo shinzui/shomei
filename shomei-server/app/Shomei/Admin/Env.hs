@@ -16,11 +16,12 @@ module Shomei.Admin.Env
   )
 where
 
+import Data.Foldable (for_)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Hasql.Pool (Pool)
-import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), defaultArgon2Params)
+import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor, defaultArgon2Params)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
@@ -55,7 +56,16 @@ argon2FromEnv = do
   mem <- intEnvOr "SHOMEI_ARGON2_MEMORY_KIB" defaultArgon2Params.memoryKiB
   iters <- intEnvOr "SHOMEI_ARGON2_ITERATIONS" defaultArgon2Params.iterations
   lanes <- intEnvOr "SHOMEI_ARGON2_PARALLELISM" defaultArgon2Params.parallelism
-  pure Argon2Params {memoryKiB = mem, iterations = iters, parallelism = lanes}
+  let params = Argon2Params {memoryKiB = mem, iterations = iters, parallelism = lanes}
+  for_ (argon2HardFloor params) \why ->
+    ioError
+      ( userError
+          ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
+              <> "are rejected by the Argon2 implementation: "
+              <> Text.unpack why
+          )
+      )
+  pure params
 
 intEnvOr :: Text -> Int -> IO Int
 intEnvOr name def = do
