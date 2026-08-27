@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** `configSigningAlgorithm` now returns `Either Text SigningAlgorithm`; embedding
+  applications must reject invalid hand-built signing configuration instead of receiving an
+  implicit `ES256` fallback.
 - **Breaking:** login-attempt recording, TOTP/passkey counters, user-status changes, session
   revocation, and credential-reset tails now expose compare-and-swap or transactional operations.
   Single-use transitions report whether they won, login failures are recorded and counted

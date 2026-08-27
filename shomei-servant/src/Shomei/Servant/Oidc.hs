@@ -76,7 +76,8 @@ discoveryDocument cfg =
       "response_types_supported" Aeson..= (["code"] :: [Text]),
       "grant_types_supported" Aeson..= (["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"] :: [Text]),
       "code_challenge_methods_supported" Aeson..= (["S256"] :: [Text]),
-      "id_token_signing_alg_values_supported" Aeson..= [signingAlgorithmToText (configSigningAlgorithm cfg)],
+      "id_token_signing_alg_values_supported"
+        Aeson..= either (const []) (pure . signingAlgorithmToText) (configSigningAlgorithm cfg),
       "subject_types_supported" Aeson..= (["public"] :: [Text]),
       "scopes_supported" Aeson..= supportedScopes,
       "token_endpoint_auth_methods_supported" Aeson..= (["client_secret_basic", "client_secret_post"] :: [Text])

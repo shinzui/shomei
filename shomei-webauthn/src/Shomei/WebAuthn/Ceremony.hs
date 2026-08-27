@@ -141,9 +141,10 @@ completeRegistration :: WebAuthnConfig -> ByteString -> Value -> IO (Either WebA
 completeRegistration cfg blob credJson = do
   now <- dateCurrent
   pure do
+    allowed <- maybe (Left (WebAuthnOtherError "no allowed WebAuthn origins are configured")) Right (originsOf cfg)
     opts <- recoverRegistrationOptions blob
     cred <- decodeRegistrationCredential credJson
-    case WA.verifyRegistrationResponse (originsOf cfg) (rpIdHashOf cfg) mempty now opts cred of
+    case WA.verifyRegistrationResponse allowed (rpIdHashOf cfg) mempty now opts cred of
       Failure errs -> Left (mapRegError (NE.head errs))
       Success result -> Right (entryToRegistration (WA.rrEntry result))
 
@@ -154,6 +155,7 @@ completeAuthentication ::
   Value ->
   Either WebAuthnError VerifiedAuthentication
 completeAuthentication cfg blob (StoredCredentialForVerify scid suh spk scnt strans) credJson = do
+  allowed <- maybe (Left (WebAuthnOtherError "no allowed WebAuthn origins are configured")) Right (originsOf cfg)
   opts <- recoverAuthenticationOptions blob
   cred <- decodeAuthenticationCredential credJson
   let entry =
@@ -164,7 +166,7 @@ completeAuthentication cfg blob (StoredCredentialForVerify scid suh spk scnt str
             WA.ceSignCounter = toWACounter scnt,
             WA.ceTransports = map WStr.decodeAuthenticatorTransport strans
           }
-  case WA.verifyAuthenticationResponse (originsOf cfg) (rpIdHashOf cfg) (Just (toWAUserHandle suh)) entry opts cred of
+  case WA.verifyAuthenticationResponse allowed (rpIdHashOf cfg) (Just (toWAUserHandle suh)) entry opts cred of
     Failure errs -> Left (mapAuthError (NE.head errs))
     Success (WA.AuthenticationResult counterResult) -> case counterResult of
       WA.SignatureCounterZero -> Right (verifiedAuth scid scnt)
@@ -212,8 +214,8 @@ entryToRegistration e =
 
 -- RP identity / policy mapping ------------------------------------------------
 
-originsOf :: WebAuthnConfig -> NonEmpty WA.Origin
-originsOf cfg = NE.fromList (map WA.Origin (origins cfg))
+originsOf :: WebAuthnConfig -> Maybe (NonEmpty WA.Origin)
+originsOf cfg = NE.nonEmpty (map WA.Origin (origins cfg))
 
 rpIdHashOf :: WebAuthnConfig -> WA.RpIdHash
 rpIdHashOf cfg = WA.RpIdHash (hash (encodeUtf8 (rpId cfg)))

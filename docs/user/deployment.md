@@ -33,6 +33,7 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
+| `SHOMEI_EMAIL_VERIFICATION_REQUIRED` | require a verified email before subsequent token issuance (the initial signup session is still issued) | `false` |
 | `SHOMEI_KEY_ENCRYPTION_KEY` | **Required.** 32 bytes, base64; envelope-encrypts every signing key at rest | — |
 | `SHOMEI_KEY_ENCRYPTION_KEY_OLD` | the previous KEK; read only by `shomei-admin keys rewrap` | unset |
 | `SHOMEI_PASSWORD_MIN_LENGTH` / `SHOMEI_PASSWORD_MAX_LENGTH` | accepted password length bounds | `12` / `256` |

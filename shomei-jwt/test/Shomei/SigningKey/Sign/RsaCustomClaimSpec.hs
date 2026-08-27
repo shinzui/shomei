@@ -10,6 +10,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertFromBase)
 import Data.ByteString (ByteString)
+import Data.Either (isLeft)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
@@ -18,7 +19,7 @@ import Shomei.Authorization.Claims.Domain (AuthClaims (..), mkExtraClaims)
 import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..), configSigningAlgorithm)
 import Shomei.Id (idText)
 import Shomei.Session.Token.Domain (AccessToken (AccessToken))
-import Shomei.SigningKey.Domain (SigningAlgorithm (ES256, RS256))
+import Shomei.SigningKey.Domain (SigningAlgorithm (RS256))
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, keyKid)
 import Shomei.SigningKey.Sign.Jwt (signAccessToken)
 import Shomei.SigningKey.TestSupport (mkClaims, publicJwks, testConfig)
@@ -70,11 +71,11 @@ tests =
         case res of
           Right ac' -> idText ac'.subject @?= idText base.subject
           Left e -> assertFailure ("verify failed: " <> show e),
-      testCase "configSigningAlgorithm parses RS256 and falls back to ES256" $ do
+      testCase "configSigningAlgorithm parses RS256 and rejects unknown text" $ do
         let rs = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "RS256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30}}
             bad = testConfig {signingKeyConfig = SigningKeyConfig {algorithm = "nope", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30}}
-        configSigningAlgorithm rs @?= RS256
-        configSigningAlgorithm bad @?= ES256
+        configSigningAlgorithm rs @?= Right RS256
+        assertBool "unknown signing algorithms must be a boot error" (isLeft (configSigningAlgorithm bad))
     ]
 
 -- | Sign claims, failing the test if signing errors; returns the compact token text.

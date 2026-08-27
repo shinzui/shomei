@@ -55,7 +55,7 @@ import Shomei.Account.Password.Domain (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Passkey.Domain (UserVerificationPolicy (..))
 import Shomei.Prelude
-import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
+import Shomei.SigningKey.Domain (SigningAlgorithm, signingAlgorithmFromText)
 
 -- | How access and refresh tokens travel between Shōmei and its clients.
 --
@@ -478,12 +478,11 @@ defaultObservabilityConfig =
       gracefulShutdownTimeoutSeconds = 30
     }
 
--- | The signing algorithm a config selects, parsed from
--- @signingKeyConfig.algorithm@. Defaults to 'ES256' on absent/invalid text so a
--- misconfigured deployment stays on the safe default rather than failing to boot.
-configSigningAlgorithm :: ShomeiConfig -> SigningAlgorithm
-configSigningAlgorithm cfg =
-  either (const ES256) id (signingAlgorithmFromText cfg.signingKeyConfig.algorithm)
+-- | Parse the signing algorithm for newly generated keys. A hand-built embedding configuration
+-- can contain arbitrary text, so callers must treat a parse failure as a boot error rather than
+-- silently changing the trust root to another algorithm.
+configSigningAlgorithm :: ShomeiConfig -> Either Text SigningAlgorithm
+configSigningAlgorithm cfg = signingAlgorithmFromText cfg.signingKeyConfig.algorithm
 
 defaultShomeiConfig :: Issuer -> Audience -> ShomeiConfig
 defaultShomeiConfig iss aud =

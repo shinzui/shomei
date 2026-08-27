@@ -54,7 +54,7 @@ and the sweeper runs on its own connection.
       pass and regression failure recorded); load-test `SIGNUP_LOOPS`.
 - [x] (2026-08-27T20:34:00Z) M2: `argon2HardFloor` in the loader and `shomei-admin`;
       `trialArgon2Derivation` in `Boot.main` before the pool is acquired.
-- [ ] M3: `FileConfig` rejects unknown keys (silent acceptance observed first); strict WebAuthn enums
+- [x] (2026-08-27T20:44:00Z) M3: `FileConfig` rejects unknown keys (silent acceptance observed first); strict WebAuthn enums
       on the Dhall path; `configSigningAlgorithm` returns `Either`; empty origins refused at boot and
       `originsOf` uses `NE.nonEmpty`; `SHOMEI_EMAIL_VERIFICATION_REQUIRED`.
 - [ ] M4: `config/shomei-types.dhall` as `{ Type, default }`, every field `Optional`; the twenty
@@ -113,6 +113,18 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   to the executable, configuration exits 1 with the `m ≥ 8 × p` rule and emits no `[shomei] db
   pool` line, proving the refusal happens before pool acquisition. `shomei-server-config-test`
   passes and `shomei-admin` rebuilds against the same check.
+
+- **Unknown Dhall keys are a confirmed silent acceptance before M3.** With
+  `SHOMEI_CONFIG=/tmp/shomei-ep6-typo.dhall` containing only `{ cookieSecue = False }`, the server
+  applied all 35 migrations, acquired its pool, and printed `[shomei] listening on :18081`; a
+  five-second harness timeout then shut it down cleanly. The generated test signing key was removed.
+
+- **Strict configuration is exercised at both seams.** The serialized config suite now rejects an
+  unknown Dhall field, invalid attestation policy, and empty file or environment origin lists, while
+  the WebAuthn suite proves an empty hand-built origin list returns the exact typed error before
+  credential decoding. All 5 WebAuthn, 63 JWT, and the serialized configuration tests pass. The
+  rebuilt executable also exits 1 on `{ cookieSecue = False }`, prints the unknown field, and never
+  reaches migration or pool acquisition.
 
 
 ## Decision Log

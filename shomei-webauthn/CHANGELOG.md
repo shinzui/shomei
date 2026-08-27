@@ -13,6 +13,8 @@ ships once a compatible `webauthn` is on Hackage.
 
 Initial release contents:
 
+- Empty WebAuthn origin sets fail closed with a typed ceremony error instead of calling the partial
+  `NonEmpty.fromList` constructor.
 - Interprets Shōmei's passkey ceremony port with the `webauthn` library:
   challenge generation, attestation and assertion verification, origin and
   relying-party checks, and signature-counter handling.

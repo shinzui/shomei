@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** Dhall configuration rejects unknown fields and invalid WebAuthn policy names, and
+  startup refuses empty WebAuthn origin sets. `SHOMEI_EMAIL_VERIFICATION_REQUIRED` now overlays the
+  corresponding file setting.
 - The server and `shomei-admin` refuse Argon2 costs that the implementation cannot represent or
   accept; server startup also performs one real derivation before acquiring a database pool.
 - **Breaking:** configuration adds `allowedClockSkewSeconds` and validates issuer and audience as

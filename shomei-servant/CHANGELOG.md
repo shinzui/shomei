@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- OIDC discovery handles invalid hand-built signing configuration without a partial fallback; the
+  standalone server rejects that configuration before serving discovery.
 - Duplicate signup login ids and email addresses consistently return their existing `409`
   problem codes, including PostgreSQL uniqueness races.
 - `GET /oauth/authorize` now requires a live interactive session. Machine, delegated, and

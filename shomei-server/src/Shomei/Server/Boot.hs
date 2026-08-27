@@ -296,6 +296,11 @@ installSweeper settings env =
 -- @shomei-migrate@ out-of-band is also supported for production.
 buildEnv :: ShomeiConfig -> ServerSettings -> IO Env
 buildEnv cfg settings = do
+  alg <-
+    either
+      (\why -> hPutStrLn stderr ("[shomei] FATAL: signingKeyConfig.algorithm: " <> Text.unpack why) >> exitFailure)
+      pure
+      (configSigningAlgorithm cfg)
   applyShomeiMigrations settings.serverConnStr >>= \case
     Left migrationError -> do
       hPutStrLn stderr ("[shomei] FATAL: schema migration failed: " <> show migrationError)
@@ -315,7 +320,7 @@ buildEnv cfg settings = do
   pool <- acquirePool settings.serverDbPoolSize (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs) settings.serverConnStr
   kek <- loadKekFromEnv
   totpKey <- loadTotpKeyFromEnv cfg
-  keys <- bootstrapKeys kek (configSigningAlgorithm cfg) pool
+  keys <- bootstrapKeys kek alg pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
   limiter <- newHashingLimiter settings.serverHashingMaxConcurrency

@@ -31,12 +31,13 @@ import Data.Text (Text)
 import Effectful (runEff)
 import Shomei.Config
   ( UserVerificationPolicy (UVDiscouraged, UVRequired),
-    WebAuthnConfig (userVerification),
+    WebAuthnConfig (origins, userVerification),
     defaultWebAuthnConfig,
   )
 import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
+    WebAuthnError (WebAuthnOtherError),
     beginAuthenticationCeremony,
     beginRegistrationCeremony,
     completeRegistrationCeremony,
@@ -53,7 +54,8 @@ tests =
     [ testCase "begin registration produces a round-tripping options blob" beginRegistrationRoundTrips,
       testCase "begin authentication produces a round-tripping options blob" beginAuthenticationRoundTrips,
       testCase "passwordless authentication requires UV even when step-up discourages it" passwordlessRequiresUv,
-      testCase "complete registration on malformed credential JSON fails closed" completeRejectsGarbage
+      testCase "complete registration on malformed credential JSON fails closed" completeRejectsGarbage,
+      testCase "empty origins fail closed before credential decoding" emptyOriginsFailClosed
     ]
 
 sampleUser :: CredentialUserInfo
@@ -93,6 +95,12 @@ completeRejectsGarbage = do
     BeginCeremony {optionsBlob = blob} <- beginRegistrationCeremony sampleUser []
     completeRegistrationCeremony blob (object [])
   assertBool "malformed credential JSON yields a WebAuthnError, not a success" (isLeft result)
+
+emptyOriginsFailClosed :: IO ()
+emptyOriginsFailClosed = do
+  let cfg = defaultWebAuthnConfig {origins = []}
+  result <- runEff . runWebAuthnCeremonyLibrary cfg $ completeRegistrationCeremony "garbage" (object [])
+  result @?= Left (WebAuthnOtherError "no allowed WebAuthn origins are configured")
 
 -- | Decode the persisted blob back to the WJ intermediate registration options type
 -- and re-encode it; the bytes must be identical (this is the recovery path the

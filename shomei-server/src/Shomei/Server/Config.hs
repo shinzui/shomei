@@ -261,7 +261,10 @@ data FileConfig = FileConfig
     defaultRoles :: !(Maybe [Text])
   }
   deriving stock (Show, Generic)
-  deriving anyclass (FromJSON)
+  deriving anyclass (ToJSON)
+
+instance FromJSON FileConfig where
+  parseJSON = genericParseJSON defaultOptions {rejectUnknownFields = True}
 
 -- | The full loader: defaults → Dhall file (if @$SHOMEI_CONFIG@) → env.
 loadConfig :: IO (ShomeiConfig, ServerSettings)
@@ -312,6 +315,8 @@ baseFromFile (Just fc) = do
   algFile <- traverse (normalizeSigningAlg "signingAlgorithm (config file)") fc.signingAlgorithm
   transportFile <- traverse (parseTransport "tokenTransport (config file)") fc.tokenTransport
   sameSiteFile <- traverse (parseSameSite "cookieSameSite (config file)") fc.cookieSameSite
+  uvFile <- traverse (parseUserVerificationPolicy "webauthnUserVerification (config file)") fc.webauthnUserVerification
+  attestationFile <- traverse (parseAttestationPolicy "webauthnAttestation (config file)") fc.webauthnAttestation
   notifierTransportFile <- traverse (parseNotifierTransport "notifierTransport (config file)") fc.notifierTransport
   smtpTlsModeFile <- traverse (parseSmtpTlsMode "smtpTlsMode (config file)") fc.smtpTlsMode
   let iss = fromMaybe "shomei" fc.issuer
@@ -353,7 +358,7 @@ baseFromFile (Just fc) = do
                   requestLoggingEnabled = fromMaybe cfg0.observabilityConfig.requestLoggingEnabled fc.requestLoggingEnabled,
                   gracefulShutdownTimeoutSeconds = fromMaybe cfg0.observabilityConfig.gracefulShutdownTimeoutSeconds fc.gracefulShutdownTimeoutSeconds
                 },
-            webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) fc,
+            webauthnConfig = mergeWebAuthn (webauthnConfig cfg0) uvFile attestationFile fc,
             mfaConfig =
               cfg0.mfaConfig
                 { requireSecondFactor = fromMaybe cfg0.mfaConfig.requireSecondFactor fc.mfaRequireSecondFactor
@@ -448,6 +453,12 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requireStringOrUri "SHOMEI_ISSUER" "issuer" iss
   requireStringOrUri "SHOMEI_AUDIENCE" "audience" aud
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
+  let WebAuthnConfig {origins = originList} = cfg.webauthnConfig
+  when (null originList) $
+    ioError
+      ( userError
+          "SHOMEI_WEBAUTHN_ORIGINS (Dhall field webauthnOrigins) must list at least one origin; an empty list would fail every passkey ceremony"
+      )
   when (Text.null connStr) (ioError (userError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)"))
   -- Validated after the overlay so a bad value fails the boot whichever layer supplied it.
   -- A zero-size pool deadlocks every request and a zero acquisition timeout fails every
@@ -791,12 +802,14 @@ overlayNotifierFromEnv :: NotifierConfig -> Maybe Bool -> IO NotifierConfig
 overlayNotifierFromEnv base logSecrets = do
   transport <- notifierTransportEnv
   alsoLog <- boolEnv "SHOMEI_NOTIFIER_ALSO_LOG"
+  emailVerification <- boolEnv "SHOMEI_EMAIL_VERIFICATION_REQUIRED"
   publicBaseUrl' <- textEnvMaybe "SHOMEI_PUBLIC_BASE_URL"
   smtp <- overlaySmtpFromEnv base.smtpConfig
   webhook <- overlayWebhookFromEnv base.webhookConfig
   pure
     base
       { logRawTokens = fromMaybe base.logRawTokens logSecrets,
+        emailVerificationRequired = fromMaybe base.emailVerificationRequired emailVerification,
         notifierTransport = fromMaybe base.notifierTransport transport,
         alsoLogNotifications = fromMaybe base.alsoLogNotifications alsoLog,
         publicBaseUrl = fromMaybe base.publicBaseUrl publicBaseUrl',
@@ -930,14 +943,14 @@ validateNotifierConfig nc = case nc.notifierTransport of
 -- 'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot
 -- syntax), which the new passkey/config records do not support under @DuplicateRecordFields@
 -- (MasterPlan 3, EP-1 discovery); @fc.field@ dot access on 'FileConfig' is unaffected.
-mergeWebAuthn :: WebAuthnConfig -> FileConfig -> WebAuthnConfig
-mergeWebAuthn base fc =
+mergeWebAuthn :: WebAuthnConfig -> Maybe UserVerificationPolicy -> Maybe AttestationPolicy -> FileConfig -> WebAuthnConfig
+mergeWebAuthn base uvFile attestationFile fc =
   base
     { rpId = fromMaybe baseRpId fc.webauthnRpId,
       rpName = fromMaybe baseRpName fc.webauthnRpName,
       origins = fromMaybe baseOrigins fc.webauthnOrigins,
-      userVerification = maybe baseUv parseUserVerification fc.webauthnUserVerification,
-      attestation = maybe baseAtt parseAttestation fc.webauthnAttestation,
+      userVerification = fromMaybe baseUv uvFile,
+      attestation = fromMaybe baseAtt attestationFile,
       ceremonyTimeout = maybe baseTimeout fromIntegral fc.webauthnCeremonyTimeoutSeconds,
       pendingCeremonyTTL = maybe baseTtl fromIntegral fc.webauthnPendingCeremonyTtlSeconds
     }
@@ -993,17 +1006,13 @@ overlayWebAuthnFromEnv base = do
       case m of
         Nothing -> pure Nothing
         Just "" -> pure Nothing
-        Just s -> case parseUserVerificationMaybe (Text.pack s) of
-          Just p -> pure (Just p)
-          Nothing -> ioError (userError "SHOMEI_WEBAUTHN_USER_VERIFICATION must be required|preferred|discouraged")
+        Just s -> Just <$> parseUserVerificationPolicy "SHOMEI_WEBAUTHN_USER_VERIFICATION" (Text.pack s)
     attestationEnv = do
       m <- lookupEnv "SHOMEI_WEBAUTHN_ATTESTATION"
       case m of
         Nothing -> pure Nothing
         Just "" -> pure Nothing
-        Just s -> case parseAttestationMaybe (Text.pack s) of
-          Just p -> pure (Just p)
-          Nothing -> ioError (userError "SHOMEI_WEBAUTHN_ATTESTATION must be none|direct")
+        Just s -> Just <$> parseAttestationPolicy "SHOMEI_WEBAUTHN_ATTESTATION" (Text.pack s)
 
 boolEnv :: Text -> IO (Maybe Bool)
 boolEnv name = do
@@ -1016,28 +1025,21 @@ boolEnv name = do
       "false" -> pure (Just False)
       _ -> ioError (userError (Text.unpack name <> " must be true|false"))
 
--- | Parse a WebAuthn user-verification policy string (Dhall path; defaults to @preferred@ on
--- unrecognized input, matching 'defaultWebAuthnConfig').
-parseUserVerification :: Text -> UserVerificationPolicy
-parseUserVerification = fromMaybe UVPreferred . parseUserVerificationMaybe
+-- | Parse a WebAuthn user-verification policy from either configuration source. Unknown text is
+-- a boot error: silently falling back can weaken the ceremony an operator intended to require.
+parseUserVerificationPolicy :: Text -> Text -> IO UserVerificationPolicy
+parseUserVerificationPolicy label t = case Text.toLower (Text.strip t) of
+  "required" -> pure UVRequired
+  "preferred" -> pure UVPreferred
+  "discouraged" -> pure UVDiscouraged
+  other -> ioError (userError (Text.unpack label <> " must be required|preferred|discouraged, got " <> Text.unpack other))
 
-parseUserVerificationMaybe :: Text -> Maybe UserVerificationPolicy
-parseUserVerificationMaybe t = case Text.toLower t of
-  "required" -> Just UVRequired
-  "preferred" -> Just UVPreferred
-  "discouraged" -> Just UVDiscouraged
-  _ -> Nothing
-
--- | Parse a WebAuthn attestation policy string (Dhall path; defaults to @none@ on
--- unrecognized input, matching 'defaultWebAuthnConfig').
-parseAttestation :: Text -> AttestationPolicy
-parseAttestation = fromMaybe AttestationNone . parseAttestationMaybe
-
-parseAttestationMaybe :: Text -> Maybe AttestationPolicy
-parseAttestationMaybe t = case Text.toLower t of
-  "none" -> Just AttestationNone
-  "direct" -> Just AttestationDirect
-  _ -> Nothing
+-- | Parse a WebAuthn attestation policy from either configuration source.
+parseAttestationPolicy :: Text -> Text -> IO AttestationPolicy
+parseAttestationPolicy label t = case Text.toLower (Text.strip t) of
+  "none" -> pure AttestationNone
+  "direct" -> pure AttestationDirect
+  other -> ioError (userError (Text.unpack label <> " must be none|direct, got " <> Text.unpack other))
 
 textEnv :: Text -> Text -> IO Text
 textEnv name def = do

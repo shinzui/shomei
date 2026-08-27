@@ -215,6 +215,39 @@ argon2EnvVars =
     "SHOMEI_HASHING_MAX_CONCURRENCY"
   ]
 
+-- | Misspelled keys, enum typos, and an empty origin set are deployment errors, not requests to
+-- silently keep a default. The email-verification policy is available from the environment too.
+strictConfigurationSettings :: Assertion
+strictConfigurationSettings = do
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_CONFIG" configPath
+
+  writeFile configPath "{ cookieSecue = False }"
+  unknownKey <- try loadConfig
+  expectUserErrorNaming "invalid SHOMEI_CONFIG" unknownKey
+
+  writeFile configPath "{ webauthnAttestation = \"nope\" }"
+  badAttestation <- try loadConfig
+  expectUserErrorNaming "webauthnAttestation" badAttestation
+
+  writeFile configPath "{ webauthnOrigins = ([] : List Text) }"
+  emptyFileOrigins <- try loadConfig
+  expectUserErrorNaming "webauthnOrigins" emptyFileOrigins
+
+  unsetEnv "SHOMEI_CONFIG"
+  setEnv "SHOMEI_WEBAUTHN_ORIGINS" ","
+  emptyEnvOrigins <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_WEBAUTHN_ORIGINS" emptyEnvOrigins
+  unsetEnv "SHOMEI_WEBAUTHN_ORIGINS"
+
+  setEnv "SHOMEI_EMAIL_VERIFICATION_REQUIRED" "true"
+  (emailRequired, _) <- loadConfigFromEnv
+  emailRequired.notifierConfig.emailVerificationRequired @?= True
+  unsetEnv "SHOMEI_EMAIL_VERIFICATION_REQUIRED"
+
+  writeFile configPath dhallContents
+  unsetEnv "PG_CONNECTION_STRING"
+
 -- | Assert a config load failed with a 'userError' whose message names the offending variable.
 expectUserErrorNaming :: String -> Either IOError a -> Assertion
 expectUserErrorNaming name = \case
@@ -313,6 +346,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   sweepEnvOverrides
   sweepRejectsNonPositive
   argon2Settings
+  strictConfigurationSettings
   verifierSettings
   notifierDefaults
   notifierSmtpDhallAndEnv
