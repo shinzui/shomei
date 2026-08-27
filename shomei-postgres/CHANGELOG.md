@@ -8,6 +8,8 @@ Shōmei packages.
 
 - Session-store and authentication-unit-of-work interpreters now write session provenance and
   read legacy `NULL` provenance as `interactive`.
+- Sessions round-trip their OAuth granted scopes, and consumed authorization codes can bind and
+  recover the session minted by their first exchange for replay response.
 
 ## 0.1.0.0 — 2026-08-24
 

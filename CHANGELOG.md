@@ -9,6 +9,16 @@ independently under the Haskell [PVP](https://pvp.haskell.org/) (`A.B.C.D`) and 
 Per-package detail lives in each package's own `CHANGELOG.md`; this file is the
 project-level roundup of what shipped together.
 
+## Unreleased
+
+- OAuth authorization-code sessions retain their granted scopes across refresh and can be rotated
+  only by their minting client; the bespoke refresh endpoint refuses them.
+- OAuth clients cannot receive Shōmei's reserved privilege scopes, revocation enforces caller
+  ownership, UserInfo gates email and roles by scope, and replaying an authorization code revokes
+  the first exchange's session.
+- OIDC interoperability now form-decodes Basic credentials, advertises token exchange, recognizes
+  refresh tokens during hint-less introspection, and emits the correct missing-bearer challenge.
+
 ## 2026-08-24 — first Hackage release
 
 The first packages published to Hackage, all at `0.1.0.0`:

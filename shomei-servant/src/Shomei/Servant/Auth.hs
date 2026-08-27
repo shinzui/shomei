@@ -133,7 +133,7 @@ instance
     where
       authenticate req = do
         case extractToken BearerToken req of
-          Nothing -> delayedFailFatal OAuth.invalidToken
+          Nothing -> delayedFailFatal OAuth.missingToken
           Just _ -> do
             outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
             either (const (delayedFailFatal OAuth.invalidToken)) pure outcome

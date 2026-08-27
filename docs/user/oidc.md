@@ -72,6 +72,20 @@ URIs are matched by **exact string equality** at authorize time — no prefix ma
 A confidential client's secret is shown once and only its SHA-256 digest is stored; there is no
 rotate command (revoke and re-register). A public client is issued no secret at all.
 
+The scopes `impersonate:user` (or the configured impersonation scope), `shomei:admin`, and
+`token-exchange:subject` are principal-level privilege gates. They are refused when an OAuth client
+is registered and again at authorize time. Grant those scopes only to service accounts, which hold
+them as their own authority; see [Scopes are principal privilege](security.md#scopes-are-principal-privilege-three-are-reserved).
+
+## Trust model
+
+Every active registered OAuth client is fully trusted with every user's identity. There is no
+consent screen: once a user has an interactive session, authorize issues a code immediately for
+any active client with a matching redirect URI and allowed scopes. Registering a client is the
+operator's consent decision and should be treated with the same care as granting an administrator
+access to the identity system. Register only controlled applications, use exact redirect URIs, and
+revoke a client that is no longer trusted.
+
 ## The authorize contract (host-owned login)
 
 `GET /oauth/authorize` authenticates the browser with the **same** credential machinery as every
@@ -142,13 +156,27 @@ or `client_secret_post`. A public client cannot use them.
 Introspection is **session-aware**: a token is `active` only if it verifies *and* its session is
 unrevoked and unexpired — regardless of `sessionCheckMode`. This is the point of RFC 7662: a
 resource server sees a revocation that stateless JWT verification cannot. Anything invalid, expired,
-or revoked returns `{"active": false}` at `200` (never an error, to prevent probing).
+or revoked returns `{"active": false}` at `200` (never an error, to prevent probing). Refresh
+tokens are recognized with or without `token_type_hint=refresh_token`; the hint is only an
+optimization.
 
 Revocation of a refresh token revokes its family and session; of an access token, its session and
-that session's refresh tokens. **Caveat**: because access tokens are stateless JWTs, a deployment
+that session's refresh tokens, but only when the caller owns that session. An OAuth client owns
+sessions minted under its `client_id`. A service account owns sessions in which its backing user is
+the subject or actor; a service account holding `shomei:admin` may revoke any session. A caller that
+does not own the presented token still receives the indistinguishable RFC-required `200`, with no
+state change. **Caveat**: because access tokens are stateless JWTs, a deployment
 verifying statelessly (`sessionCheckMode = VerifyTokenOnly`, the default) keeps accepting a revoked
 access token until it expires; only `VerifyTokenAndSession` — and the introspection endpoint —
 reject it immediately. Revocation always returns `200`, even for an unknown token.
+
+## Userinfo
+
+`GET /oauth/userinfo` always returns `sub` and the Shōmei `scopes` extension describing the
+presented token. It returns `email` and `email_verified` only when the token has the `email` scope,
+and the Shōmei `roles` extension only when it has `profile`. A missing bearer credential receives
+`WWW-Authenticate: Bearer realm="shomei"`; an invalid credential additionally carries
+`error="invalid_token"`.
 
 ## Worked example: oauth2-proxy
 
@@ -171,8 +199,9 @@ shomei-admin oauth-clients create --display-name oauth2-proxy --type confidentia
 ```
 
 That is the whole integration: no Shōmei-specific code, because the discovery document told
-oauth2-proxy where the authorize, token, and JWKS endpoints are and which algorithms and PKCE
-methods this provider supports.
+oauth2-proxy where the authorize, token, and JWKS endpoints are and which algorithms, PKCE methods,
+and grant types this provider supports. The advertised grants include authorization code, refresh,
+client credentials, and RFC 8693 token exchange.
 
 ## ID tokens
 

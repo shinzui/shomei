@@ -22,6 +22,7 @@
 module Shomei.Servant.OAuth
   ( -- * The RFC 6749 §5.2 error shape
     oauthError,
+    missingToken,
     invalidToken,
     invalidClient,
     invalidRequest,
@@ -42,6 +43,7 @@ module Shomei.Servant.OAuth
 where
 
 import Data.Aeson qualified as Aeson
+import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
 import Data.OpenApi (ToSchema (..), fromAesonOptions, genericDeclareNamedSchema)
 import Data.Set (Set)
@@ -49,6 +51,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Network.HTTP.Types.Status (Status, status400, status401, statusCode, statusMessage)
+import Network.HTTP.Types.URI (urlDecode)
 import Servant (ServerError (..))
 import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Prelude
@@ -126,6 +129,20 @@ invalidToken =
         ]
     }
 
+-- | A missing UserInfo bearer credential. RFC 6750 §3 says the challenge should omit an
+-- @error@ attribute when the request supplied no authentication information; the JSON body stays
+-- the same protocol-owned @invalid_token@ response.
+missingToken :: ServerError
+missingToken =
+  invalidToken
+    { errHeaders =
+        [ ("Content-Type", "application/json"),
+          ("Cache-Control", "no-store"),
+          ("Pragma", "no-cache"),
+          ("WWW-Authenticate", "Bearer realm=\"shomei\"")
+        ]
+    }
+
 -- | A missing or malformed request parameter; @what@ names it.
 invalidRequest :: Text -> ServerError
 invalidRequest what = oauthError status400 "invalid_request" what
@@ -174,12 +191,16 @@ extractClientAuth mAuthHeader form =
 
     decodeBasic encoded = do
       raw <- orInvalidClient (B64.decodeBase64Untyped (TE.encodeUtf8 encoded))
-      decoded <- orInvalidClient (TE.decodeUtf8' raw)
-      -- Split on the FIRST colon: a secret may contain colons, a client id may not.
-      let (cid, rest) = Text.breakOn ":" decoded
-      if Text.null rest
+      -- RFC 6749 §2.3.1 form-encodes both values before joining them with a colon. Split the
+      -- encoded bytes on the first separator, decode each form component, and only then decode
+      -- UTF-8; a secret may itself contain an encoded colon.
+      let (encodedCid, rest) = BS.break (== 58) raw
+      if BS.null rest
         then Left invalidClient
-        else pure ClientAuth {clientId = cid, clientSecret = Text.drop 1 rest}
+        else do
+          cid <- orInvalidClient (TE.decodeUtf8' (urlDecode True encodedCid))
+          secret <- orInvalidClient (TE.decodeUtf8' (urlDecode True (BS.drop 1 rest)))
+          pure ClientAuth {clientId = cid, clientSecret = secret}
 
     fromBody = case (lookupParam "client_id" form, lookupParam "client_secret" form) of
       (Just cid, Just secret) -> pure ClientAuth {clientId = cid, clientSecret = secret}

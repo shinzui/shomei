@@ -63,8 +63,8 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 - [x] (2026-08-27 15:34Z) M3: `mayRevokeSession`; `oauthRevokeH` enforces ownership, `200` on mismatch; servant ownership scenario (observed failing first); impersonation scenario revokes as `shomei:admin`
 - [x] (2026-08-27 15:34Z) M3: userinfo gated by `email`/`profile`; servant scenario (observed leaking email first)
 - [x] (2026-08-27 15:34Z) M3: `session_id` on codes via migration 0031; bind/find-consumed port ops; replay revokes and audits `oauth_code_replayed`. All 260 core, 59 Postgres, 40 servant, and 62 OpenAPI cases pass; `cabal build all` is green.
-- [ ] M4: Basic credentials urldecoded; token-exchange in `grant_types_supported`; hint-less refresh introspection; `missingToken` challenge; assertions updated
-- [ ] M4: `oidc.md` trust model, ownership, userinfo claims; `api.md`; changelogs; `cabal test all` green; Outcomes written
+- [x] (2026-08-27 15:42Z) M4: Basic credentials urldecoded; token-exchange in `grant_types_supported`; hint-less refresh introspection; `missingToken` challenge; assertions updated
+- [x] (2026-08-27 15:42Z) M4: `oidc.md` trust model, ownership, userinfo claims; `api.md`; changelogs; `just adr-validate` and `cabal test all` green; Outcomes written
 
 
 ## Surprises & Discoveries
@@ -182,7 +182,25 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+EP-2 is complete. OAuth authorization-code sessions now persist their granted scopes, carry those
+scopes through refresh, and rotate only through the client that minted them. Revocation applies the
+OAuth-client or service-account ownership model without revealing mismatches; authorization-code
+replay revokes the first exchange's session and emits `oauth_code_replayed`; and UserInfo releases
+email and roles only under their OIDC scopes.
+
+The privilege boundary is centralized in `Shomei.Authorization.Scope.Domain`: OAuth-client
+registration and authorize both refuse Shōmei's reserved privilege scopes, while service accounts
+remain their intended holders and receive a CLI warning. [ADR-2](../adr/0002-reserved-privilege-scopes-are-service-account-authority.md)
+records that principal distinction. The OIDC guide now states the provider's no-consent trust model
+and documents revocation ownership and claim release explicitly.
+
+The four interoperability defects are closed as part of the same HTTP surface: Basic credentials
+are form-decoded, discovery advertises token exchange, introspection recognizes an opaque refresh
+token without a hint, and a missing UserInfo bearer uses the RFC 6750 challenge without an `error`
+attribute. The regression-first tests reproduced the bespoke-refresh, revocation-ownership,
+consumed-code, scope-release, and client-registration failures before their fixes. Final validation
+passed strict ADR validation and `cabal test all`, including 260 core tests, 59 PostgreSQL tests, 40
+Servant scenarios, 62 OpenAPI examples, and every server, client, JWT, WebAuthn, and example suite.
 
 
 ## Context and Orientation

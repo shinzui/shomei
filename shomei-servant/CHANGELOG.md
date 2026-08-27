@@ -9,6 +9,13 @@ Shōmei packages.
 - `GET /oauth/authorize` now requires a live interactive session. Machine, delegated, and
   explicit-actor credentials receive `401 login_required` in the OAuth error shape with no
   redirect; dead sessions follow the unauthenticated login branch.
+- The bespoke refresh endpoint refuses OAuth-client sessions; OAuth refresh retains and echoes the
+  original granted scopes.
+- Revocation enforces OAuth-client and service-account ownership (`shomei:admin` remains global),
+  and UserInfo exposes email only under `email` and roles only under `profile`.
+- `client_secret_basic` credentials are form-decoded, discovery advertises token exchange,
+  introspection recognizes refresh tokens without a hint, and a missing UserInfo bearer challenge
+  omits `error` as required by RFC 6750.
 
 ## 0.1.0.0 — 2026-08-24
 

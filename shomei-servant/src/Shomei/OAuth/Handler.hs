@@ -537,13 +537,13 @@ oauthIntrospectH env mAuthHeader form = do
   case OAuth.lookupParam "token" form of
     Nothing -> pure inactive
     Just presented -> case OAuth.lookupParam "token_type_hint" form of
-      -- The hint is advisory; we honor `refresh_token` because a refresh token is opaque and
-      -- would never verify as a JWT, so without the hint it would always look inactive.
+      -- The hint is advisory. Try an opaque refresh token directly when named; otherwise try the
+      -- JWT path first and fall back to refresh lookup when signature verification fails.
       Just "refresh_token" -> introspectRefresh env presented
       _ -> do
         verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
         case verified of
-          Left _ -> pure inactive
+          Left _ -> introspectRefresh env presented
           Right claims -> do
             mSession <- runOAuthPort env (findSessionById claims.sessionId)
             now' <- runOAuthPort env now

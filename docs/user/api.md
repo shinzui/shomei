@@ -148,8 +148,9 @@ Request: `Content-Type: application/x-www-form-urlencoded`. The `grant_type` par
 flow; this deployment implements **`client_credentials`** (RFC 6749 §4.4). The client authenticates
 as itself with either method from §2.3.1:
 
-- `client_secret_basic` — `Authorization: Basic base64(client_id:client_secret)`. Preferred; if
-  the header is present it is used, even when body parameters also appear.
+- `client_secret_basic` — form-encode `client_id` and `client_secret` separately, join them with
+  `:`, then send `Authorization: Basic base64(encoded_client_id:encoded_client_secret)`. Preferred;
+  if the header is present it is used, even when body parameters also appear.
 - `client_secret_post` — `client_id` and `client_secret` as body parameters.
 
 | Parameter | Required | Meaning |
@@ -259,7 +260,10 @@ When `oidcEnabled` is set, Shōmei is a standards-consumable OpenID Connect prov
 auto-configures from the discovery URL alone. The full guide, including the headless authorize
 contract and a worked oauth2-proxy configuration, is [oidc.md](oidc.md). Userinfo requires a
 bearer token; missing or invalid credentials produce OAuth `invalid_token` JSON with an RFC 6750
-`WWW-Authenticate: Bearer` challenge, never an application problem document.
+`WWW-Authenticate: Bearer` challenge, never an application problem document. It always returns
+`sub` and `scopes`, adds the email pair only under `email`, and adds `roles` only under `profile`.
+Revocation changes state only for a session the calling OAuth client or service account owns;
+`shomei:admin` service accounts may revoke any session, and every mismatch remains a `200` no-op.
 
 ### `POST /v1/auth/logout` *(authenticated)*
 → `204`. Revokes the caller's session and its refresh tokens. In cookie transport the response

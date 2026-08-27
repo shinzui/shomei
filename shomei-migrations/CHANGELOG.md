@@ -8,6 +8,8 @@ Shōmei packages.
 
 - Add the nullable, defaulted `shomei_sessions.kind` column for interactive, machine, and delegated
   session provenance without rewriting existing rows.
+- Add `shomei_sessions.granted_scopes` for refresh-stable OAuth grants and nullable
+  `shomei_oauth_authorization_codes.session_id` for consumed-code replay revocation.
 
 ## 0.1.0.0 — 2026-08-24
 

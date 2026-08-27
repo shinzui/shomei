@@ -13,6 +13,13 @@ Shōmei packages.
 - RFC 8693 exchange and impersonation always verify the presented session; impersonation also
   requires an active operator account.
 - Authorization-code exchange now honours `emailVerificationRequired`.
+- OAuth sessions persist their granted scopes; refresh preserves them and refuses a minting-client
+  mismatch, including use through the bespoke refresh workflow.
+- OAuth-client registration and authorize refuse reserved privilege scopes while service accounts
+  remain their intended holders.
+- Authorization-code rows bind to their minted sessions; replay revokes the session and refresh
+  family and emits `oauth_code_replayed`. The core revocation policy models client and
+  service-account ownership plus the `shomei:admin` escape hatch.
 
 ## 0.1.0.0 — 2026-08-24
 

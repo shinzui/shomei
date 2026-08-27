@@ -573,7 +573,7 @@ seedOAuthAccount ref jwk jwkset cfg createdAt = do
     pure (account ^. #clientId)
 
 oauthClientSecret :: Text
-oauthClientSecret = "oauth-test-secret"
+oauthClientSecret = "oauth+test:secret"
 
 -- | EP-6: sign up a uniquely-named backing user (so several service accounts can coexist in one
 -- world without colliding on the fixed 'seedServiceUser' identity).
@@ -1269,7 +1269,8 @@ postForm :: Manager -> Int -> String -> Maybe (Text, Text) -> [(ByteString, Byte
 postForm mgr port path mBasic params = do
   req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
   let withBody = urlEncodedBody params req0
-      req = maybe withBody (\(c, s) -> applyBasicAuth (Text.encodeUtf8 c) (Text.encodeUtf8 s) withBody) mBasic
+      encoded = urlEncode True . Text.encodeUtf8
+      req = maybe withBody (\(c, s) -> applyBasicAuth (encoded c) (encoded s) withBody) mBasic
   resp <- httpLbs req mgr
   pure (statusCode (responseStatus resp), responseHeaders resp, decode (responseBody resp))
 
@@ -1522,7 +1523,7 @@ scenarioOidcDiscoveryEnabled port = do
   dig ["subject_types_supported"] doc @?= Just (toJSON (["public"] :: [Text]))
   -- EP-4's grant is advertised alongside the two EP-5 adds.
   dig ["grant_types_supported"] doc
-    @?= Just (toJSON (["authorization_code", "refresh_token", "client_credentials"] :: [Text]))
+    @?= Just (toJSON (["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"] :: [Text]))
   -- The default test config signs with ES256.
   dig ["id_token_signing_alg_values_supported"] doc @?= Just (toJSON (["ES256"] :: [Text]))
   dig ["token_endpoint_auth_methods_supported"] doc
@@ -2581,7 +2582,7 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   noTokenUi@(_, noTokenHeaders, _) <- getRaw mgr port "/oauth/userinfo" []
   assertOAuthError "userinfo without a bearer token" 401 "invalid_token" noTokenUi
   headerValue "WWW-Authenticate" noTokenHeaders
-    @?= Just "Bearer realm=\"shomei\", error=\"invalid_token\""
+    @?= Just "Bearer realm=\"shomei\""
   assertBool
     "userinfo authentication failures stay outside the problem envelope"
     (headerValue "Content-Type" noTokenHeaders /= Just "application/problem+json")
@@ -2604,6 +2605,12 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   -- Garbage introspects inactive, at 200 (never an error, to prevent probing).
   garbage <- introspect mgr port basic "not-a-token"
   garbage @?= object ["active" .= False]
+
+  -- A token-type hint is an optimization, never a requirement. The JWT attempt falls through to
+  -- opaque refresh-token lookup and reports the live refresh token at 200.
+  activeRefresh <- introspect mgr port basic refreshToken
+  dig ["active"] activeRefresh @?= Just (Aeson.Bool True)
+  (dig ["token_type"] activeRefresh >>= asText) @?= Just "refresh_token"
 
   -- The flip: revoke the refresh token, and the access token's session dies with it, so
   -- introspection -- which is session-aware regardless of sessionCheckMode -- now reports inactive.
