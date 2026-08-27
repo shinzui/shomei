@@ -87,6 +87,7 @@ buildClaims cfg uid sid ts =
       audience = cfg.audience,
       issuedAt = ts,
       expiresAt = addUTCTime cfg.accessTokenTTL ts,
+      authTime = ts,
       scopes = Set.empty,
       roles = Set.empty,
       permissions = Set.empty,
@@ -206,7 +207,8 @@ issueSessionWith cfg opts user ts = do
           oauthClientId = opts.oauthClientId,
           -- Every caller is an interactive login or a code exchange authorized by one.
           kind = InteractiveSession,
-          grantedScopes = opts.extraScopes
+          grantedScopes = opts.extraScopes,
+          authenticatedAt = ts
         }
       NewSessionToken
         { tokenHash = tokHash,

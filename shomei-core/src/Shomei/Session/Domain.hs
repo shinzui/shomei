@@ -50,7 +50,9 @@ data Session = Session
     -- | the scopes the authorization-code grant granted, re-applied on every refresh so a
     --     rotated access token keeps @openid@ and friends. Empty for every other flow and for
     --     every row that predates the column.
-    grantedScopes :: !(Set Scope)
+    grantedScopes :: !(Set Scope),
+    -- | when the last credential was proven; preserved across refresh and emitted as @auth_time@.
+    authenticatedAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -66,7 +68,9 @@ data NewSession = NewSession
     -- | how this session was established; see 'SessionKind'.
     kind :: !SessionKind,
     -- | the authorization-code grant's persisted scope set; empty for every other flow.
-    grantedScopes :: !(Set Scope)
+    grantedScopes :: !(Set Scope),
+    -- | when the credential establishing this session was proven.
+    authenticatedAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

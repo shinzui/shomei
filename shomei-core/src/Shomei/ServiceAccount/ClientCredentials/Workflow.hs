@@ -103,7 +103,8 @@ grantClientCredentials cfg cmd = runErrorNoCallStack do
           actor = Nothing,
           oauthClientId = Nothing,
           kind = MachineSession,
-          grantedScopes = Set.empty
+          grantedScopes = Set.empty,
+          authenticatedAt = ts
         }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)

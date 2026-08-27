@@ -50,6 +50,9 @@ data AuthClaims = AuthClaims
     audience :: !Audience,
     issuedAt :: !UTCTime,
     expiresAt :: !UTCTime,
+    -- | when the last credential was proven. Unlike 'issuedAt', this is preserved across token
+    -- refresh and is the clock for reauthentication gates.
+    authTime :: !UTCTime,
     scopes :: !(Set Scope),
     roles :: !(Set Role),
     -- | the capabilities the subject's roles imply (EP-9), resolved at mint time from the
@@ -77,7 +80,7 @@ data AuthClaims = AuthClaims
 -- from the recovered extension bag, and 'mkExtraClaims' drops every managed value
 -- at construction. Adding a managed claim therefore starts by adding its name here.
 reservedClaimKeys :: [Text]
-reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "nbf", "jti", "sid", "scopes", "roles", "permissions", "act"]
+reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "nbf", "jti", "sid", "scopes", "roles", "permissions", "act", "auth_time"]
 
 -- | Build an extra-claims object, dropping any reserved key (see 'reservedClaimKeys').
 mkExtraClaims :: Object -> Object

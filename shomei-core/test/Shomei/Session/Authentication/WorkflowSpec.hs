@@ -173,8 +173,13 @@ testRefreshRotates :: TestTree
 testRefreshRotates = testCase "refresh rotates token and old token becomes Used" do
   ref <- newIORef (emptyWorld fixedTime)
   (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  originalClaims <- expectRight =<< runInMemory ref (verifyToken cfg pair.accessToken)
+  advanceTo ref 60
   pair2 <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
+  refreshedClaims <- expectRight =<< runInMemory ref (verifyToken cfg pair2.accessToken)
   assertBool "rotated token differs from the original" (pair2.refreshToken /= pair.refreshToken)
+  refreshedClaims.authTime @?= originalClaims.authTime
+  refreshedClaims.issuedAt @?= addUTCTime 60 originalClaims.issuedAt
   w <- readIORef ref
   let toks = Map.elems w.refreshTokens
   assertBool "exactly one token is marked Used" (length (filter (\t -> t.status == RefreshTokenUsed) toks) == 1)

@@ -120,7 +120,8 @@ sessionRow session =
     userIdToUUID <$> session.actor,
     session.oauthClientId,
     Just (sessionKindToText session.kind),
-    [scope | Scope scope <- Set.toList session.grantedScopes]
+    [scope | Scope scope <- Set.toList session.grantedScopes],
+    Just session.authenticatedAt
   )
 
 -- | The column tuple 'insertRefreshTokenStmt' encodes. A freshly inserted token is always

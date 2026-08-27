@@ -57,8 +57,9 @@ against today's code after five wrong codes and is locked out once M2 lands.
 - [x] (2026-08-27T17:48:45Z) M2: `ProofContext`; the four proof workflows gated and counted;
       `PasswordChangeFailed`; `RemoteHost` on four routes; TOTP, passkey, password-change, and
       removal lockout regressions green. The core, PostgreSQL, Servant, and server suites passed.
-- [ ] M3: `auth_time` on claims, sessions, and the wire; refresh preserves it; gates read it; TOTP
-      removal requires freshness; docs reworded.
+- [x] (2026-08-27T18:02:41Z) M3: `auth_time` on claims, sessions, and the wire; refresh preserves it;
+      gates read it; TOTP removal requires freshness; compatibility and forgery tests plus user
+      docs complete. Core (267), JWT (63), Servant/OpenAPI (62), and PostgreSQL (61) tests passed.
 - [ ] M4: `Shomei.Servant.Throttle`; thirteen routes marked; conformance test; `api.md` and
       `docs/api/openapi.json` updated.
 - [ ] M5: passwordless forces `UVRequired`; docs and capability catalog; ADR distillation; Outcomes.
@@ -92,6 +93,16 @@ implementation. Provide concise evidence.
   the future. Because failure counting deliberately starts after the latest success, those failures
   were correctly excluded. Keeping the enrollment at the fixture clock and moving only the proof
   clock forward made the test model real monotonic time and exposed the intended pre-fix `200`.
+
+- The freshness HTTP regression uses the in-memory workflow clock while jose validates `iat` against
+  the real wall clock. Refreshing after moving the fake clock ten minutes forward therefore produced
+  a future-issued JWT and a misleading `401`, before the freshness handler ran. Starting the TOTP
+  scenario twelve minutes in the past lets it advance across the five-minute freshness window while
+  keeping both the refreshed `iat` and `exp` valid against jose's real clock.
+
+- The migration allocator placed `sessions-authenticated-at` at `0034`, immediately after M1's
+  `0033`, and the PostgreSQL compatibility test confirmed a `NULL authenticated_at` reads as the
+  session's `created_at`.
 
 
 ## Decision Log

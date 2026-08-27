@@ -163,7 +163,8 @@ signup cfg cmd = runErrorNoCallStack do
           actor = Nothing,
           oauthClientId = Nothing,
           kind = InteractiveSession,
-          grantedScopes = Set.empty
+          grantedScopes = Set.empty,
+          authenticatedAt = ts
         }
       NewSessionToken
         { tokenHash = tokHash,
@@ -401,7 +402,7 @@ refreshFrom origin cfg cmd = do
                         -- Re-running the enrichment here is what makes a role change take
                         -- effect on refresh (the staleness contract in docs/user/security.md).
                         base <- buildEnrichedClaims cfg s.userId s.sessionId ts
-                        let claims = base {scopes = base.scopes <> s.grantedScopes}
+                        let claims = base {scopes = base.scopes <> s.grantedScopes, authTime = s.authenticatedAt}
                         access <- signAccessToken claims
                         pure
                           ( Right

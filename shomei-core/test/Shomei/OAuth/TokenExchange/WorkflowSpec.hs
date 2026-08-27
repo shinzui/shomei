@@ -89,6 +89,7 @@ claimsFor uid sid scs act iat =
       audience = cfg.audience,
       issuedAt = iat,
       expiresAt = addUTCTime 900 iat,
+      authTime = iat,
       scopes = scs,
       roles = Set.empty,
       permissions = Set.empty,

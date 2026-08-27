@@ -37,7 +37,7 @@ or `code`, not on `title` or `detail`.
 | <a id="totp_enrollment_not_found"></a>`totp_enrollment_not_found` | No pending TOTP enrollment to verify | 404 | no | Start a new enrollment. | never |
 | <a id="totp_code_invalid"></a>`totp_code_invalid` | TOTP code is invalid | 401 | no | Present a new current code. | never |
 | <a id="recovery_code_invalid"></a>`recovery_code_invalid` | Recovery code is invalid | 401 | no | Present an unused recovery code. | never |
-| <a id="reauthentication_required"></a>`reauthentication_required` | Recent authentication required for this action | 403 | no | Authenticate again before the sensitive action. | never |
+| <a id="reauthentication_required"></a>`reauthentication_required` | Recent authentication required for this action | 403 | no | Log in again (or complete MFA again); refreshing does not count. | never |
 | <a id="impersonation_forbidden"></a>`impersonation_forbidden` | Not allowed to impersonate | 403 | no | Stop; the caller lacks delegation authority. | never |
 | <a id="impersonation_target_invalid"></a>`impersonation_target_invalid` | Invalid impersonation target | 400 | no | Correct the delegation target. | never |
 | <a id="impersonation_action_blocked"></a>`impersonation_action_blocked` | This action is not permitted while impersonating | 403 | no | Use the actor's own session. | never |

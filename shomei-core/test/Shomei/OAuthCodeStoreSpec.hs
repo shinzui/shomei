@@ -76,7 +76,7 @@ tests =
           testCase "an absent scope is invalid when only privilege scopes remain" privilegeOnlyDefaultFails,
           testCase "a scope outside the allow-list is invalid_scope" scopeOutsideAllowList,
           testCase "an empty scope parameter is invalid_scope, not a request for nothing" emptyScope,
-          testCase "auth_time is the authorizing token's iat, not now" authTimeIsTokenIat,
+          testCase "auth_time is copied from the authorizing token, not its iat or now" authTimeIsCredentialTime,
           testCase "isValidS256Challenge accepts only 43 unpadded base64url chars" challengeShape
         ]
     ]
@@ -120,8 +120,8 @@ baseParams =
       codeChallengeMethod = Just "S256"
     }
 
--- | Claims for a user who authenticated an hour before the request reached authorize, so a test
--- can tell @auth_time@ (the token's @iat@) from "now".
+-- | Claims for a user whose token was refreshed at request time but who authenticated an hour
+-- earlier, so the authorization-code test can distinguish @auth_time@ from @iat@ and "now".
 claimsFor :: UserId -> SessionId -> AuthClaims
 claimsFor uid sid =
   AuthClaims
@@ -129,8 +129,9 @@ claimsFor uid sid =
       sessionId = sid,
       issuer = Issuer "https://shomei.test",
       audience = Audience "shomei-clients",
-      issuedAt = addUTCTime (-3600) t0,
+      issuedAt = t0,
       expiresAt = addUTCTime 900 t0,
+      authTime = addUTCTime (-3600) t0,
       scopes = Set.empty,
       roles = Set.empty,
       permissions = Set.empty,
@@ -232,7 +233,8 @@ runAuthorizeWithAllowed registeredScopes clientType params = do
             actor = Nothing,
             oauthClientId = Nothing,
             kind = InteractiveSession,
-            grantedScopes = Set.empty
+            grantedScopes = Set.empty,
+            authenticatedAt = t0
           }
     ocid <- genOAuthClientId
     client <-
@@ -370,9 +372,9 @@ emptyScope = do
   e @?= AuthorizeInvalidScope
 
 -- | OIDC's @auth_time@ means "when the user authenticated", which is the authorizing access
--- token's @iat@ — an hour ago here — not the moment the browser reached authorize.
-authTimeIsTokenIat :: IO ()
-authTimeIsTokenIat = do
+-- token's carried credential time — an hour ago here — not its refreshed @iat@ or request time.
+authTimeIsCredentialTime :: IO ()
+authTimeIsCredentialTime = do
   (result, world) <- runAuthorize ConfidentialClient baseParams
   _ <- expectRight result
   case Map.elems (oauthCodes world) of

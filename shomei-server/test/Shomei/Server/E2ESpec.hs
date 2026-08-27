@@ -155,6 +155,7 @@ tests =
                     audience = cfg.audience,
                     issuedAt = t,
                     expiresAt = addUTCTime 900 t,
+                    authTime = t,
                     scopes = Set.singleton (Scope "impersonate:user"),
                     roles = Set.empty,
                     permissions = Set.empty,
@@ -489,7 +490,8 @@ seedOperatorPrincipal pool = do
                 actor = Nothing,
                 oauthClientId = Nothing,
                 kind = InteractiveSession,
-                grantedScopes = Set.empty
+                grantedScopes = Set.empty,
+                authenticatedAt = ts
               }
         pure (userId, session.sessionId)
   either (assertFailure . ("could not seed the operator user: " <>) . show) pure outcome

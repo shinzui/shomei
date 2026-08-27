@@ -70,6 +70,7 @@ claimsFor uid sid actor =
       audience = Audience "shomei-clients",
       issuedAt = fixedTime,
       expiresAt = addUTCTime 900 fixedTime,
+      authTime = fixedTime,
       scopes = Set.empty,
       roles = Set.empty,
       permissions = Set.empty,
@@ -96,7 +97,8 @@ runAuthorize kind state carriesActor = do
             actor,
             oauthClientId = Nothing,
             kind,
-            grantedScopes = Set.empty
+            grantedScopes = Set.empty,
+            authenticatedAt = fixedTime
           }
     case state of
       Revoked -> revokeSession session.sessionId fixedTime

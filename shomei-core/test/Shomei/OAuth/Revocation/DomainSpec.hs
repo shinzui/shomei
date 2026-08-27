@@ -63,6 +63,7 @@ withPrincipals assertion = do
             actor = Nothing,
             oauthClientId = Just "oauthclient_owner",
             kind = InteractiveSession,
-            grantedScopes = Set.empty
+            grantedScopes = Set.empty,
+            authenticatedAt = t0
           }
   assertion account subjectUser session

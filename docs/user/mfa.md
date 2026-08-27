@@ -83,16 +83,17 @@ bounded to one code guess per password proof.
 
 ## Removing TOTP
 
-`DELETE /v1/auth/totp` requires **proof of possession** in the body — a currently valid code, or
-an unused recovery code — not merely a fresh session:
+`DELETE /v1/auth/totp` requires both recent authentication and **proof of possession** in the body
+— a currently valid code, or an unused recovery code:
 
 ```json
 {"code":"492039"}                 // or {"recoveryCode":"7Q2FK-9XPRD"}
 ```
 
-→ `204`. Proving possession of the factor (or its designated fallback) is a stronger gate than
-token freshness and matches what major providers do. Removal is also blocked under a delegated
-token.
+→ `204`. The access token's `auth_time` must be within
+`impersonationConfig.actorFreshnessWindow` (default 5 minutes); refreshing rotates `iat` but does
+not renew `auth_time`, so a stale caller must log in again. Removal is also blocked under a
+delegated token.
 
 ## Recovery codes
 
@@ -103,9 +104,10 @@ token.
 ```
 
 Regeneration **invalidates the previous set**. Because this prints new secrets, it requires a
-recently issued access token: if the presented token is older than
+recent credential proof: if the token's `auth_time` is older than
 `impersonationConfig.actorFreshnessWindow` (default 5 minutes), it is refused with
-`403 reauthentication_required` — log in again and retry. Codes are stored only as SHA-256
+`403 reauthentication_required` — log in again and retry. Refreshing does not renew this clock.
+Codes are stored only as SHA-256
 hashes; `psql` shows `shomei_recovery_codes.code_hash` as hex, never a plaintext code.
 
 - `GET /v1/auth/recovery-codes` returns `{"remaining":9}` — how many are unused.

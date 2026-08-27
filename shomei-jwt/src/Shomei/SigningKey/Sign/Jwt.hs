@@ -106,6 +106,7 @@ claimsFromAuth ac =
       & addClaim "scopes" (Aeson.toJSON (Set.toList ac.scopes))
       & addClaim "roles" (Aeson.toJSON (Set.toList ac.roles))
       & addClaim "permissions" (Aeson.toJSON (Set.toList ac.permissions))
+      & addClaim "auth_time" (Aeson.toJSON (NumericDate (wholeSeconds ac.authTime)))
   where
     addExtra obj cs = KeyMap.foldrWithKey (\k v -> addClaim (Key.toText k) v) cs obj
     -- Add the @act@ claim only for delegated tokens, leaving ordinary tokens

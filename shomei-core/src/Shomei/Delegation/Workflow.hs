@@ -42,7 +42,7 @@ import Shomei.Time.Store (Clock, now)
 
 -- | Command to start impersonating a target on behalf of the verified caller.
 data StartImpersonation = StartImpersonation
-  { -- | the caller's verified token contents (carries scopes + issuedAt + subject)
+  { -- | the caller's verified token contents (carries scopes + authTime + subject)
     actorClaims :: !AuthClaims,
     targetUserId :: !UserId,
     reason :: !Text,
@@ -72,8 +72,8 @@ startImpersonation cfg cmd = runErrorNoCallStack do
   ts <- now
   -- Scope check: the caller must hold the configured impersonation scope.
   unless (imp.impersonateScope `Set.member` caller.scopes) (throwError ImpersonationForbidden)
-  -- Freshness check: the caller's own token must be recently issued.
-  when (ts > addUTCTime imp.actorFreshnessWindow caller.issuedAt) (throwError ImpersonationForbidden)
+  -- Freshness check: the caller must have recently proven a credential; refresh does not count.
+  when (ts > addUTCTime imp.actorFreshnessWindow caller.authTime) (throwError ImpersonationForbidden)
   -- The operator's credential must still be backed by a live session, regardless of the host's
   -- ordinary route-authentication mode.
   _ <- either (const (throwError ImpersonationForbidden)) pure =<< requireLiveSession ts caller.sessionId
@@ -155,7 +155,8 @@ mintDelegatedToken cfg ts mint = do
           actor = Just mint.actorUserId,
           oauthClientId = Nothing,
           kind = DelegatedSession,
-          grantedScopes = Set.empty
+          grantedScopes = Set.empty,
+          authenticatedAt = ts
         }
   let claims =
         AuthClaims
@@ -165,6 +166,7 @@ mintDelegatedToken cfg ts mint = do
             audience = cfg.audience,
             issuedAt = ts,
             expiresAt = expires,
+            authTime = ts,
             scopes = mint.scopes,
             roles = Set.empty,
             -- A delegated token carries negotiated scopes, not role-derived permissions (EP-9):

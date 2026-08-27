@@ -136,7 +136,7 @@ Credential and lockout failures are the same `401 invalid_login`; the per-IP fai
 `429 too_many_requests`; an enforced unverified email is `403 email_not_verified`.
 
 ### `POST /v1/auth/refresh`
-Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
 ### `POST /oauth/token`
 
@@ -352,10 +352,10 @@ Empty body. → `200` `{"secret","otpauthUri"}` — the Base32 secret and `otpau
 Body `{"code"}`. Activates a pending enrollment with a first valid code. → `200`. `404 totp_enrollment_not_found` (no pending/unexpired enrollment); `401 totp_code_invalid`.
 
 ### `DELETE /v1/auth/totp` *(authenticated)*
-Body carries **exactly one** of `code` (a current TOTP code) or `recoveryCode` — proof of possession. → `204`. `404 totp_enrollment_not_found`; `401 totp_code_invalid` / `401 recovery_code_invalid`; `403 impersonation_action_blocked` under a delegated token.
+Body carries **exactly one** of `code` (a current TOTP code) or `recoveryCode` — proof of possession. The access token's `auth_time` must also be within `impersonationConfig.actorFreshnessWindow`; refresh does not renew it. → `204`. `404 totp_enrollment_not_found`; `401 totp_code_invalid` / `401 recovery_code_invalid`; `403 reauthentication_required` when stale; `403 impersonation_action_blocked` under a delegated token.
 
 ### `POST /v1/auth/recovery-codes` *(authenticated)*
-Empty body. Generates ten single-use codes, shown **once**, replacing any previous set. → `200` `{"codes":[…10…]}`. Requires a freshly issued token (within `impersonationConfig.actorFreshnessWindow`), else `403 reauthentication_required`; `403 impersonation_action_blocked` under a delegated token.
+Empty body. Generates ten single-use codes, shown **once**, replacing any previous set. → `200` `{"codes":[…10…]}`. Requires recent credential proof: the token's `auth_time` must be within `impersonationConfig.actorFreshnessWindow`, and refreshing does not change it. Otherwise → `403 reauthentication_required`; `403 impersonation_action_blocked` under a delegated token.
 
 ### `GET /v1/auth/recovery-codes` *(authenticated)*
 → `200` `{"remaining":N}` — how many unused recovery codes remain.

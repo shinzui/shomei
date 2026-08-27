@@ -365,6 +365,7 @@ mkAdminToken jwk cfg = do
             audience = cfg.audience,
             issuedAt = t,
             expiresAt = addUTCTime 900 t,
+            authTime = t,
             scopes = Set.empty,
             roles = Set.fromList [Role "admin"],
             permissions = Set.empty,
@@ -400,6 +401,7 @@ mkTokenForSession jwk cfg uid sid roles scopes actor t = do
             audience = cfg.audience,
             issuedAt = t,
             expiresAt = addUTCTime 900 t,
+            authTime = t,
             scopes = scopes,
             roles = roles,
             permissions = Set.empty,
@@ -3352,12 +3354,12 @@ scenarioTotp r jwk cfg port = do
   (liBody >>= dig ["status"] >>= asText) @?= Just "complete"
   access <- must "login accessToken" (liBody >>= dig ["token", "accessToken"] >>= asText)
 
-  -- Move the deterministic World clock ~2 minutes into the PAST relative to the real wall clock,
+  -- Move the deterministic World clock ~12 minutes into the PAST relative to the real wall clock,
   -- then step it forward. Tokens minted at these World times keep an @nbf@/@exp@ that jose (which
   -- validates against the real clock) still accepts, while their time-step counters advance so a
   -- confirmed code cannot be replayed at the next login (the strictly-greater rule).
   now0 <- clock <$> readIORef r
-  let start = addUTCTime (-120) now0
+  let start = addUTCTime (-720) now0
   setClock r start
 
   -- enroll: secret shown once, plus an otpauth URI.
@@ -3390,6 +3392,7 @@ scenarioTotp r jwk cfg port = do
   (c1Status, c1Body) <- complete cid1 (object ["type" .= ("totp" :: Text), "code" .= code1])
   c1Status @?= 200
   totpAccess <- must "totp accessToken" (c1Body >>= dig ["accessToken"] >>= asText)
+  totpRefresh <- must "totp refreshToken" (c1Body >>= dig ["refreshToken"] >>= asText)
 
   -- replaying that same code at a fresh challenge fails: its counter is now spent.
   (m2Status, m2Body) <- login
@@ -3452,6 +3455,7 @@ scenarioTotp r jwk cfg port = do
               audience = cfg.audience,
               issuedAt = start,
               expiresAt = addUTCTime 900 start,
+              authTime = start,
               scopes = Set.empty,
               roles = Set.empty,
               permissions = Set.empty,
@@ -3473,12 +3477,18 @@ scenarioTotp r jwk cfg port = do
   afterStatus @?= 200
   (afterBody >>= dig ["status"] >>= asText) @?= Just "complete"
 
-  -- regenerating recovery codes on a token older than the freshness window is refused. Advancing
+  -- TOTP removal and recovery-code regeneration both require recent credential proof. Advancing
   -- the World clock ages the earlier token (its jose exp is checked against real time, so it stays
-  -- otherwise valid); the freshness gate compares the token's issuedAt to the World clock's now.
+  -- otherwise valid); refreshing rotates iat but must preserve the earlier auth_time.
   let t3 = addUTCTime 600 t1
   setClock r t3
-  (frStatus, frBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
+  (staleDeleteStatus, staleDeleteBody) <- deleteAuthBody mgr port "/v1/auth/totp" (bearer totpAccess) (object ["code" .= codeAt t3])
+  staleDeleteStatus @?= 403
+  (staleDeleteBody >>= dig ["code"] >>= asText) @?= Just "reauthentication_required"
+  (refreshStatus, refreshBody) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= totpRefresh])
+  refreshStatus @?= 200
+  refreshedAccess <- must "refreshed accessToken" (refreshBody >>= dig ["accessToken"] >>= asText)
+  (frStatus, frBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer refreshedAccess)
   frStatus @?= 403
   (frBody >>= dig ["code"] >>= asText) @?= Just "reauthentication_required"
 

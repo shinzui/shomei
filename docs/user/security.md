@@ -14,7 +14,9 @@ logs. The minimum-length / policy check runs before hashing.
 ## Tokens
 
 - **Access tokens** are JWTs signed by the active signing key, carrying the subject (user id),
-  session id, issuer, audience, and expiry. They are verified offline against the published JWKS.
+  session id, issuer, audience, expiry, and `auth_time` (the instant the last credential was
+  proven). They are verified offline against the published JWKS. Refresh changes `iat` but
+  preserves the session's `auth_time`, so refreshing never counts as reauthentication.
   The signer and verifier accept only **ES256** (ECDSA P-256, the default) and **RS256**
   (RSASSA-PKCS1-v1_5); see `SHOMEI_SIGNING_ALG` in [deployment.md](deployment.md). Access-token
   headers carry `typ: at+jwt`. Every JWT and JWKS entry carries `alg`, and the JWT header's `kid`
@@ -33,7 +35,8 @@ logs. The minimum-length / policy check runs before hashing.
 - **Custom claims.** A service embedding Shōmei as a library can attach arbitrary top-level JSON
   claims to every token via `AuthClaims.extraClaims` (e.g. `buildClaimsWith`). They serialize
   alongside the standard claims and are returned on verification. Reserved standard claims (`iss`,
-  `sub`, `aud`, `iat`, `exp`, `nbf`, `jti`, `sid`, `scopes`, `roles`, `permissions`, `act`)
+  `sub`, `aud`, `iat`, `exp`, `nbf`, `jti`, `sid`, `scopes`, `roles`, `permissions`, `act`,
+  `auth_time`)
   **cannot be forged** through the bag: `mkExtraClaims` drops them at construction, the signer
   always writes Shōmei's own value last, and `jose` filters the registered claims from the custom
   map on both sign and verify.
@@ -249,7 +252,8 @@ account (a correct password, a valid refresh token, or a verified passkey assert
 
 ## Abuse protection (EP-2)
 
-- **Per-account brute-force lockout** (PostgreSQL-backed, survives restarts): after
+- **Per-account brute-force lockout** (PostgreSQL-backed, survives restarts): password, TOTP,
+  recovery-code, passkey, password-change, and TOTP-removal proofs share one budget. After
   `maxFailedLoginsPerAccount` failures (default 5) within `lockoutWindow` (default 15 min) an
   account is locked for `lockoutDuration` (default 15 min). The account key stored in the abuse
   tables is a SHA-256 of the normalized email, never the plaintext. Counting is "failures since
@@ -345,12 +349,12 @@ without shedding their own identity.
   token**, so it cannot be silently renewed and dies at its TTL. The customer's own session is
   never reused or copied, and the delegated credential cannot be laundered into a refreshable
   session through the authorization-code flow.
-- **Scope + freshness gate.** Starting impersonation requires the `impersonate:user` scope and a
-  recently-issued caller token (`impersonationConfig.actorFreshnessWindow`, default 5 minutes), a
+- **Scope + freshness gate.** Starting impersonation requires the `impersonate:user` scope and
+  recent credential proof (`auth_time` within `impersonationConfig.actorFreshnessWindow`, default
+  5 minutes), a
   live operator session, and an operator account that is still active. These liveness and status
   checks apply in every `sessionCheckMode`.
-  *(Recent authentication is enforced as a token-freshness window, not yet as an interactive MFA
-  re-prompt — a future plan can add a step-up ceremony and require it here.)*
+  Refreshing does not renew `auth_time`; the caller must log in or complete MFA again.
 - **Credential endpoints refuse delegated tokens.** Password change and passkey
   enrollment/removal return `403 impersonation_action_blocked` for any delegated token: an operator
   can look but cannot change the customer's credentials. Each blocked attempt is audited.

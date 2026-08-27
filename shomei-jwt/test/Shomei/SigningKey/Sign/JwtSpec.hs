@@ -13,6 +13,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), mkExtraClaims)
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Error (TokenError (..))
@@ -144,6 +145,19 @@ tests =
         res <- verifyToken (publicJwks jwk []) testConfig wire
         case res of
           Right ac' -> idText ac'.subject @?= idText base.subject
+          Left e -> assertFailure ("verify failed: " <> show e),
+      testCase "a custom auth_time in the extra bag cannot forge credential freshness" $ do
+        jwk <- generateSigningKey
+        t <- getCurrentTime
+        base <- mkClaims testConfig t
+        let expectedAuthTime = addUTCTime (-120) t
+            ac = base {authTime = expectedAuthTime, extraClaims = KeyMap.fromList [("auth_time", Aeson.Number 0)]}
+        wire <- signOrFail jwk ac
+        res <- verifyToken (publicJwks jwk []) testConfig wire
+        case res of
+          Right ac' -> do
+            floor (utcTimeToPOSIXSeconds ac'.authTime) @?= (floor (utcTimeToPOSIXSeconds expectedAuthTime) :: Integer)
+            assertBool "auth_time must not appear in extraClaims" (KeyMap.lookup "auth_time" ac'.extraClaims == Nothing)
           Left e -> assertFailure ("verify failed: " <> show e),
       -- The @permissions@ claim (EP-9) is managed like @roles@/@scopes@: the verify side reads it
       -- into the typed field and MUST strip it from the extra bag, or a consumer reading

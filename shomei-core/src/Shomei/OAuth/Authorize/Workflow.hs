@@ -139,8 +139,8 @@ isValidS256Challenge t =
 --   4. Mint a high-entropy opaque code, store only its SHA-256 digest along with every binding the
 --      exchange will re-check, and publish 'Event.OAuthCodeIssued'.
 --
--- @auth_time@ is the authorizing token's @iat@: the moment the user actually authenticated, which
--- is what OIDC's @auth_time@ claim means — not the moment they arrived at this endpoint.
+-- @auth_time@ is copied from the authorizing token: the moment the user actually proved a
+-- credential, which is what OIDC's claim means — not its refresh time or this request time.
 authorize ::
   ( OAuthCodeStore :> es,
     TokenGen :> es,
@@ -178,7 +178,7 @@ authorize cfg client claims params = runErrorNoCallStack do
         scopes = granted,
         nonce = params.nonce,
         codeChallenge = challenge,
-        authTime = claims.issuedAt,
+        authTime = claims.authTime,
         createdAt = ts,
         expiresAt = addUTCTime (cfg ^. #oauthConfig . #authorizationCodeTTL) ts
       }

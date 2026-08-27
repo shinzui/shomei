@@ -65,6 +65,7 @@ totpVerifyH env authUser request = runApplicationHandler do
 totpDeleteH :: Env -> AuthUser -> SockAddr -> TotpRemoveRequest -> Handler TotpDeleteResult
 totpDeleteH env authUser peer request = runApplicationHandler do
   denyUnderDelegation env "totp_remove" authUser
+  requireFreshAuth env authUser
   user <- loadUser env authUser
   workflow env (Totp.removeTotp env.config (proofContext env peer) user (totpRemovalProofOf request))
 
@@ -85,7 +86,7 @@ requireFreshAuth :: Env -> AuthUser -> ApplicationHandler ()
 requireFreshAuth env user = do
   timestamp <- port env now
   let window = env.config.impersonationConfig.actorFreshnessWindow
-  when (timestamp > addUTCTime window user.authClaims.issuedAt) $
+  when (timestamp > addUTCTime window user.authClaims.authTime) $
     rejectProblem pcReauthenticationRequired noProblemOccurrence
 
 proofContext :: Env -> SockAddr -> ProofContext

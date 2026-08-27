@@ -200,6 +200,11 @@ claimsToAuth cs = do
   audTxt <- exactAudience (cs ^. claimAud)
   issuedAt' <- note "missing iat" (dateOf (cs ^. claimIat))
   expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
+  authTime' <- case Map.lookup "auth_time" claims of
+    Nothing -> Right issuedAt'
+    Just value -> case parseEither Aeson.parseJSON value of
+      Left _ -> Left TokenMalformed
+      Right (NumericDate t) -> Right t
   scopeValues <- lookupStringList "scopes"
   roleValues <- lookupStringList "roles"
   permissionValues <- lookupStringList "permissions"
@@ -229,6 +234,7 @@ claimsToAuth cs = do
         audience = Domain.Audience audTxt,
         issuedAt = issuedAt',
         expiresAt = expiresAt',
+        authTime = authTime',
         scopes = scs,
         roles = rls,
         permissions = perms,

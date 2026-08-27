@@ -727,6 +727,7 @@ signWith jwk = do
             audience = cfg.audience,
             issuedAt = t,
             expiresAt = addUTCTime 900 t,
+            authTime = t,
             scopes = Set.empty,
             roles = Set.empty,
             permissions = Set.empty,

@@ -3,7 +3,7 @@
 -- | Regression tests for the verifier's trust boundary.
 module Shomei.SigningKey.Verify.JwtSpec (tests) where
 
-import Control.Lens ((&), (.~), (?~), (^.))
+import Control.Lens ((%~), (&), (.~), (?~), (^.))
 import Crypto.JOSE.Compact (encodeCompact)
 import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.Header (newHeaderParamProtected)
@@ -20,6 +20,7 @@ import Crypto.JWT
     addClaim,
     claimAud,
     signClaims,
+    unregisteredClaims,
   )
 import Data.Aeson (Object, Result (Error, Success), Value (Number, String))
 import Data.Aeson qualified as Aeson
@@ -27,6 +28,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteArray.Encoding (Base (Base64URLUnpadded), convertFromBase, convertToBase)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
@@ -86,7 +88,18 @@ tests =
         wire <- signAccessOrFail jwk claims
         payload <- decodeSegment 1 wire
         assertIntegralNumber "iat" payload
-        assertIntegralNumber "exp" payload,
+        assertIntegralNumber "exp" payload
+        assertIntegralNumber "auth_time" payload,
+      testCase "a legacy access token without auth_time falls back to iat" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        claims <- mkClaims testConfig now
+        let legacyClaims = claimsFromAuth claims & unregisteredClaims %~ Map.delete "auth_time"
+        wire <- signClaimsOrFail jwk legacyClaims
+        result <- verifyToken (publicJwks jwk []) testConfig wire
+        case result of
+          Right verified -> verified.authTime @?= verified.issuedAt
+          Left err -> assertFailure ("expected the legacy token to verify, got " <> show err),
       testCase "drops nbf and jti from the extension claim bag" $ do
         let extras = mkExtraClaims (KeyMap.fromList [("nbf", Number 1), ("jti", String "forged")])
         assertBool "nbf must be reserved" (not (KeyMap.member "nbf" extras))
