@@ -30,8 +30,6 @@ import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
-import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Admin.Audit (runAuditReader)
@@ -622,7 +620,6 @@ testRolesGrantBothExpiryFlagsFailsToParse =
 testAuditQuery :: TestTree
 testAuditQuery = testCase "audit reader returns published events; type filter + count work" $ withDb \pool _ -> do
   t <- getCurrentTime
-  em <- mkEmail' "audit@example.com"
   uid <- genUserId
   sid <- genSessionId
   -- Seed two events through the real PostgreSQL publisher.
@@ -630,7 +627,7 @@ testAuditQuery = testCase "audit reader returns published events; type filter + 
     =<< runPublish
       pool
       ( do
-          publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (either (error . show) id (mkLoginId (emailText em))) t))
+          publishAuthEvent (Event.LoginFailed (Event.LoginFailedData Nothing Nothing t))
           publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData uid sid (addUTCTime 1 t)))
       )
   -- Read them back through the CLI's reader stack (newest-first).
@@ -656,9 +653,6 @@ runPublish pool =
 
 okR :: (Show e) => Either e a -> IO a
 okR = either (assertFailure . show) pure
-
-mkEmail' :: Text -> IO Email
-mkEmail' t = either (\e -> assertFailure ("bad email: " <> show e)) pure (mkEmail t)
 
 -- Helpers --------------------------------------------------------------------
 

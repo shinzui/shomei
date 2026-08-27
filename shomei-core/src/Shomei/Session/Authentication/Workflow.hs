@@ -36,7 +36,6 @@ import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 import Shomei.Account.Credential.Domain (Credential (..))
 import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredential, findPasswordCredentialByLoginId)
 import Shomei.Account.Email.Domain (emailText)
-import Shomei.Account.LoginId.Domain (LoginId)
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Breach.Workflow (enforceBreachPolicy)
 import Shomei.Account.Password.Domain (PasswordContext (..), validatePassword)
@@ -51,7 +50,7 @@ import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Authorization.Role.Workflow (applyDefaultRoles)
 import Shomei.Config (MfaConfig (..), NotifierConfig (..), RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (..))
-import Shomei.Id (CeremonyId)
+import Shomei.Id (CeremonyId, UserId)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
 import Shomei.Mfa.Totp.Domain (isTotpConfirmed)
 import Shomei.Mfa.Totp.Store (TotpCredentialStore, findTotpByUser)
@@ -228,7 +227,7 @@ login cfg ctx cmd = runErrorNoCallStack do
   -- lock state observable through response time even though the HTTP error stayed generic.
   when lockedBefore do
     verifyPasswordDummy cmd.password
-    failLogin rl outcome ctx cmd.loginId ts
+    failLogin rl outcome ctx Nothing ts
   -- Every failure path below performs exactly one password-hashing operation. The paths that
   -- never reach a stored hash call 'verifyPasswordDummy' instead, which burns an equivalent
   -- amount of Argon2id work, so a miss cannot be told apart from a wrong password by response
@@ -236,15 +235,15 @@ login cfg ctx cmd = runErrorNoCallStack do
   mCred <- findPasswordCredentialByLoginId cmd.loginId
   cred <- maybe (failLoginTimed rl outcome ctx cmd ts) pure mCred
   ok <- verifyPassword cmd.password cred.passwordHash
-  unless ok (failLogin rl outcome ctx cmd.loginId ts)
+  unless ok (failLogin rl outcome ctx (Just cred.userId) ts)
   -- The password hash was already evaluated, so the missing-user and inactive-user branches do
   -- not need a dummy hash. Keeping the user lookup after verification also leaves the common
   -- wrong-password path at four database checkouts, including its audit event.
   mUser <- findUserById cred.userId
-  user <- maybe (failLogin rl outcome ctx cmd.loginId ts) pure mUser
+  user <- maybe (failLogin rl outcome ctx (Just cred.userId) ts) pure mUser
   when (user.status /= UserActive) do
     publishNewLock rl outcome ctx ts
-    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData cmd.loginId ts))
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (Just ctx.accountKey) (Just user.userId) ts))
     throwError UserNotActive
   -- Gate before the MFA branch, so an account with an unverified email is not even offered a
   -- ceremony. The password was already proven correct here, so naming the reason discloses
@@ -286,7 +285,7 @@ failLoginTimed ::
   Eff es a
 failLoginTimed rl outcome ctx cmd ts = do
   verifyPasswordDummy cmd.password
-  failLogin rl outcome ctx cmd.loginId ts
+  failLogin rl outcome ctx Nothing ts
 
 -- | The shared failure path for 'login': publish the lock transition reserved by the already
 -- recorded provisional failure, publish 'LoginFailed', then throw the generic
@@ -299,12 +298,12 @@ failLogin ::
   RateLimitConfig ->
   FailureOutcome ->
   ClientContext ->
-  LoginId ->
+  Maybe UserId ->
   UTCTime ->
   Eff es a
-failLogin rl outcome ctx loginId ts = do
+failLogin rl outcome ctx mUserId ts = do
   publishNewLock rl outcome ctx ts
-  publishAuthEvent (Event.LoginFailed (Event.LoginFailedData loginId ts))
+  publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (Just ctx.accountKey) mUserId ts))
   throwError InvalidCredentials
 
 publishNewLock ::

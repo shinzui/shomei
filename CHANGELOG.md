@@ -11,6 +11,9 @@ project-level roundup of what shipped together.
 
 ## Unreleased
 
+- **Breaking (`shomei-core` 0.2.0.0):** access and refresh token domain types no longer have
+  generic JSON instances and render redacted; failed-login audit rows retain only the hashed
+  account key plus a resolved user ID, never the submitted identifier.
 - **Breaking (`shomei-core` 0.2.0.0):** notifier credentials no longer live in `ShomeiConfig`;
   the standalone server holds stripped, non-printable runtime secrets, requires secure transport
   defaults, and timestamps webhook signatures for receiver replay windows.

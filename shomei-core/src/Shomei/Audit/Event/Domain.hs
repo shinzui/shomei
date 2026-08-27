@@ -82,7 +82,8 @@ data LoginSucceededData = LoginSucceededData
   deriving anyclass (FromJSON, ToJSON)
 
 data LoginFailedData = LoginFailedData
-  { loginId :: !LoginId,
+  { accountKey :: !(Maybe AccountKey),
+    userId :: !(Maybe UserId),
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)

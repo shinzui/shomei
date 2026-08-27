@@ -15,7 +15,10 @@ import Shomei.Session.RefreshToken.Domain (RefreshToken)
 
 newtype AccessToken = AccessToken Text
   deriving stock (Generic)
-  deriving newtype (Eq, Show, FromJSON, ToJSON)
+  deriving newtype (Eq)
+
+instance Show AccessToken where
+  show _ = "AccessToken <redacted>"
 
 data TokenPair = TokenPair
   { accessToken :: !AccessToken,
@@ -23,4 +26,3 @@ data TokenPair = TokenPair
     expiresIn :: !NominalDiffTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)

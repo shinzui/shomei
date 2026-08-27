@@ -1474,7 +1474,7 @@ testPublishEvent :: TestTree
 testPublishEvent = testCase "publish auth event lands a row" $ withDb \pool -> do
   result <- runApp pool do
     t <- now
-    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceLogin t))
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (Just (AccountKey "k-alice")) Nothing t))
   _ <- expectApp result
   n <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events"
   n @?= 1
@@ -1489,9 +1489,9 @@ testAuditEventReader = testCase "audit reader: filter + order + keyset paginatio
     s1 <- genSessionId
     s2 <- genSessionId
     -- Five events at strictly increasing times (newest = tt 4).
-    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData aliceLogin (tt 0)))
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (Just (AccountKey "k-alice")) (Just alice.userId) (tt 0)))
     publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData alice.userId s1 (tt 1)))
-    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData bobLogin (tt 2)))
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData (Just (AccountKey "k-bob")) (Just bob.userId) (tt 2)))
     publishAuthEvent (Event.PasswordChanged (Event.PasswordChangedData alice.userId (tt 3)))
     publishAuthEvent (Event.LoginSucceeded (Event.LoginSucceededData bob.userId s2 (tt 4)))
     allEvents <- queryAuthEvents emptyAuditQuery
@@ -1507,13 +1507,13 @@ testAuditEventReader = testCase "audit reader: filter + order + keyset paginatio
         let lastRow = last rows
             cur = AuditCursor (storedCreatedAt lastRow) (storedEventId lastRow)
          in queryAuthEvents emptyAuditQuery {queryLimit = 2, queryBefore = Just cur}
-    pure (allEvents, aliceEvents, failedEvents, windowEvents, total, failedTotal, page1, page2)
-  (allEvents, aliceEvents, failedEvents, windowEvents, total, failedTotal, page1, page2) <- expectApp result
+    pure (alice.userId, allEvents, aliceEvents, failedEvents, windowEvents, total, failedTotal, page1, page2)
+  (aliceUserId, allEvents, aliceEvents, failedEvents, windowEvents, total, failedTotal, page1, page2) <- expectApp result
   -- newest-first ordering across all five
   map storedEventType allEvents
     @?= ["login_succeeded", "password_changed", "login_failed", "login_succeeded", "login_failed"]
-  -- user filter: only alice's two rows, newest-first
-  map storedEventType aliceEvents @?= ["password_changed", "login_succeeded"]
+  -- user filter includes a failed proof once its credential resolves to Alice.
+  map storedEventType aliceEvents @?= ["password_changed", "login_succeeded", "login_failed"]
   -- type filter: the two failed logins (tt 2 = bob, tt 0 = alice)
   map storedEventType failedEvents @?= ["login_failed", "login_failed"]
   -- since (inclusive) tt1 .. until (exclusive) tt3 → tt2 then tt1
@@ -1531,7 +1531,7 @@ testAuditEventReader = testCase "audit reader: filter + order + keyset paginatio
   case reverse failedEvents of
     (oldest : _) ->
       reconstructAuthEvent (storedEventType oldest) (storedPayload oldest)
-        @?= Right (Event.LoginFailed (Event.LoginFailedData aliceLogin (tt 0)))
+        @?= Right (Event.LoginFailed (Event.LoginFailedData (Just (AccountKey "k-alice")) (Just aliceUserId) (tt 0)))
     [] -> assertFailure "expected at least one failed-login row"
 
 testWorkflowSignup :: TestTree

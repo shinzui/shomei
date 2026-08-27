@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased (0.2.0.0)
 
+- **Breaking:** `AccessToken`, `RefreshToken`, and `TokenPair` no longer expose generic JSON
+  instances, and token `Show` output is redacted. `LoginFailedData` replaces the submitted
+  `loginId` with an optional hashed `accountKey` and resolved `userId`; resolved failures now
+  populate the audit envelope's `user_id` column.
 - **Breaking:** `SmtpConfig` no longer contains the SMTP password and `WebhookConfig` no longer
   contains the webhook signing secret. Runtime credentials belong to the server or embedding
   host, so `Show`/`ToJSON` of `ShomeiConfig` cannot expose them.

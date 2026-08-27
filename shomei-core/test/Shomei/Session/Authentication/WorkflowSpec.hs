@@ -7,11 +7,15 @@
 -- 'Either' and, for state-changing cases, on the 'World' read back from the 'IORef'.
 module Shomei.Session.Authentication.WorkflowSpec (tests) where
 
+import Data.Aeson qualified as Aeson
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BSL
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId)
@@ -337,22 +341,37 @@ testRefreshAfterLogoutIsSessionRevoked = testCase "a refresh token revoked by lo
   length [() | Event.RefreshTokenReuseDetected _ <- w.publishedEvents] @?= 0
 
 testFailClosed :: TestTree
-testFailClosed = testCase "password verification fails closed on wrong password" do
+testFailClosed = testCase "wrong-password audit identifies the hashed account and resolved user" do
   ref <- newIORef (emptyWorld fixedTime)
-  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
-  result <- runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail wrongPw))
+  (alice, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  let ctx = ClientContext (ClientIp "test-ip") (AccountKey "sha256-alice")
+      cmd = loginEmail aliceEmail wrongPw
+  result <- runInMemory ref (login cfg ctx cmd)
   result @?= Left InvalidCredentials
   w <- readIORef ref
-  assertBool "a login-failed event was published" (any isFailed w.publishedEvents)
-  where
-    isFailed (Event.LoginFailed _) = True
-    isFailed _ = False
+  case [d | Event.LoginFailed d <- w.publishedEvents] of
+    [d] -> do
+      d.accountKey @?= Just ctx.accountKey
+      d.userId @?= Just alice.userId
+      assertBool
+        "the submitted identifier is absent from the encoded audit event"
+        (not (TE.encodeUtf8 (loginIdText cmd.loginId) `BS.isInfixOf` BSL.toStrict (Aeson.encode (Event.LoginFailed d))))
+    ds -> assertFailure ("expected exactly one login-failed event, got " <> show (length ds))
 
 testNoAccountLeak :: TestTree
 testNoAccountLeak = testCase "unknown email yields the same generic error as a wrong password" do
   ref <- newIORef (emptyWorld fixedTime)
   _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
   wrong <- runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail wrongPw))
-  unknown <- runInMemory ref (login cfg (ctxFor unknownEmail) (loginEmail unknownEmail strongPw))
+  let unknownCtx = ClientContext (ClientIp "test-ip") (AccountKey "sha256-unknown")
+  unknown <- runInMemory ref (login cfg unknownCtx (loginEmail unknownEmail strongPw))
   wrong @?= unknown
   unknown @?= Left InvalidCredentials
+  w <- readIORef ref
+  case [d | Event.LoginFailed d <- w.publishedEvents, d.accountKey == Just unknownCtx.accountKey] of
+    [d] -> do
+      d.userId @?= Nothing
+      assertBool
+        "the unknown submitted identifier is absent from the encoded audit event"
+        (not (TE.encodeUtf8 (emailText unknownEmail) `BS.isInfixOf` BSL.toStrict (Aeson.encode (Event.LoginFailed d))))
+    ds -> assertFailure ("expected one unknown-login audit event, got " <> show (length ds))

@@ -380,7 +380,7 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-6: `config/shomei-types.dhall` widened to `Optional` fields and synced; `shomei_password_credentials (user_id)` unique index; statement and idle-transaction timeouts; sweeper isolated from request capacity
 - [x] EP-7: transport exceptions mapped to reason codes; NotifySpec case for a DATA-stage `451`; ADR-9 records that exception text never crosses the persistence boundary
 - [x] EP-7: notifier delivery moved to a supervised background worker; the request path answers `202` in sub-second bounded work with the hit/miss residual pinned by test; ADR-10 records the bounded queue and drain policy
-- [ ] EP-7: SMTP password and webhook secret out of `ShomeiConfig`; env secrets trimmed; `http://` webhooks refused by default; timestamped HMAC; redacting `Show` for tokens; `LoginFailed` carries the hashed key
+- [x] EP-7: SMTP password and webhook secret out of `ShomeiConfig`; env secrets trimmed; `http://` webhooks refused by default; timestamped HMAC; redacting `Show` for tokens; `LoginFailed` carries the hashed key
 - [ ] EP-8: trusted-proxy list with rightmost-untrusted `X-Forwarded-For`; dotted-quad IPs; per-IP knobs configurable
 - [ ] EP-8: chunked bodies metered; metrics method label bounded and escaped; monotonic clock; readiness timed and cached; problem-shaped 413 and 500; lenient header decoding
 - [ ] EP-9: `installHostBackgroundTasks` and `hostMiddleware` exported and used by both embedded examples; embedding checklist documented

@@ -420,6 +420,12 @@ The structured request logger reads only the method, path, response status, dura
 IP — never request/response bodies or the `Authorization`/`Cookie` headers — so no password,
 token, or cookie can appear in a log line.
 
+The core `AccessToken` and `RefreshToken` types and the client `Token` type render only a
+`<redacted>` marker through `Show`; the core token types deliberately have no generic JSON
+instances. Transport errors are also reduced to the closed `DeliveryReason` vocabulary before
+they reach a log or audit row. Raw exception text can contain an SMTP message body, a webhook
+URL, or an echoed response body and is never durable diagnostic data.
+
 The built-in `LogNotifier` (which writes password-reset and email-verification notifications to
 the server log) redacts the one-time token. It logs the first 8 hex characters of the token's
 SHA-256 instead, and no link:
@@ -777,6 +783,14 @@ pull in opposite directions, and only you can resolve that. See
 
 ### Operator runbook: investigate a suspected brute-force attempt
 
+New `login_failed` rows contain `payload.accountKey`, the SHA-256 hex key also used by
+`account_locked`, so the two event types can be correlated without retaining what was typed into
+the login field. When a credential resolved, the row also carries its subject in both `user_id`
+and `payload.userId`; `shomei-admin audit user <id>` therefore includes those failed attempts.
+Unknown identifiers leave `user_id` and `payload.userId` empty. Legacy rows containing
+`payload.loginId` remain readable, but new SIEM rules must filter or join on
+`payload.accountKey` instead.
+
 ```text
 # How many failed logins in total, and recently?
 $ shomei-admin audit count --type login_failed
@@ -792,10 +806,11 @@ $ shomei-admin audit events --type login_failed --limit 5
 # Did the account ultimately get locked or throttled? Pull its whole timeline.
 $ shomei-admin audit user 019eb2eb-ac04-747e-9e70-ea4db1bd446e
 2026-06-17T10:05:00Z    account_locked     019eb2eb-…  -           …
+2026-06-17T10:04:00Z    login_failed       019eb2eb-…  -           …
 2026-06-17T10:01:00Z    login_succeeded    019eb2eb-…  019eb2ec-…  …
 
 # Feed structured rows into jq / a SIEM:
-$ shomei-admin audit events --type account_locked --json | jq -c '{at: .createdAt, user: .userId, payload}'
+$ shomei-admin audit events --type login_failed --type account_locked --json | jq -c '{at: .createdAt, user: .userId, account: .payload.accountKey}'
 
 # Break down the underlying proof failures by credential factor:
 $ psql "$DATABASE_URL" -c "SELECT factor, count(*) FROM shomei.shomei_login_attempts WHERE outcome = 'failure' GROUP BY factor ORDER BY factor"

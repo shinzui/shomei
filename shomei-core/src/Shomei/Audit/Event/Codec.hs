@@ -94,8 +94,8 @@ projectAuthEvent = \case
     (Just (userIdToUUID uid), Nothing, "user_registered", toJSON d, occ)
   LoginSucceeded d@(LoginSucceededData uid sid occ) ->
     (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "login_succeeded", toJSON d, occ)
-  LoginFailed d@(LoginFailedData _ occ) ->
-    (Nothing, Nothing, "login_failed", toJSON d, occ)
+  LoginFailed d ->
+    (userIdToUUID <$> d.userId, Nothing, "login_failed", toJSON d, d.occurredAt)
   SessionStarted d@(SessionStartedData sid uid occ) ->
     (Just (userIdToUUID uid), Just (sessionIdToUUID sid), "session_started", toJSON d, occ)
   -- The @user_id@ column is the event's /subject/, not its actor: filtering @?user=@ by an

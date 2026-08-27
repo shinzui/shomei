@@ -86,6 +86,7 @@ tests =
     [ testGroup "round-trips every constructor" roundTrips,
       testUnknownType,
       testConstructorCount,
+      testOldLoginFailedDecodes,
       testOldSessionRevokedDecodes,
       testOldRoleGrantedDecodes
     ]
@@ -96,7 +97,7 @@ roundTrips :: [TestTree]
 roundTrips =
   [ let d = UserRegisteredData uid aliceLogin (Just aliceEmail) t0 in check "user_registered" d (UserRegistered d),
     let d = LoginSucceededData uid sid t0 in check "login_succeeded" d (LoginSucceeded d),
-    let d = LoginFailedData aliceLogin t0 in check "login_failed" d (LoginFailed d),
+    let d = LoginFailedData (Just (AccountKey "k-alice")) (Just uid) t0 in check "login_failed" d (LoginFailed d),
     let d = SessionStartedData sid uid t0 in check "session_started" d (SessionStarted d),
     let d = SessionRevokedData sid (Just uid2) t0 in check "session_revoked" d (SessionRevoked d),
     let d = RefreshTokenRotatedData sid rtid t0 in check "refresh_token_rotated" d (RefreshTokenRotated d),
@@ -168,6 +169,20 @@ testUnknownType =
 testConstructorCount :: TestTree
 testConstructorCount =
   testCase "covers all 42 AuthEvent constructors" (length roundTrips @?= 42)
+
+-- | Historical rows contained the submitted login identifier verbatim. The new optional fields
+-- deliberately make those rows readable without reproducing that identifier in the typed event.
+testOldLoginFailedDecodes :: TestTree
+testOldLoginFailedDecodes =
+  testCase "a legacy login_failed payload decodes without reproducing the raw identifier" $
+    reconstructAuthEvent "login_failed" oldPayload
+      @?= Right (LoginFailed (LoginFailedData Nothing Nothing t0))
+  where
+    oldPayload =
+      Aeson.object
+        [ "loginId" Aeson..= ("alice" :: Text),
+          "occurredAt" Aeson..= t0
+        ]
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

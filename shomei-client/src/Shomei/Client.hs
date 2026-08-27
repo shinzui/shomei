@@ -130,7 +130,10 @@ import Web.FormUrlEncoded (toForm)
 
 -- | A Bearer access token (the signed JWT the server returned from @\/v1\/auth\/login@).
 newtype Token = Token {unToken :: Text}
-  deriving stock (Eq, Show)
+  deriving stock (Eq)
+
+instance Show Token where
+  show _ = "Token <redacted>"
 
 -- | Tell @servant-client@ what credential the @shomei-jwt@ scheme needs client-side.
 type instance AuthClientData (AuthProtect "shomei-jwt") = Token

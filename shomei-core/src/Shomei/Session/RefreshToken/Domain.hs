@@ -21,7 +21,10 @@ import Shomei.Prelude
 
 newtype RefreshToken = RefreshToken Text
   deriving stock (Generic)
-  deriving newtype (Eq, Show, FromJSON, ToJSON)
+  deriving newtype (Eq)
+
+instance Show RefreshToken where
+  show _ = "RefreshToken <redacted>"
 
 newtype RefreshTokenHash = RefreshTokenHash Text
   deriving stock (Generic)

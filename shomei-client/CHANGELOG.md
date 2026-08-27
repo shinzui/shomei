@@ -13,6 +13,8 @@ alongside `shomei-server`.
 
 Initial release contents:
 
+- Bearer `Token` values render as `Token <redacted>` so assertion failures and diagnostic output
+  cannot disclose the credential.
 - A typed Haskell client derived from the same `ShomeiAPI` definition that
   `shomei-servant` serves, so client and server cannot drift apart.
 - Connection management and token handling for calling a standalone
