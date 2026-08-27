@@ -40,3 +40,7 @@ new-migration name:
       --manifest shomei-migrations/migrations/shomei/manifest \
       --name "$next-{{name}}" \
       --description "{{name}}"
+
+# Strictly enforce the shared assurance.reviews profile and its update log.
+reviews-validate:
+    okf validate docs/reviews --strict --profile docs/reviews/profile.dhall --profile-enforce --log-enforce
