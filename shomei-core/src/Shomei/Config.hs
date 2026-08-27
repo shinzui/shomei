@@ -11,6 +11,7 @@ module Shomei.Config
     SameSitePolicy (..),
     CookieConfig (..),
     defaultCookieConfig,
+    normalizeOrigin,
     SessionCheckMode (..),
     SigningKeyConfig (..),
     NotifierConfig (..),
@@ -48,8 +49,10 @@ module Shomei.Config
   )
 where
 
+import Data.Char (isAlpha, isSpace)
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Time (NominalDiffTime)
 import Shomei.Account.Password.Domain (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
@@ -117,6 +120,24 @@ defaultCookieConfig =
       sameSite = SameSiteLax,
       allowedOrigins = ["http://localhost:8080"]
     }
+
+-- | Normalize the exact browser-origin shape Shōmei compares at the CSRF boundary.
+-- Origins have no path, query, or fragment; one presentation-only trailing slash is accepted.
+normalizeOrigin :: Text -> Either Text Text
+normalizeOrigin raw
+  | Text.null scheme
+      || not (Text.all isAlpha scheme)
+      || Text.null host
+      || Text.any invalidHostCharacter host =
+      Left invalidMessage
+  | otherwise = Right (Text.toLower normalized)
+  where
+    stripped = Text.strip raw
+    normalized = fromMaybe stripped (Text.stripSuffix "/" stripped)
+    (scheme, separatorAndHost) = Text.breakOn "://" normalized
+    host = fromMaybe "" (Text.stripPrefix "://" separatorAndHost)
+    invalidHostCharacter c = c `elem` ("/?#" :: String) || isSpace c
+    invalidMessage = raw <> " must be scheme://host[:port] with no path"
 
 data SessionCheckMode = VerifyTokenOnly | VerifyTokenAndSession
   deriving stock (Generic, Eq, Show)

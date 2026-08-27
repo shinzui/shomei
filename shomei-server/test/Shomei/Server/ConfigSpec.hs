@@ -16,7 +16,7 @@ import Data.Text.Encoding qualified as Text
 import Shomei.Account.Password.Domain (PasswordPolicy (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
 import Shomei.Authorization.Claims.Domain (Issuer (..))
-import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
+import Shomei.Config (CookieConfig (..), MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Notify (NotifierSecrets (..), smtpPasswordText, webhookSecretBytes)
 import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv, loadCoreConfig, loadNotifierSecretsFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
@@ -403,6 +403,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   dhallSchemaMatchesFileConfig
   coreLoaderNeedsNoConnectionString
   verifierSettings
+  rateLimitAndCookieEdgeSettings
   notifierDefaults
   notifierSmtpDhallAndEnv
   notifierWebhookEnv
@@ -463,6 +464,70 @@ verifierSettings = do
   expectUserErrorNaming "SHOMEI_AUDIENCE" invalidAudience
 
   unsetEnv "SHOMEI_AUDIENCE"
+  unsetEnv "PG_CONNECTION_STRING"
+
+rateLimitEnvVars :: [String]
+rateLimitEnvVars =
+  [ "SHOMEI_RATE_LIMIT_ENABLED",
+    "SHOMEI_MAX_FAILED_LOGINS_PER_ACCOUNT",
+    "SHOMEI_MAX_FAILED_LOGINS_PER_IP",
+    "SHOMEI_PER_IP_REQUESTS_PER_MINUTE",
+    "SHOMEI_PER_IP_BURST",
+    "SHOMEI_LOCKOUT_WINDOW_SECONDS",
+    "SHOMEI_LOCKOUT_DURATION_SECONDS"
+  ]
+
+-- | The complete abuse-policy surface is configurable, invalid zero bounds fail closed,
+-- and browser origins are canonical before exact CSRF comparison and warning generation.
+rateLimitAndCookieEdgeSettings :: Assertion
+rateLimitAndCookieEdgeSettings = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv rateLimitEnvVars
+  unsetEnv "SHOMEI_TOKEN_TRANSPORT"
+  unsetEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+
+  setEnv "SHOMEI_RATE_LIMIT_ENABLED" "false"
+  setEnv "SHOMEI_MAX_FAILED_LOGINS_PER_ACCOUNT" "7"
+  setEnv "SHOMEI_MAX_FAILED_LOGINS_PER_IP" "23"
+  setEnv "SHOMEI_PER_IP_REQUESTS_PER_MINUTE" "71"
+  setEnv "SHOMEI_PER_IP_BURST" "11"
+  setEnv "SHOMEI_LOCKOUT_WINDOW_SECONDS" "601"
+  setEnv "SHOMEI_LOCKOUT_DURATION_SECONDS" "902"
+  (configured, _) <- loadConfigFromEnv
+  let rate = configured.rateLimitConfig
+  rate.rateLimitEnabled @?= False
+  rate.maxFailedLoginsPerAccount @?= 7
+  rate.maxFailedLoginsPerIp @?= 23
+  rate.perIpRequestsPerMinute @?= 71
+  rate.perIpBurst @?= 11
+  rate.lockoutWindow @?= 601
+  rate.lockoutDuration @?= 902
+
+  setEnv "SHOMEI_PER_IP_BURST" "0"
+  zeroBurst <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_PER_IP_BURST" zeroBurst
+  mapM_ unsetEnv rateLimitEnvVars
+
+  setEnv "SHOMEI_CSRF_ALLOWED_ORIGINS" "HTTPS://App.Example.com/"
+  (normalized, _) <- loadConfigFromEnv
+  normalized.cookieConfig.allowedOrigins @?= ["https://app.example.com"]
+  setEnv "SHOMEI_CSRF_ALLOWED_ORIGINS" "https://app.example.com/login"
+  invalidOrigin <- try loadConfigFromEnv
+  expectUserErrorNaming "must be scheme://host[:port] with no path" invalidOrigin
+
+  unsetEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
+  setEnv "SHOMEI_TOKEN_TRANSPORT" "cookie"
+  (_, defaultWarningSettings) <- loadConfigFromEnv
+  defaultWarningSettings.serverWarnings
+    @?= ["cookie transport is on with the development default csrfAllowedOrigins = [http://localhost:8080]; browsers on any other origin get 403 csrf_rejected — set SHOMEI_CSRF_ALLOWED_ORIGINS"]
+
+  setEnv "SHOMEI_CSRF_ALLOWED_ORIGINS" "https://app.example.com"
+  (_, productionSettings) <- loadConfigFromEnv
+  productionSettings.serverWarnings @?= []
+
+  unsetEnv "SHOMEI_TOKEN_TRANSPORT"
+  unsetEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
   unsetEnv "PG_CONNECTION_STRING"
 
 kekIsRequired :: Assertion

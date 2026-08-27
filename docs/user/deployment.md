@@ -21,6 +21,13 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_PORT` | warp listen port | `8080` |
 | `SHOMEI_TRUSTED_PROXIES` | comma-separated proxy addresses or CIDR blocks whose `X-Forwarded-For` chain may supply client identity | empty (trust nobody) |
 | `SHOMEI_PROXY_PROTOCOL` | warp PROXY protocol v1 mode: `none` or `required` | `none` |
+| `SHOMEI_RATE_LIMIT_ENABLED` | master switch for the account failure budgets and WAI client-IP token bucket | `true` |
+| `SHOMEI_MAX_FAILED_LOGINS_PER_ACCOUNT` | failed credential proofs allowed per account within the lockout window; must be positive | `5` |
+| `SHOMEI_MAX_FAILED_LOGINS_PER_IP` | failed credential proofs allowed per client IP within the lockout window; must be positive | `20` |
+| `SHOMEI_PER_IP_REQUESTS_PER_MINUTE` | sustained WAI request-bucket refill for marked proof routes; must be positive | `60` |
+| `SHOMEI_PER_IP_BURST` | WAI request-bucket capacity for marked proof routes; must be positive | `60` |
+| `SHOMEI_LOCKOUT_WINDOW_SECONDS` | rolling failure-count window; must be positive | `900` |
+| `SHOMEI_LOCKOUT_DURATION_SECONDS` | account lockout duration after the threshold is reached; must be positive | `900` |
 | `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
 | `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |

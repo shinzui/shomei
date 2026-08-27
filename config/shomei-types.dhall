@@ -48,7 +48,11 @@ let ConfigType =
       , notifierQueueSize : Optional Natural
       , rateLimitEnabled : Optional Bool
       , maxFailedLoginsPerAccount : Optional Natural
+      , maxFailedLoginsPerIp : Optional Natural
       , perIpRequestsPerMinute : Optional Natural
+      , perIpBurst : Optional Natural
+      , lockoutWindowSeconds : Optional Natural
+      , lockoutDurationSeconds : Optional Natural
       , metricsEnabled : Optional Bool
       , requestLoggingEnabled : Optional Bool
       , gracefulShutdownTimeoutSeconds : Optional Natural
@@ -125,7 +129,11 @@ let default =
       , notifierQueueSize = None Natural
       , rateLimitEnabled = None Bool
       , maxFailedLoginsPerAccount = None Natural
+      , maxFailedLoginsPerIp = None Natural
       , perIpRequestsPerMinute = None Natural
+      , perIpBurst = None Natural
+      , lockoutWindowSeconds = None Natural
+      , lockoutDurationSeconds = None Natural
       , metricsEnabled = None Bool
       , requestLoggingEnabled = None Bool
       , gracefulShutdownTimeoutSeconds = None Natural

@@ -23,6 +23,7 @@ module Shomei.Server.Config
     loadCoreConfig,
     loadNotifierSecretsFromEnv,
     defaultRolesFromEnv,
+    cookieTransportWarnings,
     FileConfig (..),
   )
 where
@@ -30,6 +31,7 @@ where
 -- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Account.Password.Hash.Postgres".
 
 import Data.Aeson (eitherDecodeStrict')
+import Data.Char (isDigit)
 import Data.Foldable (for_)
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -60,7 +62,10 @@ import Shomei.Config
     UserVerificationPolicy (..),
     WebAuthnConfig (..),
     WebhookConfig (..),
+    defaultCookieConfig,
     defaultShomeiConfig,
+    normalizeOrigin,
+    transportUsesCookies,
   )
 import Shomei.Notify (NotifierSecrets (..), SmtpPassword (..), WebhookSecret (..))
 import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
@@ -242,7 +247,11 @@ data FileConfig = FileConfig
     notifierQueueSize :: !(Maybe Int),
     rateLimitEnabled :: !(Maybe Bool),
     maxFailedLoginsPerAccount :: !(Maybe Int),
+    maxFailedLoginsPerIp :: !(Maybe Int),
     perIpRequestsPerMinute :: !(Maybe Int),
+    perIpBurst :: !(Maybe Int),
+    lockoutWindowSeconds :: !(Maybe Int),
+    lockoutDurationSeconds :: !(Maybe Int),
     metricsEnabled :: !(Maybe Bool),
     requestLoggingEnabled :: !(Maybe Bool),
     gracefulShutdownTimeoutSeconds :: !(Maybe Int),
@@ -368,6 +377,7 @@ baseFromFile (Just fc) = do
   attestationFile <- traverse (parseAttestationPolicy "webauthnAttestation (config file)") fc.webauthnAttestation
   notifierTransportFile <- traverse (parseNotifierTransport "notifierTransport (config file)") fc.notifierTransport
   smtpTlsModeFile <- traverse (parseSmtpTlsMode "smtpTlsMode (config file)") fc.smtpTlsMode
+  csrfOriginsFile <- traverse normalizeOrigins fc.csrfAllowedOrigins
   trustedProxiesFile <- parseTrustedProxyList (fromMaybe [] fc.trustedProxies)
   proxyProtocolFile <- traverse (parseProxyProtocol "proxyProtocol (config file)") fc.proxyProtocol
   let iss = fromMaybe "shomei" fc.issuer
@@ -391,7 +401,11 @@ baseFromFile (Just fc) = do
               cfg0.rateLimitConfig
                 { rateLimitEnabled = fromMaybe cfg0.rateLimitConfig.rateLimitEnabled fc.rateLimitEnabled,
                   maxFailedLoginsPerAccount = fromMaybe cfg0.rateLimitConfig.maxFailedLoginsPerAccount fc.maxFailedLoginsPerAccount,
-                  perIpRequestsPerMinute = fromMaybe cfg0.rateLimitConfig.perIpRequestsPerMinute fc.perIpRequestsPerMinute
+                  maxFailedLoginsPerIp = fromMaybe cfg0.rateLimitConfig.maxFailedLoginsPerIp fc.maxFailedLoginsPerIp,
+                  lockoutWindow = maybe cfg0.rateLimitConfig.lockoutWindow fromIntegral fc.lockoutWindowSeconds,
+                  lockoutDuration = maybe cfg0.rateLimitConfig.lockoutDuration fromIntegral fc.lockoutDurationSeconds,
+                  perIpRequestsPerMinute = fromMaybe cfg0.rateLimitConfig.perIpRequestsPerMinute fc.perIpRequestsPerMinute,
+                  perIpBurst = fromMaybe cfg0.rateLimitConfig.perIpBurst fc.perIpBurst
                 },
             passwordPolicy =
               cfg0.passwordPolicy
@@ -433,7 +447,7 @@ baseFromFile (Just fc) = do
               cfg0.cookieConfig
                 { secure = fromMaybe cfg0.cookieConfig.secure fc.cookieSecure,
                   sameSite = fromMaybe cfg0.cookieConfig.sameSite sameSiteFile,
-                  allowedOrigins = fromMaybe cfg0.cookieConfig.allowedOrigins fc.csrfAllowedOrigins
+                  allowedOrigins = fromMaybe cfg0.cookieConfig.allowedOrigins csrfOriginsFile
                 },
             defaultRoles = maybe cfg0.defaultRoles roleSet fc.defaultRoles
           }
@@ -559,9 +573,19 @@ overlayFromEnvBoth baseCfg baseSettings = do
     "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
     "allowedClockSkewSeconds"
     cfg.signingKeyConfig.allowedClockSkewSeconds
+  let rate = cfg.rateLimitConfig
+  requirePositive "SHOMEI_MAX_FAILED_LOGINS_PER_ACCOUNT" "maxFailedLoginsPerAccount" rate.maxFailedLoginsPerAccount
+  requirePositive "SHOMEI_MAX_FAILED_LOGINS_PER_IP" "maxFailedLoginsPerIp" rate.maxFailedLoginsPerIp
+  requirePositive "SHOMEI_PER_IP_REQUESTS_PER_MINUTE" "perIpRequestsPerMinute" rate.perIpRequestsPerMinute
+  requirePositive "SHOMEI_PER_IP_BURST" "perIpBurst" rate.perIpBurst
+  when (rate.lockoutWindow <= 0) $
+    ioError (userError "SHOMEI_LOCKOUT_WINDOW_SECONDS (Dhall field lockoutWindowSeconds) must be a positive number of seconds")
+  when (rate.lockoutDuration <= 0) $
+    ioError (userError "SHOMEI_LOCKOUT_DURATION_SECONDS (Dhall field lockoutDurationSeconds) must be a positive number of seconds")
   -- Validated after the overlay so a selected notifier transport is proven fully configured
   -- whichever layer supplied its fields (secrets always come from the environment).
   notifierWarnings <- validateNotifierConfig cfg.notifierConfig
+  let warnings = notifierWarnings <> cookieTransportWarnings cfg
   pure
     ( cfg,
       ServerSettings
@@ -573,7 +597,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverDbStatementTimeoutMs = statementTimeout,
           serverNotifierQueueSize = notifierQueueSize,
-          serverWarnings = notifierWarnings,
+          serverWarnings = warnings,
           serverSweep = sweep,
           serverArgon2 = argon2,
           serverHashingMaxConcurrency = hashingConcurrency
@@ -679,6 +703,13 @@ overlayCoreFromEnv base = do
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   notifierCfg <- overlayNotifierFromEnv base.notifierConfig logSecrets
+  rateLimitEnabled' <- boolEnv "SHOMEI_RATE_LIMIT_ENABLED"
+  maxFailedLoginsPerAccount' <- intEnvMaybe "SHOMEI_MAX_FAILED_LOGINS_PER_ACCOUNT"
+  maxFailedLoginsPerIp' <- intEnvMaybe "SHOMEI_MAX_FAILED_LOGINS_PER_IP"
+  perIpRequestsPerMinute' <- intEnvMaybe "SHOMEI_PER_IP_REQUESTS_PER_MINUTE"
+  perIpBurst' <- intEnvMaybe "SHOMEI_PER_IP_BURST"
+  lockoutWindow' <- ttlEnv "SHOMEI_LOCKOUT_WINDOW_SECONDS"
+  lockoutDuration' <- ttlEnv "SHOMEI_LOCKOUT_DURATION_SECONDS"
   cookieSecure' <- boolEnv "SHOMEI_COOKIE_SECURE"
   cookieSameSite' <- sameSiteEnv
   csrfOrigins <- csrfOriginsEnv
@@ -688,6 +719,16 @@ overlayCoreFromEnv base = do
       { accessTokenTTL = fromMaybe base.accessTokenTTL acc,
         defaultRoles = fromMaybe base.defaultRoles defaultRoles',
         notifierConfig = notifierCfg,
+        rateLimitConfig =
+          base.rateLimitConfig
+            { rateLimitEnabled = fromMaybe base.rateLimitConfig.rateLimitEnabled rateLimitEnabled',
+              maxFailedLoginsPerAccount = fromMaybe base.rateLimitConfig.maxFailedLoginsPerAccount maxFailedLoginsPerAccount',
+              maxFailedLoginsPerIp = fromMaybe base.rateLimitConfig.maxFailedLoginsPerIp maxFailedLoginsPerIp',
+              lockoutWindow = fromMaybe base.rateLimitConfig.lockoutWindow lockoutWindow',
+              lockoutDuration = fromMaybe base.rateLimitConfig.lockoutDuration lockoutDuration',
+              perIpRequestsPerMinute = fromMaybe base.rateLimitConfig.perIpRequestsPerMinute perIpRequestsPerMinute',
+              perIpBurst = fromMaybe base.rateLimitConfig.perIpBurst perIpBurst'
+            },
         signingKeyConfig =
           base.signingKeyConfig
             { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
@@ -1248,13 +1289,49 @@ proxyProtocolEnv fallback = do
     Just "" -> pure fallback
     Just raw -> parseProxyProtocol "SHOMEI_PROXY_PROTOCOL" (Text.pack raw)
 
+normalizeOrigins :: [Text] -> IO [Text]
+normalizeOrigins = traverse normalizeOne
+  where
+    normalizeOne origin =
+      case normalizeOrigin origin of
+        Left reason -> ioError (userError (Text.unpack reason))
+        Right normalized -> pure normalized
+
+-- | Warn when browser-cookie transport still has development-only or insecure origin policy.
+cookieTransportWarnings :: ShomeiConfig -> [Text]
+cookieTransportWarnings cfg
+  | not (transportUsesCookies cfg.tokenTransport) = []
+  | otherwise = defaultWarning <> insecureWarnings
+  where
+    origins = cfg.cookieConfig.allowedOrigins
+    defaultWarning =
+      [ "cookie transport is on with the development default csrfAllowedOrigins = [http://localhost:8080]; browsers on any other origin get 403 csrf_rejected — set SHOMEI_CSRF_ALLOWED_ORIGINS"
+      | origins == defaultCookieConfig.allowedOrigins
+      ]
+    insecureWarnings =
+      [ "csrfAllowedOrigins entry "
+          <> origin
+          <> " is not https; with cookieSecure the browser will not send the cookies to it"
+      | origin <- origins,
+        not ("https://" `Text.isPrefixOf` origin || isLocalhostOrigin origin)
+      ]
+    isLocalhostOrigin origin =
+      case Text.stripPrefix "http://localhost" origin of
+        Just "" -> True
+        Just suffix
+          | Just port <- Text.stripPrefix ":" suffix ->
+              not (Text.null port) && Text.all isDigit port
+        _ -> False
+
 -- | A comma-separated origin allow-list, e.g. @https://app.example.com,https://admin.example.com@.
 csrfOriginsEnv :: IO (Maybe [Text])
 csrfOriginsEnv = do
   m <- lookupEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
-  pure case m of
-    Just v | not (null v) -> Just (filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v))))
-    _ -> Nothing
+  case m of
+    Just v
+      | not (null v) ->
+          Just <$> normalizeOrigins (filter (not . Text.null) (map Text.strip (Text.splitOn "," (Text.pack v))))
+    _ -> pure Nothing
 
 -- | Read @SHOMEI_DEFAULT_ROLES@: a comma-separated role list, e.g. @member,beta-tester@, granted
 -- to every new user at signup. 'Nothing' when unset or empty. The names are validated against

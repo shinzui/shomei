@@ -47,7 +47,7 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
       the four MiddlewareSpec cases; `trustedProxies`/`proxyProtocol` keys (env + Dhall); boot refuses an
       invalid entry; `edgeMiddleware` in `Boot.hs`; warp `setProxyProtocol*`; `deployment.md` "Behind a
       reverse proxy"; `docs/adr/` created with the trusted-proxy ADR.
-- [ ] M2: seven rate-limit env vars and four missing Dhall keys; `normalizeOrigin` at load;
+- [x] (2026-08-27T22:59:15Z) M2: seven rate-limit env vars and four missing Dhall keys; `normalizeOrigin` at load;
       `cookieTransportWarnings` at boot; ConfigSpec cases.
 - [ ] M3: `__Host-`/`__Secure-` names when `cookieSecure`; servant scenarios, docs, CHANGELOGs; cookie ADR.
 - [ ] M4: metered body; `pcPayloadTooLarge`; chunked test flipped; `problemExceptionResponse` installed;
@@ -80,6 +80,11 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
   every in-tree reader to `Shomei.Servant.ClientIp`. The focused suite passed 21 cases, and the
   live rerun with `SHOMEI_TRUSTED_PROXIES=127.0.0.1/32` returned twenty-five 401s while persisting
   `203.0.113.1` through `203.0.113.25` once each; `SHOMEI_TRUSTED_PROXIES=nope` exited 1 before boot.
+
+- M2's configuration suite passed with the schema and loader synchronized at 77 fields. The live
+  cookie-mode boot printed the single development-origin warning before listening, and a resolved
+  client under `SHOMEI_PER_IP_BURST=3` produced `401 401 401 429`, proving the new knob reaches
+  the running token bucket rather than only the decoded record.
 
 
 ## Decision Log
