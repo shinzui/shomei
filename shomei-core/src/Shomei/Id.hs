@@ -27,6 +27,7 @@ module Shomei.Id
     OAuthClientId,
     TotpCredentialId,
     RecoveryCodeId,
+    LoginAttemptId,
     genUserId,
     genSessionId,
     genRefreshTokenId,
@@ -39,6 +40,7 @@ module Shomei.Id
     genOAuthClientId,
     genTotpCredentialId,
     genRecoveryCodeId,
+    genLoginAttemptId,
     idText,
     parseId,
     userIdToUUID,
@@ -65,6 +67,8 @@ module Shomei.Id
     totpCredentialIdFromUUID,
     recoveryCodeIdToUUID,
     recoveryCodeIdFromUUID,
+    loginAttemptIdToUUID,
+    loginAttemptIdFromUUID,
   )
 where
 
@@ -115,6 +119,10 @@ type TotpCredentialId = KindID "totp"
 -- only as a hash.
 type RecoveryCodeId = KindID "recovery"
 
+-- | One persisted credential-proof attempt. The id lets a provisional failure be converted to
+-- success without inserting a second row.
+type LoginAttemptId = KindID "loginattempt"
+
 genUserId :: (MonadIO m) => m UserId
 genUserId = KindID.genKindID @"user"
 
@@ -150,6 +158,9 @@ genTotpCredentialId = KindID.genKindID @"totp"
 
 genRecoveryCodeId :: (MonadIO m) => m RecoveryCodeId
 genRecoveryCodeId = KindID.genKindID @"recovery"
+
+genLoginAttemptId :: (MonadIO m) => m LoginAttemptId
+genLoginAttemptId = KindID.genKindID @"loginattempt"
 
 idText :: (ToPrefix p, ValidPrefix (PrefixSymbol p)) => KindID p -> Text
 idText = KindID.toText
@@ -230,6 +241,12 @@ recoveryCodeIdToUUID = getUUID
 
 recoveryCodeIdFromUUID :: UUID -> RecoveryCodeId
 recoveryCodeIdFromUUID = decorateKindID
+
+loginAttemptIdToUUID :: LoginAttemptId -> UUID
+loginAttemptIdToUUID = getUUID
+
+loginAttemptIdFromUUID :: UUID -> LoginAttemptId
+loginAttemptIdFromUUID = decorateKindID
 
 instance (ToPrefix p, ValidPrefix (PrefixSymbol p)) => FromHttpApiData (KindID p) where
   parseUrlPiece = parseId

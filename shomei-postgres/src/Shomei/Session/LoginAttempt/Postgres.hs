@@ -14,7 +14,6 @@ where
 import Contravariant.Extras (contrazip2, contrazip4, contrazip6)
 import Data.Int (Int32, Int64)
 import Data.UUID (UUID)
-import Data.UUID.V4 qualified as UUIDv4
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
@@ -22,14 +21,18 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
+import Shomei.Id (genLoginAttemptId, loginAttemptIdToUUID)
 import Shomei.Persistence.Codec.Postgres (attemptFactorToText, loginOutcomeToText)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Prelude
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey (..),
     AccountLockout (..),
     ClientIp (..),
+    FailureOutcome (..),
+    LockPolicy (..),
     NewLoginAttempt (..),
   )
 import Shomei.Session.LoginAttempt.Store (LoginAttemptStore (..))
@@ -39,12 +42,37 @@ runLoginAttemptStorePostgres ::
   Eff (LoginAttemptStore : es) a ->
   Eff es a
 runLoginAttemptStorePostgres = interpret_ \case
-  RecordLoginAttempt na -> do
-    aid <- liftIO UUIDv4.nextRandom
+  RecordLoginFailure na windowStart policy -> do
+    aid <- genLoginAttemptId
     let AccountKey k = na.accountKey
         ClientIp ip = na.clientIp
-        row = (aid, k, ip, loginOutcomeToText na.outcome, na.occurredAt, attemptFactorToText na.factor)
-    res <- runSession (Session.statement row insertAttemptStmt)
+        row = (loginAttemptIdToUUID aid, k, ip, loginOutcomeToText na.outcome, na.occurredAt, attemptFactorToText na.factor)
+    res <- runTransaction do
+      _ <- Tx.statement k lockAccountKeyStmt
+      Tx.statement row insertAttemptStmt
+      n64 <- Tx.statement (k, windowStart) countByAccountStmt
+      prior <- Tx.statement k findLockoutStmt
+      let failures = fromIntegral n64
+          stillLocked = maybe False (maybe False (> na.occurredAt) . secondOf3) prior
+      lockedNow <- case policy of
+        Just p
+          | failures >= p.maxFailures && not stillLocked -> do
+              Tx.statement (k, fromIntegral failures, Just p.lockUntil, na.occurredAt) upsertLockoutStmt
+              pure True
+        _ -> pure False
+      pure
+        FailureOutcome
+          { attemptId = aid,
+            failures,
+            priorLockout = rebuildLockout na.accountKey <$> prior,
+            lockedNow
+          }
+    either dbFail pure res
+  ConvertLoginAttemptToSuccess aid -> do
+    res <- runSession (Session.statement (loginAttemptIdToUUID aid) convertAttemptStmt)
+    either dbFail (const (pure ())) res
+  DiscardLoginAttempt aid -> do
+    res <- runSession (Session.statement (loginAttemptIdToUUID aid) discardAttemptStmt)
     either dbFail (const (pure ())) res
   CountRecentFailuresByAccount (AccountKey k) cutoff -> do
     res <- runSession (Session.statement (k, cutoff) countByAccountStmt)
@@ -66,6 +94,7 @@ runLoginAttemptStorePostgres = interpret_ \case
     either dbFail (const (pure ())) res
   where
     dbFail = throwError . postgresUnavailable
+    secondOf3 (_, value, _) = value
 
 rebuildLockout :: AccountKey -> (Int32, Maybe UTCTime, UTCTime) -> AccountLockout
 rebuildLockout k (fc, lu, ua) =
@@ -94,6 +123,30 @@ insertAttemptStmt =
         (E.param (E.nonNullable E.timestamptz))
         (E.param (E.nonNullable E.text))
     )
+    D.noResult
+
+-- | Serialize failure accounting for one opaque account key until the surrounding transaction
+-- commits or rolls back. The query deliberately returns one row so Hasql proves the lock was
+-- acquired before the insert and count run.
+lockAccountKeyStmt :: Statement Text Int32
+lockAccountKeyStmt =
+  preparable
+    "SELECT 1::int4 FROM pg_advisory_xact_lock(hashtextextended($1, 0))"
+    (E.param (E.nonNullable E.text))
+    (D.singleRow (D.column (D.nonNullable D.int4)))
+
+convertAttemptStmt :: Statement UUID ()
+convertAttemptStmt =
+  preparable
+    "UPDATE shomei.shomei_login_attempts SET outcome = 'success' WHERE attempt_id = $1"
+    (E.param (E.nonNullable E.uuid))
+    D.noResult
+
+discardAttemptStmt :: Statement UUID ()
+discardAttemptStmt =
+  preparable
+    "DELETE FROM shomei.shomei_login_attempts WHERE attempt_id = $1 AND outcome = 'failure'"
+    (E.param (E.nonNullable E.uuid))
     D.noResult
 
 -- Per-account failures in the window AND strictly after the most recent success.

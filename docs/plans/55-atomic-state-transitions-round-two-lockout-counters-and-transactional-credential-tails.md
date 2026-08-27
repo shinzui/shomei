@@ -40,11 +40,19 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
 
 ## Progress
 
-- [ ] M1: in-memory fake atomic; `LoginAttemptId`; `RecordLoginFailure` and
+- [x] (2026-08-27T18:41:26Z) M1 regression added and observed red: 100 racing wrong passwords
+      exceeded the three-verification stored-hash budget before the record-first change
+- [x] (2026-08-27T18:49:30Z) M1 EP-4 integration resolved: correct password proofs that advance
+      to MFA discard their provisional row without resetting the shared failure budget
+- [x] (2026-08-27T18:53:00Z) M1 PostgreSQL race observed red without the advisory lock and green
+      with it; the eight returned counts serialize exactly as `1..8` and one caller locks
+- [x] (2026-08-27T18:58:10Z) M1: in-memory fake atomic; `LoginAttemptId`; `RecordLoginFailure` and
       `ConvertLoginAttemptToSuccess` replace `RecordLoginAttempt`; advisory-lock transaction;
       `login` records before hashing
-- [ ] M1: `ConcurrencySpec` 100 wrong passwords (red first); Postgres budget + lock race;
+- [x] (2026-08-27T18:58:10Z) M1: `ConcurrencySpec` 100 wrong passwords (red first); Postgres budget + lock race;
       `TimingSpec` locked case; docs
+- [x] (2026-08-27T19:05:16Z) M1 gate: `nix fmt`, `cabal build all`, and the serialized
+      all-package test matrix pass
 - [ ] M2: counter CAS statements, `Bool` ports, replay handling, `casWorld`; races in both suites
 - [ ] M3: three unit-of-work operations; `revokeSessionStmt` guarded; `RefreshTokenRevoked →
       SessionRevoked`; sibling verification tokens revoked; one-reuse-event assertion; budgets
@@ -55,7 +63,33 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
 
 ## Surprises & Discoveries
 
-(None yet. Record here, with test output, each race test's pre-fix failure and any statement whose PostgreSQL behavior differed.)
+- The regression-first in-memory race exceeded the configured three stored-hash evaluations on
+  the pre-fix workflow. The scheduler let six requests pass the read-only gate before the first
+  lockout write became visible; the exact number is schedule-dependent, while any value above
+  three proves the bypass.
+
+  ```text
+  100 concurrent wrong passwords: at most 3 real verifications, one lock: FAIL
+    real verifications exceeded the budget: 6
+  ```
+
+- The first full core run exposed an integration case absent from the draft: a correct password
+  that advances into MFA cannot remain a `failure` row (that double-counts one authentication
+  attempt), and it cannot become `success` (that resets earlier factor failures before MFA
+  succeeds). The failing evidence was `successful login clears the failure counter` returning
+  `InvalidCredentials`, a suspended account's threshold attempt changing from `UserNotActive` to
+  `InvalidCredentials`, and the five-bad-passkey setup locking during its third password proof.
+  A provisional-row discard is the only transition that preserves EP-4's shared-budget rule.
+
+- Removing the advisory-lock statement reproduced the READ COMMITTED race exactly: four
+  transactions observed count one and four later transactions observed count five, rather than
+  each observing its unique post-insert count. Restoring the statement made the test green.
+
+  ```text
+  lockout: eight racing failures count 1..8 and lock once: FAIL
+    expected: [1,2,3,4,5,6,7,8]
+     but got: [1,1,1,1,5,5,5,5]
+  ```
 
 
 ## Decision Log
@@ -87,6 +121,17 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   request still performs exactly one Argon2 operation; the locked branch was the one exception.
   Date: 2026-08-27
 
+- Decision: The request whose provisional row first reaches `maxFailures` owns the lock
+  transition but may still evaluate the stored hash. Only a `priorLockout` that remains live
+  refuses the hash. If the threshold request proves the password, it converts or discards its
+  provisional row and clears the lock it just reserved.
+  Rationale: the configured threshold is the number of failed proofs allowed, not one less. The
+  original draft's `lockedNow || lockedBefore` branch refused the third proof under a threshold
+  of three before knowing whether it was a failure, broke successful reset-at-threshold behavior,
+  and changed suspended-account errors on the threshold request. Prior-lock refusal still bounds
+  100 concurrent requests to at most the configured number of stored-hash evaluations.
+  Date: 2026-08-27
+
 - Decision: `RecordLoginAttempt` is removed from `LoginAttemptStore`; `RecordLoginFailure` and
   `ConvertLoginAttemptToSuccess` replace it; the count and lockout reads stay; a
   `LoginAttemptId` (`KindID "loginattempt"`) is added to `Shomei.Id`.
@@ -94,6 +139,16 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   compiler enumerates every caller. If `docs/plans/54-…` lands first and records second-factor
   failures through `recordLoginAttempt`, rebase those calls onto `recordLoginFailure` and its
   success recording onto the convert.
+  Date: 2026-08-27
+
+- Decision: Add `DiscardLoginAttempt :: LoginAttemptId -> LoginAttemptStore m ()`. A correct
+  password that advances into an MFA challenge discards its provisional row; if reserving that
+  row created the lock, it also removes that newly-created lockout. The eventual factor failure
+  records one failure, while full MFA success records the success that resets the budget.
+  Rationale: EP-4 landed before this plan and deliberately makes only full authentication reset
+  the shared budget. Converting the password row to success would violate that invariant; leaving
+  it as failure would count a correct proof and double-charge each bad-MFA attempt. Deleting only
+  the provisional row preserves both rules without expanding the persisted outcome vocabulary.
   Date: 2026-08-27
 
 - Decision: `SetTotpLastUsedCounter` and `UpdatePasskeySignCounter` return `Bool`; `False` is
@@ -157,7 +212,14 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation; each Purpose sentence should map to a test seen failing first.)
+- M1 closed the parallel password-guess bypass. One serialized operation now appends the
+  provisional failure, returns the exact post-insert windowed count, and creates at most one
+  lockout before stored-hash verification. The 100-racer in-memory regression went from six
+  real verifications on the pre-fix workflow to at most three, with all 100 requests performing
+  exactly one real-or-dummy verification and one `AccountLocked` event. The eight-transaction
+  PostgreSQL regression went from duplicate counts `[1,1,1,1,5,5,5,5]` without the advisory
+  lock to `1..8` with exactly one lock owner. The complete core (268 tests) and PostgreSQL (63
+  tests) suites pass, as do `cabal build all` and the serialized all-package test matrix.
 
 
 ## Context and Orientation
@@ -258,7 +320,10 @@ In `Session/LoginAttempt/Store.hs` delete `RecordLoginAttempt`; add
 `RecordLoginFailure :: NewLoginAttempt -> UTCTime -> Maybe LockPolicy -> LoginAttemptStore m FailureOutcome`
 (the `UTCTime` is the window start; `Nothing` means record and count but never lock — the
 `rateLimitEnabled = False` branch) and `ConvertLoginAttemptToSuccess :: LoginAttemptId ->
-LoginAttemptStore m ()`, each with its lower-case `send` wrapper.
+LoginAttemptStore m ()`, each with its lower-case `send` wrapper. Add
+`DiscardLoginAttempt :: LoginAttemptId -> LoginAttemptStore m ()` as the EP-4 integration:
+when a correct password advances to MFA, deleting only that provisional row avoids charging a
+correct factor or resetting the shared failure budget before full authentication succeeds.
 
 Postgres, `Session/LoginAttempt/Postgres.hs`: two new statements —
 `lockAccountKeyStmt :: Statement Text Int32` (`D.singleRow (D.column (D.nonNullable D.int4))`)
@@ -288,7 +353,8 @@ RecordLoginFailure na windowStart mPolicy -> do
   either dbFail pure res
 ```
 
-`ConvertLoginAttemptToSuccess` is one `runSession` of `convertAttemptStmt`. Update
+`ConvertLoginAttemptToSuccess` is one `runSession` of `convertAttemptStmt`;
+`DiscardLoginAttempt` is a guarded delete of only that failure row. Update
 `Session/UnitOfWork/Postgres.hs`'s haddock (lines 4–6 claim it is the only `runTransaction`
 user): this port operation is one transaction because its serialization point must enclose its
 count; it is not a workflow tail. In memory, `RecordLoginFailure` is one `atomicModifyIORef'`:
@@ -307,19 +373,23 @@ Workflow, `Authentication/Workflow.hs`. Replace 227–263 so that after the per-
       cutoff
       (if rl.rateLimitEnabled then Just (LockPolicy rl.maxFailedLoginsPerAccount (addUTCTime rl.lockoutDuration ts)) else Nothing)
   let lockedBefore = maybe False (\lo -> maybe False (> ts) lo.lockedUntil) outcome.priorLockout
-  when (outcome.lockedNow || lockedBefore) do
+  when lockedBefore do
     verifyPasswordDummy cmd.password   -- locked accounts pay the same Argon2 cost (REV-2 finding 12)
     failLogin outcome ctx cmd.loginId ts
 ```
 
 then 244–252 unchanged. `failLogin` becomes `FailureOutcome -> ClientContext -> LoginId ->
-UTCTime -> Eff es a`: publish `LoginFailed`; when `outcome.lockedNow` publish `AccountLocked`
-with `outcome.failures` and the lock deadline; throw `InvalidCredentials`; record nothing.
+UTCTime -> Eff es a`: after the proof has failed, publish `AccountLocked` when
+`outcome.lockedNow`, publish `LoginFailed`, and throw `InvalidCredentials`; record nothing.
+The threshold-owning request must evaluate the proof: the threshold is the number of failures
+allowed, not one fewer, and publishing `AccountLocked` before that proof would emit a false lock
+event when the password is correct.
 `failLoginTimed` keeps its dummy call. On success replace the `recordLoginAttempt … LoginSuccess`
-block with `convertLoginAttemptToSuccess outcome.attemptId` and keep
-`when (isJust outcome.priorLockout) (clearAccountLockout ctx.accountKey)`. The successful-login
-budget stays at ten (the lockout read becomes the transaction, the success insert becomes the
-convert); a wrong password costs four.
+block with `convertLoginAttemptToSuccess outcome.attemptId`; clear a prior lockout or the one
+reserved by this threshold request. If password verification instead advances to MFA, discard
+the provisional row and clear only a lock reserved by this request. The successful-login budget
+stays at ten (the lockout read becomes the transaction, the success insert becomes the convert);
+a wrong password costs four.
 
 Tests. `shomei-core/test/Shomei/Session/Authentication/ConcurrencySpec.hs`:
 `testConcurrentWrongPasswordsRespectTheBudget` — seed Alice under `LockoutSpec`'s config

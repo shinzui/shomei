@@ -1,11 +1,11 @@
 -- | PostgreSQL interpreter for the 'AuthUnitOfWork' port: each operation is exactly one
 -- @BEGIN … COMMIT@.
 --
--- This is the only module in @shomei-postgres@ that uses
--- 'Shomei.Persistence.Database.Postgres.runTransaction'; every other interpreter issues one statement per
--- 'Shomei.Persistence.Database.Postgres.runSession', which is one pool checkout per statement. Here the
--- statements of a workflow's write tail are composed into a single @hasql-transaction@
--- 'Transaction' and run in one checkout, so they are both atomic and cheap.
+-- This module uses 'Shomei.Persistence.Database.Postgres.runTransaction' for workflow write
+-- tails. 'Shomei.Session.LoginAttempt.Postgres' also owns one transaction because its
+-- transaction-scoped advisory lock must enclose the corresponding insert and count; that is a
+-- serialized store operation rather than a workflow tail. Other interpreters issue one statement
+-- per 'Shomei.Persistence.Database.Postgres.runSession', which is one pool checkout per statement.
 --
 -- No SQL is written here. Every statement is the prepared 'Statement' its own store
 -- interpreter already uses, lifted into the transaction with 'Tx.statement'. That matters most

@@ -240,6 +240,7 @@ testSuccessClearsCounter = testCase "successful login clears the failure counter
   ok @?= Right ()
   wAfter <- readIORef ref
   assertBool "no lockout row after the successful login" (not (Map.member (keyOf aliceEmail) wAfter.accountLockouts))
+  length [() | Event.AccountLocked _ <- wAfter.publishedEvents] @?= 0
   -- A subsequent single failure must NOT lock (the success reset the counter).
   _ <- badLogin ref ip1 aliceEmail
   w <- readIORef ref

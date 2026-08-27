@@ -62,7 +62,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
-import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', readIORef)
 import Data.List (sortBy, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -108,6 +108,7 @@ import Shomei.Authorization.Role.Store (RoleDefinition (..), RoleStore (..))
 import Shomei.Error (TokenError (..))
 import Shomei.Id
   ( CeremonyId,
+    LoginAttemptId,
     OAuthClientId,
     PasskeyId,
     PasswordResetTokenId,
@@ -119,6 +120,7 @@ import Shomei.Id
     UserId,
     VerificationTokenId,
     genCredentialId,
+    genLoginAttemptId,
     genPasskeyId,
     genPasswordResetTokenId,
     genRefreshTokenId,
@@ -179,6 +181,8 @@ import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey,
     AccountLockout (..),
+    FailureOutcome (..),
+    LockPolicy (..),
     LoginAttempt (..),
     LoginOutcome (..),
     NewLoginAttempt (..),
@@ -358,9 +362,11 @@ runUserStore ref = interpret_ \case
   FindUserById uid -> liftIO ((Map.lookup uid . (.users)) <$> readIORef ref)
   FindUserByLoginId lid -> liftIO (findByLoginId lid <$> readIORef ref)
   FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
-  UpdateUserStatus uid st -> liftIO do
-    w <- readIORef ref
-    modifyWorld ref (#users %~ Map.adjust (\u -> u & #status .~ st & #updatedAt .~ w.clock) uid)
+  UpdateUserStatus uid st ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          (w & #users %~ Map.adjust (\u -> u & #status .~ st & #updatedAt .~ w.clock) uid, ())
+      )
   MarkUserEmailVerified uid t ->
     liftIO (modifyWorld ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))
   ListUsers q -> liftIO (page q . Map.elems . (.users) <$> readIORef ref)
@@ -733,8 +739,39 @@ mkPasswordResetToken tid nrt =
 
 runLoginAttemptStore :: (IOE :> es) => IORef World -> Eff (LoginAttemptStore : es) a -> Eff es a
 runLoginAttemptStore ref = interpret_ \case
-  RecordLoginAttempt na ->
-    liftIO (modifyWorld ref (#loginAttempts %~ (toAttempt na :)))
+  RecordLoginFailure na cutoff policy -> do
+    aid <- genLoginAttemptId
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          let attempted = w & #loginAttempts %~ (toAttempt aid na :)
+              failures = countAccountFailures na.accountKey cutoff attempted
+              prior = Map.lookup na.accountKey w.accountLockouts
+              stillLocked = maybe False (maybe False (> na.occurredAt) . (.lockedUntil)) prior
+              shouldLock = case policy of
+                Just p -> failures >= p.maxFailures && not stillLocked
+                Nothing -> False
+              next = case policy of
+                Just p
+                  | shouldLock ->
+                      attempted
+                        & #accountLockouts
+                        %~ Map.insert
+                          na.accountKey
+                          (AccountLockout na.accountKey failures (Just p.lockUntil) na.occurredAt)
+                _ -> attempted
+              result =
+                FailureOutcome
+                  { attemptId = aid,
+                    failures,
+                    priorLockout = prior,
+                    lockedNow = shouldLock
+                  }
+           in (next, result)
+      )
+  ConvertLoginAttemptToSuccess aid ->
+    liftIO (modifyWorld ref (#loginAttempts %~ fmap (convertAttempt aid)))
+  DiscardLoginAttempt aid ->
+    liftIO (modifyWorld ref (#loginAttempts %~ filter ((/= aid) . (.attemptId))))
   CountRecentFailuresByAccount k cutoff ->
     liftIO (countAccountFailures k cutoff <$> readIORef ref)
   CountRecentFailuresByIp ip cutoff ->
@@ -746,14 +783,19 @@ runLoginAttemptStore ref = interpret_ \case
   ClearAccountLockout k ->
     liftIO (modifyWorld ref (#accountLockouts %~ Map.delete k))
   where
-    toAttempt na =
+    toAttempt aid na =
       LoginAttempt
-        { accountKey = na.accountKey,
+        { attemptId = aid,
+          accountKey = na.accountKey,
           clientIp = na.clientIp,
           outcome = na.outcome,
           occurredAt = na.occurredAt,
           factor = na.factor
         }
+    convertAttempt :: LoginAttemptId -> LoginAttempt -> LoginAttempt
+    convertAttempt aid attempt@LoginAttempt {attemptId, accountKey, clientIp, occurredAt, factor}
+      | attemptId == aid = LoginAttempt {attemptId, accountKey, clientIp, outcome = LoginSuccess, occurredAt, factor}
+      | otherwise = attempt
     -- Pure windowed failure count (used for the per-IP throttle).
     countWith p cutoff w =
       length
@@ -832,14 +874,12 @@ runPendingCeremonyStore ref = interpret_ \case
   PutPendingCeremony pc ->
     liftIO (modifyWorld ref (#pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc))
   TakePendingCeremony cid now' -> liftIO do
-    w <- readIORef ref
-    case Map.lookup cid w.pendingCeremonies of
-      Nothing -> pure Nothing
-      Just pc -> do
-        -- Consume-once: remove the row regardless, so an expired take also
-        -- clears the stale row; return it only if it is still live.
-        modifyWorld ref (#pendingCeremonies %~ Map.delete cid)
-        pure (if pcExpiresAt pc > now' then Just pc else Nothing)
+    atomicModifyIORef' ref \w -> case Map.lookup cid w.pendingCeremonies of
+      Nothing -> (w, Nothing)
+      Just pc ->
+        -- Consume-once: remove the row regardless, so an expired take also clears the stale row;
+        -- return it only if it is still live.
+        (w & #pendingCeremonies %~ Map.delete cid, if pcExpiresAt pc > now' then Just pc else Nothing)
 
 -- | Field accessors for the EP-4 service-account records. Both 'ServiceAccount' and
 -- 'NewServiceAccount' share field names with several other domain records, so read them with
@@ -1223,17 +1263,13 @@ runClock ref = interpret_ \case
 runTokenGen :: (IOE :> es) => IORef World -> Eff (TokenGen : es) a -> Eff es a
 runTokenGen ref = interpret_ \case
   GenerateOpaqueToken -> liftIO do
-    w <- readIORef ref
-    let n = w.tokenCounter
-    writeIORef ref (w & #tokenCounter .~ (n + 1))
+    n <- atomicModifyIORef' ref \w -> (w & #tokenCounter %~ (+ 1), w.tokenCounter)
     pure (RefreshToken ("rt-" <> Text.pack (show n)))
   HashRefreshToken (RefreshToken t) -> pure (RefreshTokenHash ("hash:" <> t))
   -- Deterministic pseudo-random bytes: varied within a call and distinct across calls (the
   -- counter advances), so ten recovery codes drawn in a row differ. Never used for real secrecy.
   GenerateRandomBytes n -> liftIO do
-    w <- readIORef ref
-    let c = w.tokenCounter
-    writeIORef ref (w & #tokenCounter .~ (c + 1))
+    c <- atomicModifyIORef' ref \w -> (w & #tokenCounter %~ (+ 1), w.tokenCounter)
     pure (BS.pack [fromIntegral ((c * 131 + i * 17 + 7) `mod` 256) | i <- [0 .. n - 1]])
 
 -- | A deterministic, cryptography-free fake of 'WebAuthnCeremony' for tests
@@ -1271,9 +1307,7 @@ runWebAuthnCeremonyFake ref = interpret_ \case
 -- Build a canned begin result with a deterministic, counter-derived challenge.
 mkCannedCeremony :: IORef World -> IO BeginCeremony
 mkCannedCeremony ref = do
-  w <- readIORef ref
-  let n = w.ceremonyCounter
-  writeIORef ref (w & #ceremonyCounter .~ (n + 1))
+  n <- atomicModifyIORef' ref \w -> (w & #ceremonyCounter %~ (+ 1), w.ceremonyCounter)
   let chal = "ceremony-challenge-" <> Text.pack (show n)
       optionsJson = object ["challenge" Aeson..= chal]
   pure BeginCeremony {optionsJson, optionsBlob = LBS.toStrict (encode optionsJson)}

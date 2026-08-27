@@ -369,10 +369,12 @@ early would silently downgrade "token reuse — revoke the whole family" to "unk
 token in the family is unusable anyway. Lowering `SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS` below
 your refresh-token TTL narrows that window; do not.
 
-**Rows in `shomei_account_lockouts` with no active lock are never swept.** They carry the
-running failure count for an account that is not currently locked, and deleting one would reset
-a brute-force counter mid-attack. They are bounded by the number of accounts that have ever
-failed a login, and a successful login clears them.
+**`shomei_account_lockouts` rows exist only after the account reaches its threshold.** The
+append-only `shomei_login_attempts` table is the source of truth for the running windowed count;
+the lockout row records the resulting cooldown. A successful login removes the row, and the
+sweeper removes rows whose cooldown elapsed longer ago than the configured grace period. Deleting
+an elapsed lockout does not reset the failure history; the attempt-retention window bounds that
+history independently.
 
 ### Audit-event retention is off by default
 

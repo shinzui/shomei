@@ -7,7 +7,9 @@
 -- the hashed account identifier.
 module Shomei.Session.LoginAttempt.Store
   ( LoginAttemptStore (..),
-    recordLoginAttempt,
+    recordLoginFailure,
+    convertLoginAttemptToSuccess,
+    discardLoginAttempt,
     countRecentFailuresByAccount,
     countRecentFailuresByIp,
     getAccountLockout,
@@ -18,12 +20,19 @@ where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Id (LoginAttemptId)
 import Shomei.Prelude
-import Shomei.Session.LoginAttempt.Domain (AccountKey, AccountLockout, ClientIp, NewLoginAttempt)
+import Shomei.Session.LoginAttempt.Domain (AccountKey, AccountLockout, ClientIp, FailureOutcome, LockPolicy, NewLoginAttempt)
 
 data LoginAttemptStore :: Effect where
-  -- | Append one attempt to the log.
-  RecordLoginAttempt :: NewLoginAttempt -> LoginAttemptStore m ()
+  -- | Serialize on the account key, append a provisional failure, count it in the current
+  -- window, and optionally transition the account to locked in the same operation.
+  RecordLoginFailure :: NewLoginAttempt -> UTCTime -> Maybe LockPolicy -> LoginAttemptStore m FailureOutcome
+  -- | Convert a provisional failure to success without adding a second attempt row.
+  ConvertLoginAttemptToSuccess :: LoginAttemptId -> LoginAttemptStore m ()
+  -- | Remove a provisional row after a correct password advances into an MFA challenge. It is
+  -- neither a failed proof nor a fully authenticated success, so it must affect neither budget.
+  DiscardLoginAttempt :: LoginAttemptId -> LoginAttemptStore m ()
   -- | Count failures for an account since the given cutoff (window start).
   CountRecentFailuresByAccount :: AccountKey -> UTCTime -> LoginAttemptStore m Int
   -- | Count failures from an IP since the given cutoff (window start).
@@ -37,8 +46,19 @@ data LoginAttemptStore :: Effect where
 
 type instance DispatchOf LoginAttemptStore = Dynamic
 
-recordLoginAttempt :: (LoginAttemptStore :> es) => NewLoginAttempt -> Eff es ()
-recordLoginAttempt = send . RecordLoginAttempt
+recordLoginFailure ::
+  (LoginAttemptStore :> es) =>
+  NewLoginAttempt ->
+  UTCTime ->
+  Maybe LockPolicy ->
+  Eff es FailureOutcome
+recordLoginFailure attempt cutoff policy = send (RecordLoginFailure attempt cutoff policy)
+
+convertLoginAttemptToSuccess :: (LoginAttemptStore :> es) => LoginAttemptId -> Eff es ()
+convertLoginAttemptToSuccess = send . ConvertLoginAttemptToSuccess
+
+discardLoginAttempt :: (LoginAttemptStore :> es) => LoginAttemptId -> Eff es ()
+discardLoginAttempt = send . DiscardLoginAttempt
 
 countRecentFailuresByAccount :: (LoginAttemptStore :> es) => AccountKey -> UTCTime -> Eff es Int
 countRecentFailuresByAccount k t = send (CountRecentFailuresByAccount k t)

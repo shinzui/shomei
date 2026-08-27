@@ -218,7 +218,7 @@ import Shomei.ServiceAccount.Store
 import Shomei.Session.Authentication.Workflow (login, refresh, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
-import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), AttemptFactor (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), AttemptFactor (..), ClientIp (..), FailureOutcome (..), LockPolicy (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
 import Shomei.Session.LoginAttempt.Store
   ( LoginAttemptStore,
@@ -226,7 +226,7 @@ import Shomei.Session.LoginAttempt.Store
     countRecentFailuresByAccount,
     countRecentFailuresByIp,
     getAccountLockout,
-    recordLoginAttempt,
+    recordLoginFailure,
     setAccountLockout,
   )
 import Shomei.Session.Postgres (runSessionStorePostgres)
@@ -517,12 +517,14 @@ tests =
     testAuditEventReader,
     testWorkflowSignup,
     testLoginRoundTripBudget,
+    testFailedLoginRoundTripBudget,
     testRefreshRoundTripBudget,
     testWorkflowRefreshRotation,
     testWorkflowReuseRevokesFamily,
     testWorkflowAccountVerification,
     testWorkflowPasswordReset,
     testLoginAttemptStore,
+    testLockoutRecordAndCountIsAtomicUnderRace,
     testWorkflowLockout,
     testPasskeyCreateAndFind,
     testPasskeyUpdateCountDelete,
@@ -1356,17 +1358,18 @@ countingDatabase counter = interpose \_env op -> do
 -- | A successful password login costs exactly ten database round-trips:
 --
 --   1. @countRecentFailuresByIp@   (per-IP throttle)
---   2. @getAccountLockout@         (lockout gate)
+--   2. @recordLoginFailure@        (ONE transaction: advisory lock + provisional insert + count)
 --   3. @findPasswordCredentialByLoginId@
 --   4. @findUserById@
---   5. @recordLoginAttempt@        (success row)
---   6. @countPasskeysByUser@       (MFA gate: passkey factor)
---   7. @findTotpByUser@            (MFA gate: confirmed-TOTP factor — EP-7)
+--   5. @countPasskeysByUser@       (MFA gate: passkey factor)
+--   6. @findTotpByUser@            (MFA gate: confirmed-TOTP factor — EP-7)
+--   7. @convertLoginAttemptToSuccess@
 --   8. @persistNewSession@         (ONE transaction: session + refresh token + 2 audit events)
 --   9. @listRolesForUser@          (the roles claim, via @buildEnrichedClaims@)
 --  10. @permissionsForRoles@       (the permissions claim, via @buildEnrichedClaims@ — EP-9)
 --
--- There is deliberately no @clearAccountLockout@: the lockout read at step 2 found nothing.
+-- There is deliberately no @clearAccountLockout@: the record transaction found no standing row
+-- and did not reach the account threshold.
 -- Password verification and access-token signing are CPU-only and cost no round-trip.
 --
 -- Step 7 was added by EP-7's generalized MFA gate: login now challenges for /any/ enrolled
@@ -1393,6 +1396,19 @@ testLoginRoundTripBudget = testCase "a successful login costs exactly 10 databas
   loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
   _ <- expectApp loginRes >>= expectRight
   readIORef counter >>= (@?= 10)
+
+-- | A wrong password costs four checkouts: per-IP count, atomic record-and-count transaction,
+-- credential lookup, and the @LoginFailed@ audit insert. The user row is only needed after the
+-- password succeeds, and hashing itself is CPU-only.
+testFailedLoginRoundTripBudget :: TestTree
+testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 database round-trips" $ withDb \pool -> do
+  signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+  _ <- expectApp signupRes >>= expectRight
+  counter <- newIORef 0
+  let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
+  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin (PlainPassword "wrong"))))
+  expectApp loginRes >>= (@?= Left InvalidCredentials)
+  readIORef counter >>= (@?= 4)
 
 -- | A token refresh costs exactly five database round-trips:
 --
@@ -1488,30 +1504,17 @@ testLoginAttemptStore = testCase "login attempt store: record + windowed count +
   result <- runApp pool do
     t <- now
     let cutoff = addUTCTime (-900) t
-    recordLoginAttempt
-      NewLoginAttempt
-        { accountKey = key,
-          clientIp = ip,
-          outcome = LoginFailure,
-          occurredAt = t,
-          factor = FactorTotp
-        }
-    recordLoginAttempt
-      NewLoginAttempt
-        { accountKey = key,
-          clientIp = ip,
-          outcome = LoginFailure,
-          occurredAt = t,
-          factor = FactorTotp
-        }
-    recordLoginAttempt
-      NewLoginAttempt
-        { accountKey = key,
-          clientIp = ClientIp "9.9.9.9",
-          outcome = LoginFailure,
-          occurredAt = t,
-          factor = FactorTotp
-        }
+        failure fromIp =
+          NewLoginAttempt
+            { accountKey = key,
+              clientIp = fromIp,
+              outcome = LoginFailure,
+              occurredAt = t,
+              factor = FactorTotp
+            }
+    _ <- recordLoginFailure (failure ip) cutoff Nothing
+    _ <- recordLoginFailure (failure ip) cutoff Nothing
+    _ <- recordLoginFailure (failure (ClientIp "9.9.9.9")) cutoff Nothing
     accFails <- countRecentFailuresByAccount key cutoff
     ipFails <- countRecentFailuresByIp ip cutoff
     future <- countRecentFailuresByAccount key (addUTCTime 3600 t)
@@ -1526,6 +1529,33 @@ testLoginAttemptStore = testCase "login attempt store: record + windowed count +
   future @?= 0 -- a cutoff in the future excludes everything
   fmap (.failedCount) lo1 @?= Just 5
   lo2 @?= Nothing
+
+testLockoutRecordAndCountIsAtomicUnderRace :: TestTree
+testLockoutRecordAndCountIsAtomicUnderRace =
+  testCase "lockout: eight racing failures count 1..8 and lock once" $ withDb \pool -> do
+    let key = AccountKey "race-key"
+        ip = ClientIp "10.0.0.9"
+        cutoff = addUTCTime (-900) t0
+        policy = LockPolicy 5 (addUTCTime 900 t0)
+        failure =
+          NewLoginAttempt
+            { accountKey = key,
+              clientIp = ip,
+              outcome = LoginFailure,
+              occurredAt = t0,
+              factor = FactorPassword
+            }
+    gate <- newEmptyMVar
+    dones <- replicateM 8 do
+      done <- newEmptyMVar
+      _ <- forkIO do
+        readMVar gate
+        putMVar done =<< runApp pool (recordLoginFailure failure cutoff (Just policy))
+      pure done
+    putMVar gate ()
+    outcomes <- traverse (\done -> expectApp =<< takeMVar done) dones
+    sort (map (.failures) outcomes) @?= [1 .. 8]
+    length (filter (.lockedNow) outcomes) @?= 1
 
 testWorkflowLockout :: TestTree
 testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlock-after-cooldown" $ withDb \pool -> do

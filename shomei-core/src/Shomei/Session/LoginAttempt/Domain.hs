@@ -9,9 +9,12 @@ module Shomei.Session.LoginAttempt.Domain
     LoginAttempt (..),
     NewLoginAttempt (..),
     AccountLockout (..),
+    LockPolicy (..),
+    FailureOutcome (..),
   )
 where
 
+import Shomei.Id (LoginAttemptId)
 import Shomei.Prelude
 
 -- | Whether an attempt succeeded or failed. (We log both; success clears the counter.)
@@ -41,7 +44,8 @@ newtype ClientIp = ClientIp Text
 
 -- | A persisted login attempt (one row in @shomei_login_attempts@).
 data LoginAttempt = LoginAttempt
-  { accountKey :: !AccountKey,
+  { attemptId :: !LoginAttemptId,
+    accountKey :: !AccountKey,
     clientIp :: !ClientIp,
     outcome :: !LoginOutcome,
     occurredAt :: !UTCTime,
@@ -67,6 +71,25 @@ data AccountLockout = AccountLockout
     failedCount :: !Int,
     lockedUntil :: !(Maybe UTCTime),
     updatedAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | What one atomic failure-recording operation may do after the windowed count reaches the
+-- configured account threshold.
+data LockPolicy = LockPolicy
+  { maxFailures :: !Int,
+    lockUntil :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | The account-key state immediately after a failure row was durably recorded.
+data FailureOutcome = FailureOutcome
+  { attemptId :: !LoginAttemptId,
+    failures :: !Int,
+    priorLockout :: !(Maybe AccountLockout),
+    lockedNow :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

@@ -221,6 +221,15 @@ Every failing login therefore performs **exactly one** password verification: th
 reach a stored hash verify against a fixed dummy Argon2id hash instead, so all of them pay the same
 cost.
 
+The account budget is reserved **before** the stored hash is consulted. For one opaque account key,
+PostgreSQL takes a transaction-scoped advisory lock, inserts a provisional failure, counts the
+window, and creates the lockout in one transaction. The request that reaches the threshold may
+still prove its password; a correct proof converts that row to success (or discards it while an MFA
+challenge is pending) and removes the lock it just reserved. Requests that observe an already-live
+lockout use the dummy verifier instead. Parallel guesses therefore cannot make more stored-hash
+evaluations than `maxFailedLoginsPerAccount`, and only the transaction that creates the lockout
+publishes `AccountLocked`.
+
 ### Signup deliberately discloses existence
 
 `POST /v1/auth/signup` answers `409 email_taken` / `409 login_id_taken` when the identifier is

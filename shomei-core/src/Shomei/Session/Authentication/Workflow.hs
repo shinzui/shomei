@@ -62,13 +62,11 @@ import Shomei.Passkey.Store (PasskeyStore, countPasskeysByUser)
 import Shomei.Prelude
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
-import Shomei.Session.LoginAttempt.Domain (AttemptFactor (FactorPassword))
-import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.LoginAttempt.Domain (AccountLockout (..), AttemptFactor (FactorPassword), FailureOutcome (..))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore, clearAccountLockout, convertLoginAttemptToSuccess, discardLoginAttempt)
 import Shomei.Session.LoginAttempt.Workflow
-  ( AbuseGate (..),
-    guardAbuse,
-    recordProofFailure,
-    recordProofSuccess,
+  ( guardIpBudget,
+    recordProofFailureOutcome,
   )
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Session.RefreshToken.Domain qualified as RT
@@ -219,27 +217,33 @@ login ::
 login cfg ctx cmd = runErrorNoCallStack do
   ts <- now
   let rl = cfg.rateLimitConfig
-  gate <- guardAbuse rl ctx ts
+  guardIpBudget rl ctx ts
+  -- Serialize this account key and reserve one failure-budget slot before any stored hash is
+  -- consulted. A correct password converts the provisional failure to success below.
+  outcome <- recordProofFailureOutcome rl ctx FactorPassword ts
+  let lockedBefore = maybe False (maybe False (> ts) . lockedUntil) outcome.priorLockout
   -- A locked account is still charged one Argon2id verification. Returning before hashing made
   -- lock state observable through response time even though the HTTP error stayed generic.
-  when gate.locked do
+  when lockedBefore do
     verifyPasswordDummy cmd.password
-    throwError InvalidCredentials
+    failLogin rl outcome ctx cmd.loginId ts
   -- Every failure path below performs exactly one password-hashing operation. The paths that
   -- never reach a stored hash call 'verifyPasswordDummy' instead, which burns an equivalent
   -- amount of Argon2id work, so a miss cannot be told apart from a wrong password by response
   -- time.
   mCred <- findPasswordCredentialByLoginId cmd.loginId
-  cred <- maybe (failLoginTimed rl ctx cmd ts) pure mCred
+  cred <- maybe (failLoginTimed rl outcome ctx cmd ts) pure mCred
+  ok <- verifyPassword cmd.password cred.passwordHash
+  unless ok (failLogin rl outcome ctx cmd.loginId ts)
+  -- The password hash was already evaluated, so the missing-user and inactive-user branches do
+  -- not need a dummy hash. Keeping the user lookup after verification also leaves the common
+  -- wrong-password path at four database checkouts, including its audit event.
   mUser <- findUserById cred.userId
-  user <- maybe (failLoginTimed rl ctx cmd ts) pure mUser
+  user <- maybe (failLogin rl outcome ctx cmd.loginId ts) pure mUser
   when (user.status /= UserActive) do
-    verifyPasswordDummy cmd.password
-    recordProofFailure rl ctx FactorPassword ts
+    publishNewLock rl outcome ctx ts
     publishAuthEvent (Event.LoginFailed (Event.LoginFailedData cmd.loginId ts))
     throwError UserNotActive
-  ok <- verifyPassword cmd.password cred.passwordHash
-  unless ok (failLogin rl ctx cmd.loginId ts)
   -- Gate before the MFA branch, so an account with an unverified email is not even offered a
   -- ceremony. The password was already proven correct here, so naming the reason discloses
   -- nothing the caller does not know (see 'EmailNotVerified').
@@ -252,9 +256,14 @@ login cfg ctx cmd = runErrorNoCallStack do
   if requireSecondFactor (mfaConfig cfg) && hasSecondFactor
     then do
       (cid, optionsJson, methods) <- prepareMfaChallenge cfg user ts
+      -- A correct password that advances to MFA is neither a failed proof nor a fully
+      -- authenticated success. Remove its provisional row without resetting earlier failures.
+      discardLoginAttempt outcome.attemptId
+      when outcome.lockedNow (clearAccountLockout ctx.accountKey)
       pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson, methods = methods})
     else do
-      recordProofSuccess ctx FactorPassword gate.standingLockout ts
+      convertLoginAttemptToSuccess outcome.attemptId
+      when (outcome.lockedNow || isJust outcome.priorLockout) (clearAccountLockout ctx.accountKey)
       (_sid, pair) <- issueSession cfg user ts
       pure (LoginComplete user pair)
 
@@ -263,38 +272,50 @@ login cfg ctx cmd = runErrorNoCallStack do
 -- row whose user row is missing. Without the dummy work these return in microseconds while a
 -- wrong password costs ~100 ms, which enumerates accounts through the identical @401@.
 failLoginTimed ::
-  ( LoginAttemptStore :> es,
-    AuthEventPublisher :> es,
+  ( AuthEventPublisher :> es,
     PasswordHasher :> es,
     Error AuthError :> es
   ) =>
   RateLimitConfig ->
+  FailureOutcome ->
   ClientContext ->
   LoginCommand ->
   UTCTime ->
   Eff es a
-failLoginTimed rl ctx cmd ts = do
+failLoginTimed rl outcome ctx cmd ts = do
   verifyPasswordDummy cmd.password
-  failLogin rl ctx cmd.loginId ts
+  failLogin rl outcome ctx cmd.loginId ts
 
--- | The shared failure path for 'login': record the failed attempt, publish 'LoginFailed',
--- lock the account if the windowed per-account failure budget is now exhausted, then throw the
--- generic 'InvalidCredentials'. Both the unknown-account branch and the wrong-password branch
--- reach this so they remain byte-for-byte identical at the boundary.
+-- | The shared failure path for 'login': publish the lock transition reserved by the already
+-- recorded provisional failure, publish 'LoginFailed', then throw the generic
+-- 'InvalidCredentials'. Both the unknown-account branch and the wrong-password branch reach
+-- this so they remain byte-for-byte identical at the boundary.
 failLogin ::
-  ( LoginAttemptStore :> es,
-    AuthEventPublisher :> es,
+  ( AuthEventPublisher :> es,
     Error AuthError :> es
   ) =>
   RateLimitConfig ->
+  FailureOutcome ->
   ClientContext ->
   LoginId ->
   UTCTime ->
   Eff es a
-failLogin rl ctx loginId ts = do
-  recordProofFailure rl ctx FactorPassword ts
+failLogin rl outcome ctx loginId ts = do
+  publishNewLock rl outcome ctx ts
   publishAuthEvent (Event.LoginFailed (Event.LoginFailedData loginId ts))
   throwError InvalidCredentials
+
+publishNewLock ::
+  (AuthEventPublisher :> es) =>
+  RateLimitConfig ->
+  FailureOutcome ->
+  ClientContext ->
+  UTCTime ->
+  Eff es ()
+publishNewLock rl outcome ctx ts = when outcome.lockedNow do
+  let deadline = addUTCTime rl.lockoutDuration ts
+  publishAuthEvent
+    (Event.AccountLocked (Event.AccountLockedData ctx.accountKey ctx.clientIp outcome.failures deadline ts))
 
 data Refreshed = Refreshed
   { tokens :: !TokenPair,

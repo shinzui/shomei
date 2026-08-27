@@ -13,11 +13,13 @@ module Shomei.Session.Authentication.ConcurrencySpec (tests) where
 
 import Control.Concurrent.Async (mapConcurrently)
 import Data.Either (partitionEithers)
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
+import Effectful (Eff, IOE, liftIO, (:>))
+import Effectful.Dispatch.Dynamic (interpose)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 -- Qualified: several 'AuthError' constructors share names with 'SessionStatus' constructors.
 
@@ -27,17 +29,19 @@ import Shomei.Account.Lifecycle.Workflow
     confirmPasswordReset,
     requestPasswordReset,
   )
-import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.LoginId.Domain (loginIdText, mkLoginId)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken)
-import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Account.Password.Domain (PasswordHash (..), PlainPassword (..))
+import Shomei.Account.Password.Hash.Store (PasswordHasher (..))
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error qualified as Err
-import Shomei.Session.Authentication.Workflow (refresh, signup)
-import Shomei.Session.Command (RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Authentication.Workflow (login, refresh, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshToken)
 import Shomei.Session.Token.Domain (TokenPair (..))
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
@@ -76,7 +80,8 @@ tests =
   testGroup
     "Shomei.Session.Authentication.Workflow.Concurrency"
     [ testConcurrentRefreshHasOneWinner,
-      testConcurrentPasswordResetHasOneWinner
+      testConcurrentPasswordResetHasOneWinner,
+      testConcurrentWrongPasswordsRespectTheBudget
     ]
 
 signupCmd :: Email -> SignupCommand
@@ -148,3 +153,61 @@ testConcurrentPasswordResetHasOneWinner =
       length (filter isCompleted w.publishedEvents) @?= 1
     isCompleted (Event.PasswordResetCompleted _) = True
     isCompleted _ = False
+
+-- | Count stored-hash and dummy-hash verification separately while preserving the deterministic
+-- fake hash format used by 'runInMemory'. The distinction proves that the account budget bounds
+-- real guesses even though every request still pays one Argon2-equivalent operation.
+countingPasswordHasher ::
+  (PasswordHasher :> es, IOE :> es) =>
+  IORef Int ->
+  IORef Int ->
+  Eff es a ->
+  Eff es a
+countingPasswordHasher realCalls dummyCalls = interpose \_env -> \case
+  HashPassword (PlainPassword pw) -> pure (PasswordHash ("argon2-fake:" <> pw))
+  VerifyPassword (PlainPassword pw) (PasswordHash h) -> do
+    liftIO (atomicModifyIORef' realCalls \n -> (n + 1, ()))
+    pure (h == "argon2-fake:" <> pw)
+  VerifyPasswordDummy _ ->
+    liftIO (atomicModifyIORef' dummyCalls \n -> (n + 1, ()))
+
+testConcurrentWrongPasswordsRespectTheBudget :: TestTree
+testConcurrentWrongPasswordsRespectTheBudget =
+  testCase (show racers <> " concurrent wrong passwords: at most 3 real verifications, one lock") do
+    ref <- newIORef (emptyWorld fixedTime)
+    realCalls <- newIORef 0
+    dummyCalls <- newIORef 0
+    let raceCfg =
+          cfg
+            { rateLimitConfig =
+                cfg.rateLimitConfig
+                  { maxFailedLoginsPerAccount = 3,
+                    maxFailedLoginsPerIp = racers + 1
+                  }
+            }
+        lid = either (error . show) id (mkLoginId (emailText aliceEmail))
+        ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (loginIdText lid))
+        wrongLogin = login raceCfg ctx (LoginCommand lid (PlainPassword "wrong password"))
+    _ <-
+      expectRight
+        =<< runInMemory
+          ref
+          (countingPasswordHasher realCalls dummyCalls (signup raceCfg (signupCmd aliceEmail)))
+    writeIORef realCalls 0
+    writeIORef dummyCalls 0
+
+    results <-
+      mapConcurrently
+        (const (runInMemory ref (countingPasswordHasher realCalls dummyCalls wrongLogin)))
+        [1 .. racers]
+    assertBool ("unexpected result among wrong-password racers: " <> show results) (all (== Left Err.InvalidCredentials) results)
+    real <- readIORef realCalls
+    dummy <- readIORef dummyCalls
+    assertBool ("real verifications exceeded the budget: " <> show real) (real <= 3)
+    real + dummy @?= racers
+    w <- readIORef ref
+    length (filter isAccountLocked w.publishedEvents) @?= 1
+    assertBool "account was not locked" (isJust (Map.lookup ctx.accountKey w.accountLockouts >>= (.lockedUntil)))
+  where
+    isAccountLocked (Event.AccountLocked _) = True
+    isAccountLocked _ = False
