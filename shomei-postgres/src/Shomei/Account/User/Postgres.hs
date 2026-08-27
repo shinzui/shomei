@@ -52,9 +52,10 @@ runUserStorePostgres = interpret_ \case
     res <- runSession (Session.statement (emailText email) findUserByEmailStmt)
     row <- either dbFail pure res
     traverse rebuild row
-  UpdateUserStatus uid st -> do
-    res <- runSession (Session.statement (userIdToUUID uid, userStatusToText st) updateUserStatusStmt)
-    either dbFail (const (pure ())) res
+  UpdateUserStatus uid allowed st ts -> do
+    let params = (userIdToUUID uid, userStatusToText st, map userStatusToText allowed, ts)
+    res <- runSession (Session.statement params updateUserStatusStmt)
+    either dbFail (pure . isJust) res
   MarkUserEmailVerified uid ts -> do
     res <- runSession (Session.statement (userIdToUUID uid, ts) markEmailVerifiedStmt)
     either dbFail (const (pure ())) res
@@ -171,17 +172,24 @@ findUserByEmailStmt =
     (E.param (E.nonNullable E.text))
     (D.rowMaybe userRowDecoder)
 
--- | @updated_at@ moves with the status. Before EP-2 nothing called this, so the omission never
--- showed; the admin listing surfaces @updatedAt@, and a suspension that leaves it at the signup
--- timestamp is a lie an operator would read as "nothing has happened to this account".
-updateUserStatusStmt :: Statement (UUID, Text) ()
+-- | The allowed-status predicate makes the transition a compare-and-swap. The returned row
+-- identifies the sole winner under concurrency, and the caller-provided timestamp keeps the
+-- status write and its audit tail on the same clock reading.
+updateUserStatusStmt :: Statement (UUID, Text, [Text], UTCTime) (Maybe UUID)
 updateUserStatusStmt =
   preparable
     """
-    UPDATE shomei.shomei_users SET status = $2, updated_at = now() WHERE user_id = $1
+    UPDATE shomei.shomei_users
+    SET status = $2, updated_at = $4
+    WHERE user_id = $1 AND status = ANY ($3)
+    RETURNING user_id
     """
-    (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.text)))
-    D.noResult
+    ( ((\(a, _, _, _) -> a) >$< E.param (E.nonNullable E.uuid))
+        <> ((\(_, b, _, _) -> b) >$< E.param (E.nonNullable E.text))
+        <> ((\(_, _, c, _) -> c) >$< E.param (E.nonNullable (E.foldableArray (E.nonNullable E.text))))
+        <> ((\(_, _, _, d) -> d) >$< E.param (E.nonNullable E.timestamptz))
+    )
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 markEmailVerifiedStmt :: Statement (UUID, UTCTime) ()
 markEmailVerifiedStmt =

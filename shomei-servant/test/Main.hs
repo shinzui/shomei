@@ -77,7 +77,7 @@ import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Dto (UserResponse)
 import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
@@ -318,7 +318,10 @@ revokeAllSessionsOf ref userIdText = do
     revokeAllUserSessions uid ts
 
 suspendUserIn :: IORef World -> UserId -> IO ()
-suspendUserIn ref uid = runInMemory ref (updateUserStatus uid UserSuspended)
+suspendUserIn ref uid = runInMemory ref do
+  ts <- now
+  _ <- updateUserStatus uid [UserActive] UserSuspended ts
+  pure ()
 
 -- | EP-9 host helpers over the in-memory world: define a role, wire a permission on or off it,
 -- and grant a role to a user through the audited workflow — the operator moves a token check

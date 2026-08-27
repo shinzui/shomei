@@ -32,7 +32,7 @@ import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Domain (PasswordHash (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Store (PasswordHasher (..))
 import Shomei.Account.PasswordReset.Store (PasswordResetTokenStore)
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Store (UserStore, updateUserStatus)
 import Shomei.Account.Verification.Store (VerificationTokenStore)
 import Shomei.Audit.Publisher.Store (AuthEventPublisher)
@@ -221,7 +221,7 @@ suspendEveryone :: IORef World -> IO ()
 suspendEveryone ref = do
   w <- readIORef ref
   counter <- newIORef 0
-  runCounting ref counter (mapM_ (\u -> updateUserStatus u.userId UserSuspended) (Map.elems w.users))
+  runCounting ref counter (mapM_ (\u -> updateUserStatus u.userId [UserActive] UserSuspended fixedTime) (Map.elems w.users))
 
 -- | Exhaust Alice's default five-attempt account budget before the measured login.
 lockAlice :: IORef World -> IO ()

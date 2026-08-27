@@ -16,7 +16,7 @@ import Effectful.Dispatch.Dynamic (interpose, passthrough, send)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
@@ -266,8 +266,8 @@ testSuspendedAttemptsCount = testCase "attempts against a suspended account coun
   ref <- newIORef (emptyWorld t0)
   seedAlice ref
   w0 <- readIORef ref
-  case Map.elems w0.users of
-    [user] -> runInMemory ref (updateUserStatus user.userId UserSuspended)
+  _ <- case Map.elems w0.users of
+    [user] -> runInMemory ref (updateUserStatus user.userId [UserActive] UserSuspended t0)
     users -> assertFailure ("expected one seeded user, got " <> show (length users))
   r1 <- goodLogin ref ip1 aliceEmail
   r2 <- goodLogin ref ip1 aliceEmail

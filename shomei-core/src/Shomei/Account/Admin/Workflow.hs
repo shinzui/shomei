@@ -104,9 +104,10 @@ transition target allowed newStatus after = do
       | user.status `notElem` allowed -> pure (Left InvalidUserStatus)
       | otherwise -> do
           ts <- now
-          updateUserStatus target newStatus
-          after ts
-          pure (Right ())
+          won <- updateUserStatus target allowed newStatus ts
+          if won
+            then after ts >> pure (Right ())
+            else pure (Left InvalidUserStatus)
 
 -- | Revoke every /active/ session of a user, returning how many were revoked.
 --

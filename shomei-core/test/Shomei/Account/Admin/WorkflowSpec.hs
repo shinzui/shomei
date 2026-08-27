@@ -5,6 +5,8 @@
 -- ones (@shomei-postgres/test/Main.hs@ pins the SQL side of listing and revocation).
 module Shomei.Account.Admin.WorkflowSpec (tests) where
 
+import Control.Concurrent.Async (mapConcurrently)
+import Control.Monad (replicateM)
 import Data.IORef (IORef, newIORef, readIORef)
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff)
@@ -19,7 +21,6 @@ import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (genSessionId, genUserId)
-import Shomei.Prelude
 import Shomei.Session.Authentication.Workflow (LoginResult (..), login, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (SessionActive))
@@ -35,6 +36,7 @@ tests =
   testGroup
     "Shomei.Account.Admin.Workflow"
     [ testSuspendFlipsStatusRevokesSessionsAndRecordsActor,
+      testConcurrentSuspendsAuditOnce,
       testStrictTransitions,
       testDeleteIsTerminal,
       testReinstateRestoresLogin,
@@ -95,6 +97,21 @@ testSuspendFlipsStatusRevokesSessionsAndRecordsActor =
         d.actor @?= Just admin
         d.userId @?= targetId
       other -> assertFailure ("expected exactly one user_suspended event, got " <> show (length other))
+
+-- | The status transition itself is the linearization point: exactly one of many administrators
+-- may move the same active account to suspended, and only that winner performs the revocation
+-- and audit tail.
+testConcurrentSuspendsAuditOnce :: TestTree
+testConcurrentSuspendsAuditOnce =
+  testCase "100 concurrent suspends have one winner and one audit event" $ withWorld \ref -> do
+    signupResult <- runInMemory ref (signup cfg signupCmd)
+    (user, _) <- either (assertFailure . ("signup failed: " <>) . show) pure signupResult
+    admins <- runInMemory ref (replicateM 100 genUserId)
+    results <- mapConcurrently (\admin -> runInMemory ref (suspendUser admin user.userId)) admins
+    length (filter (== Right ()) results) @?= 1
+    length (filter (== Left InvalidUserStatus) results) @?= 99
+    published <- (.publishedEvents) <$> readIORef ref
+    length [() | Event.UserSuspended _ <- published] @?= 1
 
 -- | Suspending twice is a 'InvalidUserStatus', not a silent success: two administrators handling
 -- one incident must be able to tell which of them changed the state.

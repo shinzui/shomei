@@ -17,7 +17,7 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
@@ -289,7 +289,7 @@ testImpersonationSuspendedOperator = testCase "impersonation: a suspended operat
   target <- seedUser ref "customer@example.com"
   (op, sid) <- seedPrincipal ref "operator@example.com"
   opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) Nothing fixedTime)
-  _ <- runInMemory ref (updateUserStatus op UserSuspended)
+  _ <- runInMemory ref (updateUserStatus op [UserActive] UserSuspended fixedTime)
   res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
   fmap (const ()) res @?= Left ImpersonationForbidden
 
@@ -397,7 +397,7 @@ testOnBehalfInactiveSubject = testCase "on-behalf-of: an inactive subject user i
   ref <- newIORef (emptyWorld fixedTime)
   (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  _ <- runInMemory ref (updateUserStatus user UserSuspended)
+  _ <- runInMemory ref (updateUserStatus user [UserActive] UserSuspended fixedTime)
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
   res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton ingestScope))))

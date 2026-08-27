@@ -18,7 +18,7 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
@@ -187,7 +187,7 @@ testInactiveBackingUser = testCase "an inactive backing user is invalid_client" 
   ref <- newIORef (emptyWorld fixedTime)
   serviceUser <- seedUser ref "connector-rei"
   account <- seedAccount ref serviceUser.userId
-  _ <- runInMemory ref (updateUserStatus serviceUser.userId UserSuspended)
+  _ <- runInMemory ref (updateUserStatus serviceUser.userId [UserActive] UserSuspended fixedTime)
   res <- runInMemory ref (grantClientCredentials baseCfg (grantFor account))
   fmap (const ()) res @?= Left OAuthClientInvalid
 

@@ -66,7 +66,9 @@ data UserStore :: Effect where
   -- | Look a user up by email. No longer the principal lookup, but retained for the
   -- reset/verification flows a caller initiates /by typing an email/.
   FindUserByEmail :: Email -> UserStore m (Maybe User)
-  UpdateUserStatus :: UserId -> UserStatus -> UserStore m ()
+  -- | Change status only when the row is currently in one of the allowed states. 'False'
+  -- means the user was absent or another writer won the transition.
+  UpdateUserStatus :: UserId -> [UserStatus] -> UserStatus -> UTCTime -> UserStore m Bool
   MarkUserEmailVerified :: UserId -> UTCTime -> UserStore m ()
   -- | Newest-first page of users, optionally filtered by status. Soft-deleted users are
   -- included: the admin surface is honest about them.
@@ -86,8 +88,8 @@ findUserByLoginId = send . FindUserByLoginId
 findUserByEmail :: (UserStore :> es) => Email -> Eff es (Maybe User)
 findUserByEmail = send . FindUserByEmail
 
-updateUserStatus :: (UserStore :> es) => UserId -> UserStatus -> Eff es ()
-updateUserStatus uid st = send (UpdateUserStatus uid st)
+updateUserStatus :: (UserStore :> es) => UserId -> [UserStatus] -> UserStatus -> UTCTime -> Eff es Bool
+updateUserStatus uid allowed st ts = send (UpdateUserStatus uid allowed st ts)
 
 markUserEmailVerified :: (UserStore :> es) => UserId -> UTCTime -> Eff es ()
 markUserEmailVerified uid t = send (MarkUserEmailVerified uid t)

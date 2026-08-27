@@ -362,10 +362,13 @@ runUserStore ref = interpret_ \case
   FindUserById uid -> liftIO ((Map.lookup uid . (.users)) <$> readIORef ref)
   FindUserByLoginId lid -> liftIO (findByLoginId lid <$> readIORef ref)
   FindUserByEmail e -> liftIO (findByEmail e <$> readIORef ref)
-  UpdateUserStatus uid st ->
+  UpdateUserStatus uid allowed st ts ->
     liftIO
-      ( atomicModifyIORef' ref \w ->
-          (w & #users %~ Map.adjust (\u -> u & #status .~ st & #updatedAt .~ w.clock) uid, ())
+      ( casWorld ref \w -> case Map.lookup uid w.users of
+          Just user
+            | user.status `elem` allowed ->
+                Just (w & #users %~ Map.insert uid (user & #status .~ st & #updatedAt .~ ts))
+          _ -> Nothing
       )
   MarkUserEmailVerified uid t ->
     liftIO (modifyWorld ref (#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid))

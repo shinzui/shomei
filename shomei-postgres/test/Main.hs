@@ -499,6 +499,8 @@ tests =
   [ testUserRoundTrip,
     testUserNoEmailAndUniqueLoginId,
     testListUsersOrderFilterAndPaging,
+    testUserStatusIsCompareAndSwap,
+    testUserStatusCasUnderRace,
     testListSessionsForUser,
     testCredentialRoundTrip,
     testSessionRevoke,
@@ -925,7 +927,8 @@ testListUsersOrderFilterAndPaging = testCase "listUsers: newest-first, status-fi
     u1 <- createUser (NewUser {loginId = mkLoginId' "one", email = Nothing, displayName = Nothing})
     u2 <- createUser (NewUser {loginId = mkLoginId' "two", email = Nothing, displayName = Nothing})
     u3 <- createUser (NewUser {loginId = mkLoginId' "three", email = Nothing, displayName = Nothing})
-    updateUserStatus u2.userId UserSuspended
+    ts <- now
+    _ <- updateUserStatus u2.userId [UserActive] UserSuspended ts
     everyone <- listUsers emptyUserListQuery
     suspended <- listUsers emptyUserListQuery {queryStatus = Just UserSuspended}
     active <- listUsers emptyUserListQuery {queryStatus = Just UserActive}
@@ -953,6 +956,37 @@ testListUsersOrderFilterAndPaging = testCase "listUsers: newest-first, status-fi
   length page1 @?= 2
   length page2 @?= 1
   (map (.userId) page1 <> map (.userId) page2) `shouldContainExactly` [u1.userId, u2.userId, u3.userId]
+
+testUserStatusIsCompareAndSwap :: TestTree
+testUserStatusIsCompareAndSwap =
+  testCase "user status changes only from an allowed current status" $ withDb \pool -> do
+    result <- runApp pool do
+      user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      first <- updateUserStatus user.userId [UserActive] UserSuspended t0
+      second <- updateUserStatus user.userId [UserActive] UserSuspended t0
+      stored <- findUserById user.userId
+      pure (first, second, stored)
+    (first, second, stored) <- expectApp result
+    (first, second) @?= (True, False)
+    fmap (.status) stored @?= Just UserSuspended
+
+testUserStatusCasUnderRace :: TestTree
+testUserStatusCasUnderRace =
+  testCase "user status: eight racing suspends have one winner" $ withDb \pool -> do
+    seeded <- runApp pool do
+      user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      pure user.userId
+    uid <- expectApp seeded
+    gate <- newEmptyMVar
+    dones <- replicateM 8 do
+      done <- newEmptyMVar
+      _ <- forkIO do
+        readMVar gate
+        putMVar done =<< runApp pool (updateUserStatus uid [UserActive] UserSuspended t0)
+      pure done
+    putMVar gate ()
+    results <- traverse (\done -> expectApp =<< takeMVar done) dones
+    length (filter id results) @?= 1
 
 testListSessionsForUser :: TestTree
 testListSessionsForUser = testCase "listSessionsForUser returns every status, newest-first, for one user only" $ withDb \pool -> do

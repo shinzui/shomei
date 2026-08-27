@@ -18,7 +18,7 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
@@ -189,7 +189,7 @@ testSuspendedCaller = testCase "suspended caller is forbidden" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
   caller <- freshOperator ref
-  _ <- runInMemory ref (updateUserStatus caller.subject UserSuspended)
+  _ <- runInMemory ref (updateUserStatus caller.subject [UserActive] UserSuspended fixedTime)
   res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
   fmap (const ()) res @?= Left ImpersonationForbidden
 
@@ -212,7 +212,7 @@ testInactiveTarget :: TestTree
 testInactiveTarget = testCase "suspended target is an invalid target" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
-  _ <- runInMemory ref (updateUserStatus target UserSuspended)
+  _ <- runInMemory ref (updateUserStatus target [UserActive] UserSuspended fixedTime)
   caller <- freshOperator ref
   res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
   fmap (const ()) res @?= Left ImpersonationTargetInvalid

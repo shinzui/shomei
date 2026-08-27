@@ -68,7 +68,12 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
       one-reuse-event assertion; budgets
 - [x] (2026-08-27T19:41:16Z) M3 gate: `nix fmt`, `cabal build all`, and the serialized
       all-package test matrix pass (core 272; PostgreSQL 70)
-- [ ] M4: `UpdateUserStatus` conditional; concurrent-suspend tests in core and Postgres
+- [x] (2026-08-27T19:43:26Z) M4 regression observed red: 100 concurrent suspends produced five
+      successful transitions before the user-status compare-and-swap
+- [x] (2026-08-27T19:51:55Z) M4: `UpdateUserStatus` conditional; concurrent-suspend tests in
+      core and Postgres
+- [x] (2026-08-27T19:51:55Z) M4 gate: `nix fmt`, `cabal build all`, and the serialized
+      all-package test matrix pass (core 273; PostgreSQL 72)
 - [ ] M5: `findUserByEmail` guard; SQLSTATE 23505 mapped to typed conflicts; tests
 - [ ] M6: migration (number allocated by `just new-migration`; `0029` at the time of writing); PostgreSQL 17/18 floor documented; CHANGELOGs; ADR distillation
 
@@ -145,6 +150,17 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   100 concurrent refreshes: exactly one winner: FAIL
     expected: 1
      but got: 55
+  ```
+
+- The pre-fix in-memory admin race produced five successful suspensions in the observed run.
+  As with the refresh race, the precise duplicate count depends on scheduling; the important
+  evidence is that multiple callers crossed the read-only status check and each published the
+  success tail.
+
+  ```text
+  100 concurrent suspends have one winner and one audit event: FAIL
+    expected: 1
+     but got: 5
   ```
 
 
@@ -295,6 +311,14 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   false theft signal. PostgreSQL keeps logout at two round-trips and reset confirmation at
   three. The complete core (272 tests) and PostgreSQL (70 tests) suites pass, as do `cabal build
   all` and the serialized all-package test matrix.
+
+- M4 made the user-status write conditional on its allowed source states and threaded its one
+  clock reading through the store. The admin workflow retains its pre-read to distinguish a
+  missing user, but only the compare-and-swap winner now revokes sessions and publishes the
+  lifecycle event; every loser receives `InvalidUserStatus`. The in-memory 100-racer regression
+  fell from five successful suspensions to one, and the eight-connection PostgreSQL race also
+  has exactly one winner. The complete core (273 tests) and PostgreSQL (72 tests) suites pass,
+  as do `cabal build all` and the serialized all-package test matrix.
 
 
 ## Context and Orientation
