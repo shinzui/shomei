@@ -75,6 +75,20 @@ at all, so the pool only has to cover the write workflows (signup, login, refres
 replica, not against request concurrency, and prefer shedding load with a short acquisition
 timeout over queueing behind a saturated pool.
 
+### PostgreSQL version
+
+Shōmei migrations run through pg-migrate's compatibility contract
+(`mori://shinzui/pg-migrate/docs/compatibility`). The runner reads the server's major version
+before initializing or changing the migration ledger and returns `UnsupportedPostgresVersion`
+unless that major is PostgreSQL 17 or 18. Shōmei's integration suites run on PostgreSQL 17.
+
+Migration `0035-status-checks-and-case-insensitive-identity.sql` adds eleven `CHECK` constraints
+and four expression indexes. Each `ADD CONSTRAINT` validates the existing table while holding the
+required table lock, and each unique index scans its source table. This is negligible for a fresh
+0.1.0.0 installation; on a populated host, inspect and repair out-of-vocabulary status values and
+case-variant login/email collisions first, then schedule the migration for a maintenance window
+sized for those scans.
+
 ### Password hashing cost and concurrency
 
 Passwords are hashed with **Argon2id** at 64 MiB / 3 iterations / 1 lane, which is at or above

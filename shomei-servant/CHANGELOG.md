@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Duplicate signup login ids and email addresses consistently return their existing `409`
+  problem codes, including PostgreSQL uniqueness races.
 - `GET /oauth/authorize` now requires a live interactive session. Machine, delegated, and
   explicit-actor credentials receive `401 login_required` in the OAuth error shape with no
   redirect; dead sessions follow the unauthenticated login branch.

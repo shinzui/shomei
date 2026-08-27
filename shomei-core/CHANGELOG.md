@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** login-attempt recording, TOTP/passkey counters, user-status changes, session
+  revocation, and credential-reset tails now expose compare-and-swap or transactional operations.
+  Single-use transitions report whether they won, login failures are recorded and counted
+  atomically, and password reset/change revokes every affected session in the same unit of work.
 - **Breaking:** `StoredSigningKey` gains `revokedAt`, and `SigningKeyStore` gains the atomic
   `ReplaceActiveSigningKey` operation. The in-memory interpreter stamps every lifecycle timestamp.
 - **Breaking:** `SigningKeyConfig` gains `allowedClockSkewSeconds`; the reserved custom-claim set

@@ -22,6 +22,7 @@ import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
+import Hasql.Errors qualified as Hasql
 import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
@@ -442,6 +443,16 @@ execSql pool sql = do
   res <- Pool.use pool (Session.script sql)
   either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
 
+-- | Assert that a raw SQL script is rejected with one exact PostgreSQL SQLSTATE.
+execSqlExpectState :: Pool -> Text -> Text -> IO ()
+execSqlExpectState pool expected sql = do
+  result <- Pool.use pool (Session.script sql)
+  case result of
+    Left (Pool.SessionUsageError (Hasql.ScriptSessionError _ (Hasql.ServerError actual _ _ _ _))) ->
+      actual @?= expected
+    Left err -> assertFailure ("expected SQLSTATE " <> Text.unpack expected <> ", got: " <> show err)
+    Right () -> assertFailure ("expected SQLSTATE " <> Text.unpack expected <> ", but SQL succeeded")
+
 -- | Unwrap the typed dependency result that 'sweepOnce' returns.
 expectSweep :: Either AuthError SweepReport -> IO SweepReport
 expectSweep = either (\e -> assertFailure ("sweep failed: " <> show e)) pure
@@ -498,6 +509,7 @@ tests :: [TestTree]
 tests =
   [ testUserRoundTrip,
     testUserNoEmailAndUniqueLoginId,
+    testSchemaRejectsInvalidUserStatusAndCaseVariantIdentities,
     testListUsersOrderFilterAndPaging,
     testUserStatusIsCompareAndSwap,
     testUserStatusCasUnderRace,
@@ -913,6 +925,48 @@ testUserNoEmailAndUniqueLoginId =
     _ <- expectApp =<< runApp pool (createUser (NewUser {loginId = mkLoginId' "email-owner", email = Just aliceEmail, displayName = Nothing}))
     dupEmail <- runApp pool (createUser (NewUser {loginId = mkLoginId' "email-collider", email = Just aliceEmail, displayName = Nothing}))
     dupEmail @?= Left EmailAlreadyRegistered
+
+-- | The database remains a trust boundary even for writers that bypass Shomei's codecs.
+-- Invalid persisted vocabulary is a CHECK violation, while login ids and email addresses are
+-- unique independently of case.
+testSchemaRejectsInvalidUserStatusAndCaseVariantIdentities :: TestTree
+testSchemaRejectsInvalidUserStatusAndCaseVariantIdentities =
+  testCase "schema rejects invalid user status and case-variant identities" $ withDb \pool -> do
+    execSql
+      pool
+      """
+      INSERT INTO shomei.shomei_users
+        (user_id, email, display_name, status, created_at, updated_at, login_id)
+      VALUES
+        ('11111111-1111-1111-1111-111111111111', 'alice@example.com', 'Alice', 'active', now(), now(), 'alice');
+      """
+    execSqlExpectState
+      pool
+      "23514"
+      """
+      INSERT INTO shomei.shomei_users
+        (user_id, email, display_name, status, created_at, updated_at, login_id)
+      VALUES
+        ('22222222-2222-2222-2222-222222222222', 'bogus@example.com', NULL, 'bogus', now(), now(), 'bogus');
+      """
+    execSqlExpectState
+      pool
+      "23505"
+      """
+      INSERT INTO shomei.shomei_users
+        (user_id, email, display_name, status, created_at, updated_at, login_id)
+      VALUES
+        ('33333333-3333-3333-3333-333333333333', 'Alice@Example.com', NULL, 'active', now(), now(), 'other-login');
+      """
+    execSqlExpectState
+      pool
+      "23505"
+      """
+      INSERT INTO shomei.shomei_users
+        (user_id, email, display_name, status, created_at, updated_at, login_id)
+      VALUES
+        ('44444444-4444-4444-4444-444444444444', 'other@example.com', NULL, 'active', now(), now(), 'Alice');
+      """
 
 -- | The admin listing's three promises, against the real statement: newest-first order, the
 -- status filter, and a keyset walk that is both disjoint and complete.

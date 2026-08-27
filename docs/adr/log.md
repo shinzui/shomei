@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-08-27
+* **Addition**: ADR-7 makes single-use and monotonic security transitions conditional writes and uses transaction-scoped advisory locks where serialization must enclose a read.
 * **Addition**: ADR-6 makes session-backed auth_time, rather than token iat, the clock for recent-credential gates and requires refresh to preserve it.
 * **Addition**: ADR-5 puts every credential proof under one account abuse budget and derives the edge-throttled operation set from API markers.
 * **Addition**: ADR-4 makes one active signing key a PostgreSQL invariant and requires atomic replacement with lifecycle timestamps.

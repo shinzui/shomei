@@ -6,6 +6,11 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** interpreters implement the new atomic login-attempt, counter, user-status,
+  revocation, and credential-tail ports. Per-account failure counting uses a transaction-scoped
+  advisory lock; conditional updates and unit-of-work transactions expose exactly one winner.
+- Unique identity violations retain their typed login/email conflict at the persistence boundary;
+  unknown PostgreSQL write failures remain opaque dependency errors.
 - **Breaking:** the signing-key interpreter persists `revoked_at`, stamps activation, retirement,
   and revocation times, and implements atomic active-key replacement in one transaction.
 - Session-store and authentication-unit-of-work interpreters now write session provenance and

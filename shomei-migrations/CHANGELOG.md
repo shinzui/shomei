@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add database `CHECK` constraints for persisted status, outcome, ceremony-kind, and OAuth-client
+  vocabulary, plus case-insensitive unique indexes for user and password-credential login ids and
+  email addresses.
 - Add `shomei_signing_keys.revoked_at` and the partial unique index
   `shomei_signing_keys_one_active`; migration normalizes legacy multi-active rows before enforcing
   the invariant.

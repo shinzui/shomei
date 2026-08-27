@@ -80,7 +80,12 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
       conflicts; tests
 - [x] (2026-08-27T20:02:40Z) M5 gate: `nix fmt`, `cabal build all`, and the serialized
       all-package test matrix pass (core 273; PostgreSQL 72; Servant 42)
-- [ ] M6: migration (number allocated by `just new-migration`; `0029` at the time of writing); PostgreSQL 17/18 floor documented; CHANGELOGs; ADR distillation
+- [x] (2026-08-27T20:08:25Z) M6: migration 0035 allocated from the live manifest; schema
+      checks and case-insensitive indexes; raw-SQL PostgreSQL proof; PostgreSQL 17/18 floor and
+      populated-host scan warning; CHANGELOGs; ADR-7 distilled and strictly validated
+- [x] (2026-08-27T20:13:49Z) M6 gate: targeted `nix fmt`, `cabal build all`, strict ADR
+      validation, and the serialized all-package test matrix pass (core 273; PostgreSQL 73;
+      Servant 42)
 
 
 ## Surprises & Discoveries
@@ -172,6 +177,14 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   checked only the principal login id; the HTTP regression therefore returned 201 instead of
   `409 email_taken`. PostgreSQL enforced uniqueness, but the adapter erased SQLSTATE 23505 into
   `DependencyUnavailable PostgreSQL`, so a genuine client conflict appeared retryable.
+
+- The draft expected migration 0029, but six sibling migrations had already advanced the live
+  manifest through 0034. The required allocator correctly produced 0035; the plan, deployment
+  note, and acceptance signature now name the allocated artifact rather than the stale forecast.
+
+- The repository's ADR validation recipe is `just adr-validate`, not the generic
+  `just check-adr` name. It runs the required strict profile and log enforcement and validates
+  the expanded bundle as seven concepts.
 
 
 ## Decision Log
@@ -285,6 +298,13 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   write it refuses surfaces as `409` through M5. A new EP-4 outcome value extends the `CHECK`.
   Date: 2026-08-27
 
+- Decision: The schema-hygiene migration is 0035, the identifier returned by
+  `just new-migration status-checks-and-case-insensitive-identity` against the live manifest.
+  Rationale: migration numbers are repository-global allocation results, not identifiers a plan
+  may reserve. Sibling work had already claimed 0029 through 0034, and renumbering those applied
+  artifacts would violate migration-ledger history.
+  Date: 2026-08-27
+
 - Decision: Race tests run in both suites: in-memory `ConcurrencySpec` (100 racers × 10 rounds)
   and Postgres store-level races with eight gated threads modeled on
   `testAuthorizationCodeConsumeIsAtomicUnderRace`.
@@ -338,6 +358,15 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   SQL detail exposed. The complete core (273), PostgreSQL (72), and Servant (42) suites pass, as
   do `cabal build all` and the serialized all-package test matrix.
 
+- M6 moved persisted text vocabulary and identifier uniqueness into the database trust boundary.
+  Migration 0035 adds eleven `CHECK` constraints and four case-folded unique indexes; raw SQL now
+  returns SQLSTATE 23514 for an invalid user status and 23505 for case-variant email and login-id
+  inserts. The deployment guide records pg-migrate's PostgreSQL 17/18 contract and warns populated
+  hosts about validation and index scans. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md)
+  preserves the conditional-write, transaction-tail, and advisory-lock policy beyond this plan.
+  The complete core (273), PostgreSQL (73), and Servant (42) suites pass, as do `cabal build all`,
+  targeted `nix fmt`, strict ADR validation, and the serialized all-package test matrix.
+
 
 ## Context and Orientation
 
@@ -358,10 +387,11 @@ READ COMMITTED; retries only on 40001/40P01). `shomei-migrations` holds SQL unde
 `cabal test shomei-servant` (in-memory `World` behind a real WAI app); run the matrix as
 `cabal test all -j1 --test-options="-j1"`, since plans 28 and 33 found the parallel form flaky.
 
-Architecture Decision Records: this repository has no `docs/adr/` bundle (`mori.dhall` declares
-`improvement-requests`, `capabilities`, and `reviews` only), so no local ADR applies; M6 ends
-with the distillation pass `.claude/skills/exec-plan/ADR.md` requires. Incorporated by
-reference: `docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md`
+Architecture Decision Records: M6 distilled this plan's durable persistence policy into
+[ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md).
+It requires conditional writes for single-use and monotonic transitions, transaction-scoped
+advisory locks when serialization must enclose a read, and short atomic credential tails.
+Incorporated by reference: `docs/plans/28-enforce-absolute-session-expiry-and-atomic-token-state-transitions.md`
 (the CAS convention, `Bool` returns, `casWorld`, a CAS loser may observe `SessionRevoked`) and
 `docs/plans/33-transactional-auth-workflows-and-configurable-connection-pool.md` (the
 `AuthUnitOfWork` port, `RotationConflict` as a signal, exported statements so the transaction
@@ -694,7 +724,7 @@ Commit: `fix(account): answer 409 for a duplicate email at signup and map unique
 ### Milestone 6 — Schema hygiene, the PostgreSQL floor, and distillation
 
 Run `just new-migration status-checks-and-case-insensitive-identity` from the repository root;
-it creates `shomei-migrations/migrations/shomei/0029-status-checks-and-case-insensitive-identity.sql`
+it creates `shomei-migrations/migrations/shomei/0035-status-checks-and-case-insensitive-identity.sql`
 and appends it to the manifest. After `SET search_path TO shomei, pg_catalog;`, one
 `DROP CONSTRAINT IF EXISTS` / `ADD CONSTRAINT` pair per column (PostgreSQL has no
 `ADD CONSTRAINT IF NOT EXISTS`) and four indexes:
@@ -726,13 +756,13 @@ manifest. Add a Postgres test that raw SQL inserting `status = 'bogus'`, or `Ali
 beside `alice@example.com`, fails. In `docs/user/deployment.md`, after "Sizing the connection
 pool", add `### PostgreSQL version`: migrations run through pg-migrate, which refuses a server
 whose major version is not 17 or 18 (`UnsupportedPostgresVersion`); the suites run on 17; a
-populated host should expect the 0029 constraint scans. Add an Unreleased entry to the
+populated host should expect the 0035 constraint scans. Add an Unreleased entry to the
 `CHANGELOG.md` of `shomei-core`, `shomei-postgres`, `shomei-migrations`, and `shomei-servant`
-(the port signature changes are breaking for library callers). Then the distillation pass: if
-`docs/adr/` still does not exist, create it per `.claude/skills/exec-plan/ADR.md` with one
-record — every single-use or counter transition is one conditional statement returning whether
-it happened, and per-key serialization that must enclose a read uses a transaction-scoped
-advisory lock — and cite it from Outcomes. Commit:
+(the port signature changes are breaking for library callers). Then the distillation pass adds
+ADR-7 to the existing profile-governed bundle following `agents/skills/exec-plan/ADR.md`: every
+single-use or counter transition is one conditional statement returning whether it happened, and
+per-key serialization that must enclose a read uses a transaction-scoped advisory lock. Cite it
+from Outcomes. Commit:
 `feat(migrations): CHECK status columns and case-insensitive identity indexes`.
 
 
@@ -773,7 +803,7 @@ $ cabal test shomei-postgres
 ```
 
 For M6, `just new-migration status-checks-and-case-insensitive-identity` prints the created path,
-and `tail -1 shomei-migrations/migrations/shomei/manifest` must read `0029-status-checks-and-case-insensitive-identity.sql`.
+and `tail -1 shomei-migrations/migrations/shomei/manifest` must read `0035-status-checks-and-case-insensitive-identity.sql`.
 
 
 ## Validation and Acceptance
@@ -826,7 +856,7 @@ returning `Bool`. M3 — the three `Shomei.Session.UnitOfWork.Store` operations 
 seven exported statements, `Shomei.Session.Postgres.revokeSessionStmt :: Statement (UUID, UTCTime) (Maybe UUID)`.
 M4 — `Shomei.Account.User.Store.UpdateUserStatus` as written above. M5 —
 `Shomei.Persistence.Database.Postgres.uniqueViolation` and `postgresWriteError`. M6 — migration
-`0029` in the manifest and the `deployment.md` subsection.
+`0035` in the manifest and the `deployment.md` subsection.
 
 Sibling plans: `docs/plans/54-…` owns the login-attempt vocabulary. `RecordLoginFailure` takes
 the whole `NewLoginAttempt`, so a factor discriminator flows through the insert unchanged and
@@ -835,3 +865,8 @@ of a column, EP-4 extends `countByAccountStmt`, the `0011` partial indexes, and 
 EP-4 may move `convertLoginAttemptToSuccess` to after the second factor; this plan places it
 where `LoginSuccess` is recorded today. `docs/plans/56-…` owns hashing: the unit-of-work
 operations take a precomputed `PasswordHash`, and the `shomei_password_credentials (user_id)` index is EP-6's.
+
+
+Plan revision note (2026-08-27): Recorded M6's live migration allocation as 0035, the schema and
+raw-SQL evidence, the supported PostgreSQL contract, and ADR-7 distillation so the completed plan
+matches the repository state rather than its original migration-number forecast.
