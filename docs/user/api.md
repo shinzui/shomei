@@ -52,6 +52,20 @@ A `401` carries `WWW-Authenticate` only when the response is an authentication c
 `429` carries `Retry-After`; a `503` carries it only when the server knows an honest interval.
 Clients must ignore unknown extension members.
 
+The per-client-IP edge limiter guards every HTTP operation that proves or presents a credential:
+
+- `POST /v1/auth/login`, `/signup`, `/refresh`, and `/mfa/complete`
+- `POST /v1/auth/login/passkey/begin` and `/v1/auth/login/passkey/complete`
+- `POST /v1/auth/password/change`
+- `POST /v1/auth/verify-email/request` and `/v1/auth/verify-email/confirm`
+- `POST /v1/auth/password-reset/request` and `/v1/auth/password-reset/confirm`
+- `DELETE /v1/auth/totp`
+- `POST /oauth/token`
+
+Over-rate requests return `429` with `Retry-After: 60` before routing. The first twelve use the
+Problem Details shape described above. `/oauth/token` normally speaks OAuth errors, but this edge
+response is a Problem Details document because the limiter answers before the OAuth handler.
+
 The OpenAPI document (`GET /openapi.json`, or `docs/api/openapi.json`) derives declared statuses,
 media types, and headers from the exact served route types. Application MultiVerb routes share a
 closed error tail (400, 401, 403, 404, 409, 422, 429, 500, and 503), so their Haskell client calls
@@ -195,7 +209,8 @@ Errors are RFC 6749 §5.2 objects, never problem documents:
 grants are part of the OIDC provider surface — see [oidc.md](oidc.md).
 
 Every successful `client_credentials` issuance writes a `service_token_issued` audit event whose
-`accountId` is the `client_id`. `/oauth/token` is **not** rate-limited; see
+`accountId` is the `client_id`. `/oauth/token` is rate-limited per client IP like every other
+credential proof; the `429` is the Problem Details document from the edge, not an OAuth error. See
 [machine-tokens.md](machine-tokens.md) for operating and security guidance.
 
 Manage accounts with `shomei-admin service-accounts create|rotate-secret|revoke|list`. See
@@ -292,16 +307,16 @@ through your own provider.
 Body `{"email"}`. → `202`. Logs a verification link for a real, unverified account.
 
 ### `POST /v1/auth/verify-email/confirm`
-Body `{"token"}`. → `200`. Marks the account verified (`email_verified_at`); the work completes inside the request. `400 verification_token_invalid` for an unknown/consumed/expired token.
+Body `{"token"}`. → `200`. Marks the account verified (`email_verified_at`); the work completes inside the request. `400 verification_token_invalid` for an unknown/consumed/expired token; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/password-reset/request`
 Body `{"email"}`. → `202` (byte-identical for known and unknown emails). Logs a reset link for a real account.
 
 ### `POST /v1/auth/password-reset/confirm`
-Body `{"token","newPassword"}`. → `200`. Changes the password **and revokes all of the user's sessions and refresh tokens**. `400 password_reset_token_invalid` on a bad token.
+Body `{"token","newPassword"}`. → `200`. Changes the password **and revokes all of the user's sessions and refresh tokens**. `400 password_reset_token_invalid` on a bad token; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/password/change` *(authenticated)*
-Body `{"currentPassword","newPassword"}`. → `204`. Verifies the current password, changes it, and revokes the user's other sessions. `401 invalid_login` if the current password is wrong.
+Body `{"currentPassword","newPassword"}`. → `204`. Verifies the current password, changes it, and revokes the user's other sessions. `401 invalid_login` if the current password is wrong; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ## Passkeys & MFA (MasterPlan 3)
 
@@ -331,12 +346,13 @@ tagged `proof`: `{"type":"passkey","assertion":…}`, `{"type":"totp","code":"12
 are decoding failures. → `200` `{"accessToken","refreshToken","expiresIn"}`;
 `404 ceremony_not_found`; `401 mfa_failed` / `totp_code_invalid` / `recovery_code_invalid` on a
 failed factor; `403 email_not_verified` when email verification is enforced.
+`429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/login/passkey/begin`
-Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`.
+Empty body (passwordless). → `200` `{"ceremonyId","options"}`. The browser feeds `options` to `navigator.credentials.get()`. `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/login/passkey/complete`
-Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified. Sets the cookies in cookie transport.
+Body `{"ceremonyId","assertion"}`. → `200` `{"accessToken","refreshToken","expiresIn"}` — the passkey is the strong factor, so this returns a token pair directly (never an MFA challenge). `404 ceremony_not_found`; `401 mfa_failed` on a failed assertion. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified; `429 too_many_requests` when the client-IP budget is exhausted. Sets the cookies in cookie transport.
 
 ## TOTP & recovery codes (MasterPlan 7, EP-7)
 
@@ -352,7 +368,7 @@ Empty body. → `200` `{"secret","otpauthUri"}` — the Base32 secret and `otpau
 Body `{"code"}`. Activates a pending enrollment with a first valid code. → `200`. `404 totp_enrollment_not_found` (no pending/unexpired enrollment); `401 totp_code_invalid`.
 
 ### `DELETE /v1/auth/totp` *(authenticated)*
-Body carries **exactly one** of `code` (a current TOTP code) or `recoveryCode` — proof of possession. The access token's `auth_time` must also be within `impersonationConfig.actorFreshnessWindow`; refresh does not renew it. → `204`. `404 totp_enrollment_not_found`; `401 totp_code_invalid` / `401 recovery_code_invalid`; `403 reauthentication_required` when stale; `403 impersonation_action_blocked` under a delegated token.
+Body carries **exactly one** of `code` (a current TOTP code) or `recoveryCode` — proof of possession. The access token's `auth_time` must also be within `impersonationConfig.actorFreshnessWindow`; refresh does not renew it. → `204`. `404 totp_enrollment_not_found`; `401 totp_code_invalid` / `401 recovery_code_invalid`; `403 reauthentication_required` when stale; `403 impersonation_action_blocked` under a delegated token; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/recovery-codes` *(authenticated)*
 Empty body. Generates ten single-use codes, shown **once**, replacing any previous set. → `200` `{"codes":[…10…]}`. Requires recent credential proof: the token's `auth_time` must be within `impersonationConfig.actorFreshnessWindow`, and refreshing does not change it. Otherwise → `403 reauthentication_required`; `403 impersonation_action_blocked` under a delegated token.

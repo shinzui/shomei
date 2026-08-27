@@ -2,6 +2,7 @@
 module Shomei.Servant.Api
   ( ShomeiRoutes (..),
     shomeiRoutesApi,
+    shomeiThrottledRoutes,
     ApplicationApi (..),
     applicationApi,
     AppApi,
@@ -28,6 +29,7 @@ import Shomei.Passkey.Api (PasskeyApi)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireRole)
+import Shomei.Servant.Throttle (ThrottledRoute, throttledRoutesOf)
 import Shomei.Session.Admin.Api (AdminSessionApi)
 import Shomei.Session.Api (SessionApi)
 import Shomei.SigningKey.Api (WellKnownApi)
@@ -73,6 +75,9 @@ data ShomeiRoutes mode = ShomeiRoutes
 
 shomeiRoutesApi :: Proxy (NamedRoutes ShomeiRoutes)
 shomeiRoutesApi = Proxy
+
+shomeiThrottledRoutes :: [ThrottledRoute]
+shomeiThrottledRoutes = throttledRoutesOf shomeiRoutesApi
 
 newtype Project = Project {projectId :: Text}
   deriving stock (Generic)

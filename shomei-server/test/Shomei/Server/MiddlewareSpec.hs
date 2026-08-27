@@ -18,15 +18,17 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
-import Data.Text qualified as T
 import Data.Word (Word64)
-import Network.HTTP.Types (statusCode)
+import Network.HTTP.Types (methodDelete, methodPost, statusCode)
 import Network.HTTP.Types.Status (status200)
 import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, responseHeaders, responseLBS, responseStatus)
 import Network.Wai.Internal (ResponseReceived (..))
 import Servant.Health.Paths (healthRawPaths)
 import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultObservabilityConfig, defaultRateLimitConfig)
+import Shomei.Servant.Api (shomeiThrottledRoutes)
+import Shomei.Servant.Throttle (PathSegment (Literal), ThrottledRoute (..))
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, serverErrorLine)
@@ -122,32 +124,44 @@ testBucketMapStaysBounded = testCase "10k one-shot IPs leave a bounded map" do
     ("expected at most " <> show (every + 1) <> " buckets, got " <> show n)
     (n <= every + 1)
 
--- | The limiter matches request paths literally, so a route move that forgets this list does
--- not fail loudly — brute-force protection just silently stops applying. Pin both directions:
--- the versioned paths are guarded, and the pre-@\/v1@ ones (which now 404 anyway) are not
--- special-cased. GET is never throttled, only the unauthenticated POST endpoints.
+-- | Pin the API-derived set to the credential proofs documented for operators. Adding or moving a
+-- 'RateLimited' marker changes this value automatically and makes the conformance assertion fail
+-- until the documentation and threat-model inventory are reviewed together.
 testThrottledPathsAreVersioned :: TestTree
-testThrottledPathsAreVersioned = testCase "the throttled paths are the versioned auth endpoints" do
-  forM_ ["login", "signup", "refresh"] \endpoint ->
-    assertBool
-      ("POST /v1/auth/" <> T.unpack endpoint <> " must be throttled")
-      (throttledPath (post ["v1", "auth", endpoint]))
-  forM_ ["verify-email", "password-reset"] \endpoint ->
-    assertBool
-      ("POST /v1/auth/" <> T.unpack endpoint <> "/request must be throttled")
-      (throttledPath (post ["v1", "auth", endpoint, "request"]))
+testThrottledPathsAreVersioned = testCase "the derived throttled set matches every credential proof" do
+  let actual = Set.fromList shomeiThrottledRoutes
+      expected =
+        Set.fromList
+          [ postRoute ["v1", "auth", "login"],
+            postRoute ["v1", "auth", "signup"],
+            postRoute ["v1", "auth", "refresh"],
+            postRoute ["v1", "auth", "mfa", "complete"],
+            postRoute ["v1", "auth", "login", "passkey", "begin"],
+            postRoute ["v1", "auth", "login", "passkey", "complete"],
+            postRoute ["v1", "auth", "password", "change"],
+            postRoute ["v1", "auth", "verify-email", "request"],
+            postRoute ["v1", "auth", "verify-email", "confirm"],
+            postRoute ["v1", "auth", "password-reset", "request"],
+            postRoute ["v1", "auth", "password-reset", "confirm"],
+            route methodDelete ["v1", "auth", "totp"],
+            postRoute ["oauth", "token"]
+          ]
+  assertEqual "the marker-derived operation set" expected actual
+  assertEqual "no derived operation is duplicated" (Set.size actual) (length shomeiThrottledRoutes)
+  rl <- newRateLimiterWith 8 testLimiterConfig
   assertBool
     "the unversioned login path is not throttled (it no longer exists)"
-    (not (throttledPath (post ["auth", "login"])))
+    (not (throttledPath rl (request methodPost ["auth", "login"])))
   assertBool
     "authenticated routes are not throttled"
-    (not (throttledPath (post ["v1", "auth", "logout"])))
+    (not (throttledPath rl (request methodPost ["v1", "auth", "logout"])))
   assertBool
     "GET is not throttled"
-    (not (throttledPath (post ["v1", "auth", "login"]) {requestMethod = "GET"}))
+    (not (throttledPath rl (request "GET" ["v1", "auth", "login"])))
   where
-    post :: [Text] -> Request
-    post segments = defaultRequest {requestMethod = "POST", pathInfo = segments}
+    route method segments = ThrottledRoute method (Literal <$> segments)
+    postRoute = route methodPost
+    request method segments = defaultRequest {requestMethod = method, pathInfo = segments}
 
 ipKey :: Int -> ByteString
 ipKey i = BC.pack ("ip" <> show i)

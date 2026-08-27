@@ -20,7 +20,7 @@ import Shomei.Passkey.Dto
 import Shomei.Passkey.Result
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
-import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses)
+import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
 import Shomei.Servant.Result (ApplicationContentTypes, BadRequestPreHandlerResponses)
 
 type RegisterBeginRoute = "passkeys" :> "register" :> "begin" :> Authenticated :> CsrfProtected :> MultiVerb 'POST ApplicationContentTypes RegisterBeginResponses RegisterBeginResult
@@ -31,9 +31,9 @@ type ListPasskeysRoute = "passkeys" :> Authenticated :> MultiVerb 'GET Applicati
 
 type RemovePasskeyRoute = "passkeys" :> Authenticated :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "passkeyId" PasskeyId :> MultiVerb 'DELETE ApplicationContentTypes RemovePasskeyResponses RemovePasskeyResult
 
-type PasskeyLoginBeginRoute = "login" :> "passkey" :> "begin" :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginBeginResponses PasskeyLoginBeginResult
+type PasskeyLoginBeginRoute = "login" :> "passkey" :> "begin" :> RateLimited :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginBeginResponses PasskeyLoginBeginResult
 
-type PasskeyLoginCompleteRoute = "login" :> "passkey" :> "complete" :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasskeyLoginCompleteRequest :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginCompleteResponses PasskeyLoginCompleteResult
+type PasskeyLoginCompleteRoute = "login" :> "passkey" :> "complete" :> RateLimited :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasskeyLoginCompleteRequest :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginCompleteResponses PasskeyLoginCompleteResult
 
 data PasskeyApi mode = PasskeyApi
   { registerBegin :: mode :- RegisterBeginRoute,

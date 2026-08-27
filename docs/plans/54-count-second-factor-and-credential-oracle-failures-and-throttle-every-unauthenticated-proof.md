@@ -60,8 +60,9 @@ against today's code after five wrong codes and is locked out once M2 lands.
 - [x] (2026-08-27T18:02:41Z) M3: `auth_time` on claims, sessions, and the wire; refresh preserves it;
       gates read it; TOTP removal requires freshness; compatibility and forgery tests plus user
       docs complete. Core (267), JWT (63), Servant/OpenAPI (62), and PostgreSQL (61) tests passed.
-- [ ] M4: `Shomei.Servant.Throttle`; thirteen routes marked; conformance test; `api.md` and
-      `docs/api/openapi.json` updated.
+- [x] (2026-08-27T18:14:58Z) M4: `Shomei.Servant.Throttle`; thirteen routes marked and consumed by
+      the runtime limiter; exact-set conformance test; `api.md` and `docs/api/openapi.json` updated.
+      Servant (41 HTTP and 62 OpenAPI examples) and server (30 integration tests) passed.
 - [ ] M5: passwordless forces `UVRequired`; docs and capability catalog; ADR distillation; Outcomes.
 
 
@@ -103,6 +104,12 @@ implementation. Provide concise evidence.
 - The migration allocator placed `sessions-authenticated-at` at `0034`, immediately after M1's
   `0033`, and the PostgreSQL compatibility test confirmed a `NULL authenticated_at` reads as the
   session's `created_at`.
+
+- The existing closed application error tail already documented 429 for every application
+  MultiVerb operation, whether or not the edge limiter guarded it. Marking `/oauth/token` exposed
+  the first OpenAPI delta: its handler-owned failures remain OAuth JSON, while its new pre-routing
+  429 is deliberately the shared Problem Details response. The protocol-boundary OpenAPI test now
+  pins that single exception.
 
 
 ## Decision Log

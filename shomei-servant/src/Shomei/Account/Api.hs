@@ -31,13 +31,13 @@ type SignupRoute = "signup" :> RateLimited :> PreHandlerResponses BadRequestPreH
 
 type VerifyEmailRequestRoute = "verify-email" :> "request" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] VerifyEmailRequest :> MultiVerb 'POST ApplicationContentTypes VerifyEmailRequestResponses VerifyEmailRequestResult
 
-type VerifyEmailConfirmRoute = "verify-email" :> "confirm" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmEmailVerificationRequest :> MultiVerb 'POST ApplicationContentTypes VerifyEmailConfirmResponses VerifyEmailConfirmResult
+type VerifyEmailConfirmRoute = "verify-email" :> "confirm" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmEmailVerificationRequest :> MultiVerb 'POST ApplicationContentTypes VerifyEmailConfirmResponses VerifyEmailConfirmResult
 
 type PasswordResetRequestRoute = "password-reset" :> "request" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetRequestResponses PasswordResetRequestResult
 
-type PasswordResetConfirmRoute = "password-reset" :> "confirm" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmPasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetConfirmResponses PasswordResetConfirmResult
+type PasswordResetConfirmRoute = "password-reset" :> "confirm" :> RateLimited :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmPasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetConfirmResponses PasswordResetConfirmResult
 
-type PasswordChangeRoute = "password" :> "change" :> Authenticated :> CsrfProtected :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ChangePasswordRequest :> MultiVerb 'POST ApplicationContentTypes PasswordChangeResponses PasswordChangeResult
+type PasswordChangeRoute = "password" :> "change" :> RateLimited :> Authenticated :> CsrfProtected :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ChangePasswordRequest :> MultiVerb 'POST ApplicationContentTypes PasswordChangeResponses PasswordChangeResult
 
 type MeRoute = Authenticated :> "me" :> MultiVerb 'GET ApplicationContentTypes MeResponses MeResult
 

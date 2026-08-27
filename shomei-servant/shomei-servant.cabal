@@ -93,6 +93,7 @@ library
     Shomei.Servant.Result
     Shomei.Servant.Seam
     Shomei.Servant.Server
+    Shomei.Servant.Throttle
     Shomei.Session.Admin.Api
     Shomei.Session.Api
     Shomei.Session.Dto

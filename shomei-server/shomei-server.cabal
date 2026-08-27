@@ -241,6 +241,7 @@ test-suite shomei-server-test
     , shomei-jwt                      ^>=0.1.0.0
     , shomei-migrations:test-support  ^>=0.1.0.0
     , shomei-postgres                 ^>=0.1.0.0
+    , shomei-servant                  ^>=0.1.0.0
     , shomei-server                   ^>=0.1.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11

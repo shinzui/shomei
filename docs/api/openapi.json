@@ -2057,6 +2057,25 @@
                             }
                         }
                     },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Too many requests",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "Seconds until the request may be retried",
+                                "schema": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "content": {
                             "application/json": {

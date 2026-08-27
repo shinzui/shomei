@@ -254,14 +254,14 @@ spec = do
                   health503Witness `seq`
                     True `shouldBe` True
 
-  describe "EP-4: /oauth/token speaks RFC 6749, not the problem-details envelope" $ do
+  describe "EP-4: /oauth/token speaks RFC 6749 behind a problem-details edge throttle" $ do
     it "declares the OAuthErrorResponse schema" $
       (lookupTop "components" >>= field "schemas" >>= field "OAuthErrorResponse") `shouldSatisfy` isJust
 
-    -- The whole point of the exemption: a stock OAuth2 client parses `error`/`error_description`
-    -- by field name. If any /oauth/token response ever carried application/problem+json, that
-    -- client would break. The protocol response lists are the sole source of these alternatives.
-    it "documents no problem+json response on /oauth/token" $
+    -- Handler-owned failures stay in the shape a stock OAuth2 client parses. The sole exception
+    -- is 429: the edge limiter answers before routing and therefore uses the shared problem
+    -- document (with Retry-After), exactly as the runtime middleware does.
+    it "documents only the edge 429 as problem+json on /oauth/token" $
       [ Key.toText status
       | (path, Object item) <- KM.toList paths,
         path == "/oauth/token",
@@ -269,10 +269,10 @@ spec = do
         (status, resp) <- responsesOf op,
         isProblemResponse resp
       ]
-        `shouldBe` []
+        `shouldBe` ["429"]
 
     it "documents the protocol-owned error statuses" $
-      responseStatusesAt "/oauth/token" `shouldBe` ["200", "400", "401", "404", "500", "503"]
+      responseStatusesAt "/oauth/token" `shouldBe` ["200", "400", "401", "404", "429", "500", "503"]
 
   describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
     -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling

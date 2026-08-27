@@ -39,6 +39,7 @@
 module Shomei.Server.Middleware.RateLimit
   ( RateLimiter,
     newRateLimiter,
+    newRateLimiterFor,
     newRateLimiterWith,
     rateLimitMiddleware,
     throttledPath,
@@ -53,12 +54,13 @@ import Data.ByteString.Char8 qualified as Char8
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Network.HTTP.Types (methodPost)
 import Network.Socket (SockAddr (..))
 import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
+import Shomei.Servant.Api (shomeiThrottledRoutes)
 import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
 import Shomei.Servant.Middleware (problemResponse)
+import Shomei.Servant.Throttle (ThrottledRoute, matchesThrottledRoute)
 
 -- | One bucket per client IP: current token level + last-refill time (POSIX seconds).
 data Bucket = Bucket !Double !Double
@@ -73,7 +75,9 @@ data RateLimiter = RateLimiter
     capacity :: !Double,
     -- | perIpRequestsPerMinute / 60
     refillPerSec :: !Double,
-    enabled :: !Bool
+    enabled :: !Bool,
+    -- | Derived once from the API's 'Shomei.Servant.PreHandler.RateLimited' markers.
+    throttled :: ![ThrottledRoute]
   }
 
 -- | How many 'takeToken' calls pass between prunes. Large enough that the @O(size)@ prune is
@@ -85,13 +89,21 @@ defaultSweepEvery = 4096
 -- | Build a limiter from the configured policy. Buckets are created lazily per client IP and
 -- pruned once they refill (see the module haddock).
 newRateLimiter :: RateLimitConfig -> IO RateLimiter
-newRateLimiter = newRateLimiterWith defaultSweepEvery
+newRateLimiter = newRateLimiterFor shomeiThrottledRoutes
+
+-- | Build a limiter over an explicitly derived route set. Embedding hosts can derive this from
+-- their own Servant API; the standalone server passes 'shomeiThrottledRoutes'.
+newRateLimiterFor :: [ThrottledRoute] -> RateLimitConfig -> IO RateLimiter
+newRateLimiterFor = newRateLimiterWithFor defaultSweepEvery
 
 -- | 'newRateLimiter' with the prune interval given explicitly. A test seam: production wants
 -- 'newRateLimiter', but a test that had to issue 4096 requests to observe one prune would be
 -- measuring the wrong thing. Values below 1 are clamped to 1.
 newRateLimiterWith :: Int -> RateLimitConfig -> IO RateLimiter
-newRateLimiterWith every cfg = do
+newRateLimiterWith every = newRateLimiterWithFor every shomeiThrottledRoutes
+
+newRateLimiterWithFor :: Int -> [ThrottledRoute] -> RateLimitConfig -> IO RateLimiter
+newRateLimiterWithFor every routes cfg = do
   tv <- newTVarIO HM.empty
   counter <- newTVarIO 0
   pure
@@ -101,7 +113,8 @@ newRateLimiterWith every cfg = do
         sweepEvery = max 1 every,
         capacity = fromIntegral cfg.perIpBurst,
         refillPerSec = fromIntegral cfg.perIpRequestsPerMinute / 60,
-        enabled = cfg.rateLimitEnabled
+        enabled = cfg.rateLimitEnabled,
+        throttled = routes
       }
 
 -- | How many per-IP buckets the limiter is currently holding. Exposed so a test can assert the
@@ -140,7 +153,7 @@ takeToken rl key nowSecs = atomically do
 -- | The WAI middleware. Passes non-throttled paths straight through.
 rateLimitMiddleware :: RateLimiter -> Middleware
 rateLimitMiddleware rl app req respond
-  | not rl.enabled || not (throttledPath req) = app req respond
+  | not rl.enabled || not (throttledPath rl req) = app req respond
   | otherwise = do
       nowSecs <- realToFrac <$> getPOSIXTime
       allowed <- takeToken rl (clientKey req) nowSecs
@@ -152,24 +165,10 @@ rateLimitMiddleware rl app req respond
     -- error mapping — it shares the catalog constant instead.
     tooMany = problemResponse pcTooManyRequests (retryAfterOccurrence 60)
 
--- | The unauthenticated POST endpoints the limiter guards. Authenticated routes (which carry
--- a bearer token) are intentionally excluded.
---
--- The paths are matched literally, so they carry the @v1@ segment
--- 'Shomei.Servant.Api.ShomeiRoutes' mounts the application routes under. A mismatch here does
--- not fail loudly — it silently lets every login attempt through — so any route move must
--- update this list.
-throttledPath :: Request -> Bool
-throttledPath req =
-  requestMethod req == methodPost && pathInfo req `elem` unauthPaths
-  where
-    unauthPaths =
-      [ ["v1", "auth", "login"],
-        ["v1", "auth", "signup"],
-        ["v1", "auth", "refresh"],
-        ["v1", "auth", "verify-email", "request"],
-        ["v1", "auth", "password-reset", "request"]
-      ]
+-- | Match the request against the routes derived from the API type. Method, path length, and
+-- every literal segment must agree; captures match exactly one segment.
+throttledPath :: RateLimiter -> Request -> Bool
+throttledPath rl req = matchesThrottledRoute rl.throttled (requestMethod req) (pathInfo req)
 
 -- | The per-IP key: the client's host address WITHOUT the ephemeral source port (otherwise
 -- each connection would get its own bucket). Behind a reverse proxy this is the proxy address; a

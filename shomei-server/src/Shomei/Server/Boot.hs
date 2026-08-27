@@ -60,7 +60,7 @@ import Shomei.Persistence.Pool.Postgres (acquirePool)
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
-import Shomei.Servant.Api (shomeiRoutesApi)
+import Shomei.Servant.Api (shomeiRoutesApi, shomeiThrottledRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Error (shomeiErrorFormatters)
 import Shomei.Servant.Middleware (problemMiddleware)
@@ -71,7 +71,7 @@ import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
-import Shomei.Server.Middleware.RateLimit (newRateLimiter, rateLimitMiddleware)
+import Shomei.Server.Middleware.RateLimit (newRateLimiterFor, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
@@ -101,7 +101,7 @@ main = do
   validateDefaultRoles cfg env
   installKeyReload cfg env
   installSweeper settings env
-  rl <- newRateLimiter cfg.rateLimitConfig
+  rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
       -- IP-4 realized middleware order (outermost first): EP-3 request-id + JSON logging,
