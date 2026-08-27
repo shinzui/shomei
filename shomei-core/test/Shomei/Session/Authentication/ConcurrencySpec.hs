@@ -11,7 +11,9 @@
 -- unconditional adjust makes these tests fail with two or more winners.
 module Shomei.Session.Authentication.ConcurrencySpec (tests) where
 
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar)
 import Control.Concurrent.Async (mapConcurrently)
+import Control.Monad (replicateM, when)
 import Data.Either (partitionEithers)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
@@ -19,7 +21,7 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff, IOE, liftIO, (:>))
-import Effectful.Dispatch.Dynamic (interpose)
+import Effectful.Dispatch.Dynamic (interpose, passthrough)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 -- Qualified: several 'AuthError' constructors share names with 'SessionStatus' constructors.
 
@@ -34,12 +36,18 @@ import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken)
 import Shomei.Account.Password.Domain (PasswordHash (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Store (PasswordHasher (..))
+import Shomei.Account.User.Domain (User (..))
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error qualified as Err
-import Shomei.Session.Authentication.Workflow (login, refresh, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Id (CeremonyId, genTotpCredentialId)
+import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), totpCode, totpCounter)
+import Shomei.Mfa.Totp.Domain (NewTotpCredential (..))
+import Shomei.Mfa.Totp.Store (TotpCredentialStore (..), confirmTotp, upsertTotpEnrollment)
+import Shomei.Mfa.Workflow (MfaCompletion (MfaTotp), completeMfa)
+import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..), login, refresh, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshToken)
@@ -81,7 +89,8 @@ tests =
     "Shomei.Session.Authentication.Workflow.Concurrency"
     [ testConcurrentRefreshHasOneWinner,
       testConcurrentPasswordResetHasOneWinner,
-      testConcurrentWrongPasswordsRespectTheBudget
+      testConcurrentWrongPasswordsRespectTheBudget,
+      testConcurrentTotpCompletionsHaveOneWinner
     ]
 
 signupCmd :: Email -> SignupCommand
@@ -211,3 +220,84 @@ testConcurrentWrongPasswordsRespectTheBudget =
   where
     isAccountLocked (Event.AccountLocked _) = True
     isAccountLocked _ = False
+
+testConcurrentTotpCompletionsHaveOneWinner :: TestTree
+testConcurrentTotpCompletionsHaveOneWinner =
+  testCase (show racers <> " concurrent submissions of one TOTP code: exactly one winner") do
+    mapM_ (const oneRound) [1 .. rounds]
+  where
+    secret = TotpSecret "12345678901234567890"
+    proofContext = ProofContext {clientIp = ClientIp "10.0.0.10", accountKeyOf = AccountKey}
+    raceCfg =
+      cfg
+        { rateLimitConfig =
+            cfg.rateLimitConfig
+              { maxFailedLoginsPerAccount = racers + 1,
+                maxFailedLoginsPerIp = racers + 1
+              }
+        }
+
+    oneRound = do
+      ref <- newIORef (emptyWorld fixedTime)
+      (user, _) <- expectRight =<< runInMemory ref (signup raceCfg (signupCmd aliceEmail))
+      tcid <- genTotpCredentialId
+      runInMemory ref do
+        _ <-
+          upsertTotpEnrollment
+            NewTotpCredential
+              { totpCredentialId = tcid,
+                userId = user.userId,
+                secret,
+                createdAt = fixedTime
+              }
+        confirmTotp tcid fixedTime
+
+      ceremonies <- replicateM racers (loginExpectingTotpChallenge ref)
+      let code = totpCode 6 secret (totpCounter fixedTime)
+      readCount <- newIORef 0
+      allRead <- newEmptyMVar
+      results <-
+        mapConcurrently
+          ( \cid ->
+              runInMemory
+                ref
+                (synchronizeTotpRead readCount allRead (completeMfa raceCfg proofContext cid (MfaTotp code)))
+          )
+          ceremonies
+      let (failures, winners) = partitionEithers results
+      length winners @?= 1
+      assertBool
+        ("unexpected failure among replay losers: " <> show failures)
+        (all (== Err.TotpCodeInvalid) failures)
+      w <- readIORef ref
+      length (filter isMfaSucceeded w.publishedEvents) @?= 1
+
+    loginExpectingTotpChallenge :: IORef World -> IO CeremonyId
+    loginExpectingTotpChallenge ref = do
+      let lid = either (error . show) id (mkLoginId (emailText aliceEmail))
+          ctx = ClientContext (ClientIp "10.0.0.10") (AccountKey (loginIdText lid))
+      result <- expectRight =<< runInMemory ref (login raceCfg ctx (LoginCommand lid strongPw))
+      case result of
+        MfaRequired MfaChallenge {ceremonyId} -> pure ceremonyId
+        LoginComplete _ _ -> assertFailure "expected a TOTP MFA challenge"
+
+    -- Force every completion to verify against the same stale high-water mark before any one
+    -- of them may advance it. This makes the old read-then-unconditional-write behavior fail
+    -- deterministically instead of relying on a favorable scheduler interleaving.
+    synchronizeTotpRead ::
+      (TotpCredentialStore :> es, IOE :> es) =>
+      IORef Int ->
+      MVar () ->
+      Eff es a ->
+      Eff es a
+    synchronizeTotpRead readCount allRead = interpose \env -> \case
+      op@(FindTotpByUser _) -> do
+        result <- passthrough env op
+        isLast <- liftIO (atomicModifyIORef' readCount \n -> let n' = n + 1 in (n', n' == racers))
+        when isLast (liftIO (putMVar allRead ()))
+        liftIO (readMVar allRead)
+        pure result
+      op -> passthrough env op
+
+    isMfaSucceeded (Event.MfaSucceeded _) = True
+    isMfaSucceeded _ = False

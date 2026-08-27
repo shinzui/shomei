@@ -79,7 +79,8 @@ runPasskeyStorePostgres = interpret_ \case
     traverse rebuild rows
   UpdatePasskeySignCounter pid (SignatureCounter c) t -> do
     res <- runSession (Session.statement (passkeyIdToUUID pid, fromIntegral c :: Int64, t) updateSignCounterStmt)
-    either dbFail (const (pure ())) res
+    accepted <- either dbFail pure res
+    pure (isJust accepted)
   DeletePasskey uid pid -> do
     res <- runSession (Session.statement (userIdToUUID uid, passkeyIdToUUID pid) deletePasskeyStmt)
     either dbFail (const (pure ())) res
@@ -204,20 +205,22 @@ findByUserHandleStmt =
     (E.param (E.nonNullable E.bytea))
     (D.rowList passkeyRowDecoder)
 
-updateSignCounterStmt :: Statement (UUID, Int64, UTCTime) ()
+updateSignCounterStmt :: Statement (UUID, Int64, UTCTime) (Maybe UUID)
 updateSignCounterStmt =
   preparable
     """
     UPDATE shomei.shomei_webauthn_credentials
     SET sign_counter = $2, last_used_at = $3
     WHERE passkey_id = $1
+      AND (sign_counter < $2 OR ($2 = 0 AND sign_counter = 0))
+    RETURNING passkey_id
     """
     ( contrazip3
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.int8))
         (E.param (E.nonNullable E.timestamptz))
     )
-    D.noResult
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 deletePasskeyStmt :: Statement (UUID, UUID) ()
 deletePasskeyStmt =

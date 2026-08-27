@@ -128,7 +128,10 @@ verifyTotpEnrollment cfg user code = runErrorNoCallStack do
   case verifyTotp (secretOf cred) Nothing ts code of
     Just accepted -> do
       confirmTotp (tcId cred) ts
-      setTotpLastUsedCounter (tcId cred) accepted
+      won <- setTotpLastUsedCounter (tcId cred) accepted
+      unless won do
+        publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_replayed" ts))
+        throwError TotpCodeInvalid
       publishAuthEvent (Event.TotpEnrolled (Event.TotpEnrolledData uid ts))
     Nothing -> do
       publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_invalid" ts))
@@ -167,7 +170,12 @@ removeTotp cfg pctx user proof = runErrorNoCallStack do
   case proof of
     RemoveWithCode code ->
       case verifyTotp (secretOf cred) (lastUsedOf cred) ts code of
-        Just accepted -> setTotpLastUsedCounter (tcId cred) accepted
+        Just accepted -> do
+          won <- setTotpLastUsedCounter (tcId cred) accepted
+          unless won do
+            recordProofFailure cfg.rateLimitConfig ctx FactorTotp ts
+            publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_replayed" ts))
+            throwError TotpCodeInvalid
         Nothing -> do
           recordProofFailure cfg.rateLimitConfig ctx FactorTotp ts
           publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_invalid" ts))

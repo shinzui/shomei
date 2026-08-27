@@ -145,10 +145,14 @@ updateSignCounter :: IO ()
 updateSignCounter = do
   ref <- newWorld
   uid <- genUserId
-  found <- runInMemory ref do
+  (advanced, replayed, older, found) <- runInMemory ref do
     created <- createPasskey (sampleNew uid)
-    updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
-    findPasskeyByCredentialId (WebAuthnCredentialId cid1)
+    advanced <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
+    replayed <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
+    older <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 6) t1
+    found <- findPasskeyByCredentialId (WebAuthnCredentialId cid1)
+    pure (advanced, replayed, older, found)
+  (advanced, replayed, older) @?= (True, False, False)
   fmap pkSignCounter found @?= Just (SignatureCounter 7)
   fmap pkLastUsedAt found @?= Just (Just t1)
 

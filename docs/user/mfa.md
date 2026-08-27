@@ -19,8 +19,9 @@ second factor — a passkey or a confirmed TOTP credential — must complete MFA
 Fixed and **not configurable**, because these are what every mainstream authenticator app
 implements: **SHA-1**, a **30-second** period, **6 digits**, and a **±1 step** acceptance window
 (tolerating ~30 s of clock skew each way). A verified code is never accepted twice: each
-credential remembers the highest time-step counter it has accepted, and only a strictly greater
-counter is admitted (RFC 6238 §5.2).
+credential advances its highest accepted time-step counter with one atomic compare-and-swap, and
+only a strictly greater counter is admitted (RFC 6238 §5.2). If concurrent requests submit the
+same valid code, exactly one advances the counter and the others return `totp_code_invalid`.
 
 ## Enrolling TOTP (authenticated)
 

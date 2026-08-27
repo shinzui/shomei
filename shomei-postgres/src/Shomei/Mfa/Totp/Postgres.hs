@@ -18,7 +18,7 @@ module Shomei.Mfa.Totp.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip3, contrazip4)
+import Contravariant.Extras (contrazip2, contrazip4)
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types
   ( AEAD,
@@ -146,7 +146,8 @@ runTotpCredentialStorePostgres key = interpret_ \case
     either dbFail (const (pure ())) res
   SetTotpLastUsedCounter tcid c -> do
     res <- runSession (Session.statement (totpCredentialIdToUUID tcid, c) setCounterStmt)
-    either dbFail (const (pure ())) res
+    accepted <- either dbFail pure res
+    pure (isJust accepted)
   DeleteTotpByUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) deleteByUserStmt)
     either dbFail (const (pure ())) res
@@ -223,16 +224,18 @@ confirmStmt =
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
     D.noResult
 
-setCounterStmt :: Statement (UUID, Int64) ()
+setCounterStmt :: Statement (UUID, Int64) (Maybe UUID)
 setCounterStmt =
   preparable
     """
     UPDATE shomei.shomei_totp_credentials
     SET last_used_counter = $2
     WHERE totp_credential_id = $1
+      AND (last_used_counter IS NULL OR last_used_counter < $2)
+    RETURNING totp_credential_id
     """
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.int8)))
-    D.noResult
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 deleteByUserStmt :: Statement UUID ()
 deleteByUserStmt =

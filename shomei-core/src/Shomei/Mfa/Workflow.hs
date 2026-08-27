@@ -203,7 +203,8 @@ completeMfa cfg pctx ceremonyId completion = runErrorNoCallStack do
       let PasskeyCredential {userId = pkUid, passkeyId} = passkey
           VerifiedAuthentication {newSignCounter} = verified
       when (pkUid /= uid) (failMfa failure (Just uid) "credential not owned by user")
-      updatePasskeySignCounter passkeyId newSignCounter ts
+      won <- updatePasskeySignCounter passkeyId newSignCounter ts
+      unless won (failMfa failure (Just uid) "signature counter replayed")
     MfaTotp code -> completeTotp failure uid ts code
     MfaRecoveryCode code -> completeRecovery failure uid ts code
   recordProofSuccess ctx factor gate.standingLockout ts
@@ -227,7 +228,9 @@ completeTotp onFailure uid ts code = do
     Just TotpCredential {totpCredentialId, secret, lastUsedCounter, confirmedAt}
       | isJust confirmedAt ->
           case verifyTotp secret lastUsedCounter ts code of
-            Just accepted -> setTotpLastUsedCounter totpCredentialId accepted
+            Just accepted -> do
+              won <- setTotpLastUsedCounter totpCredentialId accepted
+              unless won (failTyped onFailure (Just uid) "totp_replayed" TotpCodeInvalid ts)
             Nothing -> failTyped onFailure (Just uid) "totp_invalid" TotpCodeInvalid ts
     _ -> failTyped onFailure (Just uid) "totp_invalid" TotpCodeInvalid ts
 
@@ -335,7 +338,8 @@ completePasswordlessLogin cfg pctx ceremonyId assertion = runErrorNoCallStack do
   when gate.locked do
     publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just pkUid) "account_locked" ts))
     throwError MfaAssertionInvalid
-  updatePasskeySignCounter passkeyId newSignCounter ts
+  won <- updatePasskeySignCounter passkeyId newSignCounter ts
+  unless won (failMfa failure (Just pkUid) "signature counter replayed")
   recordProofSuccess ctx FactorPasskey gate.standingLockout ts
   (sid, pair) <- issueSession cfg user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData pkUid sid ts))

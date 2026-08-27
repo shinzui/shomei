@@ -862,8 +862,14 @@ runPasskeyStore ref = interpret_ \case
     liftIO ((\w -> listToMaybe [p | p <- Map.elems w.passkeys, pkCredentialId p == cid]) <$> readIORef ref)
   FindPasskeysByUserHandle uh ->
     liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserHandle p == uh]) <$> readIORef ref)
-  UpdatePasskeySignCounter pid c t ->
-    liftIO (modifyWorld ref (#passkeys %~ Map.adjust (\p -> p & #signCounter .~ c & #lastUsedAt .~ Just t) pid))
+  UpdatePasskeySignCounter pid c@(SignatureCounter next) t ->
+    liftIO
+      ( casWorld ref \w -> case Map.lookup pid w.passkeys of
+          Just p@PasskeyCredential {signCounter = SignatureCounter current}
+            | current < next || (next == 0 && current == 0) ->
+                Just (w & #passkeys %~ Map.insert pid (p & #signCounter .~ c & #lastUsedAt .~ Just t))
+          _ -> Nothing
+      )
   DeletePasskey uid pid ->
     liftIO (modifyWorld ref (#passkeys %~ Map.update (\p -> if pkUserId p == uid then Nothing else Just p) pid))
   CountPasskeysByUser uid ->
@@ -1049,9 +1055,6 @@ runOAuthCodeStore ref = interpret_ \case
 tcId :: TotpCredential -> TotpCredentialId
 tcId TotpCredential {totpCredentialId} = totpCredentialId
 
-tcUserId :: TotpCredential -> UserId
-tcUserId TotpCredential {userId} = userId
-
 -- | In-memory interpreter for the EP-7 TOTP credential store.
 --
 -- Keyed by user id, so 'UpsertTotpEnrollment' replaces any existing (unconfirmed) row exactly as
@@ -1076,7 +1079,14 @@ runTotpCredentialStore ref = interpret_ \case
   ConfirmTotp tcid t ->
     liftIO (modifyWorld ref (#totpCredentials %~ Map.map (\c -> if tcId c == tcid then c & #confirmedAt .~ Just t else c)))
   SetTotpLastUsedCounter tcid c ->
-    liftIO (modifyWorld ref (#totpCredentials %~ Map.map (\x -> if tcId x == tcid then x & #lastUsedCounter .~ Just c else x)))
+    liftIO
+      ( casWorld ref \w ->
+          case listToMaybe [(uid, tc) | (uid, tc) <- Map.toList w.totpCredentials, tcId tc == tcid] of
+            Just (uid, tc@TotpCredential {lastUsedCounter})
+              | maybe True (< c) lastUsedCounter ->
+                  Just (w & #totpCredentials %~ Map.insert uid (tc & #lastUsedCounter .~ Just c))
+            _ -> Nothing
+      )
   DeleteTotpByUser uid ->
     liftIO (modifyWorld ref (#totpCredentials %~ Map.delete uid))
 

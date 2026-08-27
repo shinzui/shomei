@@ -60,19 +60,22 @@ tests =
 totpRoundTrip :: IO ()
 totpRoundTrip = do
   ref <- newWorld
-  (created, found0, found1, found2) <- runInMemory ref do
+  (created, found0, advanced, replayed, older, found1, found2) <- runInMemory ref do
     u <- genUserId
     tcid <- genTotpCredentialId
     created <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u, secret = rawSecret, createdAt = t0}
     found0 <- findTotpByUser u
     confirmTotp tcid t0
-    setTotpLastUsedCounter tcid 42
+    advanced <- setTotpLastUsedCounter tcid 42
+    replayed <- setTotpLastUsedCounter tcid 42
+    older <- setTotpLastUsedCounter tcid 41
     found1 <- findTotpByUser u
     deleteTotpByUser u
     found2 <- findTotpByUser u
-    pure (created, found0, found1, found2)
+    pure (created, found0, advanced, replayed, older, found1, found2)
   tcSecret created @?= rawSecret
   fmap tcConfirmedAt found0 @?= Just Nothing
+  (advanced, replayed, older) @?= (True, False, False)
   fmap (isJust . tcConfirmedAt) found1 @?= Just True
   fmap tcLastUsedCounter found1 @?= Just (Just 42)
   found2 @?= Nothing

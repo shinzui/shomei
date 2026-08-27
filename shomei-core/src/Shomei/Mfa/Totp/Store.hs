@@ -32,8 +32,9 @@ data TotpCredentialStore :: Effect where
   FindTotpByUser :: UserId -> TotpCredentialStore m (Maybe TotpCredential)
   -- | Mark the credential confirmed (activated) at the given time.
   ConfirmTotp :: TotpCredentialId -> UTCTime -> TotpCredentialStore m ()
-  -- | Persist the replay-defense high-water counter after a successful verification.
-  SetTotpLastUsedCounter :: TotpCredentialId -> Int64 -> TotpCredentialStore m ()
+  -- | Advance the replay-defense high-water counter only when the supplied value is newer.
+  -- 'False' means another request already accepted this counter (or a later one).
+  SetTotpLastUsedCounter :: TotpCredentialId -> Int64 -> TotpCredentialStore m Bool
   DeleteTotpByUser :: UserId -> TotpCredentialStore m ()
 
 type instance DispatchOf TotpCredentialStore = Dynamic
@@ -47,7 +48,7 @@ findTotpByUser = send . FindTotpByUser
 confirmTotp :: (TotpCredentialStore :> es) => TotpCredentialId -> UTCTime -> Eff es ()
 confirmTotp i t = send (ConfirmTotp i t)
 
-setTotpLastUsedCounter :: (TotpCredentialStore :> es) => TotpCredentialId -> Int64 -> Eff es ()
+setTotpLastUsedCounter :: (TotpCredentialStore :> es) => TotpCredentialId -> Int64 -> Eff es Bool
 setTotpLastUsedCounter i c = send (SetTotpLastUsedCounter i c)
 
 deleteTotpByUser :: (TotpCredentialStore :> es) => UserId -> Eff es ()

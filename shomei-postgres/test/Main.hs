@@ -528,11 +528,15 @@ tests =
     testWorkflowLockout,
     testPasskeyCreateAndFind,
     testPasskeyUpdateCountDelete,
+    testPasskeyCounterIsCompareAndSwap,
+    testPasskeyCounterCasUnderRace,
     testServiceAccountRoundTrip,
     testOAuthClientRoundTrip,
     testAuthorizationCodeRoundTrip,
     testAuthorizationCodeConsumeIsAtomicUnderRace,
     testTotpCredentialRoundTrip,
+    testTotpCounterIsCompareAndSwap,
+    testTotpCounterCasUnderRace,
     testTotpEncryptionAtRest,
     testRecoveryCodeCasAndReplace,
     testPendingCeremonyConsumeOnce,
@@ -758,18 +762,62 @@ testTotpCredentialRoundTrip =
           NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
       found0 <- findTotpByUser u.userId
       confirmTotp tcid t
-      setTotpLastUsedCounter tcid 42
+      counterAdvanced <- setTotpLastUsedCounter tcid 42
       found1 <- findTotpByUser u.userId
       deleteTotpByUser u.userId
       found2 <- findTotpByUser u.userId
-      pure (created, found0, found1, found2)
-    (created, found0, found1, found2) <- expectApp result
+      pure (created, found0, counterAdvanced, found1, found2)
+    (created, found0, counterAdvanced, found1, found2) <- expectApp result
     tcSecret created @?= TotpSecret totpRawSecret
     fmap tcSecret found0 @?= Just (TotpSecret totpRawSecret)
     fmap tcConfirmedAt found0 @?= Just Nothing
+    counterAdvanced @?= True
     fmap (isJust . tcConfirmedAt) found1 @?= Just True
     fmap tcLastUsedCounter found1 @?= Just (Just 42)
     found2 @?= Nothing
+
+testTotpCounterIsCompareAndSwap :: TestTree
+testTotpCounterIsCompareAndSwap =
+  testCase "totp counter advances only to a strictly newer value" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      tcid <- genTotpCredentialId
+      t <- now
+      _ <-
+        upsertTotpEnrollment
+          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+      first <- setTotpLastUsedCounter tcid 42
+      same <- setTotpLastUsedCounter tcid 42
+      older <- setTotpLastUsedCounter tcid 41
+      newer <- setTotpLastUsedCounter tcid 43
+      stored <- findTotpByUser u.userId
+      pure (first, same, older, newer, stored)
+    (first, same, older, newer, stored) <- expectApp result
+    (first, same, older, newer) @?= (True, False, False, True)
+    fmap tcLastUsedCounter stored @?= Just (Just 43)
+
+testTotpCounterCasUnderRace :: TestTree
+testTotpCounterCasUnderRace =
+  testCase "totp counter: eight racing updates have one winner" $ withDb \pool -> do
+    seeded <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      tcid <- genTotpCredentialId
+      t <- now
+      _ <-
+        upsertTotpEnrollment
+          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+      pure tcid
+    tcid <- expectApp seeded
+    gate <- newEmptyMVar
+    dones <- replicateM 8 do
+      done <- newEmptyMVar
+      _ <- forkIO do
+        readMVar gate
+        putMVar done =<< runApp pool (setTotpLastUsedCounter tcid 42)
+      pure done
+    putMVar gate ()
+    results <- traverse (\done -> expectApp =<< takeMVar done) dones
+    length (filter id results) @?= 1
 
 -- | The stored @secret_enc@ is genuine ciphertext: it differs from the plaintext secret and is
 -- longer by exactly the 12-byte nonce and 16-byte GCM tag. Decryption is proven by the round-trip
@@ -1897,13 +1945,14 @@ testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + co
     t <- now
     created <- createPasskey (newPasskey u t)
     let pid = pkPasskeyId created
-    updatePasskeySignCounter pid (SignatureCounter 42) t
+    counterAdvanced <- updatePasskeySignCounter pid (SignatureCounter 42) t
     afterUpdate <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
     cnt <- countPasskeysByUser u.userId
     otherUid <- genUserId
     deletePasskey otherUid pid -- wrong user: must NOT delete
-    pure (afterUpdate, cnt, u.userId, pid)
-  (afterUpdate, cnt, uid, pid) <- expectApp result
+    pure (counterAdvanced, afterUpdate, cnt, u.userId, pid)
+  (counterAdvanced, afterUpdate, cnt, uid, pid) <- expectApp result
+  counterAdvanced @?= True
   fmap pkSignCounter afterUpdate @?= Just (SignatureCounter 42)
   assertBool "last_used_at is populated after the counter bump" (maybe False (isJust . pkLastUsedAt) afterUpdate)
   cnt @?= 1
@@ -1912,6 +1961,47 @@ testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + co
   _ <- runApp pool (deletePasskey uid pid) >>= expectApp
   afterOwner <- scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials"
   afterOwner @?= 0 -- owner delete removed it
+
+testPasskeyCounterIsCompareAndSwap :: TestTree
+testPasskeyCounterIsCompareAndSwap =
+  testCase "passkey counter advances atomically and preserves counterless authenticators" $ withDb \pool -> do
+    result <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      created <- createPasskey (newPasskey u t)
+      let pid = pkPasskeyId created
+      zeroToZero <- updatePasskeySignCounter pid (SignatureCounter 0) t
+      first <- updatePasskeySignCounter pid (SignatureCounter 42) t
+      zeroAfterNonzero <- updatePasskeySignCounter pid (SignatureCounter 0) t
+      same <- updatePasskeySignCounter pid (SignatureCounter 42) t
+      older <- updatePasskeySignCounter pid (SignatureCounter 41) t
+      newer <- updatePasskeySignCounter pid (SignatureCounter 43) t
+      stored <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
+      pure (zeroToZero, first, zeroAfterNonzero, same, older, newer, stored)
+    (zeroToZero, first, zeroAfterNonzero, same, older, newer, stored) <- expectApp result
+    (zeroToZero, first, zeroAfterNonzero, same, older, newer)
+      @?= (True, True, False, False, False, True)
+    fmap pkSignCounter stored @?= Just (SignatureCounter 43)
+
+testPasskeyCounterCasUnderRace :: TestTree
+testPasskeyCounterCasUnderRace =
+  testCase "passkey counter: eight racing nonzero updates have one winner" $ withDb \pool -> do
+    seeded <- runApp pool do
+      u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+      t <- now
+      created <- createPasskey (newPasskey u t)
+      pure (pkPasskeyId created, t)
+    (pid, t) <- expectApp seeded
+    gate <- newEmptyMVar
+    dones <- replicateM 8 do
+      done <- newEmptyMVar
+      _ <- forkIO do
+        readMVar gate
+        putMVar done =<< runApp pool (updatePasskeySignCounter pid (SignatureCounter 42) t)
+      pure done
+    putMVar gate ()
+    results <- traverse (\done -> expectApp =<< takeMVar done) dones
+    length (filter id results) @?= 1
 
 testPendingCeremonyConsumeOnce :: TestTree
 testPendingCeremonyConsumeOnce = testCase "pending ceremony store: put then take consumes exactly once" $ withDb \pool -> do

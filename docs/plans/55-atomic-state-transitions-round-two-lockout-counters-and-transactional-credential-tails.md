@@ -53,7 +53,14 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
       `TimingSpec` locked case; docs
 - [x] (2026-08-27T19:05:16Z) M1 gate: `nix fmt`, `cabal build all`, and the serialized
       all-package test matrix pass
-- [ ] M2: counter CAS statements, `Bool` ports, replay handling, `casWorld`; races in both suites
+- [x] (2026-08-27T19:14:47Z) M2 in-memory regression observed red: after synchronizing every
+      credential read, 100 submissions of one TOTP code all completed successfully
+- [x] (2026-08-27T19:14:47Z) M2 PostgreSQL controls observed red without the predicates: all
+      stale/lower writes returned `True`, and all eight racing TOTP and passkey updates won
+- [x] (2026-08-27T19:23:12Z) M2: counter CAS statements, `Bool` ports, replay handling,
+      `casWorld`; 100-way workflow race and eight-way PostgreSQL races pass
+- [x] (2026-08-27T19:23:12Z) M2 gate: `nix fmt`, `cabal build all`, and the serialized
+      all-package test matrix pass (core 269; PostgreSQL 67)
 - [ ] M3: three unit-of-work operations; `revokeSessionStmt` guarded; `RefreshTokenRevoked →
       SessionRevoked`; sibling verification tokens revoked; one-reuse-event assertion; budgets
 - [ ] M4: `UpdateUserStatus` conditional; concurrent-suspend tests in core and Postgres
@@ -90,6 +97,38 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
     expected: [1,2,3,4,5,6,7,8]
      but got: [1,1,1,1,5,5,5,5]
   ```
+
+- The TOTP workflow race initially depended on lucky scheduling: without synchronizing reads,
+  the first completion could advance the fake before the other green threads loaded it. A
+  test-only `interpose` barrier now makes all 100 completions return the same stale credential
+  before allowing any update. Against the unconditional fake this made every request mint a
+  session, rather than exactly one.
+
+  ```text
+  100 concurrent submissions of one TOTP code: exactly one winner: FAIL
+    expected: 1
+     but got: 100
+  ```
+
+- Removing the PostgreSQL counter predicates made both eight-thread races return eight winners;
+  sequential stale and lower values also returned `True`. Restoring the predicates made all six
+  focused counter tests pass.
+
+  ```text
+  passkey counter: eight racing nonzero updates have one winner: FAIL
+    expected: 1
+     but got: 8
+  totp counter: eight racing updates have one winner: FAIL
+    expected: 1
+     but got: 8
+  ```
+
+- The complete PostgreSQL gate caught a restoration error in the deliberate red control: the
+  TOTP monotonic predicate had been reapplied to `confirmStmt` instead of `setCounterStmt`.
+  Confirmation then failed on an invalid timestamp/integer comparison while counter writes
+  remained unconditional. Moving the predicate to the counter statement restored all six
+  focused tests and all 67 PostgreSQL tests. The product implementation was not otherwise
+  changed; the failure demonstrates why the full suite follows destructive red controls.
 
 
 ## Decision Log
@@ -220,6 +259,15 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   PostgreSQL regression went from duplicate counts `[1,1,1,1,5,5,5,5]` without the advisory
   lock to `1..8` with exactly one lock owner. The complete core (268 tests) and PostgreSQL (63
   tests) suites pass, as do `cabal build all` and the serialized all-package test matrix.
+
+- M2 made TOTP and passkey counter advancement a compare-and-swap at both persistence
+  boundaries. A stale or losing write returns `False`, and each MFA workflow reports the proof
+  as replayed before any session can be minted. The synchronized 100-request TOTP workflow
+  regression now has exactly one winner; both PostgreSQL counter families have one winner in
+  their eight-thread nonzero races and reject sequential stale/lower writes. Counterless
+  WebAuthn authenticators retain the required zero-to-zero behavior. The complete core (269
+  tests) and PostgreSQL (67 tests) suites pass, as do `cabal build all` and the serialized
+  all-package test matrix.
 
 
 ## Context and Orientation

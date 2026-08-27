@@ -42,9 +42,9 @@ data PasskeyStore :: Effect where
   FindPasskeysByUser :: UserId -> PasskeyStore m [PasskeyCredential]
   FindPasskeyByCredentialId :: WebAuthnCredentialId -> PasskeyStore m (Maybe PasskeyCredential)
   FindPasskeysByUserHandle :: UserHandle -> PasskeyStore m [PasskeyCredential]
-  -- | Set both the signature counter AND @last_used_at@ (an assertion that bumps
-  -- the counter is also the credential's most recent use).
-  UpdatePasskeySignCounter :: PasskeyId -> SignatureCounter -> UTCTime -> PasskeyStore m ()
+  -- | Compare-and-swap the signature counter and @last_used_at@. 'False' means replay. A
+  -- counterless authenticator's zero-to-zero update is accepted, matching WebAuthn clone checks.
+  UpdatePasskeySignCounter :: PasskeyId -> SignatureCounter -> UTCTime -> PasskeyStore m Bool
   -- | Delete only when both the owning user and the passkey id match (a user action).
   DeletePasskey :: UserId -> PasskeyId -> PasskeyStore m ()
   CountPasskeysByUser :: UserId -> PasskeyStore m Int
@@ -63,7 +63,7 @@ findPasskeyByCredentialId = send . FindPasskeyByCredentialId
 findPasskeysByUserHandle :: (PasskeyStore :> es) => UserHandle -> Eff es [PasskeyCredential]
 findPasskeysByUserHandle = send . FindPasskeysByUserHandle
 
-updatePasskeySignCounter :: (PasskeyStore :> es) => PasskeyId -> SignatureCounter -> UTCTime -> Eff es ()
+updatePasskeySignCounter :: (PasskeyStore :> es) => PasskeyId -> SignatureCounter -> UTCTime -> Eff es Bool
 updatePasskeySignCounter i c t = send (UpdatePasskeySignCounter i c t)
 
 deletePasskey :: (PasskeyStore :> es) => UserId -> PasskeyId -> Eff es ()
