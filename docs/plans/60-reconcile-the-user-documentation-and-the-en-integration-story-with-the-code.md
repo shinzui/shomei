@@ -240,9 +240,9 @@ $ shomei-admin audit user 019eb2eb-ac04-747e-9e70-ea4db1bd446e
 2026-06-17T10:01:00Z    login_succeeded    019eb2eb-…  019eb2ec-…  …
 ```
 
-Lines 19-21 (`kid` "keeps identifying which key signed a token"; the algorithm "reflected … in the JWKS") are EP-3's —
-today `kid` does not select the key (REV-3 finding 6) and JWKS entries omit `alg` (finding 9); M5 probes them. Lines
-382-385 and 629-636 (the en premise) are done in M2. Commit:
+The JWT/JWKS sentences at lines 19-21 were assigned to EP-3. EP-3 has now made `kid` select
+exactly one key and made every JWKS entry carry `alg`; M5 re-probes those guarantees instead of
+rewriting them. Lines 382-385 and 629-636 (the en premise) are done in M2. Commit:
 
 ```text
 docs(security): reconcile security.md with the code and stamp the reconciliation

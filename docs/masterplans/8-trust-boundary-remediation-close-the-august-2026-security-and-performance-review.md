@@ -117,16 +117,15 @@ REV-7, and its fix spans three packages. A decomposition into fewer, larger plan
 "abuse", "ops") was rejected because each would exceed five milestones and would put unrelated
 concurrency work behind a security fix that should land first.
 
-Architecture Decision Records: this repository has no `docs/adr/` bundle (checked 2026-08-27;
-`mori.dhall` declares `improvement-requests`, `capabilities`, and `reviews` only), so no local
-ADR applies. A Mori concept search for `shomei` finds no ADR in any registered project; the
-cross-repository records that do mention Shōmei are `mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1`
+Architecture Decision Records: at drafting time this repository had no `docs/adr/` bundle.
+EP-1 bootstrapped the profile-governed bundle, and EP-1 through EP-3 have now added ADR-1 through
+ADR-4. The cross-repository records that also constrain this initiative are
+`mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1`
 (scoped service-token issuance, which EP-2's privilege-scope policy must not break — the Kikan
 contract it carries treats `impersonate:user`-class scopes as Shōmei-owned and coarse) and
 `mori://shinzui/shomei/okf/improvement-requests/concepts/IR-2` (diagnostic identities, same
-constraint). Several decisions this initiative makes are durable enough to deserve ADRs — see
-the end of Integration Points — and the plan that makes each one creates `docs/adr/` on first
-use following `.claude/skills/exec-plan/ADR.md`.
+constraint). Further durable decisions are listed at the end of Integration Points; the owning
+plan adds each record to the established bundle following the exec-plan ADR workflow.
 
 
 ## Exec-Plan Registry
@@ -135,7 +134,7 @@ use following `.claude/skills/exec-plan/ADR.md`.
 |---|-------|------|-----------|-----------|--------|
 | 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | Complete |
 | 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Complete |
-| 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | In Progress |
+| 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Complete |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Not Started |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Not Started |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Not Started |
@@ -332,7 +331,8 @@ EP-4/EP-5. Within Phase 3, EP-7 and EP-8 are disjoint and EP-9 should follow bot
 Decisions that deserve an ADR once made (the owning plan creates `docs/adr/` on first use):
 session provenance as the boundary between interactive and non-interactive credentials and
 the rule that only interactive sessions may authorize (EP-1); the reserved privilege-scope list
-and where it is enforced (EP-2); `auth_time`, not `iat`, as the freshness clock (EP-4); the open
+and where it is enforced (EP-2); strict JWT verification and the database-backed one-active-key
+invariant (EP-3); `auth_time`, not `iat`, as the freshness clock (EP-4); the open
 `{ Type, default }` configuration schema and the same-commit rule for configuration keys (EP-6);
 "a transport library's exception text is never persisted" (EP-7); the trusted-proxy policy and
 its default, and the cookie-name prefixes (EP-8); the embedding contract — what a host must
@@ -365,9 +365,9 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-2: bespoke `/v1/auth/refresh` refuses client-bound sessions; `/oauth/revoke` checks ownership; refresh grant echoes `scope`
 - [x] EP-2: reserved privilege scopes refused on OAuth clients and warned on service accounts (their intended holders); userinfo honours scopes; consumed-code replay revokes
 - [x] EP-2: Basic credentials form-decoded; discovery advertises token exchange; hint-less refresh introspection and missing-bearer challenge corrected; trust model documented
-- [ ] EP-3: verifier skew, whole-second times, pinned algorithm set, `typ`, `kid`-selecting key store, strict claim shapes, reserved `nbf`/`jti`, issuer/audience validated at boot
-- [ ] EP-3: single-active-key partial unique index; transactional activate and rewrap; `retired_at`/`revoked_at` stamped; `assembleKeys` refuses two active rows; JWKS `alg`
-- [ ] EP-3: ES256 timing trade-off documented; negative tests for `none`, HS256, cross-family, unknown `kid`, revoked key
+- [x] EP-3: verifier skew, whole-second times, pinned algorithm set, `typ`, `kid`-selecting key store, strict claim shapes, reserved `nbf`/`jti`, issuer/audience validated at boot
+- [x] EP-3: single-active-key partial unique index; transactional activate and rewrap; `retired_at`/`revoked_at` stamped; `assembleKeys` refuses two active rows; JWKS `alg`
+- [x] EP-3: ES256 timing trade-off documented; negative tests for `none`, HS256, cross-family, unknown `kid`, revoked key
 - [ ] EP-4: second-factor, recovery-code, passkey, password-change, and suspended-account failures counted against the account; lockout clear deferred to second-factor success
 - [ ] EP-4: `auth_time` claim; freshness gates read it; TOTP removal requires fresh authentication
 - [ ] EP-4: throttled-path set derived from `RateLimited` routes; completion, passkey, password-change, confirm, and `/oauth/token` routes limited; passwordless login requires user verification
@@ -406,6 +406,16 @@ never by counting files. Every later plan allocates the next handle the same way
   the core workflow or HTTP boundary made the resulting ownership and scope policy independently
   observable.
 
+- EP-3 reproduced the clock-skew, permissive claim-shape, multi-audience, fractional-time, and
+  extension-claim weaknesses before correction; the algorithm-confusion controls already held.
+  RFC 3986 also corrected the draft's assumption: `shomei:prod` is a valid StringOrURI, while
+  `https://bad host` is the malformed boot-time case.
+
+- Hasql keeps transaction composition and execution in separate modules, and a partial unique
+  index is checked per statement. Retiring the current key before promoting its replacement inside
+  one transaction therefore gives both atomicity and a usable non-deferrable database invariant.
+  The final serial `cabal test all` run passed all 13 suites.
+
 
 ## Decision Log
 
@@ -431,6 +441,23 @@ never by counting files. Every later plan allocates the next handle the same way
   `PKCS15.signSafer` already exists as a one-flag alternative; a constant-time ES256 is a
   dependency change (jose/crypton) outside this repository's control. EP-3 records the
   trade-off in `security.md` and adds the recommendation; a later plan may change the default.
+  Date: 2026-08-27
+
+- Decision: JWT verification is a strict application policy over jose's general-purpose
+  primitives: ES256/RS256 only, exact `kid` selection, owned claim shapes, bounded clock skew,
+  and explicit token type. The policy is recorded in
+  [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md).
+  Rationale: The issuer always emits this narrower vocabulary. Making it explicit prevents
+  representational flexibility from becoming security surface or unauthenticated work that grows
+  with the JWKS.
+  Date: 2026-08-27
+
+- Decision: At most one signing key may be active, enforced by PostgreSQL, and replacement is one
+  transaction through both the domain port and operator CLI. The invariant is recorded in
+  [ADR-4](../adr/0004-one-active-signing-key-is-a-database-invariant.md).
+  Rationale: Application ordering cannot protect against concurrency, process failure, or
+  out-of-band writes. Retired keys remain published, so the stronger invariant preserves the
+  existing zero-downtime overlap.
   Date: 2026-08-27
 
 - Decision: The OIDC consent step stays out of scope; EP-2 records "every registered client is
@@ -484,11 +511,17 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 and EP-2 are complete. Session provenance is persisted and compile-time-required at every
-mint; authorize admits only live interactive sessions; token exchange and impersonation see
+EP-1 through EP-3 are complete, closing Phase 1. Session provenance is persisted and
+compile-time-required at every mint; authorize admits only live interactive sessions; token
+exchange and impersonation see
 revocation and operator suspension immediately; and authorization-code exchange applies the email
 gate. OAuth sessions retain their granted scopes, refresh and revocation obey client ownership,
 reserved principal privileges cannot be conferred through OAuth clients, UserInfo honours its
 claim scopes, and consumed-code replay ends the first session. ADR-1 and ADR-2 record the two trust
-boundaries, and each child's final serial workspace suite is green. Eight plans remain open; EP-3
-is now the next priority-ready plan in Phase 1.
+boundaries. JWT verification now pins its algorithm and claim policy, selects exactly by `kid`,
+tolerates configured clock skew, and emits whole-second dates plus explicit metadata. Signing-key
+replacement is atomic, PostgreSQL enforces at most one active key, lifecycle timestamps persist,
+and JWKS entries carry `alg`. ADR-3 and ADR-4 record those trust-root decisions, and each child's
+final serial workspace suite is green. Seven plans remain open; EP-5 is the recommended next
+Phase 2 plan because EP-4 names it as a soft dependency and can then record new proof failures
+through the atomic lockout path from its first revision.

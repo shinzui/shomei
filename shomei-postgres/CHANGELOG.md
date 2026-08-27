@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** the signing-key interpreter persists `revoked_at`, stamps activation, retirement,
+  and revocation times, and implements atomic active-key replacement in one transaction.
 - Session-store and authentication-unit-of-work interpreters now write session provenance and
   read legacy `NULL` provenance as `interactive`.
 - Sessions round-trip their OAuth granted scopes, and consumed authorization codes can bind and

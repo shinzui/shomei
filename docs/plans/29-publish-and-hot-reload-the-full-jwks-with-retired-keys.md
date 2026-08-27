@@ -167,12 +167,13 @@ Record every decision made while working on the plan.
   cacheable endpoint. An `IORef` read is effectively free.
   Date: 2026-07-07
 
-- Decision: If several keys are `active` simultaneously (possible only by hand-editing the
-  database — `keysActivate` auto-retires prior actives), the signer is the one with the
-  greatest `activatedAt` (`Nothing` sorts lowest); all of them are published.
-  Rationale: deterministic, matches operator intent ("the newest activation wins"), and
-  avoids refusing to boot over a recoverable inconsistency.
-  Date: 2026-07-07
+- Decision (superseded 2026-08-27): The server now refuses several simultaneously `active` keys
+  instead of selecting among them; migration 0032 installs the partial unique index
+  `shomei_signing_keys_one_active`, and activation replaces the signer transactionally.
+  Rationale: deterministic selection hid a corrupted trust boundary. The database invariant and
+  atomic operation are owned by
+  [plan 53](53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md).
+  Date: 2026-08-27
 
 - Decision: The refresh interval lives in the existing `SigningKeyConfig` record
   (`shomei-core/src/Shomei/Config.hs`), which grows from a `newtype` over `algorithm` to a
@@ -850,3 +851,8 @@ module is available, instead of unconditionally hand-rolling an equivalent loop.
 Operational MasterPlan (`docs/masterplans/6-operational-and-performance-hardening.md`)
 designates plan 34 as the owner of that idiom so `shomei-server` grows exactly one way to run
 supervised maintenance threads.
+
+Revision note (2026-08-27): Plan 53 superseded the multiple-active fallback with a database
+partial unique index, atomic active-key replacement, and a loader that refuses ambiguous state.
+The Decision Log above now records the current owner and invariant while preserving this plan's
+active-plus-retired publication and last-known-good reload contracts.

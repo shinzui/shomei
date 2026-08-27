@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add `shomei_signing_keys.revoked_at` and the partial unique index
+  `shomei_signing_keys_one_active`; migration normalizes legacy multi-active rows before enforcing
+  the invariant.
 - Add the nullable, defaulted `shomei_sessions.kind` column for interactive, machine, and delegated
   session provenance without rewriting existing rows.
 - Add `shomei_sessions.granted_scopes` for refresh-stable OAuth grants and nullable

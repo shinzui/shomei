@@ -4,6 +4,18 @@ All notable changes to `shomei-jwt` are documented here. This package adheres to
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** `toStoredSigningKey` and `toStoredSigningKeyFor` now return `Either Text
+  StoredSigningKey` and refuse keys without a public projection; generated and published JWKs
+  explicitly carry their signing `alg`.
+- Verification is pinned to ES256/RS256 and selects exactly by `kid`; missing and unknown key IDs,
+  malformed list claims, multi-valued audiences, and access-token `typ` mismatches are rejected.
+- JWT numeric dates are emitted at whole-second precision, access tokens carry `typ: at+jwt`, and
+  configurable clock skew applies to `exp`, `nbf`, and `iat`.
+- Key rotation uses the store's atomic active-key replacement operation and keeps retired overlap
+  keys trusted while immediately excluding revoked keys.
+
 ## 0.1.0.0 — 2026-08-24
 
 Initial release. Interprets Shōmei's signing-key effects with `jose`.

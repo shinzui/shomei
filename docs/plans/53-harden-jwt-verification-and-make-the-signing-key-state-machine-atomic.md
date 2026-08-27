@@ -51,7 +51,8 @@ a `psql` session that can no longer activate a second row.
 - [x] (2026-08-27 16:58Z) M3: migration `0032`; `revokedAt`; stamped `UpdateSigningKeyStatus`;
       `ReplaceActiveSigningKey`; transactional activate/rotate/rewrap; `assembleKeys` refuses
       two actives; JWKS `alg`; `toStoredSigningKey` returns `Either`; postgres/jwt/admin tests.
-- [ ] M4: security.md, deployment.md, api.md, changelogs; docs grep; Outcomes written.
+- [x] (2026-08-27 17:13Z) M4: security.md, deployment.md, api.md, changelogs; docs grep;
+      ADR-3/ADR-4 distilled; Outcomes written.
 
 
 ## Surprises & Discoveries
@@ -88,6 +89,16 @@ a `psql` session that can no longer activate a second row.
   61 PostgreSQL tests, and all 27 admin tests passed. The database tests prove SQLSTATE `23505`,
   timestamp stamping, and atomic replacement; the admin test also bypasses the CLI to prove the
   index itself refuses a second active row.
+
+- The M4 stale-wording grep still finds `allowedSkew` in the original review and the earlier
+  verifier plan's code examples. Those are point-in-time audit evidence rather than current
+  behavior claims and remain unchanged. It did reveal a future EP-10 instruction that still said
+  EP-3 had not landed; that instruction now treats strict `kid` selection and JWKS `alg` as
+  guarantees to re-probe.
+
+- The final `cabal test all -j1 --test-show-details=direct` run passed all 13 suites serially,
+  including the 61-case JWT boundary suite, the 61-case PostgreSQL suite, the 27-case admin suite,
+  the standalone server suites, and both embedding examples.
 
 
 ## Decision Log
@@ -165,9 +176,25 @@ a `psql` session that can no longer activate a second row.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation. No `docs/adr/` bundle exists; the distillation
-pass creates it per `.claude/skills/exec-plan/ADR.md` for the one-active-key invariant and the
-verifier's strictness rules.)
+The verifier is now an explicit, bounded trust boundary: ES256/RS256 only, exact `kid`
+selection, strict token and claim shapes, whole-second numeric dates, configurable clock skew,
+and boot-time StringOrURI validation. The signing-key lifecycle is atomic from the domain port
+through PostgreSQL and the admin CLI; the database enforces at most one active key, all lifecycle
+timestamps persist, and every published JWK names its algorithm. The final serial workspace test
+suite is green, as are migration, Dhall, formatting, and ADR validation.
+
+The external behavior remains compatible at the HTTP boundary: verification failures still map
+to `401 token_invalid`, retired keys preserve the rotation overlap, and typ-less access tokens
+remain accepted during the upgrade window. Haskell API consumers must adapt to the new
+configuration and signing-key fields, the atomic store operation, and `Either`-returning JWK
+conversion functions; the five package changelogs call out those PVP-relevant changes.
+
+[ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) records the
+strict verifier policy, and [ADR-4](../adr/0004-one-active-signing-key-is-a-database-invariant.md)
+records the database-backed lifecycle invariant. Follow-ups remain intentionally scoped to later
+plans: unknown-key JWKS refresh in EP-9, required `typ` after the compatibility window, optional
+pending-key publication, and any future move away from the timing-annotated ES256 dependency
+path.
 
 
 ## Context and Orientation
@@ -184,8 +211,8 @@ JSON claims document in three base64url segments whose protected header names th
 (RFC 7519) must be a valid URI if it contains a colon; a partial unique index covers only rows
 matching its `WHERE`; envelope encryption is plan 32's `enc:v1:` wrapping of `private_key_jwk`.
 
-No `docs/adr/` bundle exists (checked 2026-08-27; `mori.dhall` declares `improvement-requests`,
-`capabilities`, and `reviews`), so no local ADR applies and none is cited across repositories.
+At authoring time no `docs/adr/` bundle existed. EP-1 bootstrapped the profiled bundle; this plan
+adds ADR-3 and ADR-4 for the strict verifier and the one-active-key invariant.
 Prior plans, both checked in: `docs/plans/29-publish-and-hot-reload-the-full-jwks-with-retired-keys.md`
 (the single load path `Shomei.Server.Keys.loadKeyMaterial`, periodic and SIGHUP reload,
 keep-last-good; `activated_at` can be `NULL`) and `docs/plans/32-encrypt-signing-private-keys-at-rest.md`
@@ -590,7 +617,7 @@ active failing, `revoked_at` stamped, and rewrap moving every row; the CLI trans
 after `keys activate`, `curl -s localhost:8080/.well-known/jwks.json | jq '.keys[] | {kid, alg}'`
 lists both keys with `"alg": "ES256"`, and a token minted before the activation still returns
 `200` — plan 29's zero-downtime property, unchanged. Documentation:
-`rg -n "keeps identifying which" docs/user/security.md` finds the rewritten sentence, and
+`rg -n "keeps identifying which" docs/user/security.md` returns no matches, and
 nothing under `docs/` claims newest-wins selection.
 
 

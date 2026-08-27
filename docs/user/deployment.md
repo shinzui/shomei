@@ -192,6 +192,11 @@ A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <ki
 `users create`. The container entrypoint (`deploy/entrypoint.sh`) does the first three
 automatically.
 
+Activation retires the previous active key and promotes the selected pending key in one database
+transaction. PostgreSQL's `shomei_signing_keys_one_active` index refuses a second active row; if
+another activation wins concurrently, the CLI asks you to run `keys list` and retry. `keys list`
+prints `created=`, `activated=`, `retired=`, and `revoked=` timestamps for every row.
+
 **Choosing the signing algorithm.** Keys are **ES256** (ECDSA P-256) by default; set
 `SHOMEI_SIGNING_ALG=RS256` (or the Dhall `signingAlgorithm` field, or `keys generate --alg
 RS256`) to mint **RS256** (RSASSA-PKCS1-v1_5) keys instead — required by verifiers that only
@@ -218,9 +223,8 @@ shomei-admin keys generate
 ```
 
 The server and `shomei-admin keys generate` both require the KEK. The server rejects any signing
-key row without the encrypted envelope. The
-the pure status transitions — `activate`, `retire`, `revoke`, `list` — never touch key material
-and need nothing.
+key row without the encrypted envelope. The pure status transitions — `activate`, `retire`,
+`revoke`, `list` — never touch key material and need nothing.
 
 **Rotating the KEK.** Rows are few, so a rewrap takes milliseconds:
 

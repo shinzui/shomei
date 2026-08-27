@@ -498,7 +498,7 @@ refresh, not on one already issued.
 ## Operational endpoints
 
 ### `GET /.well-known/jwks.json`
-→ `200` the public JWKS document (the `active` plus still-trusted `retired` signing keys). Downstream services fetch this to verify Shōmei's tokens locally. Keys are EC (`"kty":"EC"`, for ES256) or RSA (`"kty":"RSA"`, for RS256) depending on the configured signing algorithm; verifiers select by `kid` and read the `alg`/`kty` from the key, so a mixed set during an algorithm rotation verifies correctly. A host service embedding Shōmei may also attach its own top-level claims to issued tokens (`AuthClaims.extraClaims`); these appear in the JWT payload beside the standard `sub`/`sid`/`scopes`/`roles` claims and are preserved on verification.
+→ `200` the public JWKS document (the `active` plus still-trusted `retired` signing keys). Downstream services fetch this to verify Shōmei's tokens locally. Every entry explicitly carries `kid` and `alg`; keys are EC (`"kty":"EC"`, `"alg":"ES256"`) or RSA (`"kty":"RSA"`, `"alg":"RS256"`) depending on the configured signing algorithm. Verifiers select by `kid`, so a mixed set during an algorithm rotation verifies correctly. A host service embedding Shōmei may also attach its own top-level claims to issued tokens (`AuthClaims.extraClaims`); these appear in the JWT payload beside the standard `sub`/`sid`/`scopes`/`roles` claims and are preserved on verification.
 
 The response carries `Cache-Control: public, max-age=300`. Key rotation is staged
 (`pending → active → retired → revoked`, see [security.md](security.md)), so a retiring key stays

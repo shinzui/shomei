@@ -15,16 +15,28 @@ logs. The minimum-length / policy check runs before hashing.
 
 - **Access tokens** are JWTs signed by the active signing key, carrying the subject (user id),
   session id, issuer, audience, and expiry. They are verified offline against the published JWKS.
-  The signing algorithm is configurable: **ES256** (ECDSA P-256, the default) or **RS256**
-  (RSASSA-PKCS1-v1_5) — see `SHOMEI_SIGNING_ALG` in [deployment.md](deployment.md). The choice is
-  reflected in the key, the JWT header's `alg`, and the JWKS; the `kid` keeps identifying which
-  key signed a token, so rotation and multi-key verification work unchanged.
+  The signer and verifier accept only **ES256** (ECDSA P-256, the default) and **RS256**
+  (RSASSA-PKCS1-v1_5); see `SHOMEI_SIGNING_ALG` in [deployment.md](deployment.md). Access-token
+  headers carry `typ: at+jwt`. Every JWT and JWKS entry carries `alg`, and the JWT header's `kid`
+  selects exactly one published verification key. An unknown or missing `kid` is refused; the
+  verifier never tries the signature against every key. Expiry, not-before, and issued-at checks
+  allow `allowedClockSkewSeconds` of clock drift (default 30 seconds).
+- **Algorithm choice and timing.** The ES256 default signs through
+  [crypton's generic ECDSA path](mori://kazu-yamamoto/crypton/packages/crypton), whose own
+  documentation warns that its scalar operations are vulnerable to timing attacks and
+  could leak the private key under timing analysis. RS256 signing uses RSA blinding through
+  `PKCS15.signSafer`. The August 2026 review judged the ES256 channel plausible, not demonstrated.
+  Where an attacker can drive many token mints against a co-located host, prefer RS256: set
+  `SHOMEI_SIGNING_ALG=RS256`, then run `shomei-admin keys generate --alg RS256` and `keys activate
+  <kid>`. ES256 remains the default until a constant-time implementation exists in the dependency
+  chain.
 - **Custom claims.** A service embedding Shōmei as a library can attach arbitrary top-level JSON
   claims to every token via `AuthClaims.extraClaims` (e.g. `buildClaimsWith`). They serialize
   alongside the standard claims and are returned on verification. Reserved standard claims (`iss`,
-  `sub`, `aud`, `iat`, `exp`, `sid`, `scopes`, `roles`, `permissions`, `act`) **cannot be forged** through the
-  bag: `mkExtraClaims` drops them at construction, the signer always writes Shōmei's own value
-  last, and `jose` filters the registered claims from the custom map on both sign and verify.
+  `sub`, `aud`, `iat`, `exp`, `nbf`, `jti`, `sid`, `scopes`, `roles`, `permissions`, `act`)
+  **cannot be forged** through the bag: `mkExtraClaims` drops them at construction, the signer
+  always writes Shōmei's own value last, and `jose` filters the registered claims from the custom
+  map on both sign and verify.
 - **Refresh tokens** and the single-use **email-verification** / **password-reset** tokens are
   opaque random strings of which only the **SHA-256 hash** is persisted — a database leak never
   reveals a usable token. Refresh tokens rotate on every use; presenting an already-used token is
@@ -52,12 +64,18 @@ logs. The minimum-length / policy check runs before hashing.
 Keys move through `pending → active → retired → revoked` (managed by `shomei-admin keys …`):
 
 - `pending` keys exist but are neither used to sign nor published.
-- exactly one `active` key signs new tokens and is published.
+- exactly one `active` key signs new tokens and is published. The partial unique index
+  `shomei_signing_keys_one_active` enforces this in PostgreSQL, independently of the application.
 - activating a new key auto-**retires** the previous active key: it stops signing but **stays in
   the JWKS and stays trusted**, so tokens minted just before the rotation keep verifying until
-  they expire. This is what makes rotation zero-downtime.
+  they expire. Retirement and activation commit in one transaction, which is what makes rotation
+  both atomic and zero-downtime.
 - `revoked` keys leave the JWKS and are immediately distrusted — the emergency lever for a
   compromised key, deliberately breaking its outstanding tokens.
+
+Every lifecycle change stamps its matching timestamp: `activated_at`, `retired_at`, or
+`revoked_at`. The server refuses to choose a signer if it ever loads multiple active rows and
+names the missing database invariant in the error.
 
 The published JWKS (`GET /.well-known/jwks.json`) therefore lists both `active` and `retired`
 keys during the overlap window. Rotation is also how you **switch signing algorithm** on a live

@@ -28,8 +28,8 @@ This plan removes both limitations. After it is implemented a consuming service 
    (RSASSA-PKCS1-v1_5 with SHA-256). The choice is carried by configuration and reflected in
    three observable places: the key that gets generated and stored, the `alg` field of the
    JWT's protected header, and the JWKS document (the public key set published for verifiers).
-   The key's `kid` (key id) keeps identifying which key signed a token, so rotation and
-   multi-key verification keep working unchanged.
+   The key's `kid` (key id) selects exactly one published verification key; an absent or unknown
+   value is refused, so rotation stays deterministic as the set grows.
 
 2. **Attach custom top-level claims** to every signed token without forking Shōmei. A service
    supplies a small bag of extra JSON fields (for example TAN's `userId`, `userInfo`,
@@ -1119,3 +1119,8 @@ header import and the Interfaces list now use `OptionalProtection (Protected)` i
 deprecated/non-constructor `Protection (Protected)` synonym (see Surprises & Discoveries), and a
 note clarifies that `publicJwks` is a `TestSupport` helper. No milestone structure changed; the
 plan fits the project.
+
+**Revision note (2026-08-27, trust-boundary remediation).** Plan 53 replaced generic multi-key
+trial verification with exact protected-`kid` selection. The Purpose wording now states the
+implemented selector contract; the configurable-algorithm and custom-claim milestones are
+otherwise unchanged.

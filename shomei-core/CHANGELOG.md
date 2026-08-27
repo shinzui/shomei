@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** `StoredSigningKey` gains `revokedAt`, and `SigningKeyStore` gains the atomic
+  `ReplaceActiveSigningKey` operation. The in-memory interpreter stamps every lifecycle timestamp.
+- **Breaking:** `SigningKeyConfig` gains `allowedClockSkewSeconds`; the reserved custom-claim set
+  now also excludes `nbf` and `jti`.
 - **Breaking:** `Session` and `NewSession` now carry a `kind` that records whether the session was
   established interactively, by `client_credentials`, or by delegation.
 - OAuth authorize accepts only a live interactive session and refuses machine, delegated, or

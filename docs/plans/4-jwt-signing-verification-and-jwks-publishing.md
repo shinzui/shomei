@@ -128,9 +128,10 @@ implementation. Provide concise evidence.
   `JWSError`), not of `JWTError`. `StringOrURI` ⇄ `Text` uses the `string :: Prism' StringOrURI
   Text` prism (and the `IsString` instance for the other direction); `Audience` is `Audience
   [StringOrURI]` with prism `_Audience`; `NumericDate` is `NumericDate UTCTime` with prism
-  `_NumericDate`. The `JWKSet` `VerificationKeyStore` instance returns **all** keys (no kid
-  filtering), so verification simply tries each key — including the signing key in a multi-key
-  set is what makes scenario (g) pass.
+  `_NumericDate`. The generic `JWKSet` `VerificationKeyStore` instance returns all keys, but
+  Shōmei now wraps it with `KidSelectingKeys`: the protected `kid` selects one key and an absent
+  or unknown value is refused. This supersedes the implementation assumption recorded here when
+  the initial verifier was built.
 - **`StringOrURI` round-trips in canonical form, so claim values must be built with
   `fromString`, not the `string` prism.** Building `iss`/`aud` with `review string txt`
   yields the `Arbitrary Text` constructor, but jose re-parses a scheme-bearing string (the
@@ -1357,3 +1358,7 @@ The single most important downstream contract is `verifyToken :: JWKSet -> Shome
 Text -> IO (Either TokenError AuthClaims)`. EP-5's Servant `Authenticated` combinator calls
 exactly this shape from inside its `AuthHandler` (which is not an `effectful` computation), so
 its type must not change without a cascading Decision Log entry in both this plan and EP-5.
+
+Revision note (2026-08-27): Plan 53 retained the public `verifyToken` signature but replaced the
+generic `JWKSet` key-store behavior with exact `kid` selection. The jose orientation paragraph now
+distinguishes the dependency's generic behavior from Shōmei's current strict verifier.
