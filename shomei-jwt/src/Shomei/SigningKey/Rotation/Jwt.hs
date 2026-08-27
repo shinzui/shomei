@@ -14,22 +14,17 @@ where
 import Crypto.JOSE.JWK (JWK)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Either (rights)
+import Data.Text qualified as Text
 import Effectful (Eff, IOE, (:>))
 import Shomei.Prelude
-import Shomei.SigningKey.Domain
-  ( SigningAlgorithm,
-    SigningKeyStatus (KeyRetired),
-    StoredSigningKey (..),
-  )
+import Shomei.SigningKey.Domain (SigningAlgorithm)
 import Shomei.SigningKey.Jwks.Jwt (jwksDocument)
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, protectStoredSigningKey, publicJwkFromStored)
 import Shomei.SigningKey.Store
   ( SigningKeyStore,
-    insertSigningKey,
-    listActiveSigningKeys,
     listPublishableSigningKeys,
-    updateSigningKeyStatus,
+    replaceActiveSigningKey,
   )
 import Shomei.Time.Store (Clock, now)
 
@@ -42,11 +37,10 @@ rotateSigningKey ::
   Eff es JWK
 rotateSigningKey kek alg = do
   t <- now
-  priorActive <- listActiveSigningKeys
   newJwk <- liftIO (generateSigningKeyFor alg)
-  protected <- liftIO (protectStoredSigningKey kek (toStoredSigningKeyFor alg t newJwk))
-  insertSigningKey protected
-  forM_ priorActive \k -> updateSigningKeyStatus k.keyId KeyRetired t
+  stored <- liftIO (either (ioError . userError . Text.unpack) pure (toStoredSigningKeyFor alg t newJwk))
+  protected <- liftIO (protectStoredSigningKey kek stored)
+  replaceActiveSigningKey protected t
   pure newJwk
 
 -- | Build the published JWKS from every publishable key: the active key(s) plus the

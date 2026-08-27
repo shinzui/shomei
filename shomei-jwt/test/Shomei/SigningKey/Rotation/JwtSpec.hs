@@ -1,26 +1,37 @@
--- | 'currentJwks' publishes every /publishable/ key — the active one plus the
--- retired-but-still-trusted ones — and never a pending or revoked key. Driven over the
--- in-memory 'SigningKeyStore' interpreter.
+-- | The signing-key lifecycle over the in-memory store: publication filters lifecycle
+-- states, rotation replaces the active key atomically, and revocation removes trust.
 module Shomei.SigningKey.Rotation.JwtSpec (tests) where
 
+import Crypto.JOSE.JWK (JWKSet)
 import Data.Aeson (Value (Array, Object, String))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteArray.Encoding (Base (Base64), convertToBase)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy (ByteString)
-import Data.Foldable (toList)
-import Data.IORef (newIORef)
+import Data.Foldable (toList, traverse_)
+import Data.IORef (newIORef, readIORef)
 import Data.List (sort)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
-import Data.Time (UTCTime (..), fromGregorian)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
+import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
 import Effectful (runEff)
-import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
+import Shomei.Error (TokenError (TokenKeyNotFound))
+import Shomei.Session.Token.Domain (AccessToken (AccessToken))
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Key.Jwt (generateSigningKey, keyKid, toStoredSigningKey)
-import Shomei.SigningKey.Rotation.Jwt (currentJwks)
-import Shomei.SigningKey.Store (insertSigningKey)
-import Shomei.Test.InMemory (emptyWorld, runSigningKeyStore)
+import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
+import Shomei.SigningKey.Rotation.Jwt (currentJwks, rotateSigningKey)
+import Shomei.SigningKey.Sign.Jwt (signAccessToken)
+import Shomei.SigningKey.Store (insertSigningKey, updateSigningKeyStatus)
+import Shomei.SigningKey.TestSupport (mkClaims, testConfig)
+import Shomei.SigningKey.Verify.Jwt (verifyToken)
+import Shomei.Test.InMemory (World (..), emptyWorld, runClock, runSigningKeyStore)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -31,37 +42,95 @@ tests =
         retiredK <- generateSigningKey
         pendingK <- generateSigningKey
         revokedK <- generateSigningKey
+        stored <-
+          either (assertFailure . show) pure $
+            traverse
+              (\(k, st) -> (\sk -> sk {status = st}) <$> toStoredSigningKey epoch k)
+              [ (activeK, KeyActive),
+                (retiredK, KeyRetired),
+                (pendingK, KeyPending),
+                (revokedK, KeyRevoked)
+              ]
         ref <- newIORef (emptyWorld epoch)
         doc <- runEff . runSigningKeyStore ref $ do
-          sequence_
-            [ insertSigningKey ((toStoredSigningKey epoch k) {status = st})
-            | (k, st) <-
-                [ (activeK, KeyActive),
-                  (retiredK, KeyRetired),
-                  (pendingK, KeyPending),
-                  (revokedK, KeyRevoked)
-                ]
-            ]
+          traverse_ insertSigningKey stored
           currentJwks
         published <- kidsOf doc
         sort published @?= sort [keyKid activeK, keyKid retiredK]
-        -- named individually so a failure says which lifecycle state leaked
         assertAbsent "pending" (keyKid pendingK) published
-        assertAbsent "revoked" (keyKid revokedK) published
+        assertAbsent "revoked" (keyKid revokedK) published,
+      testCase "rotation leaves one active key and publishes alg on both overlap keys" $ do
+        oldJwk <- generateSigningKey
+        old <- either (assertFailure . show) pure (toStoredSigningKey epoch oldJwk)
+        kek <- testKek
+        ref <- newIORef (emptyWorld epoch)
+        newJwk <-
+          runEff . runClock ref . runSigningKeyStore ref $ do
+            insertSigningKey old
+            rotateSigningKey kek ES256
+        world <- readIORef ref
+        let rows = Map.elems world.signingKeys
+            activeRows = filter ((== KeyActive) . (.status)) rows
+        fmap (.keyId) activeRows @?= [keyKid newJwk]
+        oldAfter <- maybe (assertFailure "old key disappeared during rotation") pure (Map.lookup old.keyId world.signingKeys)
+        newAfter <- maybe (assertFailure "new key was not stored during rotation") pure (Map.lookup (keyKid newJwk) world.signingKeys)
+        oldAfter.status @?= KeyRetired
+        oldAfter.retiredAt @?= Just epoch
+        newAfter.activatedAt @?= Just epoch
+        doc <- runEff . runSigningKeyStore ref $ currentJwks
+        published <- kidsOf doc
+        sort published @?= sort [old.keyId, keyKid newJwk]
+        algs <- algsOf doc
+        assertBool "every published overlap key has ES256 alg" (length algs == 2 && all (== "ES256") algs),
+      testCase "revoking a key removes it from the verifier set" $ do
+        jwk <- generateSigningKey
+        stored <- either (assertFailure . show) pure (toStoredSigningKey epoch jwk)
+        now <- getCurrentTime
+        claims <- mkClaims testConfig now
+        AccessToken wire <- signAccessToken jwk claims >>= either (assertFailure . show) pure
+        ref <- newIORef (emptyWorld epoch)
+        before <- runEff . runSigningKeyStore ref $ do
+          insertSigningKey stored
+          currentJwks
+        beforeSet <- decodeJwkSet before
+        verifyToken beforeSet testConfig wire >>= either (assertFailure . show) (const (pure ()))
+        after <- runEff . runSigningKeyStore ref $ do
+          updateSigningKeyStatus stored.keyId KeyRevoked epoch
+          currentJwks
+        afterSet <- decodeJwkSet after
+        rejected <- verifyToken afterSet testConfig wire
+        rejected @?= Left (TokenKeyNotFound (Just stored.keyId))
     ]
   where
-    epoch = UTCTime (fromGregorian 2026 7 8) 0
+    epoch = UTCTime (fromGregorian 2026 8 27) 0
     assertAbsent label kid published
       | kid `elem` published = assertFailure (label <> " key " <> show kid <> " must not be published")
       | otherwise = pure ()
 
--- | The @kid@ of each key in a JWKS document's @"keys"@ array.
 kidsOf :: ByteString -> IO [Text]
 kidsOf doc =
   case Aeson.decode doc of
     Just (Object top) ->
       case KM.lookup (Key.fromText "keys") top of
         Just (Array arr) ->
-          pure [k | Object o <- toList arr, Just (String k) <- [KM.lookup (Key.fromText "kid") o]]
+          pure [kid | Object o <- toList arr, Just (String kid) <- [KM.lookup (Key.fromText "kid") o]]
         _ -> assertFailure "JWKS has no \"keys\" array" >> pure []
     _ -> assertFailure "JWKS is not a JSON object" >> pure []
+
+algsOf :: ByteString -> IO [Text]
+algsOf doc =
+  case Aeson.decode doc of
+    Just (Object top) ->
+      case KM.lookup (Key.fromText "keys") top of
+        Just (Array arr) ->
+          pure [alg | Object o <- toList arr, Just (String alg) <- [KM.lookup (Key.fromText "alg") o]]
+        _ -> assertFailure "JWKS has no \"keys\" array" >> pure []
+    _ -> assertFailure "JWKS is not a JSON object" >> pure []
+
+decodeJwkSet :: ByteString -> IO JWKSet
+decodeJwkSet = maybe (assertFailure "JWKS did not decode as JWKSet") pure . Aeson.decode
+
+testKek :: IO KeyEncryptionKey
+testKek =
+  either (assertFailure . Text.unpack) pure $
+    keyEncryptionKeyFromBase64 (Text.decodeUtf8 (convertToBase Base64 (BS.replicate 32 0x2a)))

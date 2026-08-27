@@ -1192,11 +1192,27 @@ runSigningKeyStore ref = interpret_ \case
     liftIO ((Map.lookup kid . (.signingKeys)) <$> readIORef ref)
   InsertSigningKey k ->
     liftIO (modifyWorld ref (#signingKeys %~ Map.insert k.keyId k))
-  UpdateSigningKeyStatus kid st _t ->
-    liftIO (modifyWorld ref (#signingKeys %~ Map.adjust (#status .~ st) kid))
+  UpdateSigningKeyStatus kid st t ->
+    liftIO (modifyWorld ref (#signingKeys %~ Map.adjust (stampStatus st t) kid))
+  ReplaceActiveSigningKey key t ->
+    liftIO $ modifyWorld ref $ \w ->
+      let retired = Map.map (retireIfActive t) w.signingKeys
+          active = key {status = KeyActive, activatedAt = Just t}
+       in w {signingKeys = Map.insert active.keyId active retired}
   where
     activeKeys w = [k | k <- Map.elems w.signingKeys, k.status == KeyActive]
     publishableKeys w = [k | k <- Map.elems w.signingKeys, k.status `elem` [KeyActive, KeyRetired]]
+    stampStatus :: SigningKeyStatus -> UTCTime -> StoredSigningKey -> StoredSigningKey
+    stampStatus st t key =
+      case st of
+        KeyActive -> key & #status .~ st & #activatedAt .~ Just t
+        KeyRetired -> key & #status .~ st & #retiredAt .~ Just t
+        KeyRevoked -> key & #status .~ st & #revokedAt .~ Just t
+        KeyPending -> key & #status .~ st
+    retireIfActive :: UTCTime -> StoredSigningKey -> StoredSigningKey
+    retireIfActive t key
+      | key.status == KeyActive = key & #status .~ KeyRetired & #retiredAt .~ Just t
+      | otherwise = key
 
 runClock :: (IOE :> es) => IORef World -> Eff (Clock : es) a -> Eff es a
 runClock ref = interpret_ \case

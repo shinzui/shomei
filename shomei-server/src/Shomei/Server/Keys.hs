@@ -37,9 +37,6 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.Bifunctor (first)
 import Data.Foldable (toList)
 import Data.IORef (IORef, readIORef, writeIORef)
-import Data.List (sortOn)
-import Data.Maybe (listToMaybe)
-import Data.Ord (Down (Down))
 import Data.Text qualified as Text
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack)
@@ -119,7 +116,16 @@ loadKeyMaterial kek pool = do
 assembleKeys :: KeyEncryptionKey -> [StoredSigningKey] -> Either Text LoadedKeys
 assembleKeys kek stored = do
   publics <- traverse toPublic stored
-  signerRow <- maybe (Left "no active signing key") Right (newestActive stored)
+  signerRow <-
+    case [sk | sk <- stored, sk.status == KeyActive] of
+      [one] -> Right one
+      [] -> Left "no active signing key"
+      several ->
+        Left
+          ( "multiple active signing keys ("
+              <> Text.intercalate ", " (map (.keyId) several)
+              <> ") violate shomei_signing_keys_one_active; retire all but one with shomei-admin keys retire"
+          )
   signerJwk <- first (decryptError signerRow) (decryptStoredSigningKey kek signerRow)
   -- The signer's own row is in 'stored', so its public projection is in 'publics'.
   signerPub <-
@@ -144,8 +150,6 @@ assembleKeys kek stored = do
         "signing key " <> sk.keyId <> " has a malformed encrypted private key: " <> reason
       KeyJsonInvalid reason ->
         "signing key " <> sk.keyId <> " has unparseable private JWK JSON: " <> reason
-    newestActive rows =
-      listToMaybe (sortOn (Down . (.activatedAt)) [sk | sk <- rows, sk.status == KeyActive])
     -- jwksDocument emits a JWKSet object, so the decode cannot fail; the fallback keeps
     -- the total signature rather than partially matching on it.
     decodeJwks = fromMaybe (Object KM.empty) . Aeson.decode
@@ -176,7 +180,8 @@ ensureActiveKey kek alg = do
   when (null active) do
     t <- now
     jwk <- liftIO (generateSigningKeyFor alg)
-    protected <- liftIO (protectStoredSigningKey kek (toStoredSigningKeyFor alg t jwk))
+    stored <- liftIO (either (ioError . userError . Text.unpack) pure (toStoredSigningKeyFor alg t jwk))
+    protected <- liftIO (protectStoredSigningKey kek stored)
     insertSigningKey protected
 
 -- | Reload key material and swap it in. On failure keep the last good material and log to

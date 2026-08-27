@@ -32,7 +32,7 @@ where
 
 import Crypto.Cipher.ChaChaPoly1305 qualified as AEAD
 import Crypto.Error (CryptoFailable (..))
-import Crypto.JOSE.JWK (JWK)
+import Crypto.JOSE.JWK (JWK, JWKAlg (JWSAlg), jwkAlg)
 import Crypto.MAC.Poly1305 qualified as Poly1305
 import Crypto.Random (getRandomBytes)
 import Data.Aeson qualified as Aeson
@@ -44,7 +44,8 @@ import Data.ByteString qualified as BS
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Shomei.Prelude
-import Shomei.SigningKey.Domain (StoredSigningKey (..))
+import Shomei.SigningKey.Domain (StoredSigningKey (..), signingAlgorithmFromText)
+import Shomei.SigningKey.Key.Jwt (joseAlg)
 
 -- | The 32-byte key that encrypts stored private keys. Abstract, with no 'Show' and no
 -- JSON instances: printing it anywhere would defeat the entire scheme, so make that a type
@@ -171,5 +172,8 @@ decryptStoredSigningKey kek sk = do
 -- the verifier key set are built from this, so a missing or wrong KEK can never break
 -- verification of outstanding tokens — only signing.
 publicJwkFromStored :: StoredSigningKey -> Either Text JWK
-publicJwkFromStored sk =
-  first Text.pack (Aeson.eitherDecodeStrict (TE.encodeUtf8 sk.publicKeyJwk))
+publicJwkFromStored sk = do
+  jwk <- first Text.pack (Aeson.eitherDecodeStrict (TE.encodeUtf8 sk.publicKeyJwk))
+  pure case (jwk ^. jwkAlg, signingAlgorithmFromText sk.algorithm) of
+    (Nothing, Right alg) -> jwk & jwkAlg ?~ JWSAlg (joseAlg alg)
+    _ -> jwk

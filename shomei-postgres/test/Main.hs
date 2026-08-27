@@ -242,7 +242,7 @@ import Shomei.Session.Workflow (buildEnrichedClaims)
 import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
 import Shomei.SigningKey.Signer (TokenSigner (..))
-import Shomei.SigningKey.Store (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, updateSigningKeyStatus)
+import Shomei.SigningKey.Store (SigningKeyStore, findSigningKeyByKid, insertSigningKey, listActiveSigningKeys, listPublishableSigningKeys, replaceActiveSigningKey, updateSigningKeyStatus)
 import Shomei.Test.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
 import Shomei.Time.Postgres (runClockIO)
 import Shomei.Time.Store (Clock (..), now)
@@ -511,6 +511,8 @@ tests =
     testMarkUserEmailVerified,
     testSigningKeys,
     testPublishableSigningKeys,
+    testSigningKeyTransitionTimestamps,
+    testSigningKeyOneActiveInvariant,
     testPublishEvent,
     testAuditEventReader,
     testWorkflowSignup,
@@ -1155,7 +1157,8 @@ testSigningKeys = testCase "insert + list signing keys" $ withDb \pool -> do
               status = KeyActive,
               createdAt = t,
               activatedAt = Just t,
-              retiredAt = Nothing
+              retiredAt = Nothing,
+              revokedAt = Nothing
             }
     insertSigningKey key
     active <- listActiveSigningKeys
@@ -1180,7 +1183,8 @@ testPublishableSigningKeys = testCase "publishable signing keys are active + ret
               status = st,
               createdAt = t,
               activatedAt = Just t,
-              retiredAt = Nothing
+              retiredAt = Nothing,
+              revokedAt = Nothing
             }
     -- Insert each row Pending, then drive it to its target status through the port, so
     -- the test exercises updateSigningKeyStatus rather than trusting the insert.
@@ -1194,6 +1198,60 @@ testPublishableSigningKeys = testCase "publishable signing keys are active + ret
   (publishable, active) <- expectApp result
   sort (fmap (.keyId) publishable) @?= ["k-active", "k-retired"]
   fmap (.keyId) active @?= ["k-active"]
+
+testSigningKeyTransitionTimestamps :: TestTree
+testSigningKeyTransitionTimestamps = testCase "signing-key transitions stamp activated, retired, and revoked times" $ withDb \pool -> do
+  let activated = t0
+      retired = addUTCTime 60 t0
+      revoked = addUTCTime 120 t0
+      key = signingKeyFixture "k-stamped" KeyPending t0
+  result <- runAppAtTime t0 pool do
+    insertSigningKey key
+    updateSigningKeyStatus key.keyId KeyActive activated
+    updateSigningKeyStatus key.keyId KeyRetired retired
+    updateSigningKeyStatus key.keyId KeyRevoked revoked
+    findSigningKeyByKid key.keyId
+  stored <- expectApp result >>= maybe (assertFailure "stamped signing key disappeared") pure
+  stored.activatedAt @?= Just activated
+  stored.retiredAt @?= Just retired
+  stored.revokedAt @?= Just revoked
+
+testSigningKeyOneActiveInvariant :: TestTree
+testSigningKeyOneActiveInvariant = testCase "one-active index rejects a second insert and atomic replacement retires the old key" $ withDb \pool -> do
+  let replacedAt = addUTCTime 60 t0
+      old = (signingKeyFixture "k-old" KeyActive t0) {activatedAt = Just t0}
+      new = signingKeyFixture "k-new" KeyActive replacedAt
+  expectApp =<< runAppAtTime t0 pool (insertSigningKey old)
+
+  duplicate <- runAppAtTime t0 pool (insertSigningKey new)
+  duplicate @?= Left (DependencyUnavailable PostgreSQL)
+
+  replacement <- runAppAtTime replacedAt pool do
+    replaceActiveSigningKey new replacedAt
+    active <- listActiveSigningKeys
+    oldAfter <- findSigningKeyByKid old.keyId
+    newAfter <- findSigningKeyByKid new.keyId
+    pure (active, oldAfter, newAfter)
+  (active, oldAfter, newAfter) <- expectApp replacement
+  fmap (.keyId) active @?= [new.keyId]
+  fmap (.status) oldAfter @?= Just KeyRetired
+  fmap (.retiredAt) oldAfter @?= Just (Just replacedAt)
+  fmap (.status) newAfter @?= Just KeyActive
+  fmap (.activatedAt) newAfter @?= Just (Just replacedAt)
+
+signingKeyFixture :: Text -> SigningKeyStatus -> UTCTime -> StoredSigningKey
+signingKeyFixture kid keyStatus created =
+  StoredSigningKey
+    { keyId = kid,
+      algorithm = "ES256",
+      publicKeyJwk = "{\"kty\":\"EC\"}",
+      privateKeyJwk = "{\"kty\":\"EC\",\"d\":\"x\"}",
+      status = keyStatus,
+      createdAt = created,
+      activatedAt = Nothing,
+      retiredAt = Nothing,
+      revokedAt = Nothing
+    }
 
 testPublishEvent :: TestTree
 testPublishEvent = testCase "publish auth event lands a row" $ withDb \pool -> do

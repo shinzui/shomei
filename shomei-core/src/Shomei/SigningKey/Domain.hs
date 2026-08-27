@@ -53,7 +53,8 @@ data StoredSigningKey = StoredSigningKey
     status :: !SigningKeyStatus,
     createdAt :: !UTCTime,
     activatedAt :: !(Maybe UTCTime),
-    retiredAt :: !(Maybe UTCTime)
+    retiredAt :: !(Maybe UTCTime),
+    revokedAt :: !(Maybe UTCTime)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

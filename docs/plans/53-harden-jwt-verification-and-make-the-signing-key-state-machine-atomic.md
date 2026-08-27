@@ -48,7 +48,7 @@ a `psql` session that can no longer activate a second row.
       claims, whole seconds; complete the unknown/missing-`kid`, `typ`, and algorithm negatives.
 - [x] (2026-08-27 16:42Z) M2: env `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS`, Dhall key, deployment.md row;
       issuer/audience validated as StringOrURI at boot; config tests.
-- [ ] M3: migration (the number `just new-migration` allocates — `0029` at the time of writing); `revokedAt`; stamped `UpdateSigningKeyStatus`;
+- [x] (2026-08-27 16:58Z) M3: migration `0032`; `revokedAt`; stamped `UpdateSigningKeyStatus`;
       `ReplaceActiveSigningKey`; transactional activate/rotate/rewrap; `assembleKeys` refuses
       two actives; JWKS `alg`; `toStoredSigningKey` returns `Either`; postgres/jwt/admin tests.
 - [ ] M4: security.md, deployment.md, api.md, changelogs; docs grep; Outcomes written.
@@ -80,6 +80,15 @@ a `psql` session that can no longer activate a second row.
   as a URI; `shomei:prod` is pinned as accepted. `cabal test shomei-server-config-test`, Dhall
   type-check/render, and the real invalid-issuer boot all passed with the intended behavior.
 
+- The migration allocator had advanced to `0032`, so the durable artifact is
+  `0032-shomei-signing-keys-one-active.sql`, not the draft's illustrative `0029`. Hasql also
+  deliberately separates statement composition (`Hasql.Transaction`) from execution
+  (`Hasql.Transaction.Sessions`); the CLI now uses both, while the PostgreSQL interpreter uses
+  its existing `Database.runTransaction` effect. `just migration-check`, all 61 JWT tests, all
+  61 PostgreSQL tests, and all 27 admin tests passed. The database tests prove SQLSTATE `23505`,
+  timestamp stamping, and atomic replacement; the admin test also bypasses the CLI to prove the
+  index itself refuses a second active row.
+
 
 ## Decision Log
 
@@ -109,7 +118,7 @@ a `psql` session that can no longer activate a second row.
   ID-token-at-resource-server test keeps reporting `TokenAudienceInvalid`.
   Date: 2026-08-27
 
-- Decision: Migration `0029` first retires every `active` row except the one
+- Decision: Migration `0032` first retires every `active` row except the one
   `Shomei.Server.Keys.assembleKeys` would already choose (greatest `activated_at`, `NULL`
   lowest, then `created_at`, then `key_id`), stamping `retired_at`, then creates the index.
   Rationale: The index must not fail an existing deployment; retired keys stay published and
@@ -124,7 +133,7 @@ a `psql` session that can no longer activate a second row.
 
 - Decision: `assembleKeys` returns `Left` on more than one active row instead of picking.
   Rationale: A `Left` is the logged error the MasterPlan asks for — fatal at boot, "key reload
-  failed … keeping previous key material" on reload — and after `0029` the state is reachable
+  failed … keeping previous key material" on reload — and after `0032` the state is reachable
   only if the index is missing, which the message names.
   Date: 2026-08-27
 
@@ -362,8 +371,8 @@ Scope: the migration, the domain record, both store interpreters, `shomei-jwt`'s
 rotation modules, `Shomei.Server.Keys`, the admin CLI, and their tests; at the end a second
 `active` row is a unique-violation error, `keys activate` is one transaction, and `keys list`
 shows `revoked=`. Scaffold with `just new-migration shomei-signing-keys-one-active` (creates
-`shomei-migrations/migrations/shomei/0029-shomei-signing-keys-one-active.sql` and appends it
-to `manifest`); its body, in this order, commented as `0028` is:
+`shomei-migrations/migrations/shomei/0032-shomei-signing-keys-one-active.sql` and appends it
+to `manifest`); its body, in this order, is:
 
 ```sql
 SET search_path TO shomei, pg_catalog;
@@ -521,7 +530,7 @@ which must print
 `shomei-server: user error (SHOMEI_ISSUER (Dhall field issuer) contains ':' but is not a valid URI (RFC 7519 StringOrURI), got "https://bad host")`.
 
 M3 step 1 — `just new-migration shomei-signing-keys-one-active` prints
-`created shomei-migrations/migrations/shomei/0029-shomei-signing-keys-one-active.sql` and
+`created shomei-migrations/migrations/shomei/0032-shomei-signing-keys-one-active.sql` and
 `appended … to …/manifest`. Paste the SQL, run `just migration-check` and
 `cabal build all --enable-tests`, and observe the pre-step once on a scratch copy of the dev
 database (`createdb shomei_scratch && pg_dump "$PGDATABASE" | psql -q shomei_scratch`):
@@ -535,7 +544,7 @@ psql shomei_scratch -c "UPDATE shomei.shomei_signing_keys SET status='active' WH
 
 ```text
 UPDATE 1
-Applied 0029-shomei-signing-keys-one-active
+Applied 0032-shomei-signing-keys-one-active
  OcnLm3 | active  |
  7fQ2aX | retired | 2026-08-27 …
 ERROR:  duplicate key value violates unique constraint "shomei_signing_keys_one_active"
@@ -627,7 +636,7 @@ After M3: `StoredSigningKey.revokedAt :: Maybe UTCTime`;
 `replaceActiveSigningKey`; in `Shomei.SigningKey.Key.Jwt`
 `toStoredSigningKey :: UTCTime -> JWK -> Either Text StoredSigningKey`,
 `toStoredSigningKeyFor :: SigningAlgorithm -> UTCTime -> JWK -> Either Text StoredSigningKey`,
-`joseAlg :: SigningAlgorithm -> Alg`; migration `0029-shomei-signing-keys-one-active.sql`;
+`joseAlg :: SigningAlgorithm -> Alg`; migration `0032-shomei-signing-keys-one-active.sql`;
 index `shomei.shomei_signing_keys_one_active`. Out of scope, for follow-up: publishing
 `pending` keys in the JWKS (REV-10 finding 3), the template's refresh on `TokenKeyNotFound`
 (`docs/plans/59-…`), flipping `requireTokenType` to `True` (next minor release), and a maximum

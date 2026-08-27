@@ -5,7 +5,7 @@ module Shomei.SigningKey.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip8)
+import Contravariant.Extras (contrazip3, contrazip9)
 import Effectful (Eff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
@@ -13,14 +13,15 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
 import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Prelude
-import Shomei.SigningKey.Domain (StoredSigningKey (..))
+import Shomei.SigningKey.Domain (SigningKeyStatus (KeyActive), StoredSigningKey (..))
 import Shomei.SigningKey.Store (SigningKeyStore (..))
 
-type KeyRow = (Text, Text, Text, Text, Text, UTCTime, Maybe UTCTime, Maybe UTCTime)
+type KeyRow = (Text, Text, Text, Text, Text, UTCTime, Maybe UTCTime, Maybe UTCTime, Maybe UTCTime)
 
 runSigningKeyStorePostgres ::
   (Database :> es, Error AuthError :> es) =>
@@ -42,8 +43,14 @@ runSigningKeyStorePostgres = interpret_ \case
   InsertSigningKey k -> do
     res <- runSession (Session.statement (keyRow k) insertKeyStmt)
     either dbFail (const (pure ())) res
-  UpdateSigningKeyStatus kid st _t -> do
-    res <- runSession (Session.statement (kid, signingKeyStatusToText st) updateStatusStmt)
+  UpdateSigningKeyStatus kid st t -> do
+    res <- runSession (Session.statement (kid, signingKeyStatusToText st, t) updateStatusStmt)
+    either dbFail (const (pure ())) res
+  ReplaceActiveSigningKey key t -> do
+    let active = key {status = KeyActive, activatedAt = Just t}
+    res <- runTransaction do
+      Tx.statement t retireActiveStmt
+      Tx.statement (keyRow active) upsertActiveStmt
     either dbFail (const (pure ())) res
   where
     dbFail = throwError . postgresUnavailable
@@ -58,11 +65,12 @@ keyRow k =
     signingKeyStatusToText k.status,
     k.createdAt,
     k.activatedAt,
-    k.retiredAt
+    k.retiredAt,
+    k.revokedAt
   )
 
 rebuildKey :: KeyRow -> Either Text StoredSigningKey
-rebuildKey (kid, alg, pub, priv, st, c, act, ret) = do
+rebuildKey (kid, alg, pub, priv, st, c, act, ret, rev) = do
   status <- signingKeyStatusFromText st
   pure
     StoredSigningKey
@@ -73,12 +81,13 @@ rebuildKey (kid, alg, pub, priv, st, c, act, ret) = do
         status = status,
         createdAt = c,
         activatedAt = act,
-        retiredAt = ret
+        retiredAt = ret,
+        revokedAt = rev
       }
 
 keyRowDecoder :: D.Row KeyRow
 keyRowDecoder =
-  (,,,,,,,)
+  (,,,,,,,,)
     <$> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.text)
@@ -87,13 +96,14 @@ keyRowDecoder =
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
+    <*> D.column (D.nullable D.timestamptz)
 
 listActiveStmt :: Statement () [KeyRow]
 listActiveStmt =
   preparable
     """
     SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status,
-           created_at, activated_at, retired_at
+           created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys
     WHERE status = 'active'
     """
@@ -108,7 +118,7 @@ listPublishableStmt =
   preparable
     """
     SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status,
-           created_at, activated_at, retired_at
+           created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys
     WHERE status IN ('active','retired')
     ORDER BY created_at
@@ -121,7 +131,7 @@ findByKidStmt =
   preparable
     """
     SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status,
-           created_at, activated_at, retired_at
+           created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys
     WHERE key_id = $1
     """
@@ -134,10 +144,10 @@ insertKeyStmt =
     """
     INSERT INTO shomei.shomei_signing_keys
       (key_id, algorithm, public_key_jwk, private_key_jwk, status,
-       created_at, activated_at, retired_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       created_at, activated_at, retired_at, revoked_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     """
-    ( contrazip8
+    ( contrazip9
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
@@ -146,14 +156,59 @@ insertKeyStmt =
         (E.param (E.nonNullable E.timestamptz))
         (E.param (E.nullable E.timestamptz))
         (E.param (E.nullable E.timestamptz))
+        (E.param (E.nullable E.timestamptz))
     )
     D.noResult
 
-updateStatusStmt :: Statement (Text, Text) ()
+updateStatusStmt :: Statement (Text, Text, UTCTime) ()
 updateStatusStmt =
   preparable
     """
-    UPDATE shomei.shomei_signing_keys SET status = $2 WHERE key_id = $1
+    UPDATE shomei.shomei_signing_keys
+    SET status = $2,
+        activated_at = CASE WHEN $2 = 'active'  THEN $3 ELSE activated_at END,
+        retired_at   = CASE WHEN $2 = 'retired' THEN $3 ELSE retired_at END,
+        revoked_at   = CASE WHEN $2 = 'revoked' THEN $3 ELSE revoked_at END
+    WHERE key_id = $1
     """
-    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.text)))
+    ( contrazip3
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.timestamptz))
+    )
+    D.noResult
+
+retireActiveStmt :: Statement UTCTime ()
+retireActiveStmt =
+  preparable
+    """
+    UPDATE shomei.shomei_signing_keys
+    SET status = 'retired', retired_at = $1
+    WHERE status = 'active'
+    """
+    (E.param (E.nonNullable E.timestamptz))
+    D.noResult
+
+upsertActiveStmt :: Statement KeyRow ()
+upsertActiveStmt =
+  preparable
+    """
+    INSERT INTO shomei.shomei_signing_keys
+      (key_id, algorithm, public_key_jwk, private_key_jwk, status,
+       created_at, activated_at, retired_at, revoked_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT (key_id) DO UPDATE
+    SET status = 'active', activated_at = EXCLUDED.activated_at
+    """
+    ( contrazip9
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.text))
+        (E.param (E.nonNullable E.timestamptz))
+        (E.param (E.nullable E.timestamptz))
+        (E.param (E.nullable E.timestamptz))
+        (E.param (E.nullable E.timestamptz))
+    )
     D.noResult

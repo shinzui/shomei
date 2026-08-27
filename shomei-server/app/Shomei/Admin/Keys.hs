@@ -21,18 +21,22 @@ module Shomei.Admin.Keys
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip8)
-import Control.Monad (forM_, unless)
+import Contravariant.Extras (contrazip2, contrazip9)
+import Control.Monad (forM, forM_, unless)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime, getCurrentTime)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
+import Hasql.Errors qualified as Hasql
 import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Hasql.Transaction (Transaction)
+import Hasql.Transaction qualified as Tx
+import Hasql.Transaction.Sessions qualified as TxSession
 import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText, tshow)
 import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
@@ -54,14 +58,15 @@ keysGenerate :: KeyEncryptionKey -> SigningAlgorithm -> Pool -> IO ()
 keysGenerate kek alg pool = do
   now <- getCurrentTime
   jwk <- generateSigningKeyFor alg
-  let stored = toStoredSigningKeyFor alg now jwk
+  stored <- either (die . Text.unpack) pure (toStoredSigningKeyFor alg now jwk)
   pending <-
     protectStoredSigningKey
       kek
       stored
         { status = KeyPending,
           activatedAt = Nothing,
-          retiredAt = Nothing
+          retiredAt = Nothing,
+          revokedAt = Nothing
         }
   runSess pool (Session.statement (keyRow pending) insertKeyStmt)
   putStrLn ("generated pending " <> Text.unpack (signingAlgorithmToText alg) <> " key: " <> Text.unpack pending.keyId)
@@ -74,11 +79,12 @@ keysActivate pool kid = do
   key <- requireKey kid mk
   unless (key.status == KeyPending) (die ("key " <> Text.unpack kid <> " is " <> show key.status <> ", expected pending"))
   now <- getCurrentTime
-  priorActive <- listByStatus pool KeyActive
-  runSess pool (Session.statement (kid, now) setActiveStmt)
-  forM_ priorActive \old -> runSess pool (Session.statement (old.keyId, now) setRetiredStmt)
+  retired <- runTx pool do
+    oldKids <- Tx.statement now retireActiveStmt
+    Tx.statement (kid, now) setActiveStmt
+    pure oldKids
   putStrLn ("activated " <> Text.unpack kid)
-  forM_ priorActive \old -> putStrLn ("retired (auto) " <> Text.unpack old.keyId)
+  forM_ retired \oldKid -> putStrLn ("retired (auto) " <> Text.unpack oldKid)
 
 -- | Demote an @active@ key to @retired@ (still trusted in the JWKS), stamping @retired_at@.
 keysRetire :: Pool -> Text -> IO ()
@@ -95,7 +101,8 @@ keysRevoke :: Pool -> Text -> IO ()
 keysRevoke pool kid = do
   key <- requireKey kid =<< (runSess pool (Session.statement kid findByKidStmt) >>= rebuildMaybe)
   unless (key.status `elem` [KeyPending, KeyActive, KeyRetired]) (die ("key " <> Text.unpack kid <> " is already revoked"))
-  runSess pool (Session.statement (kid, signingKeyStatusToText KeyRevoked) updateStatusStmt)
+  now <- getCurrentTime
+  runSess pool (Session.statement (kid, now) setRevokedStmt)
   putStrLn ("revoked " <> Text.unpack kid)
 
 -- | Re-wrap every key under a new KEK: decrypt with @oldKek@, encrypt with @newKek@. Any
@@ -107,10 +114,11 @@ keysRewrap oldKek newKek pool = do
   keys <- listAllKeys pool
   -- Pass 1: decrypt everything, or die before touching a row.
   decrypted <- traverse decryptOne keys
-  -- Pass 2: re-encrypt and write.
-  forM_ decrypted \(k, plain) -> do
+  -- Pass 2: re-encrypt every row before opening the all-or-nothing write transaction.
+  rewrapped <- forM decrypted \(k, plain) -> do
     enc <- encryptPrivateJwk newKek k.keyId plain
-    runSess pool (Session.statement (k.keyId, enc) setPrivateKeyStmt)
+    pure (k.keyId, enc)
+  runTx pool (forM_ rewrapped \row -> Tx.statement row setPrivateKeyStmt)
   putStrLn ("rewrapped " <> show (length decrypted) <> " key(s)")
   where
     decryptOne k =
@@ -142,6 +150,8 @@ keysList pool = do
             <> show k.activatedAt
             <> "\tretired="
             <> show k.retiredAt
+            <> "\trevoked="
+            <> show k.revokedAt
         )
 
 -- Read helpers (also used by the integration tests) --------------------------
@@ -155,10 +165,6 @@ listAllKeys pool = runSess pool (Session.statement () listAllStmt) >>= traverse 
 
 -- Internals ------------------------------------------------------------------
 
-listByStatus :: Pool -> SigningKeyStatus -> IO [StoredSigningKey]
-listByStatus pool st =
-  runSess pool (Session.statement (signingKeyStatusToText st) listByStatusStmt) >>= traverse rebuild
-
 requireKey :: Text -> Maybe StoredSigningKey -> IO StoredSigningKey
 requireKey kid = maybe (die ("no such key: " <> Text.unpack kid)) pure
 
@@ -170,6 +176,28 @@ runSess pool s = do
   res <- Pool.use pool s
   either (\e -> die ("database error: " <> Text.unpack (tshow e))) pure res
 
+runTx :: Pool -> Transaction a -> IO a
+runTx pool transaction = do
+  res <- Pool.use pool (TxSession.transaction TxSession.ReadCommitted TxSession.Write transaction)
+  case res of
+    Right value -> pure value
+    Left err
+      | uniqueViolation err ->
+          die "another key became active concurrently; run keys list and retry"
+      | otherwise -> die ("database error: " <> Text.unpack (tshow err))
+  where
+    uniqueViolation = \case
+      Pool.SessionUsageError
+        ( Hasql.StatementSessionError
+            _
+            _
+            _
+            _
+            _
+            (Hasql.ServerStatementError (Hasql.ServerError "23505" _ _ _ _))
+          ) -> True
+      _ -> False
+
 rebuild :: KeyRow -> IO StoredSigningKey
 rebuild r = either (\e -> die ("corrupt key row: " <> Text.unpack e)) pure (rebuildKey r)
 
@@ -178,7 +206,7 @@ rebuildMaybe = traverse rebuild
 
 -- Row mapping and statements (mirror Shomei.SigningKey.Postgres) ---------
 
-type KeyRow = (Text, Text, Text, Text, Text, UTCTime, Maybe UTCTime, Maybe UTCTime)
+type KeyRow = (Text, Text, Text, Text, Text, UTCTime, Maybe UTCTime, Maybe UTCTime, Maybe UTCTime)
 
 keyRow :: StoredSigningKey -> KeyRow
 keyRow k =
@@ -189,17 +217,18 @@ keyRow k =
     signingKeyStatusToText k.status,
     k.createdAt,
     k.activatedAt,
-    k.retiredAt
+    k.retiredAt,
+    k.revokedAt
   )
 
 rebuildKey :: KeyRow -> Either Text StoredSigningKey
-rebuildKey (kid, alg, pub, priv, st, c, act, ret) = do
+rebuildKey (kid, alg, pub, priv, st, c, act, ret, rev) = do
   status <- signingKeyStatusFromText st
-  pure StoredSigningKey {keyId = kid, algorithm = alg, publicKeyJwk = pub, privateKeyJwk = priv, status = status, createdAt = c, activatedAt = act, retiredAt = ret}
+  pure StoredSigningKey {keyId = kid, algorithm = alg, publicKeyJwk = pub, privateKeyJwk = priv, status = status, createdAt = c, activatedAt = act, retiredAt = ret, revokedAt = rev}
 
 keyRowDecoder :: D.Row KeyRow
 keyRowDecoder =
-  (,,,,,,,)
+  (,,,,,,,,)
     <$> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.text)
@@ -208,12 +237,13 @@ keyRowDecoder =
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
+    <*> D.column (D.nullable D.timestamptz)
 
 findByKidStmt :: Statement Text (Maybe KeyRow)
 findByKidStmt =
   preparable
     """
-    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at
+    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys WHERE key_id = $1
     """
     (E.param (E.nonNullable E.text))
@@ -223,27 +253,17 @@ listAllStmt :: Statement () [KeyRow]
 listAllStmt =
   preparable
     """
-    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at
+    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys ORDER BY created_at
     """
     E.noParams
-    (D.rowList keyRowDecoder)
-
-listByStatusStmt :: Statement Text [KeyRow]
-listByStatusStmt =
-  preparable
-    """
-    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at
-    FROM shomei.shomei_signing_keys WHERE status = $1
-    """
-    (E.param (E.nonNullable E.text))
     (D.rowList keyRowDecoder)
 
 listPublishableStmt :: Statement () [KeyRow]
 listPublishableStmt =
   preparable
     """
-    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at
+    SELECT key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at, revoked_at
     FROM shomei.shomei_signing_keys WHERE status IN ('active','retired') ORDER BY created_at
     """
     E.noParams
@@ -254,10 +274,10 @@ insertKeyStmt =
   preparable
     """
     INSERT INTO shomei.shomei_signing_keys
-      (key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      (key_id, algorithm, public_key_jwk, private_key_jwk, status, created_at, activated_at, retired_at, revoked_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     """
-    ( contrazip8
+    ( contrazip9
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
@@ -266,14 +286,8 @@ insertKeyStmt =
         (E.param (E.nonNullable E.timestamptz))
         (E.param (E.nullable E.timestamptz))
         (E.param (E.nullable E.timestamptz))
+        (E.param (E.nullable E.timestamptz))
     )
-    D.noResult
-
-updateStatusStmt :: Statement (Text, Text) ()
-updateStatusStmt =
-  preparable
-    "UPDATE shomei.shomei_signing_keys SET status = $2 WHERE key_id = $1"
-    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.text)))
     D.noResult
 
 -- | Replace a key's private material (encrypt-at-rest backfill and KEK rewrap). Never
@@ -296,5 +310,24 @@ setRetiredStmt :: Statement (Text, UTCTime) ()
 setRetiredStmt =
   preparable
     "UPDATE shomei.shomei_signing_keys SET status = 'retired', retired_at = $2 WHERE key_id = $1"
+    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
+    D.noResult
+
+retireActiveStmt :: Statement UTCTime [Text]
+retireActiveStmt =
+  preparable
+    """
+    UPDATE shomei.shomei_signing_keys
+    SET status = 'retired', retired_at = $1
+    WHERE status = 'active'
+    RETURNING key_id
+    """
+    (E.param (E.nonNullable E.timestamptz))
+    (D.rowList (D.column (D.nonNullable D.text)))
+
+setRevokedStmt :: Statement (Text, UTCTime) ()
+setRevokedStmt =
+  preparable
+    "UPDATE shomei.shomei_signing_keys SET status = 'revoked', revoked_at = $2 WHERE key_id = $1"
     (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
     D.noResult

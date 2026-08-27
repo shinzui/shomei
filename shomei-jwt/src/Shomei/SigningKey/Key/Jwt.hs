@@ -13,18 +13,22 @@ module Shomei.SigningKey.Key.Jwt
     toStoredSigningKeyFor,
     fromStoredSigningKey,
     keyKid,
+    joseAlg,
   )
 where
 
 import Crypto.Hash (Digest)
 import Crypto.Hash.Algorithms (SHA256)
 import Crypto.JOSE.JWA.JWK (Crv (P_256))
+import Crypto.JOSE.JWA.JWS qualified as JWS
 import Crypto.JOSE.JWK
   ( JWK,
+    JWKAlg (JWSAlg),
     KeyMaterialGenParam (ECGenParam, RSAGenParam),
     KeyUse (Sig),
     asPublicKey,
     genJWK,
+    jwkAlg,
     jwkKid,
     jwkUse,
     thumbprint,
@@ -52,7 +56,7 @@ generateSigningKeyFor alg = do
   k0 <- genJWK (genParam alg)
   let tp = view thumbprint k0 :: Digest SHA256
       kid = Text.decodeUtf8 (convertToBase Base64URLUnpadded tp :: ByteString)
-  pure (k0 & jwkUse ?~ Sig & jwkKid ?~ kid)
+  pure (k0 & jwkUse ?~ Sig & jwkKid ?~ kid & jwkAlg ?~ JWSAlg (joseAlg alg))
   where
     genParam ES256 = ECGenParam P_256
     genParam RS256 = RSAGenParam 256 -- 256 bytes == 2048-bit modulus
@@ -66,30 +70,40 @@ generateSigningKey = generateSigningKeyFor ES256
 keyKid :: JWK -> Text
 keyKid k = fromMaybe "" (k ^. jwkKid)
 
+joseAlg :: SigningAlgorithm -> JWS.Alg
+joseAlg ES256 = JWS.ES256
+joseAlg RS256 = JWS.RS256
+
 -- | Convert a live 'JWK' to the storage-agnostic record. Serializes the full
 -- key (with the private @"d"@) to 'privateKeyJwk' and the public-only projection
 -- to 'publicKeyJwk'.
-toStoredSigningKey :: UTCTime -> JWK -> StoredSigningKey
-toStoredSigningKey t k =
-  let pub = fromMaybe k (k ^. asPublicKey)
-      enc = Text.decodeUtf8 . BSL.toStrict . Aeson.encode
-   in StoredSigningKey
-        { keyId = keyKid k,
-          algorithm = "ES256",
-          publicKeyJwk = enc pub,
-          privateKeyJwk = enc k,
-          status = KeyActive,
-          createdAt = t,
-          activatedAt = Just t,
-          retiredAt = Nothing
-        }
+toStoredSigningKey :: UTCTime -> JWK -> Either Text StoredSigningKey
+toStoredSigningKey t k = do
+  pub <-
+    maybe
+      (Left ("key " <> keyKid k <> " has no public projection; refusing to store private material as public"))
+      Right
+      (k ^. asPublicKey)
+  let enc = Text.decodeUtf8 . BSL.toStrict . Aeson.encode
+  pure
+    StoredSigningKey
+      { keyId = keyKid k,
+        algorithm = "ES256",
+        publicKeyJwk = enc pub,
+        privateKeyJwk = enc k,
+        status = KeyActive,
+        createdAt = t,
+        activatedAt = Just t,
+        retiredAt = Nothing,
+        revokedAt = Nothing
+      }
 
 -- | Like 'toStoredSigningKey' but records the actual algorithm of the key. New
 -- code that generates RS256 keys uses this; 'toStoredSigningKey' stays the ES256
 -- convenience so existing callers are unaffected.
-toStoredSigningKeyFor :: SigningAlgorithm -> UTCTime -> JWK -> StoredSigningKey
+toStoredSigningKeyFor :: SigningAlgorithm -> UTCTime -> JWK -> Either Text StoredSigningKey
 toStoredSigningKeyFor alg t k =
-  (toStoredSigningKey t k) {algorithm = signingAlgorithmToText alg}
+  (\stored -> stored {algorithm = signingAlgorithmToText alg}) <$> toStoredSigningKey t k
 
 -- | Parse a stored key's full (private) JWK JSON back into a live 'JWK'.
 --

@@ -162,7 +162,7 @@ protectAndUse alg = do
 storedKeyFor :: SigningAlgorithm -> IO StoredSigningKey
 storedKeyFor alg = do
   jwk <- generateSigningKeyFor alg
-  pure (toStoredSigningKeyFor alg epoch jwk)
+  either (assertFailure . Text.unpack) pure (toStoredSigningKeyFor alg epoch jwk)
 
 epoch :: UTCTime
 epoch = UTCTime (fromGregorian 2026 7 8) 0

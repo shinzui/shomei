@@ -12,6 +12,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find)
+import Data.Maybe (isJust)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -23,6 +24,7 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
+import Hasql.Errors qualified as Hasql
 import Hasql.Pool (Pool)
 import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
@@ -122,6 +124,27 @@ execSql :: Pool -> Text -> IO ()
 execSql pool sql = do
   res <- Pool.use pool (Session.script sql)
   either (\e -> assertFailure ("seed script failed: " <> show e)) pure res
+
+execSqlExpectState :: Pool -> Text -> Text -> IO ()
+execSqlExpectState pool expected sql = do
+  res <- Pool.use pool (Session.script sql)
+  case res of
+    Left err | sqlState err == Just expected -> pure ()
+    Left err -> assertFailure ("expected SQLSTATE " <> Text.unpack expected <> ", got " <> show err)
+    Right () -> assertFailure ("expected SQLSTATE " <> Text.unpack expected <> ", but SQL succeeded")
+  where
+    sqlState = \case
+      Pool.SessionUsageError (Hasql.ScriptSessionError _ (Hasql.ServerError code _ _ _ _)) -> Just code
+      Pool.SessionUsageError
+        ( Hasql.StatementSessionError
+            _
+            _
+            _
+            _
+            _
+            (Hasql.ServerStatementError (Hasql.ServerError code _ _ _ _))
+          ) -> Just code
+      _ -> Nothing
 
 -- | Run a CLI action that is expected to abort. The action functions call 'exitFailure' on a
 -- user error, which throws 'ExitCode' — catching it is how a test observes a nonzero exit.
@@ -268,6 +291,19 @@ testLifecycleOverlap = testCase "generate→activate→(generate→activate auto
   Set.fromList (map (.keyId) publishable) @?= Set.fromList [kid1, kid2]
   statusOf pool kid1 >>= (@?= KeyRetired)
   statusOf pool kid2 >>= (@?= KeyActive)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_signing_keys WHERE status = 'active'" >>= (@?= 1)
+  oldAfterActivation <- requireKey pool kid1
+  newAfterActivation <- requireKey pool kid2
+  assertBool "auto-retirement stamps retired_at" (isJust oldAfterActivation.retiredAt)
+  assertBool "activation stamps activated_at" (isJust newAfterActivation.activatedAt)
+
+  -- The database invariant is independent of the CLI: a hand-written second activation
+  -- is rejected by the partial unique index and leaves the one active row unchanged.
+  execSqlExpectState
+    pool
+    "23505"
+    ("UPDATE shomei.shomei_signing_keys SET status = 'active' WHERE key_id = '" <> kid1 <> "'")
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_signing_keys WHERE status = 'active'" >>= (@?= 1)
 
   -- A token signed by the now-RETIRED kid1 still verifies against the published JWKS.
   retired <- requireKey pool kid1
@@ -279,6 +315,8 @@ testLifecycleOverlap = testCase "generate→activate→(generate→activate auto
 
   -- Revoke kid1: it leaves the JWKS and its token stops verifying.
   keysRevoke pool kid1
+  revoked <- requireKey pool kid1
+  assertBool "revocation stamps revoked_at" (isJust revoked.revokedAt)
   publishable2 <- listPublishableSigningKeys pool
   map (.keyId) publishable2 @?= [kid2]
   jwkset2 <- buildJwks publishable2

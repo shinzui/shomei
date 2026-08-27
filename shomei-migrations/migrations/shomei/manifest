@@ -29,3 +29,4 @@
 0029-sessions-kind.sql
 0030-sessions-granted-scopes.sql
 0031-oauth-codes-session-id.sql
+0032-shomei-signing-keys-one-active.sql
