@@ -208,6 +208,16 @@ Note that `SHOMEI_KEY_ENCRYPTION_KEY`, `SHOMEI_TOTP_ENCRYPTION_KEY`, `SHOMEI_SMT
 server strips these environment values and carries typed, non-printable credential values in its
 runtime `Env` instead.
 
+Bootstrap the first administrator without putting their password in `argv`: pipe it to
+`shomei-admin users create --email admin@example.com --email-verified`, or use
+`--password-file PATH`. The command uses the deployment's Dhall password and breach-check policy;
+`--email-verified` is the explicit operator assertion that the bootstrap address was verified out
+of band.
+
+When the breach service is unavailable, diagnostics contain one classified reason such as
+`timeout` or `connection_failure`; they never include the attempted password, request body, or
+dependency exception text.
+
 ## No account-existence leakage
 
 Login returns a single generic `401 invalid_login` for a wrong password, an unknown account, and

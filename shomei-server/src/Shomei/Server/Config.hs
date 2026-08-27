@@ -19,6 +19,7 @@ module Shomei.Server.Config
     toSweepConfig,
     loadConfig,
     loadConfigFromEnv,
+    loadCoreConfig,
     loadNotifierSecretsFromEnv,
     defaultRolesFromEnv,
     FileConfig (..),
@@ -298,6 +299,16 @@ loadConfigFromEnv :: IO (ShomeiConfig, ServerSettings)
 loadConfigFromEnv = do
   (cfg, settings) <- baseDefaults
   overlayFromEnvBoth cfg settings
+
+-- | Load only the transport-agnostic configuration: defaults → Dhall file → core environment
+-- overlays. Administrative commands use this path so password policy, default roles, and other
+-- workflow behavior match the server without requiring a server connection string or validating
+-- listen/pool settings they do not consume.
+loadCoreConfig :: IO ShomeiConfig
+loadCoreConfig = do
+  mFile <- loadDhallFile
+  (cfg, _) <- baseFromFile mFile
+  overlayCoreFromEnv cfg
 
 -- Dhall file ----------------------------------------------------------------
 

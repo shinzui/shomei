@@ -1,15 +1,10 @@
--- | The minimal environment-variable configuration/assembly for @shomei-admin@ (EP-4).
+-- | The configuration/assembly for @shomei-admin@.
 --
--- A single stable entry point ('loadAdminEnv') that reads @DATABASE_URL@ (required),
--- @SHOMEI_ISSUER@/@SHOMEI_AUDIENCE@/@SHOMEI_DEFAULT_ROLES@ (optional, defaulted), builds a
--- 'ShomeiConfig' with 'defaultShomeiConfig', and acquires a @hasql@ pool. EP-5's typed Dhall/env
--- loader (IP-6) is expected to supersede the body of this function without changing its name or
--- type.
+-- A single stable entry point ('loadAdminEnv') reads @DATABASE_URL@, loads the same core Dhall
+-- and environment policy as the server, and acquires a @hasql@ pool.
 --
--- Note that this is deliberately NOT the server's full loader: the CLI has no Dhall file and no
--- listen port. But every field @shomei-admin@'s commands actually /use/ must be read here, or
--- the CLI silently behaves differently from the running server. @defaultRoles@ is one such
--- field: @users create@ drives the same @Shomei.Session.Authentication.Workflow.signup@ the HTTP route does.
+-- It deliberately skips server-only listen and pool validation. Every core field an admin
+-- workflow consumes still comes from the deployment's real policy.
 module Shomei.Admin.Env
   ( AdminEnv (..),
     loadAdminEnv,
@@ -17,15 +12,13 @@ module Shomei.Admin.Env
 where
 
 import Data.Foldable (for_)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Hasql.Pool (Pool)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor, defaultArgon2Params)
-import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
-import Shomei.Server.Config (defaultDbStatementTimeoutMs, defaultRolesFromEnv)
+import Shomei.Server.Config (defaultDbStatementTimeoutMs, loadCoreConfig)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 
@@ -42,11 +35,7 @@ data AdminEnv = AdminEnv
 loadAdminEnv :: IO AdminEnv
 loadAdminEnv = do
   cs <- requireEnv "DATABASE_URL"
-  iss <- envOr "SHOMEI_ISSUER" "shomei"
-  aud <- envOr "SHOMEI_AUDIENCE" "shomei-clients"
-  roles <- defaultRolesFromEnv
-  let base = defaultShomeiConfig (Issuer iss) (Audience aud)
-      cfg = base {defaultRoles = fromMaybe base.defaultRoles roles}
+  cfg <- loadCoreConfig
   params <- argon2FromEnv
   p <- acquirePool 4 10 defaultDbStatementTimeoutMs cs
   pure AdminEnv {config = cfg, pool = p, connStr = cs, argon2 = params}
@@ -83,11 +72,3 @@ requireEnv name = do
     Just v
       | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> pure stripped
     _ -> ioError (userError (Text.unpack name <> " is not set"))
-
-envOr :: Text -> Text -> IO Text
-envOr name def = do
-  m <- lookupEnv (Text.unpack name)
-  pure $ case m of
-    Just v
-      | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> stripped
-    _ -> def

@@ -18,7 +18,7 @@ import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
 import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Notify (NotifierSecrets (..), smtpPasswordText, webhookSecretBytes)
-import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv, loadNotifierSecretsFromEnv)
+import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv, loadCoreConfig, loadNotifierSecretsFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
 import System.Directory (makeAbsolute)
 import System.Environment (setEnv, unsetEnv)
@@ -401,6 +401,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   argon2Settings
   strictConfigurationSettings
   dhallSchemaMatchesFileConfig
+  coreLoaderNeedsNoConnectionString
   verifierSettings
   notifierDefaults
   notifierSmtpDhallAndEnv
@@ -411,6 +412,17 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierSecretsAreStrippedAndConfigIsSecretFree
   notifierInsecureTransportFlags
   kekIsRequired
+
+-- | Administrative workflows consume the deployment's core policy without pretending to be a
+-- listening server or requiring the server's PostgreSQL variable.
+coreLoaderNeedsNoConnectionString :: Assertion
+coreLoaderNeedsNoConnectionString = do
+  setEnv "SHOMEI_CONFIG" configPath
+  unsetEnv "PG_CONNECTION_STRING"
+  cfg <- loadCoreConfig
+  cfg.passwordPolicy.minLength @?= 16
+  cfg.passwordPolicy.rejectCommonPasswords @?= False
+  unsetEnv "SHOMEI_CONFIG"
 
 -- | The verifier skew has a safe default, supports env override, and rejects
 -- negative values. Issuer and audience are validated as RFC 7519 StringOrURI

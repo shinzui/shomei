@@ -31,6 +31,8 @@ import Shomei.Account.Password.Breach.Store
     parseHibpResponse,
     sha1PrefixSuffix,
   )
+import Shomei.Notify (classifyWebhookFailure, reasonText)
+import System.IO (hPutStrLn, stderr)
 
 -- | Build the interpreter from a shared TLS manager and a timeout in milliseconds (pass
 -- @cfg.passwordPolicy.breachCheckTimeoutMs@ at assembly time).
@@ -40,9 +42,11 @@ runPasswordBreachCheckerHibp mgr timeoutMs = interpret_ \case
   CheckPasswordBreached plain -> liftIO do
     let (prefix, suffix) = sha1PrefixSuffix plain
     result <- try (queryRange mgr timeoutMs prefix) :: IO (Either SomeException Text)
-    pure case result of
-      Left _ -> BreachCheckUnavailable
-      Right body -> if parseHibpResponse body suffix then Breached else NotBreached
+    case result of
+      Left err -> do
+        hPutStrLn stderr ("[shomei:breach-check] unavailable reason=" <> Text.unpack (reasonText (classifyWebhookFailure err)))
+        pure BreachCheckUnavailable
+      Right body -> pure (if parseHibpResponse body suffix then Breached else NotBreached)
 
 -- | Fetch the HIBP range bucket for a 5-char prefix as decoded text. Throws on transport
 -- errors and timeouts (caught by the interpreter above).

@@ -18,6 +18,7 @@ module Shomei.Admin.Keys
     keysRewrap,
     listPublishableSigningKeys,
     listAllKeys,
+    summarizeUsageError,
   )
 where
 
@@ -37,7 +38,8 @@ import Hasql.Statement (Statement, preparable)
 import Hasql.Transaction (Transaction)
 import Hasql.Transaction qualified as Tx
 import Hasql.Transaction.Sessions qualified as TxSession
-import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText, tshow)
+import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText)
+import Shomei.Server.DatabaseError (summarizeUsageError)
 import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
 import Shomei.SigningKey.Protection.Jwt
@@ -174,7 +176,7 @@ die msg = hPutStrLn stderr ("shomei-admin: " <> msg) >> exitFailure
 runSess :: Pool -> Session a -> IO a
 runSess pool s = do
   res <- Pool.use pool s
-  either (\e -> die ("database error: " <> Text.unpack (tshow e))) pure res
+  either (\e -> die (Text.unpack (summarizeUsageError e))) pure res
 
 runTx :: Pool -> Transaction a -> IO a
 runTx pool transaction = do
@@ -184,7 +186,7 @@ runTx pool transaction = do
     Left err
       | uniqueViolation err ->
           die "another key became active concurrently; run keys list and retry"
-      | otherwise -> die ("database error: " <> Text.unpack (tshow err))
+      | otherwise -> die (Text.unpack (summarizeUsageError err))
   where
     uniqueViolation = \case
       Pool.SessionUsageError

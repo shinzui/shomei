@@ -38,7 +38,7 @@ export DATABASE_URL="host=$PGHOST dbname=shomei user=$(id -un)"
 shomei-admin migrate
 shomei-admin keys generate          # prints a kid
 shomei-admin keys activate <kid>
-shomei-admin users create --email admin@example.com --password '…'
+printf '%s\n' "$BOOTSTRAP_PASSWORD" | shomei-admin users create --email admin@example.com --email-verified
 shomei-admin roles grant --user <user-id> --role admin
 ```
 
@@ -50,6 +50,10 @@ smaller executable for pipelines that only need the schema applied.
 Refusals are loud and atomic: granting an undefined role, creating a user with an undefined
 default role, rotating an unknown client id, or rewrapping with the wrong old KEK all exit
 non-zero **having written nothing**.
+
+User creation reads its password from stdin or `--password-file`, never `argv`, and applies the
+same Dhall password/breach policy as server signup. Database diagnostics retain only a safe
+category and optional SQLSTATE.
 
 ## Limits
 

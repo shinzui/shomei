@@ -60,6 +60,7 @@ library
     Shomei.Server.Boot
     Shomei.Server.BreachChecker
     Shomei.Server.Config
+    Shomei.Server.DatabaseError
     Shomei.Server.Keys
     Shomei.Server.Middleware.BodyLimit
     Shomei.Server.Middleware.RateLimit
@@ -75,6 +76,7 @@ library
     , crypton               >=1.1      && <1.2
     , effectful             >=2.5      && <2.8
     , effectful-core        >=2.5      && <2.8
+    , hasql                 >=1.10     && <1.11
     , hasql-pool            >=1.4      && <1.5
     , http-client           >=0.7      && <0.8
     , http-client-tls       >=0.3      && <0.5
@@ -141,6 +143,8 @@ executable shomei-admin
     , hasql                 >=1.10     && <1.11
     , hasql-pool            >=1.4      && <1.5
     , hasql-transaction     >=1.0      && <1.3
+    , http-client           >=0.7      && <0.8
+    , http-client-tls       >=0.3      && <0.5
     , optparse-applicative  >=0.19     && <0.20
     , pg-migrate            >=1.1      && <1.2
     , shomei-core           ^>=0.2.0.0
@@ -199,6 +203,8 @@ test-suite shomei-admin-test
     , hasql                           >=1.10     && <1.11
     , hasql-pool                      >=1.4      && <1.5
     , hasql-transaction               >=1.0      && <1.3
+    , http-client                     >=0.7      && <0.8
+    , http-client-tls                 >=0.3      && <0.5
     , jose                            >=0.13     && <0.14
     , optparse-applicative            >=0.19     && <0.20
     , ram                             >=0.22     && <0.23

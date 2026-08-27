@@ -11,6 +11,9 @@ project-level roundup of what shipped together.
 
 ## Unreleased
 
+- `shomei-admin users create` no longer accepts a password in process arguments; it reads stdin
+  or `--password-file`, shares the server's password/breach policy, and supports
+  `--email-verified` for out-of-band bootstrap verification.
 - **Breaking (`shomei-core` 0.2.0.0):** access and refresh token domain types no longer have
   generic JSON instances and render redacted; failed-login audit rows retain only the hashed
   account key plus a resolved user ID, never the submitted identifier.

@@ -64,7 +64,7 @@ export DATABASE_URL="host=$PGHOST dbname=shomei user=$(id -un)"
 cabal run shomei-admin -- migrate
 cabal run shomei-admin -- keys generate          # prints a kid
 cabal run shomei-admin -- keys activate <kid>
-cabal run shomei-admin -- users create --email admin@example.com --password '…'
+printf '%s\n' "$BOOTSTRAP_PASSWORD" | cabal run shomei-admin -- users create --email admin@example.com --email-verified
 ```
 
 ## Documentation

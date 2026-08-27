@@ -6,6 +6,7 @@ module Shomei.Admin.Users
   )
 where
 
+import Control.Monad (when)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -13,17 +14,19 @@ import Effectful (Eff, IOE, runEff)
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Pool (Pool)
+import Network.HTTP.Client (Manager)
+import Network.HTTP.Client.TLS (newTlsManager)
 import Shomei.Account.Credential.Postgres (runCredentialStorePostgres)
 import Shomei.Account.Credential.Store (CredentialStore)
 import Shomei.Account.Email.Domain (mkEmail)
 import Shomei.Account.LoginId.Domain (loginIdText, mkLoginId)
-import Shomei.Account.Password.Breach.Store (BreachResult (..), PasswordBreachChecker (..))
-import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
+import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
 import Shomei.Account.Password.Hash.Store (PasswordHasher)
 import Shomei.Account.User.Domain (User (..))
 import Shomei.Account.User.Postgres (runUserStorePostgres)
-import Shomei.Account.User.Store (UserStore)
+import Shomei.Account.User.Store (UserStore, markUserEmailVerified)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
 import Shomei.Audit.Publisher.Store (AuthEventPublisher)
@@ -34,8 +37,10 @@ import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
 import Shomei.Config (ShomeiConfig (..))
 import Shomei.Error (AuthError)
+import Shomei.Id (UserId)
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Token.Domain (AccessToken (..))
@@ -44,12 +49,12 @@ import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
 import Shomei.SigningKey.Signer (TokenSigner (..))
 import Shomei.Time.Postgres (runClockIO)
-import Shomei.Time.Store (Clock)
+import Shomei.Time.Store (Clock, now)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
-createUserAction :: AdminEnv -> Text -> Text -> Maybe Text -> IO ()
-createUserAction env emailArg pwArg mDisplay = do
+createUserAction :: AdminEnv -> Text -> PlainPassword -> Maybe Text -> Bool -> IO ()
+createUserAction env emailArg password mDisplay verified = do
   email <- either (\e -> die ("invalid email: " <> show e)) pure (mkEmail emailArg)
   loginId <- either (\e -> die ("invalid login id: " <> show e)) pure (mkLoginId emailArg)
   -- The server validates 'defaultRoles' against the registry at boot; the CLI has no boot, so it
@@ -60,17 +65,35 @@ createUserAction env emailArg pwArg mDisplay = do
         SignupCommand
           { loginId = loginId,
             email = Just email,
-            password = PlainPassword pwArg,
+            password = password,
             displayName = mDisplay
           }
   -- The CLI hashes exactly one password, so a limiter of one is right and costs nothing.
   limiter <- newHashingLimiter 1
-  outcome <- runSignup env.pool limiter env.argon2 (signup env.config cmd)
+  manager <- newTlsManager
+  outcome <-
+    runSignup
+      env.pool
+      limiter
+      env.argon2
+      manager
+      env.config.passwordPolicy.breachCheckTimeoutMs
+      (signup env.config cmd)
   case outcome of
     Left infra -> die ("infrastructure error: " <> show infra)
     Right (Left rejected) -> die ("signup rejected: " <> show rejected)
-    Right (Right (user, _)) ->
-      putStrLn ("created user " <> show user.userId <> " <" <> Text.unpack (loginIdText user.loginId) <> ">")
+    Right (Right (user, _)) -> do
+      when verified do
+        verifiedResult <- runMarkEmailVerified env.pool user.userId
+        either (die . ("could not mark email verified: " <>) . show) pure verifiedResult
+      putStrLn
+        ( "created user "
+            <> show user.userId
+            <> " <"
+            <> Text.unpack (loginIdText user.loginId)
+            <> ">"
+            <> if verified then " (email verified)" else ""
+        )
 
 -- | Run a 'signup' over the PostgreSQL interpreters, with a fake signer.
 --
@@ -82,6 +105,8 @@ runSignup ::
   Pool ->
   HashingLimiter ->
   Argon2Params ->
+  Manager ->
+  Int ->
   Eff
     [ UserStore,
       RoleStore,
@@ -100,7 +125,7 @@ runSignup ::
     ]
     a ->
   IO (Either AuthError a)
-runSignup pool limiter argon2 =
+runSignup pool limiter argon2 manager breachTimeoutMs =
   runEff
     . runErrorNoCallStack
     . runDatabasePool pool
@@ -110,7 +135,7 @@ runSignup pool limiter argon2 =
     . runClaimsEnricherNull
     . runTokenSignerFake
     . runPasswordHasherCrypto limiter argon2
-    . runPasswordBreachCheckerNoCheck
+    . runPasswordBreachCheckerHibp manager breachTimeoutMs
     . runAuthUnitOfWorkPostgres
     . runCredentialStorePostgres
     . runRoleStorePostgres
@@ -144,12 +169,16 @@ runTokenSignerFake = interpret_ \case
   SignAccessToken _ -> pure (AccessToken "admin-cli-token")
   SignIdToken _ -> pure (IdToken "admin-cli-id-token")
 
--- | The admin CLI does not perform the network breach check (mirroring its fake signer): it is
--- an operator-trusted seeding path, so every password is treated as not-breached. The HTTP HIBP
--- interpreter lives in 'Shomei.Server.BreachChecker' and is used only by the running server.
-runPasswordBreachCheckerNoCheck :: Eff (PasswordBreachChecker : es) a -> Eff es a
-runPasswordBreachCheckerNoCheck = interpret_ \case
-  CheckPasswordBreached _ -> pure NotBreached
+runMarkEmailVerified :: Pool -> UserId -> IO (Either AuthError ())
+runMarkEmailVerified pool uid =
+  runEff
+    . runErrorNoCallStack
+    . runDatabasePool pool
+    . runClockIO
+    . runUserStorePostgres
+    $ do
+      ts <- now
+      markUserEmailVerified uid ts
 
 die :: String -> IO a
 die msg = hPutStrLn stderr ("shomei-admin: " <> msg) >> exitFailure

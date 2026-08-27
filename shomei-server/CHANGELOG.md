@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- `shomei-admin users create` reads passwords from stdin or `--password-file`, loads the
+  deployment's Dhall password and HIBP breach policy, and can explicitly mark a bootstrap email
+  verified. PostgreSQL diagnostics retain only a safe category and optional SQLSTATE; breach-check
+  outages log one classified reason.
 - **Breaking:** `SmtpConfig` and `WebhookConfig` no longer carry credentials. The server loads
   stripped secrets into non-printable runtime types, requires HTTPS webhooks and encrypted SMTP
   authentication unless env-only lab flags opt out, and signs webhooks over

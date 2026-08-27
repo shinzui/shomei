@@ -30,6 +30,7 @@ import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
+import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Admin.Audit (runAuditReader)
@@ -42,6 +43,7 @@ import Shomei.Admin.Keys
     keysRewrap,
     listAllKeys,
     listPublishableSigningKeys,
+    summarizeUsageError,
   )
 import Shomei.Admin.OAuthClients qualified as OAuthClients
 import Shomei.Admin.Roles (GrantExpiry (..), RolesCommand (..), rolesParser, runRoles)
@@ -168,7 +170,10 @@ main =
           testJwksNeedsNoKek,
           testRewrapRotatesTheKek,
           testRewrapWithWrongOldKekModifiesNothing,
+          testUsageErrorSummary,
           testUserCreate,
+          testUserCreateEmailVerified,
+          testUserCreateAppliesPasswordPolicy,
           testAuditQuery,
           testSweepCommand,
           testRolesLifecycle,
@@ -428,11 +433,48 @@ testSweepCommand = testCase "sweep deletes dead rows; audit events need an expli
 testUserCreate :: TestTree
 testUserCreate = testCase "users create persists a user + credential whose hash verifies" $ withDb \pool connStr -> do
   let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
-  createUserAction env "alice@example.com" "correct horse battery staple" (Just "Alice")
+  createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") (Just "Alice") False
   users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email = 'alice@example.com'"
   creds <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_credentials"
   users @?= 1
   creds @?= 1
+
+testUserCreateEmailVerified :: TestTree
+testUserCreateEmailVerified = testCase "users create --email-verified stamps email_verified_at" $ withDb \pool connStr -> do
+  let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+  createUserAction env "verified@example.com" (PlainPassword "correct horse battery staple") Nothing True
+  verified <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email = 'verified@example.com' AND email_verified_at IS NOT NULL"
+  verified @?= 1
+
+testUserCreateAppliesPasswordPolicy :: TestTree
+testUserCreateAppliesPasswordPolicy = testCase "users create applies config.passwordPolicy" $ withDb \pool connStr -> do
+  let policy = cfg.passwordPolicy {minLength = 40}
+      env = AdminEnv {config = cfg {passwordPolicy = policy}, pool = pool, connStr = connStr, argon2 = testArgon2Params}
+  expectExitFailure
+    "users create with a password rejected by the deployment policy"
+    (createUserAction env "policy@example.com" (PlainPassword "correct horse battery staple") Nothing False)
+  users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email = 'policy@example.com'"
+  users @?= 0
+
+testUsageErrorSummary :: TestTree
+testUsageErrorSummary = testCase "database errors retain only category and SQLSTATE" do
+  summarizeUsageError (Pool.ConnectionUsageError (Hasql.NetworkingConnectionError "password=secret"))
+    @?= "could not connect to PostgreSQL"
+  summarizeUsageError Pool.AcquisitionTimeoutUsageError
+    @?= "timed out acquiring a connection"
+  let detailed =
+        Pool.SessionUsageError
+          ( Hasql.StatementSessionError
+              1
+              0
+              "INSERT INTO keys VALUES ($1) -- secret sql"
+              ["encrypted-key-envelope"]
+              True
+              (Hasql.ServerStatementError (Hasql.ServerError "23505" "secret primary message" Nothing Nothing Nothing))
+          )
+      summary = summarizeUsageError detailed
+  summary @?= "statement failed (SQLSTATE 23505)"
+  assertBool "SQL and parameters are absent" (not ("secret" `Text.isInfixOf` summary) && not ("envelope" `Text.isInfixOf` summary))
 
 -- Roles ----------------------------------------------------------------------
 
@@ -442,7 +484,7 @@ testRolesLifecycle :: TestTree
 testRolesLifecycle =
   testCase "roles define/list-defined/grant/list/revoke round-trips and audits the grants" $ withDb \pool connStr -> do
     let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
-    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") Nothing False
     uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
 
     -- The registry starts with the migration's seeded 'admin'.
@@ -497,7 +539,7 @@ testUserCreateAppliesDefaultRoles =
         env = AdminEnv {config = cfgWithDefaults, pool = pool, connStr = connStr, argon2 = testArgon2Params}
         registryEnv = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
     runRoles registryEnv (RolesDefine "member" Nothing)
-    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") Nothing False
     granted <-
       scalarInt
         pool
@@ -524,7 +566,7 @@ testUserCreateRefusesUndefinedDefaultRoles =
             }
     expectExitFailure
       "users create with an undefined default role"
-      (createUserAction env "alice@example.com" "correct horse battery staple" Nothing)
+      (createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") Nothing False)
     users <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users"
     users @?= 0
 
@@ -534,7 +576,7 @@ testRolesGrantOfUndefinedRoleFails :: TestTree
 testRolesGrantOfUndefinedRoleFails =
   testCase "roles grant of an undefined role exits nonzero and writes nothing" $ withDb \pool connStr -> do
     let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
-    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") Nothing False
     uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
     expectExitFailure "grant of an undefined role" (runRoles env (RolesGrant uid "adminn" Nothing))
     grants <- scalarInt pool "SELECT count(*) FROM shomei.shomei_role_grants"
@@ -586,7 +628,7 @@ testRolesGrantWithExpiry =
   testCase "roles grant --expires-in stamps the grant row and the audit payload with the window" $ withDb \pool connStr -> do
     let env = AdminEnv {config = cfg, pool = pool, connStr = connStr, argon2 = testArgon2Params}
     runRoles env (RolesDefine "support" (Just "support staff"))
-    createUserAction env "alice@example.com" "correct horse battery staple" Nothing
+    createUserAction env "alice@example.com" (PlainPassword "correct horse battery staple") Nothing False
     uid <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email = 'alice@example.com'"
     runRoles env (RolesGrant uid "support" (Just (ExpiresIn 3600)))
     -- The grant row's expiry is ~1h out (allow a wide window for clock/setup slack).

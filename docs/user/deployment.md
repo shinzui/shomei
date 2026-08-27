@@ -130,7 +130,8 @@ The server validates the implementation's hard limits before opening its databas
 one real trial derivation. A setting rejected by crypton's C core or by the machine's allocator
 therefore stops the boot with the configured `m`, `t`, and `p` values instead of turning every later
 signup or password change into a server error. `shomei-admin users create` applies the same pure
-limits before it acquires its pool.
+limits, Dhall password policy, and HIBP breach-check policy as the server before it writes the
+bootstrap account.
 
 `SHOMEI_HASHING_MAX_CONCURRENCY` (default 2) bounds how many hashes run at once, and it matters
 more than it looks. The Argon2 implementation is reached through an *unsafe* foreign call, which
@@ -224,7 +225,7 @@ shomei-admin keys retire <kid>                    # active → retired (still tr
 shomei-admin keys revoke <kid>                    # → revoked (removed from JWKS, distrusted)
 shomei-admin keys list                            # kid / status / timestamps
 shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
-shomei-admin users create --email … --password … [--display-name …]
+shomei-admin users create --email … [--password-file PATH] [--display-name …] [--email-verified]
 shomei-admin audit events|user|session|count …     # read the security audit trail
 shomei-admin sweep [flags]                        # delete expired/dead rows once, then exit
 ```
@@ -233,10 +234,25 @@ A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <ki
 `users create`. The container entrypoint (`deploy/entrypoint.sh`) does the first three
 automatically.
 
+`users create` reads the password from stdin by default (with echo disabled when stdin is a
+terminal), or from `--password-file PATH`. It removes one trailing line ending and refuses an
+empty secret. The password never appears in the process argument list. Use `--email-verified`
+for a bootstrap administrator whose address has already been established out of band:
+
+```bash
+printf '%s\n' "$BOOTSTRAP_PASSWORD" |
+  shomei-admin users create --email admin@example.com --email-verified
+```
+
+The command loads `SHOMEI_CONFIG` plus the same core `SHOMEI_*` overrides as the server, including
+password length, common/contextual-password rejection, breach checking, and default roles.
+
 Activation retires the previous active key and promotes the selected pending key in one database
 transaction. PostgreSQL's `shomei_signing_keys_one_active` index refuses a second active row; if
 another activation wins concurrently, the CLI asks you to run `keys list` and retry. `keys list`
 prints `created=`, `activated=`, `retired=`, and `revoked=` timestamps for every row.
+Database failures are reduced to a connection/acquisition/statement category and, for server
+statement failures, SQLSTATE; SQL text, parameters, and key envelopes are never printed.
 
 **Choosing the signing algorithm.** Keys are **ES256** (ECDSA P-256) by default; set
 `SHOMEI_SIGNING_ALG=RS256` (or the Dhall `signingAlgorithm` field, or `keys generate --alg

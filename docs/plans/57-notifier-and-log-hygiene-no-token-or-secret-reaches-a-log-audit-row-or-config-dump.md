@@ -58,7 +58,7 @@ breach setting, and can mark the bootstrap admin's email verified.
 - [x] (2026-08-27T21:58:23Z) M3: `password`/`secret` removed from `SmtpConfig`/`WebhookConfig` (shomei-core 0.2.0.0); `NotifierSecrets` in `Env`; env values stripped; `https://` unless `SHOMEI_WEBHOOK_ALLOW_INSECURE`; `plain` + username refused unless `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH`; [ADR-11](../adr/0011-runtime-secrets-stay-outside-printable-configuration.md)
 - [x] (2026-08-27T21:58:23Z) M3: signature over `<unix-seconds>.<body>` with `X-Shomei-Timestamp`; NotifySpec, E2E, `notifications.md` updated with the 5-minute replay window; [ADR-12](../adr/0012-webhook-signatures-bind-a-bounded-attempt-time.md)
 - [x] (2026-08-27T22:07:01Z) M4: redacting `Show`, no JSON, on `RefreshToken`, `AccessToken`, `TokenPair`, client `Token`; `LoginFailedData` carries `accountKey`/`userId`; codec, workflow, tests, runbook; legacy payload compatibility; [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md)
-- [ ] M5: `users create` from stdin/`--password-file`, Dhall policy, HIBP interpreter, `--email-verified`; `Admin/Keys.hs` summarises `UsageError`; `BreachChecker` logs one line
+- [x] (2026-08-27T22:23:41Z) M5: `users create` from stdin/`--password-file`, Dhall policy, HIBP interpreter, `--email-verified`; `Admin/Keys.hs` summarises `UsageError`; `BreachChecker` logs one classified line; [ADR-14](../adr/0014-administrative-bootstrap-shares-the-deployment-authentication-policy.md)
 - [ ] Final: `nix fmt`, `cabal build all`, `TASTY_NUM_THREADS=1 cabal test all` green; CHANGELOGs; MasterPlan 8 row and Progress; Outcomes; ADR distillation pass
 
 
@@ -87,6 +87,11 @@ breach setting, and can mark the bootstrap admin's email verified.
   `HostCannotConnect` rather than an `IOException` for a refused socket. The classifier therefore recognizes
   that constructor's rendering only to select `connect_failed`; it still discards the rendering before any
   output. The focused refused-connection test pins this dependency seam.
+
+- The drafted M5 pointer to `Boot.hs` was stale: the sweeper already receives the closed `AuthError`
+  vocabulary after PostgreSQL failures have been mapped to `DependencyUnavailable PostgreSQL`, so its
+  rendering contains neither SQL nor parameters. The new `summarizeUsageError` is shared by the admin key
+  commands, which are the remaining scoped callers that receive raw Hasql `UsageError` values.
 
 
 ## Decision Log
@@ -168,6 +173,14 @@ breach setting, and can mark the bootstrap admin's email verified.
   Rationale: `.claude/skills/exec-plan/ADR.md` forbids inventing OKF identity as an *incidental* edit, but every
   documentation bundle in this repository is profile-governed and the MasterPlan makes the bootstrap a named,
   coordinated step with a `dhall freeze`-hashed pin, so nothing is guessed.
+  Date: 2026-08-27
+
+- Decision: Administrative bootstrap reads passwords from stdin or an explicit file, loads the same core
+  deployment policy as the server, and uses the real HIBP interpreter; email verification requires the
+  explicit `--email-verified` assertion.
+  Rationale: Process arguments are a disclosure boundary, and bootstrap accounts must not bypass the
+  deployment's password policy merely because they are created out of band. The durable contract is recorded
+  in [ADR-14](../adr/0014-administrative-bootstrap-shares-the-deployment-authentication-policy.md).
   Date: 2026-08-27
 
 

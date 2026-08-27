@@ -3,11 +3,15 @@
 -- HTTP server running. See @shomei-admin --help@.
 module Main (main) where
 
+import Control.Exception (finally)
 import Data.List.NonEmpty qualified as NonEmpty
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
 import Database.PostgreSQL.Migrate (MigrationReport (..))
 import Options.Applicative
+import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Admin.Audit (AuditCommand, auditParser, runAudit)
 import Shomei.Admin.Env (AdminEnv (..), loadAdminEnv)
 import Shomei.Admin.Keys (keysActivate, keysGenerate, keysList, keysRetire, keysRevoke, keysRewrap)
@@ -20,7 +24,7 @@ import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Server.Keys (loadKekFromEnv, loadNamedKekFromEnv)
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, stderr)
+import System.IO (hFlush, hIsTerminalDevice, hPutStr, hPutStrLn, hSetEcho, stderr, stdin)
 
 -- The command tree -----------------------------------------------------------
 
@@ -44,8 +48,9 @@ data KeysCommand
 
 data UsersCommand = UsersCreate
   { email :: Text,
-    password :: Text,
-    displayName :: Maybe Text
+    passwordFile :: Maybe FilePath,
+    displayName :: Maybe Text,
+    emailVerified :: Bool
   }
 
 commandParser :: Parser Command
@@ -88,8 +93,9 @@ usersParser =
     createOpts =
       UsersCreate
         <$> (Text.pack <$> strOption (long "email" <> metavar "EMAIL" <> help "User email address"))
-        <*> (Text.pack <$> strOption (long "password" <> metavar "PASSWORD" <> help "User password"))
+        <*> optional (strOption (long "password-file" <> metavar "PATH" <> help "Read the password from PATH instead of stdin"))
         <*> optional (Text.pack <$> strOption (long "display-name" <> metavar "NAME" <> help "Optional display name"))
+        <*> switch (long "email-verified" <> help "Mark the bootstrap user's email as already verified")
 
 main :: IO ()
 main = do
@@ -133,9 +139,10 @@ run = \case
         newKek <- loadKekFromEnv
         oldKek <- loadNamedKekFromEnv "SHOMEI_KEY_ENCRYPTION_KEY_OLD"
         keysRewrap oldKek newKek env.pool
-  Users (UsersCreate {email, password, displayName}) -> do
+  Users (UsersCreate {email, passwordFile, displayName, emailVerified}) -> do
+    password <- readPasswordSecret passwordFile
     env <- loadAdminEnv
-    createUserAction env email password displayName
+    createUserAction env email password displayName emailVerified
   Roles rc -> do
     env <- loadAdminEnv
     runRoles env rc
@@ -151,3 +158,33 @@ run = \case
   Sweep opts -> do
     env <- loadAdminEnv
     runSweep env opts
+
+-- | Read a secret without placing it in argv. A terminal gets a no-echo prompt; redirected
+-- stdin and files are consumed in full. Remove exactly one conventional line ending so
+-- @printf 'secret\n'@ and a one-line secret file preserve every other byte of the password.
+readPasswordSecret :: Maybe FilePath -> IO PlainPassword
+readPasswordSecret source = do
+  raw <- maybe readPasswordStdin TextIO.readFile source
+  let password = dropOneTrailingNewline raw
+  if Text.null password
+    then do
+      hPutStrLn stderr "shomei-admin: password must not be empty"
+      exitFailure
+    else pure (PlainPassword password)
+  where
+    readPasswordStdin = do
+      interactive <- hIsTerminalDevice stdin
+      if interactive
+        then do
+          hPutStr stderr "Password: "
+          hFlush stderr
+          hSetEcho stdin False
+          secret <- TextIO.hGetLine stdin `finally` hSetEcho stdin True
+          hPutStrLn stderr ""
+          pure secret
+        else TextIO.getContents
+
+    dropOneTrailingNewline input =
+      case Text.stripSuffix "\r\n" input of
+        Just withoutCrLf -> withoutCrLf
+        Nothing -> fromMaybe input (Text.stripSuffix "\n" input)
