@@ -69,5 +69,6 @@ in    { issuer = "shomei"
       , oauthLoginUrl = None Text
       , oauthAuthorizationCodeTtlSeconds = 60
       , oauthIdTokenTtlSeconds = 900
+      , allowedClockSkewSeconds = Some 30
       }
     : Schema

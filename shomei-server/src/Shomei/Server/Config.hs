@@ -60,6 +60,7 @@ import Shomei.Config
   )
 import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
+import Shomei.SigningKey.Verify.Jwt (checkStringOrUri)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 import System.Process (readProcess)
@@ -242,6 +243,8 @@ data FileConfig = FileConfig
     oauthLoginUrl :: !(Maybe Text),
     oauthAuthorizationCodeTtlSeconds :: !(Maybe Int),
     oauthIdTokenTtlSeconds :: !(Maybe Int),
+    -- | seconds of verifier tolerance for exp/nbf/iat; must be non-negative
+    allowedClockSkewSeconds :: !(Maybe Int),
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     signingAlgorithm :: !(Maybe Text),
     -- | seconds between background reloads of signing-key material; 0 disables them
@@ -365,7 +368,9 @@ baseFromFile (Just fc) = do
               cfg0.signingKeyConfig
                 { algorithm = fromMaybe cfg0.signingKeyConfig.algorithm algFile,
                   refreshIntervalSeconds =
-                    fromMaybe cfg0.signingKeyConfig.refreshIntervalSeconds fc.keyRefreshIntervalSeconds
+                    fromMaybe cfg0.signingKeyConfig.refreshIntervalSeconds fc.keyRefreshIntervalSeconds,
+                  allowedClockSkewSeconds =
+                    fromMaybe cfg0.signingKeyConfig.allowedClockSkewSeconds fc.allowedClockSkewSeconds
                 },
             tokenTransport = fromMaybe cfg0.tokenTransport transportFile,
             cookieConfig =
@@ -440,6 +445,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
   hashingConcurrency <- intEnv "SHOMEI_HASHING_MAX_CONCURRENCY" baseSettings.serverHashingMaxConcurrency
   iss <- textEnv "SHOMEI_ISSUER" (issuerText baseCfg.issuer)
   aud <- textEnv "SHOMEI_AUDIENCE" (audienceText baseCfg.audience)
+  requireStringOrUri "SHOMEI_ISSUER" "issuer" iss
+  requireStringOrUri "SHOMEI_AUDIENCE" "audience" aud
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
   when (Text.null connStr) (ioError (userError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)"))
   -- Validated after the overlay so a bad value fails the boot whichever layer supplied it.
@@ -464,6 +471,10 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
   -- Zero permits would block every login forever.
   requirePositive "SHOMEI_HASHING_MAX_CONCURRENCY" "hashingMaxConcurrency" hashingConcurrency
+  requireNonNegative
+    "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
+    "allowedClockSkewSeconds"
+    cfg.signingKeyConfig.allowedClockSkewSeconds
   -- Validated after the overlay so a selected notifier transport is proven fully configured
   -- whichever layer supplied its fields (secrets always come from the environment).
   validateNotifierConfig cfg.notifierConfig
@@ -484,6 +495,21 @@ overlayFromEnvBoth baseCfg baseSettings = do
     audienceText (Audience t) = t
     requirePositive = requireBound (> 0) "a positive integer"
     requireNonNegative = requireBound (>= 0) "a non-negative integer"
+    requireStringOrUri envName dhallField value =
+      case checkStringOrUri value of
+        Right () -> pure ()
+        Left reason ->
+          ioError
+            ( userError
+                ( Text.unpack envName
+                    <> " (Dhall field "
+                    <> Text.unpack dhallField
+                    <> ") "
+                    <> Text.unpack reason
+                    <> ", got "
+                    <> show value
+                )
+            )
     requireBound ok expected envName dhallField n =
       unless (ok n) do
         ioError
@@ -559,6 +585,7 @@ overlayCoreFromEnv base = do
   pwBreachTo <- intEnvMaybe "SHOMEI_PASSWORD_BREACH_TIMEOUT_MS"
   alg <- signingAlgEnv
   keyRefresh <- keyRefreshIntervalEnv
+  clockSkew <- clockSkewEnv
   -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
@@ -575,7 +602,8 @@ overlayCoreFromEnv base = do
         signingKeyConfig =
           base.signingKeyConfig
             { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
-              refreshIntervalSeconds = fromMaybe base.signingKeyConfig.refreshIntervalSeconds keyRefresh
+              refreshIntervalSeconds = fromMaybe base.signingKeyConfig.refreshIntervalSeconds keyRefresh,
+              allowedClockSkewSeconds = fromMaybe base.signingKeyConfig.allowedClockSkewSeconds clockSkew
             },
         refreshTokenTTL = fromMaybe base.refreshTokenTTL ref,
         sessionTTL = fromMaybe base.sessionTTL ses,
@@ -1120,6 +1148,20 @@ keyRefreshIntervalEnv = do
   m <- intEnvMaybe "SHOMEI_KEY_REFRESH_INTERVAL"
   case m of
     Just n | n < 0 -> ioError (userError "SHOMEI_KEY_REFRESH_INTERVAL must be >= 0 (0 disables the periodic reload)")
+    _ -> pure m
+
+-- | Read the JWT verifier's tolerance for exp/nbf/iat. A negative value has no
+-- semantic meaning (jose treats skew as absolute), so reject it at load.
+clockSkewEnv :: IO (Maybe Int)
+clockSkewEnv = do
+  m <- intEnvMaybe "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
+  case m of
+    Just n
+      | n < 0 ->
+          ioError
+            ( userError
+                "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS (Dhall field allowedClockSkewSeconds) must be >= 0"
+            )
     _ -> pure m
 
 -- | Read and validate @SHOMEI_SIGNING_ALG@ (@ES256@|@RS256@); absent/empty → Nothing.

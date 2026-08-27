@@ -74,4 +74,5 @@
 , oauthLoginUrl : Optional Text
 , oauthAuthorizationCodeTtlSeconds : Natural  -- single-use authorization code lifetime
 , oauthIdTokenTtlSeconds : Natural            -- ID token lifetime
+, allowedClockSkewSeconds : Optional Natural  -- verifier tolerance for exp/nbf/iat
 }

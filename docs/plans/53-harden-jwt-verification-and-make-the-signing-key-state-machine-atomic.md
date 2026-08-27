@@ -46,7 +46,7 @@ a `psql` session that can no longer activate a second row.
 - [x] (2026-08-27 16:35Z) M1 implementation: `nbf`/`jti` reserved; `allowedClockSkewSeconds` (30);
       `TokenKeyNotFound`; `VerifierSettings`, kid-selecting store, pinned algorithms, `typ`, strict
       claims, whole seconds; complete the unknown/missing-`kid`, `typ`, and algorithm negatives.
-- [ ] M2: env `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS`, Dhall key, deployment.md row;
+- [x] (2026-08-27 16:42Z) M2: env `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS`, Dhall key, deployment.md row;
       issuer/audience validated as StringOrURI at boot; config tests.
 - [ ] M3: migration (the number `just new-migration` allocates — `0029` at the time of writing); `revokedAt`; stamped `UpdateSigningKeyStatus`;
       `ReplaceActiveSigningKey`; transactional activate/rotate/rewrap; `assembleKeys` refuses
@@ -73,6 +73,12 @@ a `psql` session that can no longer activate a second row.
   cases. `cabal build all --enable-tests` succeeded, and the wider
   `cabal test shomei-core shomei-servant shomei-server` run passed 260 core tests, 40 Servant
   tests, 62 OpenAPI examples, and every server/config/health/admin suite.
+
+- RFC 3986 permits a scheme followed by a rootless path, so `shomei:prod` is a valid URI and
+  therefore a valid StringOrURI. The draft plan's proposed refusal was incorrect. The boot-time
+  negative test and transcript now use `https://bad host`, which contains a colon but cannot parse
+  as a URI; `shomei:prod` is pinned as accepted. `cabal test shomei-server-config-test`, Dhall
+  type-check/render, and the real invalid-issuer boot all passed with the intended behavior.
 
 
 ## Decision Log
@@ -139,6 +145,14 @@ a `psql` session that can no longer activate a second row.
 - Decision: ES256 timing is documented, not engineered around (MasterPlan 8 Decision Log).
   Date: 2026-08-27
 
+- Decision: Accept every RFC 7519 StringOrURI, including scheme/rootless-path values such as
+  `shomei:prod`, and reject only colon-bearing values that fail URI parsing.
+  Rationale: StringOrURI delegates colon-bearing values to RFC 3986 URI syntax; rejecting a valid
+  non-hierarchical URI would impose an undocumented HTTPS-URL policy rather than make jose's
+  partial conversion safe. OIDC's stricter HTTP(S) issuer rule remains separately enforced when
+  OIDC is enabled.
+  Date: 2026-08-27
+
 
 ## Outcomes & Retrospective
 
@@ -180,7 +194,7 @@ verifies (`JOSE/JWS.hs:680`) and raises `NoUsableKeys` when the store returns no
 `NumericDate` serializes fractional seconds (`JWT.hs:269-271`); `validateIatClaim` throws
 `JWTIssuedAtFuture` when `iat > now + skew` (`:580-582`); `IsString StringOrURI` is
 `fromJust . preview stringOrUri` (`JWT.hs:227-228`), so `sou = fromString . Text.unpack`
-(`Verify/Jwt.hs:72`, `Sign/Jwt.hs:79`) crashes on an issuer such as `shomei:prod`.
+(`Verify/Jwt.hs:72`, `Sign/Jwt.hs:79`) crashes on a malformed issuer such as `https://bad host`.
 
 `claimsToAuth` (`Verify/Jwt.hs:126-189`) reports the first `aud` element (`:178-181`), decodes
 list claims with `either (const []) id` (`:188`), and excludes a hand-written `managed` list
@@ -314,7 +328,7 @@ Intention: intention_01m10kwqt9eedbjvk91rn726mq
 ### Milestone 2 — The tolerance is configurable and the issuer cannot crash the signer
 
 Scope: the `shomei-server` loader, the Dhall schema, `deployment.md`, config tests; at the end
-`SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS=-1` and `SHOMEI_ISSUER=shomei:prod` both refuse to boot
+`SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS=-1` and `SHOMEI_ISSUER='https://bad host'` both refuse to boot
 naming the variable and the Dhall field. In `Server/Config.hs`: add `allowedClockSkewSeconds :: !(Maybe Int)` to `FileConfig` after
 `:248`; merge it in `baseFromFile` beside `:367-368`; add `clockSkewEnv` modelled on
 `keyRefreshIntervalEnv`, reading `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` and rejecting negatives
@@ -329,8 +343,8 @@ after `:30` the row
 `| SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS | seconds of tolerance the verifier grants exp/nbf/iat (inherited by any downstream using shomei-jwt's verifyToken); must be ≥ 0 | 30 |`,
 list `allowedClockSkewSeconds` at `:151`, and note at `:21-22` that a value containing `:` must
 be an absolute URI. Tests in `ConfigSpec.hs` (its `setEnv`/`try loadConfigFromEnv` pattern,
-`:65-75`): default 30; `"45"` is read; `"-1"` fails; `SHOMEI_ISSUER=shomei:prod` fails
-mentioning `StringOrURI`; `https://auth.example.com` passes.
+`:65-75`): default 30; `"45"` is read; `"-1"` fails; `SHOMEI_ISSUER='https://bad host'` fails
+mentioning `StringOrURI`; `shomei:prod` and `https://auth.example.com` pass.
 
 Commit:
 
@@ -502,9 +516,9 @@ HS256 matches only `OctKeyMaterial`; RS256 on EC material is `AlgorithmMismatch`
 the edits, add the `kid`/`typ` cases, and repeat until every case is `OK`, with
 `cabal test shomei-core shomei-servant shomei-server` still green. M2 — after the loader edits,
 `cabal test shomei-server-config-test`, then one manual boot with the KEK exported,
-`SHOMEI_ISSUER=shomei:prod PG_CONNECTION_STRING="$PG_CONNECTION_STRING" cabal run exe:shomei-server`,
+`SHOMEI_ISSUER='https://bad host' PG_CONNECTION_STRING="$PG_CONNECTION_STRING" cabal run exe:shomei-server`,
 which must print
-`shomei-server: user error (SHOMEI_ISSUER (Dhall field issuer) contains ':' but is not a valid URI (RFC 7519 StringOrURI), got "shomei:prod")`.
+`shomei-server: user error (SHOMEI_ISSUER (Dhall field issuer) contains ':' but is not a valid URI (RFC 7519 StringOrURI), got "https://bad host")`.
 
 M3 step 1 — `just new-migration shomei-signing-keys-one-active` prints
 `created shomei-migrations/migrations/shomei/0029-shomei-signing-keys-one-active.sql` and
@@ -558,7 +572,8 @@ with both timestamps stamped; a revoked key's token is refused.
 `TokenAudienceInvalid` case and the servant and server E2E suites, which reach the verifier
 through the unchanged `verifyToken`/`runTokenVerifierJwt` signatures. Configuration:
 `shomei-server-config-test` proves the default 30, the override, the negative rejection, and
-the `shomei:prod` refusal; the Concrete Steps boot shows the refusal for real. State machine:
+the malformed-issuer refusal while accepting `shomei:prod`; the Concrete Steps boot shows the
+refusal for real. State machine:
 the `psql` transcript shows a second active row refused by `shomei_signing_keys_one_active`;
 `shomei-admin-test` proves one active row after two activations, a hand `UPDATE` to a second
 active failing, `revoked_at` stamped, and rewrap moving every row; the CLI transcript shows
@@ -617,3 +632,11 @@ index `shomei.shomei_signing_keys_one_active`. Out of scope, for follow-up: publ
 `pending` keys in the JWKS (REV-10 finding 3), the template's refresh on `TokenKeyNotFound`
 (`docs/plans/59-…`), flipping `requireTokenType` to `True` (next minor release), and a maximum
 `exp − iat` (REV-3 finding 7, not in the MasterPlan).
+
+
+## Revision Note — 2026-08-27
+
+Milestone 2 corrected the invalid-StringOrURI example from `shomei:prod` to
+`https://bad host`. RFC 3986 makes the former a valid scheme/rootless-path URI, so the loader
+accepts it and rejects only values that actually fail URI parsing; the Progress, discovery,
+decision, work, concrete-step, and validation sections now state that contract consistently.

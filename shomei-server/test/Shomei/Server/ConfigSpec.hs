@@ -9,6 +9,7 @@ import Control.Exception (try)
 import Data.Text qualified as Text
 import Shomei.Account.Password.Domain (PasswordPolicy (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
+import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
@@ -31,6 +32,7 @@ dhallContents =
     <> ", maxFailedLoginsPerAccount = 7"
     <> ", metricsEnabled = False"
     <> ", keyRefreshIntervalSeconds = 15"
+    <> ", allowedClockSkewSeconds = 20"
     <> ", passwordMinLength = 16"
     <> ", passwordRejectCommon = False"
     <> ", webauthnRpId = \"auth.fromfile.test\""
@@ -222,6 +224,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
   unsetEnv "SHOMEI_MACHINE_TOKEN_TTL"
   unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
+  unsetEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
   unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
@@ -234,6 +237,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
   -- The signing-key refresh interval loads from the file (default is 60):
   cfg.signingKeyConfig.refreshIntervalSeconds @?= 15
+  cfg.signingKeyConfig.allowedClockSkewSeconds @?= 20
   -- Raw one-time tokens are never logged unless the env flag opts in (there is deliberately
   -- no Dhall field for it):
   cfg.notifierConfig.logRawTokens @?= False
@@ -271,14 +275,17 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   setEnv "SHOMEI_PASSWORD_MIN_LENGTH" "20"
   -- and the file's signing-key refresh interval (file says 15); 0 disables the reload:
   setEnv "SHOMEI_KEY_REFRESH_INTERVAL" "0"
+  setEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" "45"
   -- SHOMEI_NOTIFIER_LOG_SECRETS is env-only; it is the sole way to turn raw-token logging on:
   setEnv "SHOMEI_NOTIFIER_LOG_SECRETS" "true"
   (cfg3, _) <- loadConfig
   cfg3.passwordPolicy.minLength @?= 20
   cfg3.signingKeyConfig.refreshIntervalSeconds @?= 0
+  cfg3.signingKeyConfig.allowedClockSkewSeconds @?= 45
   cfg3.notifierConfig.logRawTokens @?= True
   unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   unsetEnv "SHOMEI_KEY_REFRESH_INTERVAL"
+  unsetEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
   unsetEnv "SHOMEI_PASSWORD_MIN_LENGTH"
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "SHOMEI_PORT"
@@ -296,6 +303,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   sweepEnvOverrides
   sweepRejectsNonPositive
   argon2Settings
+  verifierSettings
   notifierDefaults
   notifierSmtpDhallAndEnv
   notifierWebhookEnv
@@ -303,6 +311,47 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierSmtpUsernameWithoutPasswordFails
   notifierWebhookMissingSecretFails
   kekIsRequired
+
+-- | The verifier skew has a safe default, supports env override, and rejects
+-- negative values. Issuer and audience are validated as RFC 7519 StringOrURI
+-- values before the signer can reach jose's partial IsString conversion.
+verifierSettings :: Assertion
+verifierSettings = do
+  unsetEnv "SHOMEI_CONFIG"
+  unsetEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
+  unsetEnv "SHOMEI_ISSUER"
+  unsetEnv "SHOMEI_AUDIENCE"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+
+  (defaults, _) <- loadConfigFromEnv
+  defaults.signingKeyConfig.allowedClockSkewSeconds @?= 30
+
+  setEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" "45"
+  (overridden, _) <- loadConfigFromEnv
+  overridden.signingKeyConfig.allowedClockSkewSeconds @?= 45
+
+  setEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" "-1"
+  negativeSkew <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" negativeSkew
+  unsetEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
+
+  -- RFC 3986 permits a scheme with a rootless path, so this is a valid URI.
+  setEnv "SHOMEI_ISSUER" "shomei:prod"
+  (schemeIssuer, _) <- loadConfigFromEnv
+  let Issuer schemeIssuerText = schemeIssuer.issuer
+  schemeIssuerText @?= "shomei:prod"
+
+  setEnv "SHOMEI_ISSUER" "https://bad host"
+  invalidIssuer <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_ISSUER" invalidIssuer
+  unsetEnv "SHOMEI_ISSUER"
+
+  setEnv "SHOMEI_AUDIENCE" "https://bad audience"
+  invalidAudience <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_AUDIENCE" invalidAudience
+
+  unsetEnv "SHOMEI_AUDIENCE"
+  unsetEnv "PG_CONNECTION_STRING"
 
 kekIsRequired :: Assertion
 kekIsRequired = do

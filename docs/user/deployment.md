@@ -11,6 +11,9 @@ twelve-factor — env always wins):
 
 ### Environment variables
 
+JWT issuer and audience values use RFC 7519's StringOrURI shape: an arbitrary string is valid,
+but any value containing `:` must parse as a URI. The server validates both values at boot.
+
 | Variable | Meaning | Default |
 |---|---|---|
 | `PG_CONNECTION_STRING` | libpq connection string (required for the server) | — |
@@ -20,6 +23,7 @@ twelve-factor — env always wins):
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
+| `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` | seconds of tolerance the verifier grants `exp`/`nbf`/`iat` (inherited by downstream hosts using `shomei-jwt`'s `verifyToken`); must be non-negative | `30` |
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both`. `cookie`/`both` set `HttpOnly` cookies and accept them as credentials; `bearer` neither sets nor accepts them | `bearer` |
 | `SHOMEI_COOKIE_SECURE` | mark Shōmei's cookies `Secure` (HTTPS only; browsers exempt localhost) | `true` |
@@ -148,7 +152,7 @@ overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPool
 `passwordBreachCheckTimeoutMs`, the WebAuthn keys `webauthnRpId`, `webauthnRpName`,
 `webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
 `webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
-`mfaRequireSecondFactor`, `machineTokenTtlSeconds`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
+`mfaRequireSecondFactor`, `machineTokenTtlSeconds`, `allowedClockSkewSeconds`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
 `cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, the sweeper keys `sweepEnabled`,
 `sweepIntervalSeconds`, `sweepBatchSize`, `sweepDeadSessionGraceDays`,
 `sweepOneTimeTokenGraceDays`, `sweepCeremonyGraceMinutes`, `loginAttemptRetentionDays`,
