@@ -483,6 +483,22 @@ outstanding **access** tokens keep working until they expire (default 15 minutes
 need a suspension to bite instantly, that is the setting; the cost is one database read per
 authenticated request.
 
+### Scopes are principal privilege; three are reserved
+
+A token's `scopes` claim is authority held by that token's principal. A service account's
+`allowed_scopes` therefore describes what that machine principal may ask Shōmei to mint as its own
+authority. An OAuth client's `allowed_scopes` is different: Shōmei unions that set into the token
+of every user who authorizes through the client. Registering a privilege gate there would make the
+client an authority amplifier for every such user.
+
+Shōmei reserves the configured impersonation scope (`impersonate:user` by default),
+`shomei:admin`, and `token-exchange:subject`. `shomei-admin oauth-clients create` refuses those
+scopes, and `/oauth/authorize` returns `invalid_scope` if a row inserted by older tooling or by hand
+requests one. When `scope` is absent, authorize removes reserved values from the default grant and
+refuses the request if nothing remains. Service accounts are the intended holders, so
+`service-accounts create` accepts a reserved scope but prints a warning that the account now holds
+it as its own authority.
+
 ### Default roles for new users
 
 Set `defaultRoles` in the Dhall config (or `SHOMEI_DEFAULT_ROLES=member,beta-tester`) and every

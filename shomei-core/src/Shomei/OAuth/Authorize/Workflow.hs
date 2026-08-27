@@ -39,6 +39,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..))
+import Shomei.Authorization.Scope.Domain (privilegeScopes, privilegeScopesIn)
 import Shomei.Config (ShomeiConfig)
 import Shomei.OAuth.AuthorizationCode.Domain (NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore, putAuthorizationCode)
@@ -213,8 +214,12 @@ authorize cfg client claims params = runErrorNoCallStack do
     -- registered for" is the least surprising one. A present `scope` must be a non-empty subset:
     -- `scope=` is a malformed request, not a request for nothing.
     resolveScopes = case fmap (Set.fromList . map Scope . Text.words) params.scope of
-      Nothing -> pure (client ^. #allowedScopes)
+      Nothing -> do
+        let granted = (client ^. #allowedScopes) `Set.difference` privilegeScopes cfg
+        when (Set.null granted) (throwError AuthorizeInvalidScope)
+        pure granted
       Just requested -> do
         when (Set.null requested) (throwError AuthorizeInvalidScope)
         unless (requested `Set.isSubsetOf` (client ^. #allowedScopes)) (throwError AuthorizeInvalidScope)
+        unless (Set.null (privilegeScopesIn cfg requested)) (throwError AuthorizeInvalidScope)
         pure requested

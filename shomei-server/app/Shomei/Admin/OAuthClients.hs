@@ -73,11 +73,11 @@ import Shomei.OAuth.Client.Domain
 import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
 import Shomei.OAuth.Client.Store
   ( OAuthClientStore,
-    createOAuthClient,
     findOAuthClientByClientId,
     listOAuthClients,
     revokeOAuthClient,
   )
+import Shomei.OAuth.Client.Workflow (ClientRegistrationError (..), registerOAuthClient)
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Time.Postgres (runClockIO)
@@ -159,12 +159,13 @@ createAction env displayName clientType rawUris rawScopes = do
   mSecret <- case clientType of
     ConfidentialClient -> Just <$> generateOpaqueToken
     PublicClient -> pure Nothing
-  client <- runOrDie env.pool do
+  registration <- runOrDie env.pool do
     ocid <- genOAuthClientId
     let cid = idText ocid
     ts <- now
-    client <-
-      createOAuthClient
+    result <-
+      registerOAuthClient
+        env.config
         NewOAuthClient
           { oauthClientId = ocid,
             clientId = cid,
@@ -175,19 +176,37 @@ createAction env displayName clientType rawUris rawScopes = do
             allowedScopes = scopes,
             createdAt = ts
           }
-    publishAuthEvent
-      ( Event.OAuthClientCreated
-          Event.OAuthClientCreatedData
-            { oauthClientId = cid,
-              clientId = cid,
-              clientType = renderClientType clientType,
-              displayName,
-              redirectUris,
-              allowedScopes = scopes,
-              occurredAt = ts
-            }
-      )
-    pure client
+    case result of
+      Left refused -> pure (Left refused)
+      Right client -> do
+        publishAuthEvent
+          ( Event.OAuthClientCreated
+              Event.OAuthClientCreatedData
+                { oauthClientId = cid,
+                  clientId = cid,
+                  clientType = renderClientType clientType,
+                  displayName,
+                  redirectUris,
+                  allowedScopes = scopes,
+                  occurredAt = ts
+                }
+          )
+        pure (Right client)
+  client <- case registration of
+    Left (PrivilegeScopesRefused refused) -> case Set.toList refused of
+      [Scope scope] ->
+        die
+          ( "refused: "
+              <> Text.unpack scope
+              <> " is a privilege scope and cannot be registered on an OAuth client (it would make every user who authorizes through it hold it); grant it to a service account instead"
+          )
+      _ ->
+        die
+          ( "refused: "
+              <> renderScopes refused
+              <> " are privilege scopes and cannot be registered on an OAuth client (they would make every user who authorizes through it hold them); grant them to a service account instead"
+          )
+    Right registered -> pure registered
   pure (client, mSecret)
 
 revokeAction :: AdminEnv -> Text -> IO OAuthClient

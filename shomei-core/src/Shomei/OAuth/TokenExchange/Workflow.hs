@@ -51,6 +51,7 @@ import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..))
+import Shomei.Authorization.Scope.Domain (tokenExchangeSubjectScope)
 import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), SessionCheckMode (VerifyTokenAndSession), ShomeiConfig (..))
 import Shomei.Delegation.Workflow
   ( DelegatedMint (..),
@@ -78,12 +79,6 @@ userIdTokenType = "urn:shomei:params:oauth:token-type:user-id"
 -- | The standard RFC 8693 access-token type URN.
 accessTokenType :: Text
 accessTokenType = "urn:ietf:params:oauth:token-type:access_token"
-
--- | The gate scope a service account must hold in its @allowed_scopes@ to use on-behalf-of mode. It
--- is a gate, never carried: it is stripped from every issued token so an exchanged token cannot
--- itself perform an exchange.
-tokenExchangeSubjectScope :: Scope
-tokenExchangeSubjectScope = Scope "token-exchange:subject"
 
 -- | A parsed RFC 8693 token-exchange request. The dispatcher in "Shomei.OAuth.Handler" reads the
 -- form parameters and performs client authentication (setting 'authenticatedService'); this

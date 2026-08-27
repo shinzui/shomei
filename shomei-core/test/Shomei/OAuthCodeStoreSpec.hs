@@ -68,6 +68,9 @@ tests =
           testCase "a malformed code_challenge is refused at authorize" malformedChallenge,
           testCase "response_type other than code is unsupported_response_type" onlyCodeResponseType,
           testCase "an absent scope grants the client's whole allow-list" absentScopeGrantsAll,
+          testCase "an absent scope strips privilege scopes from a hand-inserted client" absentScopeStripsPrivileges,
+          testCase "a requested privilege scope is invalid_scope" requestedPrivilegeScopeFails,
+          testCase "an absent scope is invalid when only privilege scopes remain" privilegeOnlyDefaultFails,
           testCase "a scope outside the allow-list is invalid_scope" scopeOutsideAllowList,
           testCase "an empty scope parameter is invalid_scope, not a request for nothing" emptyScope,
           testCase "auth_time is the authorizing token's iat, not now" authTimeIsTokenIat,
@@ -195,7 +198,10 @@ deleteExpired = do
 
 -- | Run 'authorize' against a freshly registered client of the given type.
 runAuthorize :: ClientType -> AuthorizeParams -> IO (Either AuthorizeError IssuedCode, World)
-runAuthorize clientType params = do
+runAuthorize = runAuthorizeWithAllowed allowed
+
+runAuthorizeWithAllowed :: Set Scope -> ClientType -> AuthorizeParams -> IO (Either AuthorizeError IssuedCode, World)
+runAuthorizeWithAllowed registeredScopes clientType params = do
   ref <- newWorld
   result <- runInMemory ref do
     uid <- genUserId
@@ -222,7 +228,7 @@ runAuthorize clientType params = do
             clientType,
             displayName = "test",
             redirectUris = [callbackUri],
-            allowedScopes = allowed,
+            allowedScopes = registeredScopes,
             createdAt = t0
           }
     authorize cfg client (claimsFor uid session.sessionId) params
@@ -310,6 +316,28 @@ absentScopeGrantsAll = do
   (result, _) <- runAuthorize ConfidentialClient baseParams {scope = Nothing}
   issued <- expectRight result
   issued.grantedScopes @?= allowed
+
+absentScopeStripsPrivileges :: IO ()
+absentScopeStripsPrivileges = do
+  let registered = Set.insert (Scope "shomei:admin") allowed
+  (result, _) <- runAuthorizeWithAllowed registered ConfidentialClient baseParams {scope = Nothing}
+  issued <- expectRight result
+  issued.grantedScopes @?= allowed
+
+requestedPrivilegeScopeFails :: IO ()
+requestedPrivilegeScopeFails = do
+  let registered = Set.insert (Scope "shomei:admin") allowed
+  (result, _) <-
+    runAuthorizeWithAllowed registered ConfidentialClient baseParams {scope = Just "openid shomei:admin"}
+  e <- expectLeft result
+  e @?= AuthorizeInvalidScope
+
+privilegeOnlyDefaultFails :: IO ()
+privilegeOnlyDefaultFails = do
+  (result, _) <-
+    runAuthorizeWithAllowed (Set.singleton (Scope "shomei:admin")) ConfidentialClient baseParams {scope = Nothing}
+  e <- expectLeft result
+  e @?= AuthorizeInvalidScope
 
 scopeOutsideAllowList :: IO ()
 scopeOutsideAllowList = do

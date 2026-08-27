@@ -82,6 +82,7 @@ library
     Shomei.Authorization.Claims.Store
     Shomei.Authorization.Role.Store
     Shomei.Authorization.Role.Workflow
+    Shomei.Authorization.Scope.Domain
     Shomei.Config
     Shomei.Delegation.Workflow
     Shomei.Error
@@ -97,6 +98,7 @@ library
     Shomei.OAuth.Authorize.Workflow
     Shomei.OAuth.Client.Domain
     Shomei.OAuth.Client.Store
+    Shomei.OAuth.Client.Workflow
     Shomei.OAuth.IdToken.Domain
     Shomei.OAuth.TokenExchange.Workflow
     Shomei.OAuth.TokenGrant.Workflow
@@ -168,6 +170,7 @@ test-suite shomei-core-test
     Shomei.Mfa.Totp.StoreSpec
     Shomei.Mfa.WorkflowSpec
     Shomei.OAuth.Authorize.WorkflowSpec
+    Shomei.OAuth.Client.WorkflowSpec
     Shomei.OAuth.TokenExchange.WorkflowSpec
     Shomei.OAuth.TokenGrant.WorkflowSpec
     Shomei.OAuthClientStoreSpec

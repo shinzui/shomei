@@ -57,9 +57,9 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 - [x] (2026-08-27 15:09Z) M1: `grantedScopes` on `Session`/`NewSession`; migration via `just new-migration sessions-granted-scopes`; Postgres and in-memory interpreters round-trip it; every `NewSession` literal updated
 - [x] (2026-08-27 15:09Z) M1: `RefreshOrigin`/`refreshFrom`; bespoke `refresh` refuses client-bound sessions; both refresh paths re-apply granted scopes; `refreshViaOAuth` returns `Refreshed`; refresh grant echoes `scope`
 - [x] (2026-08-27 15:09Z) M1: core tests (bespoke refusal observed failing first), Postgres round-trip, servant inverse scenario; `oidc.md` and `api.md` refresh text corrected. `cabal test shomei-core` (246), `cabal test shomei-servant` (38 plus 62 OpenAPI examples), and the new Postgres case pass; the full Postgres run's sole ephemeral-start timeout passed on immediate isolated retry.
-- [ ] M2: `Shomei.Authorization.Scope.Domain`; servant and token-exchange modules re-export its constants
-- [ ] M2: `registerOAuthClient` refuses privilege scopes; CLI uses it (refusal observed failing first); `resolveScopes` refuses them; service-account CLI warns; tests
-- [ ] M2: `security.md` subsection; `machine-tokens.md` note; `docs/adr/` bootstrapped (or next handle allocated if docs/plans/51 created it) and ADR written; strict OKF validation green
+- [x] (2026-08-27 15:18Z) M2: `Shomei.Authorization.Scope.Domain`; servant and token-exchange modules re-export its constants
+- [x] (2026-08-27 15:18Z) M2: `registerOAuthClient` refuses privilege scopes; CLI uses it (refusal observed failing first); `resolveScopes` refuses them; service-account CLI warns; tests
+- [x] (2026-08-27 15:18Z) M2: `security.md` subsection; `machine-tokens.md` note; ADR-2 written and indexed; strict OKF validation, all 252 core tests, all 27 admin tests, and `cabal build all` green
 - [ ] M3: `mayRevokeSession`; `oauthRevokeH` enforces ownership, `200` on mismatch; servant ownership scenario (observed failing first); impersonation scenario revokes as `shomei:admin`
 - [ ] M3: userinfo gated by `email`/`profile`; servant scenario
 - [ ] M3: `session_id` on codes (`just new-migration oauth-codes-session-id`); bind/find-consumed port ops; replay revokes and audits `oauth_code_replayed`; tests
@@ -79,6 +79,16 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 
   This proves that the non-OAuth endpoint spends an OAuth client's refresh token today; the
   corrected guard must run after the active token resolves its session but before rotation.
+
+- The M2 CLI regression also reproduced the privilege escalation path before policy enforcement:
+
+  ```text
+  oauth-clients create refuses a privilege scope without inserting a row: FAIL
+    registering shomei:admin on an OAuth client: expected the command to abort
+  ```
+
+  Registration accepted `shomei:admin` and persisted the client, confirming that the refusal must
+  live in the core registration workflow rather than only in the CLI parser.
 
 
 ## Decision Log

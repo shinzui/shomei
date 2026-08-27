@@ -13,6 +13,7 @@ import Shomei.Mfa.Totp.AlgorithmSpec qualified
 import Shomei.Mfa.Totp.StoreSpec qualified
 import Shomei.Mfa.WorkflowSpec qualified
 import Shomei.OAuth.Authorize.WorkflowSpec qualified
+import Shomei.OAuth.Client.WorkflowSpec qualified
 import Shomei.OAuth.TokenExchange.WorkflowSpec qualified
 import Shomei.OAuth.TokenGrant.WorkflowSpec qualified
 import Shomei.OAuthClientStoreSpec qualified
@@ -44,6 +45,7 @@ main =
           Shomei.OAuthClientStoreSpec.tests,
           Shomei.OAuthCodeStoreSpec.tests,
           Shomei.OAuth.Authorize.WorkflowSpec.tests,
+          Shomei.OAuth.Client.WorkflowSpec.tests,
           Shomei.ServiceAccountStoreSpec.tests,
           Shomei.WebAuthnCeremonySpec.tests,
           Shomei.Mfa.WorkflowSpec.tests,

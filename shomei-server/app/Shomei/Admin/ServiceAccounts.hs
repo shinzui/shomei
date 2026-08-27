@@ -70,6 +70,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (Scope (..))
+import Shomei.Authorization.Scope.Domain (privilegeScopesIn)
 import Shomei.Error (AuthError)
 import Shomei.Id (ServiceAccountDbId, UserId, genServiceAccountDbId, idText)
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
@@ -145,6 +146,13 @@ saRotatedAt ServiceAccount {rotatedAt} = rotatedAt
 createAction :: AdminEnv -> Text -> [Text] -> IO (ServiceAccount, Text)
 createAction env displayName rawScopes = do
   scopes <- parseScopes rawScopes
+  forM_ (Set.toList (privilegeScopesIn env.config scopes)) \(Scope scope) ->
+    hPutStrLn
+      stderr
+      ( "shomei-admin: warning: "
+          <> Text.unpack scope
+          <> " is a privilege scope; this account holds it as its own authority (see docs/user/security.md, \"Scopes are principal privilege\")"
+      )
   secret <- generateOpaqueToken
   account <- runOrDie env.pool do
     said <- genServiceAccountDbId

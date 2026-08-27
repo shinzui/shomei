@@ -65,6 +65,7 @@ import Servant.Server.Internal
     withRequest,
   )
 import Shomei.Authorization.Claims.Domain (Permission (..), Role (..), Scope (..))
+import Shomei.Authorization.Scope.Domain (adminScope)
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))
@@ -123,11 +124,6 @@ missingPermission = toProblemError pcMissingPermission noProblemOccurrence
 -- | The @admin@ role, granted through the 'Shomei.Authorization.Role.Store' (a human administrator).
 adminRole :: Role
 adminRole = Role "admin"
-
--- | The @shomei:admin@ scope, mintable onto a service token (a support console, a back-office
--- job). Namespaced like the existing @impersonate:user@ scope.
-adminScope :: Scope
-adminScope = Scope "shomei:admin"
 
 -- | The admin gate (EP-2): the principal must carry the @admin@ role __or__ the @shomei:admin@
 -- scope.

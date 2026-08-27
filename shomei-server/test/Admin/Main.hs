@@ -29,7 +29,7 @@ import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Admin.Audit (runAuditReader)
@@ -158,10 +158,12 @@ main =
           testUserCreateAppliesDefaultRoles,
           testUserCreateRefusesUndefinedDefaultRoles,
           testServiceAccountsLifecycle,
+          testServiceAccountsPrivilegeScopeAllowed,
           testServiceAccountsRotateAndRevoke,
           testServiceAccountsUnknownClientIdFails,
           testOAuthClientsLifecycle,
           testOAuthClientsPublicHasNoSecret,
+          testOAuthClientsPrivilegeScopeFails,
           testOAuthClientsRevokeUnknownFails
         ]
     )
@@ -785,6 +787,16 @@ testServiceAccountsLifecycle =
     withUser <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'service_account_created' AND user_id IS NOT NULL"
     assertEqual "the lifecycle event files under the backing user" 1 withUser
 
+testServiceAccountsPrivilegeScopeAllowed :: TestTree
+testServiceAccountsPrivilegeScopeAllowed =
+  testCase "service-accounts create allows a privilege scope as the account's own authority" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    (account, secret) <- createAction env "support operator" ["impersonate:user"]
+    granted <- grantWith pool (saClientId' account) secret Nothing
+    case granted of
+      Left err -> assertFailure ("the intended service-account holder was refused: " <> show err)
+      Right token -> token.grantedScopes @?= Set.singleton (Scope "impersonate:user")
+
 -- | rotate-secret invalidates the old secret immediately (single-secret model, no overlap);
 -- revoke refuses every subsequent token while keeping the row.
 testServiceAccountsRotateAndRevoke :: TestTree
@@ -901,6 +913,24 @@ testOAuthClientsPublicHasNoSecret =
         pool
         ("SELECT count(*) FROM shomei.shomei_oauth_clients WHERE client_id = '" <> ocClientId' client <> "' AND secret_hash IS NULL AND client_type = 'public'")
     assertEqual "its secret_hash is a real NULL" 1 nulls
+
+testOAuthClientsPrivilegeScopeFails :: TestTree
+testOAuthClientsPrivilegeScopeFails =
+  testCase "oauth-clients create refuses a privilege scope without inserting a row" $ withDb \pool connStr -> do
+    let env = adminEnv pool connStr
+    expectExitFailure
+      "registering shomei:admin on an OAuth client"
+      ( void
+          ( OAuthClients.createAction
+              env
+              "privilege escalation client"
+              ConfidentialClient
+              ["https://client.example.com/callback"]
+              ["openid", "shomei:admin"]
+          )
+      )
+    rows <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_clients"
+    rows @?= 0
 
 -- | Revoking an unknown client_id exits nonzero rather than silently updating zero rows.
 testOAuthClientsRevokeUnknownFails :: TestTree

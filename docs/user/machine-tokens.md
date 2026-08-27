@@ -24,7 +24,9 @@ scopes:        kawa:ingest signal:raise
 
 The secret is generated from the system CSPRNG and shown exactly once. Shōmei stores only its
 SHA-256 digest and compares presented secrets in constant time. Put the secret in a secret manager;
-if it is lost, rotate it.
+if it is lost, rotate it. Granting `impersonate:user` (or the configured impersonation scope),
+`shomei:admin`, or `token-exchange:subject` prints a warning: these are principal-level privilege
+gates. A service account is their intended holder; never register them on an OAuth client.
 
 ## Request a token with `client_credentials`
 
@@ -129,6 +131,7 @@ and operator in `act`, and cannot be exchanged again or authorize an OAuth clien
 - Use a distinct service account for each workload and environment.
 - Grant only the scopes the workload requires.
 - Store the secret outside source code and rotate it periodically.
-- Treat `token-exchange:subject` and `impersonate:user` as high-privilege gates.
+- Treat `token-exchange:subject`, `impersonate:user`, and `shomei:admin` as high-privilege gates;
+  grant them only to service accounts that need them and never register them on an OAuth client.
 - Verify signature, issuer, audience, expiry, and required scopes in every resource server.
 - Log `act` whenever it is present so delegated work retains actor attribution.
