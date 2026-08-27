@@ -11,6 +11,8 @@ module Shomei.Session.Postgres
     SessionRow,
     insertSessionStmt,
     mkSession,
+    revokeSessionStmt,
+    revokeAllUserSessionsStmt,
   )
 where
 
@@ -174,16 +176,18 @@ findSessionByIdStmt =
     (E.param (E.nonNullable E.uuid))
     (D.rowMaybe sessionRowDecoder)
 
-revokeSessionStmt :: Statement (UUID, UTCTime) ()
+revokeSessionStmt :: Statement (UUID, UTCTime) (Maybe UUID)
 revokeSessionStmt =
   preparable
     """
     UPDATE shomei.shomei_sessions
     SET status = 'revoked', revoked_at = $2
     WHERE session_id = $1
+      AND status = 'active'
+    RETURNING session_id
     """
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
-    D.noResult
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
 revokeAllUserSessionsStmt :: Statement (UUID, UTCTime) ()
 revokeAllUserSessionsStmt =

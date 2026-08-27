@@ -51,7 +51,8 @@ logs. The minimum-length / policy check runs before hashing.
   the loser is treated as reuse — family and session revoked, `401 token_reuse`. The same
   single-winner guarantee holds for the one-time password-reset and email-verification tokens:
   of two concurrent confirmations, exactly one changes the password (or verifies the email);
-  the other is rejected as an invalid token.
+  the other is rejected as an invalid token. A successful confirmation also revokes the user's
+  other outstanding links of the same kind.
 - **Sessions have an absolute lifetime.** A session dies at `sessionTTL` (default 30 days) after
   it was created, no matter how often it is refreshed: refreshing extends nothing past
   `session.expiresAt`, and every rotated refresh token's expiry is capped at that deadline. Past
@@ -294,8 +295,11 @@ while the request-rate buckets are in-memory and reset on restart.
 
 ## Session revocation
 
-A successful password reset or change revokes **all** of the user's sessions and refresh tokens,
-so a stolen session is immediately useless after the legitimate owner recovers the account.
+A successful password reset or change commits the new password hash, revocation of **all** of the
+user's sessions and refresh tokens, and its audit event in one database transaction. Reset also
+revokes every other outstanding reset link in that transaction. The operation therefore either
+completes in full or changes nothing, and a stolen session is immediately useless after the
+legitimate owner recovers the account.
 
 **Revocation visibility with stateless tokens.** Revoking a session (via
 [`POST /oauth/revoke`](oidc.md#introspection-and-revocation), an admin action, or a password reset)

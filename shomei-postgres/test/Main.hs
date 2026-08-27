@@ -122,7 +122,8 @@ import Shomei.Authorization.Role.Store
   )
 import Shomei.Authorization.Role.Workflow (grantRoleTo)
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
-import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InvalidCredentials, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
+import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InvalidCredentials, PasswordResetTokenInvalid, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
+import Shomei.Error qualified as Err
 import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
 import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
 import Shomei.Mfa.RecoveryCode.Store
@@ -215,8 +216,8 @@ import Shomei.ServiceAccount.Store
     revokeServiceAccount,
     rotateServiceAccountSecret,
   )
-import Shomei.Session.Authentication.Workflow (login, refresh, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Authentication.Workflow (login, logout, refresh, signup)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), AttemptFactor (..), ClientIp (..), FailureOutcome (..), LockPolicy (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
@@ -237,7 +238,7 @@ import Shomei.Session.Store (SessionStore, createSession, findSessionById, listS
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
-import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, revokeSessionWithTokens)
 import Shomei.Session.Workflow (buildEnrichedClaims)
 import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
@@ -519,10 +520,13 @@ tests =
     testLoginRoundTripBudget,
     testFailedLoginRoundTripBudget,
     testRefreshRoundTripBudget,
+    testLogoutRoundTripBudget,
+    testPasswordResetRoundTripBudget,
     testWorkflowRefreshRotation,
     testWorkflowReuseRevokesFamily,
     testWorkflowAccountVerification,
     testWorkflowPasswordReset,
+    testRevokeSessionIsCompareAndSwap,
     testLoginAttemptStore,
     testLockoutRecordAndCountIsAtomicUnderRace,
     testWorkflowLockout,
@@ -1480,6 +1484,44 @@ testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database 
   _ <- expectApp refreshRes >>= expectRight
   readIORef counter >>= (@?= 5)
 
+-- | Logout costs two database round-trips: one session lookup and one transaction that CASes
+-- the session, revokes its refresh tokens, and inserts the audit event.
+testLogoutRoundTripBudget :: TestTree
+testLogoutRoundTripBudget = testCase "logout costs exactly 2 database round-trips" $ withDb \pool -> do
+  signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+  (user, _) <- expectApp signupRes >>= expectRight
+  sessionsRes <- runApp pool (listSessionsForUser user.userId)
+  sessions <- expectApp sessionsRes
+  sid <- case sessions of
+    session : _ -> pure session.sessionId
+    [] -> assertFailure "expected signup to create a session"
+  counter <- newIORef 0
+  logoutRes <- runApp pool (countingDatabase counter (logout cfg (LogoutCommand sid)))
+  _ <- expectApp logoutRes >>= expectRight
+  readIORef counter >>= (@?= 2)
+
+-- | Password-reset confirmation costs three database round-trips: token lookup, user lookup,
+-- and one transaction for the consume/hash/revocation/event tail.
+testPasswordResetRoundTripBudget :: TestTree
+testPasswordResetRoundTripBudget = testCase "password reset confirmation costs exactly 3 database round-trips" $ withDb \pool -> do
+  notifications <- newIORef []
+  signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+  _ <- expectApp signupRes >>= expectRight
+  requestRes <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  _ <- expectApp requestRes >>= expectRight
+  raw <- latestResetToken =<< readIORef notifications
+  counter <- newIORef 0
+  confirmRes <-
+    runAppWithNotifications
+      notifications
+      pool
+      ( countingDatabase
+          counter
+          (confirmPasswordReset cfg (ConfirmPasswordReset raw (PlainPassword "correct horse battery staple two")))
+      )
+  _ <- expectApp confirmRes >>= expectRight
+  readIORef counter >>= (@?= 3)
+
 testWorkflowRefreshRotation :: TestTree
 testWorkflowRefreshRotation = testCase "workflow: refresh rotation marks used + inserts child" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
@@ -1528,22 +1570,54 @@ testWorkflowPasswordReset = testCase "workflow: password reset changes password 
   notifications <- newIORef []
   signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   (_, pair) <- expectApp signupRes >>= expectRight
-  requestRes <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
-  _ <- expectApp requestRes >>= expectRight
-  raw <- latestResetToken =<< readIORef notifications
-  confirmRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset raw (PlainPassword "correct horse battery staple two")))
+  firstRequest <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  _ <- expectApp firstRequest >>= expectRight
+  first <- latestResetToken =<< readIORef notifications
+  secondRequest <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  _ <- expectApp secondRequest >>= expectRight
+  second <- latestResetToken =<< readIORef notifications
+  confirmRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset first (PlainPassword "correct horse battery staple two")))
   _ <- expectApp confirmRes >>= expectRight
+  siblingRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset second (PlainPassword "correct horse battery staple three")))
+  sibling <- expectApp siblingRes
+  sibling @?= Left PasswordResetTokenInvalid
   loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (loginIdText aliceLogin))) (LoginCommand aliceLogin (PlainPassword "correct horse battery staple two")))
   _ <- expectApp loginRes >>= expectRight
   oldRefreshRes <- runAppWithNotifications notifications pool (refresh cfg (RefreshCommand pair.refreshToken))
   oldRefresh <- expectApp oldRefreshRes
-  oldRefresh @?= Left RefreshTokenReuseDetected
+  oldRefresh @?= Left Err.SessionRevoked
   consumed <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_reset_tokens WHERE status = 'consumed'"
+  revokedReset <- scalarInt pool "SELECT count(*) FROM shomei.shomei_password_reset_tokens WHERE status = 'revoked'"
   revokedSessions <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status = 'revoked'"
   revokedRefresh <- scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status = 'revoked'"
   consumed @?= 1
+  revokedReset @?= 1
   assertBool "existing sessions are revoked" (revokedSessions >= 1)
   assertBool "existing refresh tokens are revoked" (revokedRefresh >= 1)
+
+testRevokeSessionIsCompareAndSwap :: TestTree
+testRevokeSessionIsCompareAndSwap =
+  testCase "session-scoped revoke unit of work publishes only for the CAS winner" $ withDb \pool -> do
+    signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
+    (user, _) <- expectApp signupRes >>= expectRight
+    sessionsRes <- runApp pool (listSessionsForUser user.userId)
+    sessions <- expectApp sessionsRes
+    sid <- case sessions of
+      session : _ -> pure session.sessionId
+      [] -> assertFailure "expected signup to create a session"
+    result <- runApp pool do
+      ts <- now
+      let event = Event.SessionRevoked (Event.SessionRevokedData sid Nothing ts)
+      first <- revokeSessionWithTokens sid ts [event]
+      second <- revokeSessionWithTokens sid ts [event]
+      pure (first, second)
+    expectApp result >>= (@?= (True, False))
+    revokedSessions <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status = 'revoked'"
+    revokedTokens <- scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status = 'revoked'"
+    revokeEvents <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'session_revoked'"
+    revokedSessions @?= 1
+    revokedTokens @?= 1
+    revokeEvents @?= 1
 
 testLoginAttemptStore :: TestTree
 testLoginAttemptStore = testCase "login attempt store: record + windowed count + lockout upsert/clear" $ withDb \pool -> do

@@ -1,5 +1,5 @@
 -- | PostgreSQL interpreter for the 'RefreshTokenStore' port, including the recursive-CTE
--- family revocation that powers reuse detection.
+-- family revocation used by standalone OAuth revocation.
 module Shomei.Session.RefreshToken.Postgres
   ( runRefreshTokenStorePostgres,
 
@@ -15,6 +15,8 @@ module Shomei.Session.RefreshToken.Postgres
     markUsedStmt,
     mkPersisted,
     refreshTokenHashText,
+    revokeSessionTokensStmt,
+    revokeUserTokensStmt,
   )
 where
 

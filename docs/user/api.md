@@ -150,7 +150,7 @@ Credential and lockout failures are the same `401 invalid_login`; the per-IP fai
 `429 too_many_requests`; an enforced unverified email is `403 email_not_verified`.
 
 ### `POST /v1/auth/refresh`
-Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. A token already revoked by logout, password recovery, or another session revocation instead answers `401 session_revoked` and does not report theft. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
 ### `POST /oauth/token`
 
@@ -307,13 +307,13 @@ through your own provider.
 Body `{"email"}`. → `202`. Logs a verification link for a real, unverified account.
 
 ### `POST /v1/auth/verify-email/confirm`
-Body `{"token"}`. → `200`. Marks the account verified (`email_verified_at`); the work completes inside the request. `400 verification_token_invalid` for an unknown/consumed/expired token; `429 too_many_requests` when the client-IP budget is exhausted.
+Body `{"token"}`. → `200`. Marks the account verified (`email_verified_at`) and revokes its other outstanding verification links; the work completes inside the request. `400 verification_token_invalid` for an unknown/consumed/expired token; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/password-reset/request`
 Body `{"email"}`. → `202` (byte-identical for known and unknown emails). Logs a reset link for a real account.
 
 ### `POST /v1/auth/password-reset/confirm`
-Body `{"token","newPassword"}`. → `200`. Changes the password **and revokes all of the user's sessions and refresh tokens**. `400 password_reset_token_invalid` on a bad token; `429 too_many_requests` when the client-IP budget is exhausted.
+Body `{"token","newPassword"}`. → `200`. Changes the password, revokes **all** of the user's sessions and refresh tokens, and revokes every other outstanding reset link. `400 password_reset_token_invalid` on a bad or superseded token; `429 too_many_requests` when the client-IP budget is exhausted.
 
 ### `POST /v1/auth/password/change` *(authenticated)*
 Body `{"currentPassword","newPassword"}`. → `204`. Verifies the current password, changes it, and revokes the user's other sessions. `401 invalid_login` if the current password is wrong; `429 too_many_requests` when the client-IP budget is exhausted.

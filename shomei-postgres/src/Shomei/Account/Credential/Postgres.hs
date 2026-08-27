@@ -1,6 +1,12 @@
 -- | PostgreSQL interpreter for the 'CredentialStore' port.
 module Shomei.Account.Credential.Postgres
   ( runCredentialStorePostgres,
+
+    -- * Statements shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Session.UnitOfWork.Postgres@ can lift the store-owned statement
+    -- into a transaction instead of restating its SQL.
+    updatePasswordHashStmt,
   )
 where
 

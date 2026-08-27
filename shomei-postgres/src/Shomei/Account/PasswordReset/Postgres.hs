@@ -1,6 +1,13 @@
 -- | PostgreSQL interpreter for the password-reset token store.
 module Shomei.Account.PasswordReset.Postgres
   ( runPasswordResetTokenStorePostgres,
+
+    -- * Statements shared with the unit-of-work interpreter
+
+    -- | Exported so @Shomei.Session.UnitOfWork.Postgres@ can compose the store-owned CAS and
+    -- revocation statements inside a transaction without duplicating their SQL.
+    markConsumedStmt,
+    revokeUserTokensStmt,
   )
 where
 

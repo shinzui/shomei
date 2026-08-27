@@ -644,8 +644,86 @@ runAuthUnitOfWork ref = interpret_ \case
                 )
           _ -> (w, RotationConflict)
       )
+  CompletePasswordReset tid uid newHash ts events ->
+    liftIO
+      ( atomicModifyIORef' ref \w -> case Map.lookup tid w.passwordResetTokens of
+          Just tok
+            | tok.status == OneTimeTokenActive ->
+                let userSessions = w.sessions
+                    w' =
+                      w
+                        & #passwordResetTokens
+                        %~ ( Map.map (revokeResetSibling uid tid ts)
+                               . Map.adjust (consumeReset ts) tid
+                           )
+                        & #credsByLoginId
+                        %~ Map.map (replaceUserHash uid newHash)
+                        & #sessions
+                        %~ Map.map (revokeUserSession uid ts)
+                        & #refreshTokens
+                        %~ Map.map (revokeUserRefreshToken userSessions uid ts)
+                        & #publishedEvents
+                        %~ (reverse events <>)
+                 in (w', True)
+          _ -> (w, False)
+      )
+  CompletePasswordChange uid newHash ts events ->
+    liftIO
+      ( modifyWorld ref \w ->
+          let userSessions = w.sessions
+           in w
+                & #credsByLoginId
+                %~ Map.map (replaceUserHash uid newHash)
+                & #sessions
+                %~ Map.map (revokeUserSession uid ts)
+                & #refreshTokens
+                %~ Map.map (revokeUserRefreshToken userSessions uid ts)
+                & #publishedEvents
+                %~ (reverse events <>)
+      )
+  RevokeSessionWithTokens sid ts events ->
+    liftIO
+      ( atomicModifyIORef' ref \w -> case Map.lookup sid w.sessions of
+          Just session
+            | session.status == SessionActive ->
+                ( w
+                    & #sessions
+                    %~ Map.adjust (revokeSessionAt ts) sid
+                    & #refreshTokens
+                    %~ Map.map (revokeSessionRefreshToken sid ts)
+                    & #publishedEvents
+                    %~ (reverse events <>),
+                  True
+                )
+          _ -> (w, False)
+      )
   where
     markUsed t tok = tok & #status .~ RefreshTokenUsed & #usedAt .~ Just t
+    consumeReset t tok = tok & #status .~ OneTimeTokenConsumed & #consumedAt .~ Just t
+    revokeResetSibling uid consumedId t tok
+      | tok.userId == uid,
+        tok.passwordResetTokenId /= consumedId,
+        tok.status == OneTimeTokenActive =
+          tok & #status .~ OneTimeTokenRevoked & #revokedAt .~ Just t
+      | otherwise = tok
+    replaceUserHash uid h credential
+      | credential.userId == uid = credential & #passwordHash .~ h
+      | otherwise = credential
+    revokeUserSession uid t session
+      | session.userId == uid,
+        session.status == SessionActive =
+          revokeSessionAt t session
+      | otherwise = session
+    revokeSessionAt t session = session & #status .~ SessionRevoked & #revokedAt .~ Just t
+    revokeUserRefreshToken sessions uid t tok =
+      case Map.lookup tok.sessionId sessions of
+        Just session
+          | session.userId == uid -> revokeRefreshTokenAt t tok
+        _ -> tok
+    revokeSessionRefreshToken sid t tok
+      | tok.sessionId == sid = revokeRefreshTokenAt t tok
+      | otherwise = tok
+    revokeRefreshTokenAt t tok = tok & #status .~ RefreshTokenRevoked & #revokedAt .~ Just t
 
 runVerificationTokenStore :: (IOE :> es) => IORef World -> Eff (VerificationTokenStore : es) a -> Eff es a
 runVerificationTokenStore ref = interpret_ \case
@@ -671,7 +749,11 @@ runVerificationTokenStore ref = interpret_ \case
           _ -> Nothing
       )
   RevokeUserVerificationTokens uid t ->
-    liftIO (modifyWorld ref (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+    liftIO
+      ( modifyWorld
+          ref
+          (#verificationTokens %~ Map.map (\tok -> if tok.userId == uid && tok.status == OneTimeTokenActive then revoke t tok else tok))
+      )
   where
     lookupVerification h w = do
       tid <- Map.lookup h w.verificationByHash
@@ -716,7 +798,11 @@ runPasswordResetTokenStore ref = interpret_ \case
           _ -> Nothing
       )
   RevokeUserPasswordResetTokens uid t ->
-    liftIO (modifyWorld ref (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid then revoke t tok else tok)))
+    liftIO
+      ( modifyWorld
+          ref
+          (#passwordResetTokens %~ Map.map (\tok -> if tok.userId == uid && tok.status == OneTimeTokenActive then revoke t tok else tok))
+      )
   where
     lookupReset h w = do
       tid <- Map.lookup h w.passwordResetByHash

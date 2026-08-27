@@ -73,10 +73,8 @@ import Shomei.Session.RefreshToken.Domain qualified as RT
 import Shomei.Session.RefreshToken.Store
   ( RefreshTokenStore,
     findRefreshTokenByHash,
-    revokeRefreshTokenFamily,
-    revokeSessionRefreshTokens,
   )
-import Shomei.Session.Store (SessionStore, findSessionById, revokeSession)
+import Shomei.Session.Store (SessionStore, findSessionById)
 import Shomei.Session.Token.Domain (AccessToken, TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Store
@@ -84,6 +82,7 @@ import Shomei.Session.UnitOfWork.Store
     NewSessionToken (..),
     RotationOutcome (..),
     persistNewSession,
+    revokeSessionWithTokens,
     rotateRefreshToken,
   )
 import Shomei.Session.Workflow (buildEnrichedClaims, ensureEmailVerified, issueSession, requireLiveSession)
@@ -121,10 +120,10 @@ signup ::
     TokenSigner :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
+    AuthEventPublisher :> es,
     -- 'applyDefaultRoles' audits each grant it makes. Note that this workflow's own
     -- UserRegistered/SessionStarted events go through 'persistNewSession' (inside its
-    -- transaction) instead, which is why signup carried no publisher constraint before.
-    AuthEventPublisher :> es,
+    -- transaction); the publisher constraint is only for those default-role grants.
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -333,7 +332,6 @@ refresh ::
     TokenSigner :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
-    AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -350,7 +348,6 @@ refreshFrom ::
     TokenSigner :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
-    AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -366,7 +363,7 @@ refreshFrom origin cfg cmd = do
     Nothing -> pure (Left RefreshTokenInvalid)
     Just tok -> case tok.status of
       RT.RefreshTokenUsed -> reuseDetected tok ts
-      RT.RefreshTokenRevoked -> reuseDetected tok ts
+      RT.RefreshTokenRevoked -> pure (Left SessionRevoked)
       RT.RefreshTokenExpired -> pure (Left RefreshTokenExpired)
       RT.RefreshTokenActive -> do
         mSession <- findSessionById tok.sessionId
@@ -434,11 +431,12 @@ refreshFrom origin cfg cmd = do
                           )
   where
     reuseDetected tok ts = do
-      revokeRefreshTokenFamily tok.refreshTokenId ts
-      revokeSession tok.sessionId ts
-      publishAuthEvent
-        (Event.RefreshTokenReuseDetected (Event.RefreshTokenReuseDetectedData tok.sessionId tok.refreshTokenId ts))
-      pure (Left RefreshTokenReuseDetected)
+      won <-
+        revokeSessionWithTokens
+          tok.sessionId
+          ts
+          [Event.RefreshTokenReuseDetected (Event.RefreshTokenReuseDetectedData tok.sessionId tok.refreshTokenId ts)]
+      pure (Left (if won then RefreshTokenReuseDetected else SessionRevoked))
 
 originMayRefresh :: RefreshOrigin -> Session -> Bool
 originMayRefresh BespokeRefresh session = isNothing session.oauthClientId
@@ -446,8 +444,7 @@ originMayRefresh (OAuthClientRefresh clientId) session = session.oauthClientId =
 
 logout ::
   ( SessionStore :> es,
-    RefreshTokenStore :> es,
-    AuthEventPublisher :> es,
+    AuthUnitOfWork :> es,
     Clock :> es
   ) =>
   ShomeiConfig ->
@@ -460,10 +457,12 @@ logout _cfg cmd = do
   case mSession of
     Nothing -> pure (Left SessionNotFound)
     Just _ -> do
-      revokeSession sid ts
-      revokeSessionRefreshTokens sid ts
       -- Self-service logout: no administrator revoked this session.
-      publishAuthEvent (Event.SessionRevoked (Event.SessionRevokedData sid Nothing ts))
+      _ <-
+        revokeSessionWithTokens
+          sid
+          ts
+          [Event.SessionRevoked (Event.SessionRevokedData sid Nothing ts)]
       pure (Right ())
 
 verifyToken ::

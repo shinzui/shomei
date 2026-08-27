@@ -91,11 +91,13 @@ tests =
     [ testRequestEmailVerification,
       testConfirmEmailVerification,
       testRejectConsumedVerification,
+      testVerificationRevokesSiblingTokens,
       testUnknownPasswordResetSuccess,
       testUnknownPasswordResetNoNotification,
       testPasswordResetDeliversToEmail,
       testConfirmPasswordReset,
       testRejectConsumedReset,
+      testPasswordResetRevokesSiblingTokens,
       testChangePasswordWrongCurrent,
       testChangePasswordFailuresLock,
       testChangePasswordRejectsCommon,
@@ -241,6 +243,21 @@ testRejectConsumedVerification = testCase "confirming an already-consumed verifi
   result <- runInMemory ref (confirmEmailVerification cfg (ConfirmEmailVerification raw))
   result @?= Left VerificationTokenInvalid
 
+testVerificationRevokesSiblingTokens :: TestTree
+testVerificationRevokesSiblingTokens = testCase "confirming email revokes the user's other verification links" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  _ <- expectRight =<< runInMemory ref (requestEmailVerification cfg (RequestEmailVerification aliceEmail))
+  first <- latestVerificationToken =<< readIORef ref
+  _ <- expectRight =<< runInMemory ref (requestEmailVerification cfg (RequestEmailVerification aliceEmail))
+  second <- latestVerificationToken =<< readIORef ref
+  _ <- expectRight =<< runInMemory ref (confirmEmailVerification cfg (ConfirmEmailVerification first))
+  replay <- runInMemory ref (confirmEmailVerification cfg (ConfirmEmailVerification second))
+  replay @?= Left VerificationTokenInvalid
+  w <- readIORef ref
+  length [() | tok <- Map.elems w.verificationTokens, tok.status == OneTimeTokenConsumed] @?= 1
+  length [() | tok <- Map.elems w.verificationTokens, tok.status == OneTimeTokenRevoked] @?= 1
+
 testUnknownPasswordResetSuccess :: TestTree
 testUnknownPasswordResetSuccess = testCase "request password reset for unknown email still returns success" do
   ref <- newIORef (emptyWorld fixedTime)
@@ -285,6 +302,21 @@ testRejectConsumedReset = testCase "confirming an already-consumed reset token i
   _ <- expectRight =<< runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset raw newPw))
   result <- runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset raw newPw))
   result @?= Left PasswordResetTokenInvalid
+
+testPasswordResetRevokesSiblingTokens :: TestTree
+testPasswordResetRevokesSiblingTokens = testCase "confirming a reset revokes the user's other reset links" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  first <- latestResetToken =<< readIORef ref
+  _ <- expectRight =<< runInMemory ref (requestPasswordReset cfg (RequestPasswordReset aliceEmail))
+  second <- latestResetToken =<< readIORef ref
+  _ <- expectRight =<< runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset first newPw))
+  replay <- runInMemory ref (confirmPasswordReset cfg (ConfirmPasswordReset second newPw))
+  replay @?= Left PasswordResetTokenInvalid
+  w <- readIORef ref
+  length [() | tok <- Map.elems w.passwordResetTokens, tok.status == OneTimeTokenConsumed] @?= 1
+  length [() | tok <- Map.elems w.passwordResetTokens, tok.status == OneTimeTokenRevoked] @?= 1
 
 testChangePasswordWrongCurrent :: TestTree
 testChangePasswordWrongCurrent = testCase "change password with wrong current password is rejected" do

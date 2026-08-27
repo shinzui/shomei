@@ -259,7 +259,6 @@ refreshViaOAuth ::
     TokenSigner :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
-    AuthEventPublisher :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -274,7 +273,8 @@ refreshViaOAuth cfg cmd = do
       throwError (GrantInvalidGrant "the refresh token was not issued to this client")
   case outcome of
     Left e -> pure (Left e)
-    -- Everything past here -- rotation, the used/revoked reuse path, expiry -- is the existing
+    -- Everything past here -- rotation, the used-token reuse path, revoked/expired terminal
+    -- states -- is the existing
     -- workflow's, unchanged. Its 'AuthError's collapse to one `invalid_grant`, because a caller
     -- must not learn from the token endpoint whether a token was expired, revoked, or reused.
     Right () -> do

@@ -119,6 +119,7 @@ tests =
       testReuseDetected,
       testReuseRevokesSession,
       testLogoutRevokes,
+      testRefreshAfterLogoutIsSessionRevoked,
       testFailClosed,
       testNoAccountLeak,
       testSignupRejectsCommon,
@@ -320,6 +321,20 @@ testLogoutRevokes = testCase "logout revokes the session" do
   where
     isRevoked (Event.SessionRevoked _) = True
     isRevoked _ = False
+
+testRefreshAfterLogoutIsSessionRevoked :: TestTree
+testRefreshAfterLogoutIsSessionRevoked = testCase "a refresh token revoked by logout is not reported as theft" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  w0 <- readIORef ref
+  sid <- case Map.keys w0.sessions of
+    (s : _) -> pure s
+    [] -> assertFailure "expected a session to exist after signup"
+  _ <- expectRight =<< runInMemory ref (logout cfg (LogoutCommand sid))
+  result <- runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
+  result @?= Left Err.SessionRevoked
+  w <- readIORef ref
+  length [() | Event.RefreshTokenReuseDetected _ <- w.publishedEvents] @?= 0
 
 testFailClosed :: TestTree
 testFailClosed = testCase "password verification fails closed on wrong password" do

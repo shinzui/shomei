@@ -17,7 +17,7 @@ import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
 import Shomei.Account.Credential.Domain (Credential (..))
-import Shomei.Account.Credential.Store (CredentialStore, findPasswordCredentialByLoginId, updatePasswordHash)
+import Shomei.Account.Credential.Store (CredentialStore, findPasswordCredentialByLoginId)
 import Shomei.Account.Email.Domain (Email, emailText)
 import Shomei.Account.LoginId.Domain (loginIdText)
 import Shomei.Account.Notification.Domain (Notification (..))
@@ -32,7 +32,6 @@ import Shomei.Account.PasswordReset.Store
   ( PasswordResetTokenStore,
     createPasswordResetToken,
     findPasswordResetTokenByHash,
-    markPasswordResetTokenConsumed,
   )
 import Shomei.Account.User.Domain (User (..), UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserByEmail, findUserById, markUserEmailVerified)
@@ -42,6 +41,7 @@ import Shomei.Account.Verification.Store
     createVerificationToken,
     findVerificationTokenByHash,
     markVerificationTokenConsumed,
+    revokeUserVerificationTokens,
   )
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
@@ -54,9 +54,8 @@ import Shomei.Session.LoginAttempt.Domain (AttemptFactor (FactorPasswordChange))
 import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
 import Shomei.Session.LoginAttempt.Workflow (AbuseGate (..), guardAbuse, recordProofFailure, recordProofSuccess)
 import Shomei.Session.RefreshToken.Domain (RefreshToken (..), RefreshTokenHash (..))
-import Shomei.Session.RefreshToken.Store (RefreshTokenStore, revokeAllUserRefreshTokens)
-import Shomei.Session.Store (SessionStore, revokeAllUserSessions)
 import Shomei.Session.Token.Generator (TokenGen, generateOpaqueToken, hashRefreshToken)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, completePasswordChange, completePasswordReset)
 import Shomei.Time.Store (Clock, now)
 
 newtype RequestEmailVerification = RequestEmailVerification {email :: Email}
@@ -138,6 +137,7 @@ confirmEmailVerification _cfg cmd = runErrorNoCallStack do
   won <- markVerificationTokenConsumed tok.verificationTokenId ts
   unless won (throwError VerificationTokenInvalid)
   markUserEmailVerified user.userId ts
+  revokeUserVerificationTokens user.userId ts
   publishAuthEvent (Event.EmailVerified (Event.EmailVerifiedData user.userId email ts))
 
 requestPasswordReset ::
@@ -174,12 +174,9 @@ requestPasswordReset cfg cmd = do
 confirmPasswordReset ::
   ( UserStore :> es,
     PasswordResetTokenStore :> es,
-    CredentialStore :> es,
     PasswordHasher :> es,
     PasswordBreachChecker :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
-    AuthEventPublisher :> es,
+    AuthUnitOfWork :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
@@ -204,20 +201,21 @@ confirmPasswordReset cfg cmd = runErrorNoCallStack do
   -- linearization point (exactly one of two concurrent confirmations proceeds), while a
   -- pure-read policy check ahead of it cannot widen the race and spares the user's token when
   -- the new password is merely too weak.
-  won <- markPasswordResetTokenConsumed tok.passwordResetTokenId ts
+  won <-
+    completePasswordReset
+      tok.passwordResetTokenId
+      tok.userId
+      newHash
+      ts
+      [Event.PasswordResetCompleted (Event.PasswordResetCompletedData tok.userId ts)]
   unless won (throwError PasswordResetTokenInvalid)
-  updatePasswordHash tok.userId newHash
-  revokeAllUserSessions tok.userId ts
-  revokeAllUserRefreshTokens tok.userId ts
-  publishAuthEvent (Event.PasswordResetCompleted (Event.PasswordResetCompletedData tok.userId ts))
 
 changePassword ::
   ( UserStore :> es,
     CredentialStore :> es,
     PasswordHasher :> es,
     PasswordBreachChecker :> es,
-    SessionStore :> es,
-    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
     AuthEventPublisher :> es,
     LoginAttemptStore :> es,
     Clock :> es
@@ -249,10 +247,11 @@ changePassword cfg pctx cmd = runErrorNoCallStack do
     throwError InvalidCredentials
   recordProofSuccess ctx FactorPasswordChange gate.standingLockout ts
   newHash <- hashPassword cmd.newPassword
-  updatePasswordHash user.userId newHash
-  revokeAllUserSessions user.userId ts
-  revokeAllUserRefreshTokens user.userId ts
-  publishAuthEvent (Event.PasswordChanged (Event.PasswordChangedData user.userId ts))
+  completePasswordChange
+    user.userId
+    newHash
+    ts
+    [Event.PasswordChanged (Event.PasswordChangedData user.userId ts)]
 
 generateOneTimeToken :: (TokenGen :> es) => Eff es (OneTimeToken, OneTimeTokenHash)
 generateOneTimeToken = do

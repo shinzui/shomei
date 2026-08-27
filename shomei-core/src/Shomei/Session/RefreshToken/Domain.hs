@@ -4,8 +4,9 @@
 -- is persisted (the server never stores the raw token). 'PersistedRefreshToken' is the
 -- stored row, including the @parentTokenId@ link that forms a rotation /family/ — the
 -- chain of tokens descended from one login. Reuse of a token already marked
--- 'RefreshTokenUsed' (or 'RefreshTokenRevoked') is treated as theft and revokes the
--- whole family (see 'Shomei.Session.Authentication.Workflow.refresh').
+-- 'RefreshTokenUsed' is treated as theft and revokes the session and its tokens; a token
+-- deliberately marked 'RefreshTokenRevoked' reports that the session was revoked without a
+-- theft response (see 'Shomei.Session.Authentication.Workflow.refresh').
 module Shomei.Session.RefreshToken.Domain
   ( RefreshToken (..),
     RefreshTokenHash (..),

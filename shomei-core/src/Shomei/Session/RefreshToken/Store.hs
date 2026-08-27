@@ -2,8 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 
--- | The refresh-token-store port: persisting and rotating refresh tokens, including the
--- family-revocation operations used by reuse detection.
+-- | The refresh-token-store port: persisting and rotating refresh tokens, including standalone
+-- family/session/user revocation operations. Authentication reuse detection uses the
+-- session-scoped transactional unit of work; OAuth revocation still uses the family operation.
 module Shomei.Session.RefreshToken.Store
   ( RefreshTokenStore (..),
     createRefreshToken,

@@ -139,6 +139,9 @@ testConcurrentRefreshHasOneWinner =
       assertBool
         "session was not revoked by the reuse response"
         (all (\s -> s.status == SessionRevoked) (Map.elems w.sessions))
+      length (filter isReuse w.publishedEvents) @?= 1
+    isReuse (Event.RefreshTokenReuseDetected _) = True
+    isReuse _ = False
 
 testConcurrentPasswordResetHasOneWinner :: TestTree
 testConcurrentPasswordResetHasOneWinner =

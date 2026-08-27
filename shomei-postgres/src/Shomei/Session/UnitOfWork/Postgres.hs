@@ -24,6 +24,9 @@ import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 import Hasql.Transaction qualified as Tx
+import Shomei.Account.Credential.Postgres (updatePasswordHashStmt)
+import Shomei.Account.Password.Domain (PasswordHash (..))
+import Shomei.Account.PasswordReset.Postgres qualified as PR
 import Shomei.Audit.Event.Codec (projectAuthEvent)
 import Shomei.Audit.Event.Domain (AuthEvent)
 import Shomei.Audit.Publisher.Postgres (AuthEventRow, insertAuthEventStmt)
@@ -33,6 +36,7 @@ import Shomei.Id
   ( RefreshTokenId,
     genRefreshTokenId,
     genSessionId,
+    passwordResetTokenIdToUUID,
     refreshTokenIdToUUID,
     sessionIdToUUID,
     userIdToUUID,
@@ -41,7 +45,13 @@ import Shomei.Persistence.Codec.Postgres (refreshTokenStatusToText, sessionKindT
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runTransaction)
 import Shomei.Prelude
 import Shomei.Session.Domain (Session (..), SessionStatus (SessionActive))
-import Shomei.Session.Postgres (SessionRow, insertSessionStmt, mkSession)
+import Shomei.Session.Postgres
+  ( SessionRow,
+    insertSessionStmt,
+    mkSession,
+    revokeAllUserSessionsStmt,
+    revokeSessionStmt,
+  )
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..))
 import Shomei.Session.RefreshToken.Domain qualified as RT
 import Shomei.Session.RefreshToken.Postgres
@@ -51,6 +61,7 @@ import Shomei.Session.RefreshToken.Postgres
     mkPersisted,
     refreshTokenHashText,
   )
+import Shomei.Session.RefreshToken.Postgres qualified as RTP
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork (..), NewSessionToken (..), RotationOutcome (..))
 
 runAuthUnitOfWorkPostgres ::
@@ -96,8 +107,43 @@ runAuthUnitOfWorkPostgres = interpret_ \case
           Tx.statement eventRow insertAuthEventStmt
           pure (Rotated persisted)
     either dbFail pure res
+  CompletePasswordReset tid uid newHash ts events -> do
+    eventRows <- traverse toEventRow events
+    res <- runTransaction do
+      won <- Tx.statement (passwordResetTokenIdToUUID tid, ts) PR.markConsumedStmt
+      case won of
+        Nothing -> pure False
+        Just _ -> do
+          Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
+          Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
+          Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
+          -- The consumed token is no longer active, so this revokes only its live siblings.
+          Tx.statement (userIdToUUID uid, ts) PR.revokeUserTokensStmt
+          True <$ traverse_ (\row -> Tx.statement row insertAuthEventStmt) eventRows
+    either dbFail pure res
+  CompletePasswordChange uid newHash ts events -> do
+    eventRows <- traverse toEventRow events
+    res <- runTransaction do
+      Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
+      Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
+      Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
+      traverse_ (\row -> Tx.statement row insertAuthEventStmt) eventRows
+    either dbFail pure res
+  RevokeSessionWithTokens sid ts events -> do
+    eventRows <- traverse toEventRow events
+    res <- runTransaction do
+      won <- Tx.statement (sessionIdToUUID sid, ts) revokeSessionStmt
+      case won of
+        Nothing -> pure False
+        Just _ -> do
+          Tx.statement (sessionIdToUUID sid, ts) RTP.revokeSessionTokensStmt
+          True <$ traverse_ (\row -> Tx.statement row insertAuthEventStmt) eventRows
+    either dbFail pure res
   where
     dbFail = throwError . postgresUnavailable
+
+passwordHashText :: PasswordHash -> Text
+passwordHashText (PasswordHash t) = t
 
 -- | Mint the event's row id outside the transaction (it is a random UUID, not a database
 -- default), and project the event exactly as 'Shomei.Audit.Publisher.Postgres' does.

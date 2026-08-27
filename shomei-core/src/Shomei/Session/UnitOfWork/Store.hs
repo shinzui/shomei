@@ -14,22 +14,25 @@
 -- This port names those tails as single operations. The PostgreSQL interpreter
 -- (@Shomei.Session.UnitOfWork.Postgres@) runs each one inside a single @BEGIN … COMMIT@; the
 -- in-memory interpreter ('Shomei.Test.InMemory') performs the equivalent update to its
--- mutable world in one atomic step. The per-table ports remain, because the workflows that do
--- not have this atomicity requirement (logout, revocation, impersonation, admin) still use
--- them.
+-- mutable world in one atomic step. The per-table ports remain for reads, single-table writes,
+-- and callers whose revocation scope or audit contract differs from these workflow tails.
 module Shomei.Session.UnitOfWork.Store
   ( AuthUnitOfWork (..),
     NewSessionToken (..),
     RotationOutcome (..),
     persistNewSession,
     rotateRefreshToken,
+    completePasswordReset,
+    completePasswordChange,
+    revokeSessionWithTokens,
   )
 where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Account.Password.Domain (PasswordHash)
 import Shomei.Audit.Event.Domain (AuthEvent)
-import Shomei.Id (RefreshTokenId, SessionId)
+import Shomei.Id (PasswordResetTokenId, RefreshTokenId, SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Session.Domain (NewSession, Session)
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken, PersistedRefreshToken, RefreshTokenHash)
@@ -84,6 +87,30 @@ data AuthUnitOfWork :: Effect where
     NewRefreshToken ->
     AuthEvent ->
     AuthUnitOfWork m RotationOutcome
+  -- | Consume the reset token (CAS); then update the hash, revoke every session and refresh
+  -- token of the user, revoke the user's other outstanding reset tokens, and record the events
+  -- atomically. 'False' means the CAS lost and nothing was written. The caller computes the hash.
+  CompletePasswordReset ::
+    PasswordResetTokenId ->
+    UserId ->
+    PasswordHash ->
+    UTCTime ->
+    [AuthEvent] ->
+    AuthUnitOfWork m Bool
+  -- | Update the hash, revoke every session and refresh token, and record the events atomically.
+  CompletePasswordChange ::
+    UserId ->
+    PasswordHash ->
+    UTCTime ->
+    [AuthEvent] ->
+    AuthUnitOfWork m ()
+  -- | CAS the session @active → revoked@; only on success revoke its refresh tokens and record
+  -- the events. 'False' means the session was already dead and nothing was written.
+  RevokeSessionWithTokens ::
+    SessionId ->
+    UTCTime ->
+    [AuthEvent] ->
+    AuthUnitOfWork m Bool
 
 type instance DispatchOf AuthUnitOfWork = Dynamic
 
@@ -105,3 +132,35 @@ rotateRefreshToken ::
   AuthEvent ->
   Eff es RotationOutcome
 rotateRefreshToken rid usedAt nrt ev = send (RotateRefreshToken rid usedAt nrt ev)
+
+-- | Atomically complete a password reset after the caller has computed and validated the hash.
+completePasswordReset ::
+  (AuthUnitOfWork :> es) =>
+  PasswordResetTokenId ->
+  UserId ->
+  PasswordHash ->
+  UTCTime ->
+  [AuthEvent] ->
+  Eff es Bool
+completePasswordReset tid uid newHash ts events =
+  send (CompletePasswordReset tid uid newHash ts events)
+
+-- | Atomically complete a password change after the caller has computed and validated the hash.
+completePasswordChange ::
+  (AuthUnitOfWork :> es) =>
+  UserId ->
+  PasswordHash ->
+  UTCTime ->
+  [AuthEvent] ->
+  Eff es ()
+completePasswordChange uid newHash ts events =
+  send (CompletePasswordChange uid newHash ts events)
+
+-- | Atomically revoke an active session, its refresh tokens, and the supplied audit events.
+revokeSessionWithTokens ::
+  (AuthUnitOfWork :> es) =>
+  SessionId ->
+  UTCTime ->
+  [AuthEvent] ->
+  Eff es Bool
+revokeSessionWithTokens sid ts events = send (RevokeSessionWithTokens sid ts events)

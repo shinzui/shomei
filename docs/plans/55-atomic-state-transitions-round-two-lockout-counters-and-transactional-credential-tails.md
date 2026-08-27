@@ -61,8 +61,13 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
       `casWorld`; 100-way workflow race and eight-way PostgreSQL races pass
 - [x] (2026-08-27T19:23:12Z) M2 gate: `nix fmt`, `cabal build all`, and the serialized
       all-package test matrix pass (core 269; PostgreSQL 67)
-- [ ] M3: three unit-of-work operations; `revokeSessionStmt` guarded; `RefreshTokenRevoked →
-      SessionRevoked`; sibling verification tokens revoked; one-reuse-event assertion; budgets
+- [x] (2026-08-27T19:35:46Z) M3 regression observed red: a 100-way refresh race published 55
+      reuse events without the session-scoped revoke CAS
+- [x] (2026-08-27T19:41:16Z) M3: three unit-of-work operations; `revokeSessionStmt` guarded;
+      `RefreshTokenRevoked → SessionRevoked`; sibling verification tokens revoked;
+      one-reuse-event assertion; budgets
+- [x] (2026-08-27T19:41:16Z) M3 gate: `nix fmt`, `cabal build all`, and the serialized
+      all-package test matrix pass (core 272; PostgreSQL 70)
 - [ ] M4: `UpdateUserStatus` conditional; concurrent-suspend tests in core and Postgres
 - [ ] M5: `findUserByEmail` guard; SQLSTATE 23505 mapped to typed conflicts; tests
 - [ ] M6: migration (number allocated by `just new-migration`; `0029` at the time of writing); PostgreSQL 17/18 floor documented; CHANGELOGs; ADR distillation
@@ -129,6 +134,18 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   remained unconditional. Moving the predicate to the counter statement restored all six
   focused tests and all 67 PostgreSQL tests. The product implementation was not otherwise
   changed; the failure demonstrates why the full suite follows destructive red controls.
+
+- The 100-way refresh race does not deterministically publish all 99 possible duplicate reuse
+  events: in the observed red run it published 55. Threads that load the token after an earlier
+  theft response has revoked it take a different branch, while threads holding a stale `used`
+  view each publish. The exact excess is scheduling-dependent; any value above one proves the
+  missing session-level linearization point.
+
+  ```text
+  100 concurrent refreshes: exactly one winner: FAIL
+    expected: 1
+     but got: 55
+  ```
 
 
 ## Decision Log
@@ -268,6 +285,16 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   WebAuthn authenticators retain the required zero-to-zero behavior. The complete core (269
   tests) and PostgreSQL (67 tests) suites pass, as do `cabal build all` and the serialized
   all-package test matrix.
+
+- M3 moved password reset, password change, logout, and refresh-reuse revocation tails behind
+  three atomic unit-of-work operations in both interpreters. Reset confirmation now consumes
+  exactly one link, revokes its siblings, changes the credential, and revokes every session and
+  refresh token in one transaction; email confirmation likewise revokes sibling links. Session
+  revocation is a compare-and-swap, so a 100-racer refresh regression fell from 55 duplicate
+  reuse events to exactly one, while already-revoked tokens report `SessionRevoked` without a
+  false theft signal. PostgreSQL keeps logout at two round-trips and reset confirmation at
+  three. The complete core (272 tests) and PostgreSQL (70 tests) suites pass, as do `cabal build
+  all` and the serialized all-package test matrix.
 
 
 ## Context and Orientation
