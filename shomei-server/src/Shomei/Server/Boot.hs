@@ -75,6 +75,7 @@ import Shomei.Servant.Seam qualified as Seam
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
+import Shomei.Server.ExceptionResponse (problemExceptionResponse)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
 import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddleware)
@@ -169,6 +170,7 @@ main = do
           . Warp.setGracefulShutdownTimeout (Just obs.gracefulShutdownTimeoutSeconds)
           . Warp.setServerName "shomei"
           . Warp.setOnException onServerException
+          . Warp.setOnExceptionResponse problemExceptionResponse
           . proxyProtocolSettings
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)

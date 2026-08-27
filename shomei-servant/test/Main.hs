@@ -20,6 +20,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Data.CaseInsensitive qualified as CI
 import Data.Foldable (forM_, toList)
@@ -1501,6 +1502,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "cookieSecure=false keeps the bare names" $ do
         e <- freshInsecureCookieEnv
         testWithApplication (pure (app e)) scenarioInsecureCookieNames,
+      testCase "hostile auth header bytes answer in the problem envelope" $ do
+        e <- freshCookieEnv
+        testWithApplication (pure (app e)) scenarioHostileAuthHeaders,
       testCase "bearer transport: no Set-Cookie, body tokens present, a cookie is not a credential" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioBearerRejectsCookies,
@@ -3071,6 +3075,22 @@ scenarioInsecureCookieNames port = do
   assertBool "Secure is absent" (all (not . T.isInfixOf "; Secure") cookies)
   (meStatus, _) <- getJSON mgr port "/v1/auth/me" [("Cookie", Text.encodeUtf8 ("shomei_session=" <> sess))]
   meStatus @?= 200
+
+-- | Header bytes are attacker input. Invalid UTF-8 must become an ordinary rejected credential
+-- or origin, never an exception that escapes Servant and becomes a transport-level 500.
+scenarioHostileAuthHeaders :: Int -> IO ()
+scenarioHostileAuthHeaders port = do
+  mgr <- newManager defaultManagerSettings
+  (sess, _, _) <- cookieSignupAs mgr port "hostile-headers@example.com"
+  let invalid = BS.pack [0xff]
+  badAuthorization <- getRaw mgr port "/v1/auth/me" [("Authorization", "Bearer " <> invalid)]
+  assertProblem "invalid UTF-8 Authorization" 401 "token_invalid" badAuthorization
+  badCookie <- getRaw mgr port "/v1/auth/me" [("Cookie", invalid)]
+  assertProblem "invalid UTF-8 Cookie" 401 "missing_token" badCookie
+  badOrigin <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, ("Origin", invalid)] Null
+  assertProblem "invalid UTF-8 Origin" 403 "csrf_rejected" badOrigin
+  badReferer <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, ("Referer", invalid)] Null
+  assertProblem "invalid UTF-8 Referer" 403 "csrf_rejected" badReferer
 
 scenario :: IORef World -> Text -> Int -> IO ()
 scenario ref adminToken port = do

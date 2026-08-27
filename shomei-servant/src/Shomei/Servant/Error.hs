@@ -104,6 +104,7 @@ module Shomei.Servant.Error
     pcMissingPermission,
     pcCsrfRejected,
     pcBadRequest,
+    pcPayloadTooLarge,
     pcBodyParseError,
     pcNotFound,
     pcMethodNotAllowed,
@@ -140,6 +141,7 @@ import Servant
     err404,
     err405,
     err409,
+    err413,
     err500,
     err503,
   )
@@ -455,6 +457,10 @@ pcCsrfRejected = problemSpec "csrf_rejected" err403 "Origin not allowed for cook
 pcBadRequest :: ProblemSpec
 pcBadRequest = problemSpec "bad_request" err400 "Bad request"
 
+-- | The edge stopped reading a request after it crossed the configured body cap.
+pcPayloadTooLarge :: ProblemSpec
+pcPayloadTooLarge = problemSpec "payload_too_large" err413 "Request body too large"
+
 -- | Servant could not parse the JSON request body; the @detail@ carries the parse message.
 pcBodyParseError :: ProblemSpec
 pcBodyParseError = problemSpec "body_parse_error" err400 "Request body could not be parsed"
@@ -526,6 +532,7 @@ problemCatalog =
     pcMissingPermission,
     pcCsrfRejected,
     pcBadRequest,
+    pcPayloadTooLarge,
     pcBodyParseError,
     pcNotFound,
     pcMethodNotAllowed,

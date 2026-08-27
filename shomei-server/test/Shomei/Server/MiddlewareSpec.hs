@@ -1,36 +1,40 @@
--- | Tests for the four EP-4 middleware hardening fixes. All of them are database-free: the
+-- | Tests for the standalone server's edge middleware. All of them are database-free: the
 -- rate limiter takes its clock as an argument, the metrics registry is plain 'IORef's, and the
 -- WAI middlewares are just functions we can apply to a 'defaultRequest'.
 module Shomei.Server.MiddlewareSpec (tests) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (ErrorCall (..), throwIO, toException, try)
-import Control.Monad (forM, forM_)
-import Data.Aeson (Value (Object, String), decodeStrict, (.=))
+import Control.Exception (AsyncException (ThreadKilled), ErrorCall (..), SomeException, evaluate, throwIO, toException, try)
+import Control.Monad (forM, forM_, unless)
+import Data.Aeson (Value (Object, String), decode, decodeStrict, (.=))
 import Data.Aeson.Key (Key)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Char8 qualified as BC
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BLC
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word16, Word64, Word8)
-import Network.HTTP.Types (methodDelete, methodPost, statusCode)
+import Network.HTTP.Types (hContentType, methodDelete, methodPost, statusCode)
 import Network.HTTP.Types.Status (status200)
 import Network.Socket (SockAddr (..), tupleToHostAddress, tupleToHostAddress6)
-import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, responseHeaders, responseLBS, responseStatus)
+import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, getRequestBodyChunk, responseHeaders, responseLBS, responseStatus, responseToStream, setRequestBodyChunks)
+import Network.Wai.Handler.Warp (InvalidRequest (BadFirstLine, PayloadTooLarge))
 import Network.Wai.Internal (ResponseReceived (..))
 import Servant.Health.Paths (healthRawPaths)
 import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultObservabilityConfig, defaultRateLimitConfig)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
 import Shomei.Servant.ClientIp (clientIpText)
+import Shomei.Servant.Error (ProblemDetails (..))
 import Shomei.Servant.Throttle (PathSegment (Literal), ThrottledRoute (..))
+import Shomei.Server.ExceptionResponse (problemExceptionResponse)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
 import Shomei.Server.Middleware.TrustedProxy (parseTrustedProxies, trustedProxyMiddleware)
@@ -82,7 +86,11 @@ tests =
         "body limit"
         [ testOversizedBodyRejected,
           testKnownSmallBodyPassesThrough,
-          testChunkedBodyPassesThrough
+          testChunkedBodyOverCapRejected,
+          testSmallChunkedBodyPassesThrough,
+          testEscapedExceptionRendersProblem,
+          testWarpInvalidRequestsRenderProblems,
+          testAsyncExceptionIsRethrown
         ]
     ]
 
@@ -378,12 +386,38 @@ testKnownSmallBodyPassesThrough = testCase "a small Content-Length passes throug
   status @?= 200
   assertEqual "the inner application handled it" True reached
 
--- | A chunked body declares no length; the documented caveat is that it passes through.
-testChunkedBodyPassesThrough :: TestTree
-testChunkedBodyPassesThrough = testCase "a chunked body passes through (documented caveat)" do
-  (status, reached) <- runBodyLimit ChunkedBody
+-- | A chunked body is metered as the application consumes it. The third chunk crosses the cap,
+-- so the inner application cannot send its success response.
+testChunkedBodyOverCapRejected :: TestTree
+testChunkedBodyOverCapRejected = testCase "a chunked body over the cap is rejected with 413" do
+  (status, innerResponded) <- runChunkedBodyLimit (replicate 3 (BS.replicate (512 * 1024) 97))
+  status @?= 413
+  assertEqual "the inner success response must not run" False innerResponded
+
+-- | Metering is transparent below the cap, including the end-of-stream marker.
+testSmallChunkedBodyPassesThrough :: TestTree
+testSmallChunkedBodyPassesThrough = testCase "a small chunked body passes through" do
+  (status, innerResponded) <- runChunkedBodyLimit (replicate 2 (BS.replicate (4 * 1024) 97))
   status @?= 200
-  assertEqual "the inner application handled it" True reached
+  assertEqual "the inner application handled it" True innerResponded
+
+-- | Warp's last-resort exception response carries the same public envelope as handler failures.
+testEscapedExceptionRendersProblem :: TestTree
+testEscapedExceptionRendersProblem = testCase "an escaped exception renders a problem document" do
+  assertExceptionProblem 500 "internal" (toException (ErrorCall "database is on fire"))
+
+testWarpInvalidRequestsRenderProblems :: TestTree
+testWarpInvalidRequestsRenderProblems = testCase "warp invalid requests retain the problem envelope" do
+  assertExceptionProblem 413 "payload_too_large" (toException PayloadTooLarge)
+  assertExceptionProblem 400 "bad_request" (toException (BadFirstLine "hostile"))
+
+testAsyncExceptionIsRethrown :: TestTree
+testAsyncExceptionIsRethrown = testCase "the exception response hook rethrows asynchronous cancellation" do
+  outcome <- try (evaluate (problemExceptionResponse (toException ThreadKilled)))
+  case outcome :: Either AsyncException Response of
+    Left ThreadKilled -> pure ()
+    Left other -> fail ("unexpected async exception: " <> show other)
+    Right _ -> fail "the asynchronous exception was converted into a response"
 
 -- | Drive 'bodyLimitMiddleware' with a 1 MiB cap over a request declaring @len@, reporting the
 -- response status and whether the inner application ran.
@@ -398,6 +432,47 @@ runBodyLimit len = do
       capture res = writeIORef statusRef (statusCode (responseStatus res)) >> pure ResponseReceived
   ResponseReceived <- bodyLimitMiddleware cap innerApp req capture
   (,) <$> readIORef statusRef <*> readIORef reachedRef
+
+-- | Drive an unknown-length body whose chunks are supplied one at a time. The Boolean reports
+-- whether the inner application reached its response continuation, not merely whether it began.
+runChunkedBodyLimit :: [ByteString] -> IO (Int, Bool)
+runChunkedBodyLimit chunks = do
+  chunksRef <- newIORef chunks
+  innerRespondedRef <- newIORef False
+  statusRef <- newIORef (0 :: Int)
+  let cap = 1024 * 1024 :: Word64
+      nextChunk =
+        atomicModifyIORef' chunksRef \case
+          [] -> ([], "")
+          chunk : rest -> (rest, chunk)
+      req = setRequestBodyChunks nextChunk defaultRequest {requestBodyLength = ChunkedBody}
+      drain request = do
+        chunk <- getRequestBodyChunk request
+        unless (BS.null chunk) (drain request)
+      innerApp request respond = do
+        drain request
+        writeIORef innerRespondedRef True
+        respond okResponse
+      capture res = writeIORef statusRef (statusCode (responseStatus res)) >> pure ResponseReceived
+  ResponseReceived <- bodyLimitMiddleware cap innerApp req capture
+  (,) <$> readIORef statusRef <*> readIORef innerRespondedRef
+
+collectResponseBody :: Response -> IO BL.ByteString
+collectResponseBody response = do
+  builderRef <- newIORef mempty
+  let (_, _, withBody) = responseToStream response
+  withBody \streamBody -> streamBody (\chunk -> modifyIORef' builderRef (<> chunk)) (pure ())
+  toLazyByteString <$> readIORef builderRef
+
+assertExceptionProblem :: Int -> Text -> SomeException -> IO ()
+assertExceptionProblem expectedStatus expectedCode err = do
+  let response = problemExceptionResponse err
+  statusCode (responseStatus response) @?= expectedStatus
+  lookup hContentType (responseHeaders response) @?= Just "application/problem+json"
+  body <- collectResponseBody response
+  problem <- maybe (fail ("expected problem JSON, got " <> show body)) pure (decode body :: Maybe ProblemDetails)
+  problem.code @?= expectedCode
+  problem.status @?= expectedStatus
 
 okResponse :: Response
 okResponse = responseLBS status200 [] "ok"

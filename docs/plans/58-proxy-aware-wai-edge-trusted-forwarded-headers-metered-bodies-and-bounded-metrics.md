@@ -51,8 +51,9 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
       `cookieTransportWarnings` at boot; ConfigSpec cases.
 - [x] (2026-08-27T23:11:41Z) M3: `__Host-`/`__Secure-` names when `cookieSecure`; servant scenarios,
       docs, CHANGELOGs; ADR-16.
-- [ ] M4: metered body; `pcPayloadTooLarge`; chunked test flipped; `problemExceptionResponse` installed;
-      `decodeUtf8Lenient` in `Auth.hs`; hostile-header scenario; `openapi.json` regenerated.
+- [x] (2026-08-27T23:24:27Z) M4: metered body; `pcPayloadTooLarge`; chunked test flipped;
+      `problemExceptionResponse` installed; `decodeUtf8Lenient` in `Auth.hs`; hostile-header scenario;
+      `openapi.json` regenerated.
 - [ ] M5: method-label whitelist and escaping; monotonic clock; `HealthPolicy` (2 s timeout, 1 s cache);
       health tests; docs reconciled; ADR distillation; MasterPlan 8 updated.
 - [ ] `nix fmt` clean; `cabal build all --enable-tests` and `cabal test all` green.
@@ -91,6 +92,13 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
   insecure-cookie fallback. A live secure cookie-mode signup returned 201 and emitted
   `__Host-shomei_session` with `Path=/` and `Secure`, plus `__Secure-shomei_refresh` with
   `Path=/v1/auth/refresh` and `Secure`; no bare cookie name was emitted.
+
+- M4's focused middleware suite passed 25 cases, the full server suite passed 45, and the servant
+  suites passed 62 OpenAPI examples and 44 HTTP scenarios. The generated OpenAPI file was
+  byte-identical. A first live body of NUL bytes still returned 400 because Aeson rejected its
+  first chunk without consuming the stream; a valid 1,052,674-byte JSON string forced full
+  consumption and returned `413 application/problem+json` with `payload_too_large`. The former
+  hostile `Authorization` request now returned `401 application/problem+json` with `token_invalid`.
 
 
 ## Decision Log

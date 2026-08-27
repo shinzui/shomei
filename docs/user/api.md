@@ -52,6 +52,11 @@ A `401` carries `WWW-Authenticate` only when the response is an authentication c
 `429` carries `Retry-After`; a `503` carries it only when the server knows an honest interval.
 Clients must ignore unknown extension members.
 
+The body-cap middleware can answer `413 payload_too_large` before routing when a declared or
+streamed request body exceeds 1 MiB. A synchronous failure that escapes the application is still
+returned as `500 internal`, not Warp's plain-text fallback. Both responses use the same
+`application/problem+json` envelope; neither includes exception text.
+
 The per-client-IP edge limiter guards every HTTP operation that proves or presents a credential:
 
 - `POST /v1/auth/login`, `/signup`, `/refresh`, and `/mfa/complete`
@@ -68,7 +73,7 @@ response is a Problem Details document because the limiter answers before the OA
 
 The OpenAPI document (`GET /openapi.json`, or `docs/api/openapi.json`) derives declared statuses,
 media types, and headers from the exact served route types. Application MultiVerb routes share a
-closed error tail (400, 401, 403, 404, 409, 422, 429, 500, and 503), so their Haskell client calls
+closed handler error tail (400, 401, 403, 404, 409, 422, 429, 500, and 503), so their Haskell client calls
 return named result sums. A declared error is a normal result value, not a transport failure.
 
 Authentication errors are deliberately **generic** — a wrong password, an unknown account, and a

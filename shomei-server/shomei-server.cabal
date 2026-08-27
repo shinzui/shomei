@@ -61,6 +61,7 @@ library
     Shomei.Server.BreachChecker
     Shomei.Server.Config
     Shomei.Server.DatabaseError
+    Shomei.Server.ExceptionResponse
     Shomei.Server.Keys
     Shomei.Server.Middleware.BodyLimit
     Shomei.Server.Middleware.RateLimit

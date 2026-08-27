@@ -221,7 +221,7 @@ extractToken :: CookiePolicy -> Request -> Maybe (TokenSource, Text)
 extractToken policy req =
   extractTokenFromHeaders policy (header "Authorization") (header "Cookie")
   where
-    header name = Text.decodeUtf8 <$> lookup name (requestHeaders req)
+    header name = Text.decodeUtf8Lenient <$> lookup name (requestHeaders req)
 
 -- | 'extractToken' over the header values directly, for routes that receive them as Servant
 -- 'Servant.Header' inputs rather than as a WAI 'Request'.
@@ -242,7 +242,7 @@ extractTokenFromHeaders policy mAuthorization mCookie =
     cookieToken = do
       raw <- mCookie
       val <- lookup policy.sessionCookie (parseCookies (Text.encodeUtf8 raw))
-      pure (Text.decodeUtf8 val)
+      pure (Text.decodeUtf8Lenient val)
 
 -- | Verify whatever credential the headers carry, yielding 'Nothing' when there is none or it does
 -- not verify. The authenticating core the 'AuthHandler' and @\/oauth\/authorize@ share.
@@ -281,7 +281,7 @@ isSafeMethod req = requestMethod req `elem` ["GET", "HEAD", "OPTIONS"]
 originAllowed :: [Text] -> Request -> Bool
 originAllowed allowed req = originHeaderAllowed allowed (header "Origin") (header "Referer")
   where
-    header name = Text.decodeUtf8 <$> lookup name (requestHeaders req)
+    header name = Text.decodeUtf8Lenient <$> lookup name (requestHeaders req)
 
 -- | 'originAllowed' over the header values directly, for routes that receive them as servant
 -- 'Header' inputs rather than a WAI 'Request' — the refresh endpoint, which is unauthenticated

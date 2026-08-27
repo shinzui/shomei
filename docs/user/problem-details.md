@@ -53,6 +53,7 @@ or `code`, not on `title` or `detail`.
 | <a id="missing_permission"></a>`missing_permission` | Missing required permission | 403 | no | Stop; the principal lacks the required permission. | never |
 | <a id="csrf_rejected"></a>`csrf_rejected` | Origin not allowed for cookie-authenticated request | 403 | no | Use an allowed origin or bearer transport. | never |
 | <a id="bad_request"></a>`bad_request` | Bad request | 400 | no | Correct the occurrence-specific request detail. | never |
+| <a id="payload_too_large"></a>`payload_too_large` | Request body too large | 413 | no | Send a smaller body. | never |
 | <a id="body_parse_error"></a>`body_parse_error` | Request body could not be parsed | 400 | no | Send a body matching the published schema. | never |
 | <a id="not_found"></a>`not_found` | Resource not found | 404 | no | Correct the request path. | never |
 | <a id="method_not_allowed"></a>`method_not_allowed` | Method not allowed | 405 | no | Use a method published for the path. | never |
