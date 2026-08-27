@@ -33,7 +33,7 @@ import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId)
 import Shomei.Prelude
-import Shomei.Session.Domain (NewSession (..), Session (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (DelegatedSession))
 import Shomei.Session.Store (SessionStore, createSession, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken)
 import Shomei.SigningKey.Signer (TokenSigner, signAccessToken)
@@ -145,7 +145,8 @@ mintDelegatedToken cfg ts mint = do
           createdAt = ts,
           expiresAt = expires,
           actor = Just mint.actorUserId,
-          oauthClientId = Nothing
+          oauthClientId = Nothing,
+          kind = DelegatedSession
         }
   let claims =
         AuthClaims

@@ -38,7 +38,7 @@ import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (EmailNotVerified))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Session.Domain (NewSession (..), Session (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
 import Shomei.Session.Token.Domain (TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, NewSessionToken (..), persistNewSession)
@@ -189,7 +189,9 @@ issueSessionWith cfg opts user ts = do
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
           actor = Nothing,
-          oauthClientId = opts.oauthClientId
+          oauthClientId = opts.oauthClientId,
+          -- Every caller is an interactive login or a code exchange authorized by one.
+          kind = InteractiveSession
         }
       NewSessionToken
         { tokenHash = tokHash,

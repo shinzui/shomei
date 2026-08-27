@@ -215,7 +215,7 @@ import Shomei.ServiceAccount.Store
   )
 import Shomei.Session.Authentication.Workflow (login, refresh, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
 import Shomei.Session.LoginAttempt.Store
@@ -500,6 +500,8 @@ tests =
     testCredentialRoundTrip,
     testSessionRevoke,
     testSessionActorRoundTrip,
+    testSessionKindRoundTrip,
+    testSessionKindNullReadsInteractive,
     testRefreshTokenMarkUsed,
     testVerificationTokenRoundTrip,
     testPasswordResetTokenRoundTrip,
@@ -899,9 +901,9 @@ testListSessionsForUser = testCase "listSessionsForUser returns every status, ne
     alice <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     bob <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
     t <- now
-    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
-    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
-    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
     revokeSession s1.sessionId t
     aliceSessions <- listSessionsForUser alice.userId
     pure (s1, s2, aliceSessions)
@@ -938,7 +940,7 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
     revokeSession s.sessionId t
     findSessionById s.sessionId
   found <- expectApp result
@@ -957,16 +959,45 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
               createdAt = t,
               expiresAt = addUTCTime 3600 t,
               actor = Just operator.userId,
-              oauthClientId = Nothing
+              oauthClientId = Nothing,
+              kind = DelegatedSession
             }
         )
-    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
     foundDelegated <- findSessionById delegated.sessionId
     foundNormal <- findSessionById normal.sessionId
     pure (operator.userId, foundDelegated, foundNormal)
   (op, foundDelegated, foundNormal) <- expectApp result
   fmap (.actor) foundDelegated @?= Just (Just op)
   fmap (.actor) foundNormal @?= Just Nothing
+
+testSessionKindRoundTrip :: TestTree
+testSessionKindRoundTrip = testCase "create session persists its kind (machine, delegated, interactive)" $ withDb \pool -> do
+  result <- runApp pool do
+    subject <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+    t <- now
+    interactive <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    machine <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = MachineSession})
+    delegated <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Just subject.userId, oauthClientId = Nothing, kind = DelegatedSession})
+    foundInteractive <- findSessionById interactive.sessionId
+    foundMachine <- findSessionById machine.sessionId
+    foundDelegated <- findSessionById delegated.sessionId
+    pure (foundInteractive, foundMachine, foundDelegated)
+  (foundInteractive, foundMachine, foundDelegated) <- expectApp result
+  fmap (.kind) foundInteractive @?= Just InteractiveSession
+  fmap (.kind) foundMachine @?= Just MachineSession
+  fmap (.kind) foundDelegated @?= Just DelegatedSession
+
+testSessionKindNullReadsInteractive :: TestTree
+testSessionKindNullReadsInteractive = testCase "a session row whose kind is NULL reads as interactive" $ withDb \pool -> do
+  created <- runApp pool do
+    user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+    t <- now
+    createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+  session <- expectApp created
+  execSql pool "UPDATE shomei.shomei_sessions SET kind = NULL"
+  found <- expectApp =<< runApp pool (findSessionById session.sessionId)
+  fmap (.kind) found @?= Just InteractiveSession
 
 -- | Pins the compare-and-swap semantics of the @UPDATE … AND status = 'active' RETURNING@
 -- statement: the first mark wins and stamps @used_at@, a second mark of the same token loses
@@ -977,7 +1008,7 @@ testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is 
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
     h <- hashRefreshToken (RefreshToken "token-1")
     persisted <-
       createRefreshToken

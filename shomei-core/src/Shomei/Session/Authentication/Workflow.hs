@@ -56,7 +56,7 @@ import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
 import Shomei.Passkey.Store (PasskeyStore, countPasskeysByUser)
 import Shomei.Prelude
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (SessionActive))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.LoginAttempt.Domain
   ( AccountLockout (..),
     LoginOutcome (..),
@@ -162,7 +162,8 @@ signup cfg cmd = runErrorNoCallStack do
           createdAt = ts,
           expiresAt = addUTCTime cfg.sessionTTL ts,
           actor = Nothing,
-          oauthClientId = Nothing
+          oauthClientId = Nothing,
+          kind = InteractiveSession
         }
       NewSessionToken
         { tokenHash = tokHash,

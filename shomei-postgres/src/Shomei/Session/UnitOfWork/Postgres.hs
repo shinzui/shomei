@@ -35,7 +35,7 @@ import Shomei.Id
     sessionIdToUUID,
     userIdToUUID,
   )
-import Shomei.Persistence.Codec.Postgres (refreshTokenStatusToText, sessionStatusToText)
+import Shomei.Persistence.Codec.Postgres (refreshTokenStatusToText, sessionKindToText, sessionStatusToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runTransaction)
 import Shomei.Prelude
 import Shomei.Session.Domain (Session (..), SessionStatus (SessionActive))
@@ -116,7 +116,8 @@ sessionRow session =
     session.expiresAt,
     Nothing,
     userIdToUUID <$> session.actor,
-    session.oauthClientId
+    session.oauthClientId,
+    Just (sessionKindToText session.kind)
   )
 
 -- | The column tuple 'insertRefreshTokenStmt' encodes. A freshly inserted token is always

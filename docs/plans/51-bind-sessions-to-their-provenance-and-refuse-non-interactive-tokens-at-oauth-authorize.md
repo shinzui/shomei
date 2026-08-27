@@ -64,10 +64,10 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 
 ## Progress
 
-- [ ] M1: `SessionKind` in `Shomei.Session.Domain`; `kind` on `Session` and `NewSession`; codec, PostgreSQL interpreters, in-memory fake, and `persistNewSession` carry it
-- [ ] M1: migration `NNNN-sessions-kind.sql` allocated with `just new-migration sessions-kind`; manifest check green
-- [ ] M1: every `NewSession {` construction site names its kind (four production sites, seven `shomei-postgres` test sites); PostgreSQL round-trip test including the NULL-reads-as-interactive case
-- [ ] M1: `cabal build all --enable-tests` and `cabal test shomei-core shomei-postgres` green; committed
+- [x] (2026-08-27 13:57Z) M1: `SessionKind` in `Shomei.Session.Domain`; `kind` on `Session` and `NewSession`; codec, PostgreSQL interpreters, in-memory fake, and `persistNewSession` carry it
+- [x] (2026-08-27 13:57Z) M1: migration `0029-sessions-kind.sql` allocated with `just new-migration sessions-kind`; 29-entry manifest check green
+- [x] (2026-08-27 13:57Z) M1: every `NewSession {` construction site names its kind (four production sites, seven original `shomei-postgres` test sites); PostgreSQL round-trip tests cover all three kinds and NULL-reads-as-interactive
+- [x] (2026-08-27 13:57Z) M1: `cabal build all --enable-tests` and `cabal test shomei-core shomei-postgres` green (228 core tests, 58 PostgreSQL tests); committed
 - [ ] M2: servant scenarios `scenarioNoLaunderingThroughAuthorize` and `scenarioAuthorizeProvenance` written first and run against pre-fix code; the 302-versus-401 failure transcript recorded in Surprises & Discoveries
 - [ ] M2: `requireLiveSession` in `Shomei.Session.Workflow`; `AuthorizeLoginRequired` in `Shomei.OAuth.Authorize.Workflow`; `authorize` refuses `act`, non-interactive kinds, and dead sessions
 - [ ] M2: `oauthAuthorizeH` answers `401 login_required` with no redirect for a non-interactive credential and treats a dead session as unauthenticated

@@ -36,7 +36,7 @@ import Shomei.Prelude
 import Shomei.ServiceAccount.Domain (ServiceAccount, ServiceAccountStatus (..))
 import Shomei.ServiceAccount.Secret (verifyServiceSecret)
 import Shomei.ServiceAccount.Store (ServiceAccountStore, findServiceAccountByClientId)
-import Shomei.Session.Domain (NewSession (..))
+import Shomei.Session.Domain (NewSession (..), SessionKind (MachineSession))
 import Shomei.Session.Store (SessionStore, createSession)
 import Shomei.Session.Token.Domain (AccessToken)
 import Shomei.Session.Workflow (buildClaims)
@@ -101,7 +101,8 @@ grantClientCredentials cfg cmd = runErrorNoCallStack do
           createdAt = ts,
           expiresAt = expires,
           actor = Nothing,
-          oauthClientId = Nothing
+          oauthClientId = Nothing,
+          kind = MachineSession
         }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)

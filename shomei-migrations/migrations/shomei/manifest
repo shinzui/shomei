@@ -26,3 +26,4 @@
 0026-shomei-totp-credentials.sql
 0027-shomei-recovery-codes.sql
 0028-shomei-role-permissions.sql
+0029-sessions-kind.sql

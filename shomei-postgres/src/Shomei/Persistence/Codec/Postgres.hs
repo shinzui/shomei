@@ -7,6 +7,8 @@ module Shomei.Persistence.Codec.Postgres
     userStatusFromText,
     sessionStatusToText,
     sessionStatusFromText,
+    sessionKindToText,
+    sessionKindFromText,
     refreshTokenStatusToText,
     refreshTokenStatusFromText,
     oneTimeTokenStatusToText,
@@ -28,7 +30,7 @@ import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Account.OneTimeToken.Domain (OneTimeTokenStatus (..))
 import Shomei.Account.User.Domain (UserStatus (..))
 import Shomei.Prelude
-import Shomei.Session.Domain (SessionStatus (..))
+import Shomei.Session.Domain (SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (LoginOutcome (..))
 import Shomei.Session.RefreshToken.Domain (RefreshTokenStatus (..))
 import Shomei.SigningKey.Domain (SigningKeyStatus (..))
@@ -61,6 +63,19 @@ sessionStatusFromText = \case
   "revoked" -> Right SessionRevoked
   "expired" -> Right SessionExpired
   t -> Left ("unknown session status: " <> t)
+
+sessionKindToText :: SessionKind -> Text
+sessionKindToText = \case
+  InteractiveSession -> "interactive"
+  MachineSession -> "machine"
+  DelegatedSession -> "delegated"
+
+sessionKindFromText :: Text -> Either Text SessionKind
+sessionKindFromText = \case
+  "interactive" -> Right InteractiveSession
+  "machine" -> Right MachineSession
+  "delegated" -> Right DelegatedSession
+  t -> Left ("unknown session kind: " <> t)
 
 refreshTokenStatusToText :: RefreshTokenStatus -> Text
 refreshTokenStatusToText = \case
