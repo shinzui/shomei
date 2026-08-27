@@ -85,7 +85,7 @@ import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issue
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
 import Shomei.Authorization.Scope.Domain (adminScope)
-import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
+import Shomei.Config (CookieConfig (..), ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InternalAuthError))
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
@@ -453,8 +453,10 @@ main = do
       gatedCfg = cfg {notifierConfig = cfg.notifierConfig {emailVerificationRequired = True}}
       -- One env per transport, each over its own World (tasty runs cases in parallel).
       cookieCfg = cfg {tokenTransport = HttpOnlyCookie}
+      insecureCookieCfg = cookieCfg {cookieConfig = cookieCfg.cookieConfig {secure = False}}
       bothCfg = cfg {tokenTransport = BearerAndCookie}
       freshCookieEnv = mkEnvWith cookieCfg <$> newIORef (emptyWorld t0)
+      freshInsecureCookieEnv = mkEnvWith insecureCookieCfg <$> newIORef (emptyWorld t0)
       freshBothEnv = mkEnvWith bothCfg <$> newIORef (emptyWorld t0)
       -- EP-4: a database-backed service account (not a config-defined one) in its own World.
       -- Returns its client_id, which the scenario authenticates with.
@@ -533,7 +535,7 @@ main = do
         pure (r, mkEnvWith totpCfg r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1362,8 +1364,8 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
   (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
   afterStatus @?= 200
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (Text, Text, Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (Text, Text, Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
@@ -1493,9 +1495,12 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "cookie transport: CSRF gate on mutating requests (Origin / Referer / none / foreign)" $ do
         e <- freshCookieEnv
         testWithApplication (pure (app e)) scenarioCsrfMatrix,
-      testCase "cookie transport: refresh reads the shomei_refresh cookie, rotates, and is CSRF-gated" $ do
+      testCase "cookie transport: refresh reads the secure refresh cookie, rotates, and is CSRF-gated" $ do
         e <- freshCookieEnv
         testWithApplication (pure (app e)) scenarioCookieRefresh,
+      testCase "cookieSecure=false keeps the bare names" $ do
+        e <- freshInsecureCookieEnv
+        testWithApplication (pure (app e)) scenarioInsecureCookieNames,
       testCase "bearer transport: no Set-Cookie, body tokens present, a cookie is not a credential" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioBearerRejectsCookies,
@@ -2884,15 +2889,21 @@ cookieSignup mgr port = do
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
   status @?= 201
   let cookies = setCookies hdrs
-  sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
-  refr <- must "shomei_refresh cookie" (cookieValueOf "shomei_refresh" cookies)
+  sess <- must "secure session cookie" (cookieValueOf secureSessionCookieName cookies)
+  refr <- must "secure refresh cookie" (cookieValueOf secureRefreshCookieName cookies)
   pure (sess, refr, body)
 
+secureSessionCookieName :: Text
+secureSessionCookieName = "__Host-shomei_session"
+
+secureRefreshCookieName :: Text
+secureRefreshCookieName = "__Secure-shomei_refresh"
+
 sessionCookieHeader :: Text -> Header
-sessionCookieHeader v = ("Cookie", Text.encodeUtf8 ("shomei_session=" <> v))
+sessionCookieHeader v = ("Cookie", Text.encodeUtf8 (secureSessionCookieName <> "=" <> v))
 
 refreshCookieHeader :: Text -> Header
-refreshCookieHeader v = ("Cookie", Text.encodeUtf8 ("shomei_refresh=" <> v))
+refreshCookieHeader v = ("Cookie", Text.encodeUtf8 (secureRefreshCookieName <> "=" <> v))
 
 -- | Cookie mode: the attributes browsers rely on, the token-free body, cookie authentication,
 -- and logout clearing.
@@ -2904,9 +2915,9 @@ scenarioCookieTransport port = do
   let cookies = setCookies hdrs
   length cookies @?= 2
 
-  sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
-  sessionAttrs <- must "shomei_session attributes" (listToMaybe (filter (T.isPrefixOf "shomei_session=") cookies))
-  refreshAttrs <- must "shomei_refresh attributes" (listToMaybe (filter (T.isPrefixOf "shomei_refresh=") cookies))
+  sess <- must "secure session cookie" (cookieValueOf secureSessionCookieName cookies)
+  sessionAttrs <- must "secure session attributes" (listToMaybe (filter (T.isPrefixOf (secureSessionCookieName <> "=")) cookies))
+  refreshAttrs <- must "secure refresh attributes" (listToMaybe (filter (T.isPrefixOf (secureRefreshCookieName <> "=")) cookies))
 
   -- HttpOnly is what puts the token out of an XSS payload's reach.
   assertBool ("session HttpOnly: " <> T.unpack sessionAttrs) ("HttpOnly" `T.isInfixOf` sessionAttrs)
@@ -2938,8 +2949,8 @@ scenarioCookieTransport port = do
   outStatus @?= 204
   let cleared = setCookies outHdrs
   length cleared @?= 2
-  assertBool ("session cleared: " <> show cleared) (any (\c -> "shomei_session=;" `T.isPrefixOf` c && "Max-Age=0" `T.isInfixOf` c) cleared)
-  assertBool ("refresh cleared: " <> show cleared) (any (\c -> "shomei_refresh=;" `T.isPrefixOf` c && "Max-Age=0" `T.isInfixOf` c) cleared)
+  assertBool ("session cleared: " <> show cleared) (any (\c -> (secureSessionCookieName <> "=;") `T.isPrefixOf` c && "Max-Age=0" `T.isInfixOf` c) cleared)
+  assertBool ("refresh cleared: " <> show cleared) (any (\c -> (secureRefreshCookieName <> "=;") `T.isPrefixOf` c && "Max-Age=0" `T.isInfixOf` c) cleared)
 
 -- | The CSRF matrix on a cookie-authenticated mutating route.
 scenarioCsrfMatrix :: Int -> IO ()
@@ -2982,8 +2993,8 @@ cookieSignupAs mgr port email = do
   (status, hdrs, body) <- postRaw mgr port "/v1/auth/signup" [] (object ["loginId" .= email, "email" .= email, "password" .= cookiePassword, "displayName" .= ("C" :: Text)])
   status @?= 201
   let cookies = setCookies hdrs
-  sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" cookies)
-  refr <- must "shomei_refresh cookie" (cookieValueOf "shomei_refresh" cookies)
+  sess <- must "secure session cookie" (cookieValueOf secureSessionCookieName cookies)
+  refr <- must "secure refresh cookie" (cookieValueOf secureRefreshCookieName cookies)
   pure (sess, refr, body)
 
 -- | Refresh from the cookie: rotates, re-sets cookies, and is CSRF-gated like any mutation.
@@ -3000,7 +3011,7 @@ scenarioCookieRefresh port = do
   (okStatus, okHdrs, okBody) <- postRaw mgr port "/v1/auth/refresh" [refreshCookieHeader refr, allowedOrigin] (object [])
   okStatus @?= 200
   let cookies = setCookies okHdrs
-  newRefresh <- must "rotated shomei_refresh" (cookieValueOf "shomei_refresh" cookies)
+  newRefresh <- must "rotated secure refresh cookie" (cookieValueOf secureRefreshCookieName cookies)
   assertBool "the refresh token rotated" (newRefresh /= refr)
   resp <- must "refresh body" okBody
   assertBool "cookie mode omits body tokens on refresh" (isNothing (dig ["accessToken"] resp))
@@ -3025,7 +3036,7 @@ scenarioBearerRejectsCookies port = do
   (bearerStatus, _) <- getJSON mgr port "/v1/auth/me" [("Authorization", Text.encodeUtf8 ("Bearer " <> access))]
   bearerStatus @?= 200
 
-  -- The very same token presented as a shomei_session cookie does not. Before this plan the
+  -- The very same token presented as a session cookie does not. Before this plan the
   -- cookie fallback was unconditional and this returned 200.
   (cookieStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader access]
   cookieStatus @?= 401
@@ -3040,8 +3051,25 @@ scenarioBothTransport port = do
   resp <- must "signup body" body
   assertBool "accessToken present in both mode" (isJust (dig ["token", "accessToken"] resp))
   assertBool "refreshToken present in both mode" (isJust (dig ["token", "refreshToken"] resp))
-  sess <- must "shomei_session cookie" (cookieValueOf "shomei_session" (setCookies hdrs))
+  sess <- must "secure session cookie" (cookieValueOf secureSessionCookieName (setCookies hdrs))
   (meStatus, _) <- getJSON mgr port "/v1/auth/me" [sessionCookieHeader sess]
+  meStatus @?= 200
+
+-- | Disabling Secure is a development escape hatch. Prefixes whose browser invariants require
+-- Secure must disappear together with the attribute, and the configured bare name must still
+-- authenticate the request.
+scenarioInsecureCookieNames :: Int -> IO ()
+scenarioInsecureCookieNames port = do
+  mgr <- newManager defaultManagerSettings
+  (status, hdrs, _) <- postRaw mgr port "/v1/auth/signup" [] cookieSignupBody
+  status @?= 201
+  let cookies = setCookies hdrs
+  sess <- must "bare session cookie" (cookieValueOf "shomei_session" cookies)
+  _ <- must "bare refresh cookie" (cookieValueOf "shomei_refresh" cookies)
+  assertBool "secure session name is absent" (isNothing (cookieValueOf secureSessionCookieName cookies))
+  assertBool "secure refresh name is absent" (isNothing (cookieValueOf secureRefreshCookieName cookies))
+  assertBool "Secure is absent" (all (not . T.isInfixOf "; Secure") cookies)
+  (meStatus, _) <- getJSON mgr port "/v1/auth/me" [("Cookie", Text.encodeUtf8 ("shomei_session=" <> sess))]
   meStatus @?= 200
 
 scenario :: IORef World -> Text -> Int -> IO ()

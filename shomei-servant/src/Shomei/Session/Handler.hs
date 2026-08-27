@@ -94,7 +94,7 @@ refreshH env cookieHeader origin referer request = runApplicationHandler do
     Nothing
       | transportUsesCookies env.config.tokenTransport,
         Just raw <- cookieHeader,
-        Just token <- refreshTokenFromCookie raw -> do
+        Just token <- refreshTokenFromCookie env.config.cookieConfig raw -> do
           unless (originHeaderAllowed env.config.cookieConfig.allowedOrigins origin referer) (rejectProblem pcCsrfRejected noProblemOccurrence)
           pure token
     Nothing -> rejectProblem pcBadRequest (detailOccurrence "refreshToken required")

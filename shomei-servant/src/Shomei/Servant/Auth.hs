@@ -70,6 +70,7 @@ import Shomei.Config (CookieConfig (..), ShomeiConfig (..), TokenTransport (..),
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
+import Shomei.Servant.Cookie (sessionCookieName)
 import Shomei.Servant.Error (bearerOccurrence, noProblemOccurrence, pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
 import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Seam (Env (..), verifyRequestToken)
@@ -132,7 +133,7 @@ instance
     route (Proxy :: Proxy api) ctx (subserver `addAuthCheck` withRequest authenticate)
     where
       authenticate req = do
-        case extractToken BearerToken req of
+        case extractToken bearerOnlyPolicy req of
           Nothing -> delayedFailFatal OAuth.missingToken
           Just _ -> do
             outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
@@ -147,7 +148,8 @@ data TokenSource = FromBearer | FromCookie
 -- and which origins may drive a cookie-authenticated mutation.
 data CookiePolicy = CookiePolicy
   { transport :: !TokenTransport,
-    allowedOrigins :: ![Text]
+    allowedOrigins :: ![Text],
+    sessionCookie :: !BS.ByteString
   }
   deriving stock (Eq, Show)
 
@@ -157,8 +159,12 @@ cookiePolicyFromConfig :: ShomeiConfig -> CookiePolicy
 cookiePolicyFromConfig cfg =
   CookiePolicy
     { transport = cfg.tokenTransport,
-      allowedOrigins = cfg.cookieConfig.allowedOrigins
+      allowedOrigins = cfg.cookieConfig.allowedOrigins,
+      sessionCookie = sessionCookieName cfg.cookieConfig
     }
+
+bearerOnlyPolicy :: CookiePolicy
+bearerOnlyPolicy = CookiePolicy BearerToken [] ""
 
 -- | Project a verified 'AuthClaims' into the principal.
 authUserFromClaims :: AuthClaims -> AuthUser
@@ -185,7 +191,7 @@ authHandler env = mkAuthHandler handle
     handle :: Request -> Handler AuthUser
     handle req = do
       (source, tok) <-
-        maybe (throwError (toProblemError pcMissingToken bearerOccurrence)) pure (extractToken policy.transport req)
+        maybe (throwError (toProblemError pcMissingToken bearerOccurrence)) pure (extractToken policy req)
       when (source == FromCookie && not (isSafeMethod req) && not (originAllowed policy.allowedOrigins req)) $
         throwError csrfRejected
       res <- liftIO (verifyRequestToken env tok)
@@ -210,10 +216,10 @@ authFailure = \case
 -- 'BearerToken' reads the @Authorization@ header only — the cookie is __not__ a fallback,
 -- because a deployment that never sets cookies must not accept them either. The cookie modes
 -- try bearer first (non-browser callers and service tokens keep working) and fall back to the
--- @shomei_session@ cookie.
-extractToken :: TokenTransport -> Request -> Maybe (TokenSource, Text)
-extractToken transport req =
-  extractTokenFromHeaders transport (header "Authorization") (header "Cookie")
+-- configured session cookie.
+extractToken :: CookiePolicy -> Request -> Maybe (TokenSource, Text)
+extractToken policy req =
+  extractTokenFromHeaders policy (header "Authorization") (header "Cookie")
   where
     header name = Text.decodeUtf8 <$> lookup name (requestHeaders req)
 
@@ -225,9 +231,9 @@ extractToken transport req =
 -- never sees a 'Request'. Sharing this function is what makes a future transport (the cookie mode
 -- today, anything later) reach that endpoint without a second implementation. Compare
 -- 'originHeaderAllowed', which exists for the same reason.
-extractTokenFromHeaders :: TokenTransport -> Maybe Text -> Maybe Text -> Maybe (TokenSource, Text)
-extractTokenFromHeaders transport mAuthorization mCookie =
-  ((FromBearer,) <$> bearer) <|> guard (transportUsesCookies transport) *> ((FromCookie,) <$> cookieToken)
+extractTokenFromHeaders :: CookiePolicy -> Maybe Text -> Maybe Text -> Maybe (TokenSource, Text)
+extractTokenFromHeaders policy mAuthorization mCookie =
+  ((FromBearer,) <$> bearer) <|> guard (transportUsesCookies policy.transport) *> ((FromCookie,) <$> cookieToken)
   where
     bearer :: Maybe Text
     bearer = mAuthorization >>= Text.stripPrefix "Bearer "
@@ -235,7 +241,7 @@ extractTokenFromHeaders transport mAuthorization mCookie =
     cookieToken :: Maybe Text
     cookieToken = do
       raw <- mCookie
-      val <- lookup ("shomei_session" :: BS.ByteString) (parseCookies (Text.encodeUtf8 raw))
+      val <- lookup policy.sessionCookie (parseCookies (Text.encodeUtf8 raw))
       pure (Text.decodeUtf8 val)
 
 -- | Verify whatever credential the headers carry, yielding 'Nothing' when there is none or it does
@@ -251,7 +257,7 @@ resolveAuthUser ::
   Maybe Text ->
   IO (Maybe AuthUser)
 resolveAuthUser env mAuthorization mCookie =
-  case extractTokenFromHeaders policy.transport mAuthorization mCookie of
+  case extractTokenFromHeaders policy mAuthorization mCookie of
     Nothing -> pure Nothing
     Just (_source, tok) -> either (const Nothing) (Just . authUserFromClaims) <$> verifyRequestToken env tok
   where
@@ -292,7 +298,7 @@ originHeaderAllowed allowed mOrigin mReferer = maybe refererAllowed (`elem` allo
         Nothing -> False
 
 -- | The refusal for a cookie-authenticated mutating request from a disallowed origin. Shared
--- with the refresh handler, which applies the same gate to the @shomei_refresh@ cookie.
+-- with the refresh handler, which applies the same gate to the configured refresh cookie.
 --
 -- This is an HTTP-layer error, not an 'Shomei.Error.AuthError': CSRF is a property of /how the
 -- credential arrived/, which the core workflows never see.

@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** secure cookie transport now uses `__Host-shomei_session` and
+  `__Secure-shomei_refresh`. Existing browser sessions are logged out once; development deployments
+  with `cookieSecure = false` retain the bare names.
 - `shomei-admin users create` reads passwords from stdin or `--password-file`, loads the
   deployment's Dhall password and HIBP breach policy, and can explicitly mark a bootstrap email
   verified. PostgreSQL diagnostics retain only a safe category and optional SQLSTATE; breach-check

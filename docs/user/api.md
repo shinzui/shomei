@@ -3,8 +3,8 @@
 All routes are defined by the `ShomeiRoutes` `NamedRoutes` record in
 `shomei-servant/src/Shomei/Servant/Api.hs` and served by `shomei-server` (default port
 `8080`). Request and response bodies are JSON. Authenticated routes require an
-`Authorization: Bearer <access-token>` header — or, in cookie transport, the `shomei_session`
-cookie (see below).
+`Authorization: Bearer <access-token>` header — or, in secure cookie transport, the
+`__Host-shomei_session` cookie (see below).
 
 ## Versioning
 
@@ -108,14 +108,17 @@ The two cookies, set together by every response that issues a token pair (`signu
 `complete` arm, `refresh`, `mfa/complete`, `login/passkey/complete`):
 
 ```text
-Set-Cookie: shomei_session=<jwt>;   Path=/;              Max-Age=900;     HttpOnly; Secure; SameSite=Lax
-Set-Cookie: shomei_refresh=<token>; Path=/v1/auth/refresh;  Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
+Set-Cookie: __Host-shomei_session=<jwt>;     Path=/;                Max-Age=900;     HttpOnly; Secure; SameSite=Lax
+Set-Cookie: __Secure-shomei_refresh=<token>; Path=/v1/auth/refresh; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
 ```
 
-`HttpOnly` keeps them out of page JavaScript, so an XSS payload cannot read the session.
-`shomei_refresh` is scoped to the one endpoint that consumes it. `POST /v1/auth/logout` re-sets both
-with an empty value and `Max-Age=0`. `Secure` and `SameSite` are configurable
-(`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`).
+`HttpOnly` keeps them out of page JavaScript, so an XSS payload cannot read the session. The
+`__Host-` prefix additionally requires `Secure`, `Path=/`, and no `Domain`; `__Secure-` requires
+`Secure`. The refresh cookie is scoped to the one endpoint that consumes it.
+`POST /v1/auth/logout` re-sets both with an empty value and `Max-Age=0`. `Secure` and `SameSite`
+are configurable (`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`). When `Secure` is explicitly
+disabled for development, the names fall back to `shomei_session` and `shomei_refresh` because
+browsers reject prefixed cookies that do not satisfy their prefix invariants.
 
 **CSRF.** Because browsers attach cookies automatically, any **cookie-authenticated mutating
 request** (anything but `GET`/`HEAD`/`OPTIONS`) must carry an allow-listed `Origin` header — or,
@@ -138,7 +141,8 @@ case-insensitive login identifier; `email` is optional. → `201 Created`
 and a nullable `email`. `409 login_id_taken` if the identifier exists (`409 email_taken` if a
 supplied email collides); `400 weak_password` / `invalid_login_id` / `invalid_email` on
 policy/format failures. In cookie transport this response also sets the
-`shomei_session`/`shomei_refresh` cookies and omits body token values.
+`__Host-shomei_session`/`__Secure-shomei_refresh` cookies and omits body token values (or the bare
+names when `SHOMEI_COOKIE_SECURE=false`).
 
 ### `POST /v1/auth/login`
 Body `{"loginId","password"}`. → `200` with a tagged response:
@@ -150,7 +154,7 @@ Credential and lockout failures are the same `401 invalid_login`; the per-IP fai
 `429 too_many_requests`; an enforced unverified email is `403 email_not_verified`.
 
 ### `POST /v1/auth/refresh`
-Body `{"refreshToken"}` — **optional**: in cookie transport the token is read from the `shomei_refresh` cookie instead and a browser client posts `{}`. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. A token already revoked by logout, password recovery, or another session revocation instead answers `401 session_revoked` and does not report theft. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"refreshToken"}` — **optional**: in secure cookie transport the token is read from the `__Secure-shomei_refresh` cookie instead and a browser client posts `{}`. With `SHOMEI_COOKIE_SECURE=false`, the bare `shomei_refresh` name is used. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. A token already revoked by logout, password recovery, or another session revocation instead answers `401 session_revoked` and does not report theft. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
 ### `POST /oauth/token`
 

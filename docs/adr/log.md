@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-08-27
+* **Addition**: ADR-16 uses browser-enforced __Host- and __Secure- cookie names for secure transport while preserving bare names when Secure is disabled.
 * **Addition**: ADR-15 requires an explicit trusted proxy before forwarded client identity is accepted and selects the rightmost untrusted X-Forwarded-For hop.
 * **Addition**: ADR-12 binds every notification webhook signature to a fresh attempt timestamp and documents a five-minute receiver replay window.
 * **Addition**: ADR-11 moves notifier credentials out of printable configuration into non-printable runtime types and makes secure transport posture the boot default.

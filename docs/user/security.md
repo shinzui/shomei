@@ -117,12 +117,15 @@ Setting `SHOMEI_TOKEN_TRANSPORT=cookie` moves both tokens into **`HttpOnly` cook
 JavaScript cannot read at all, and stops the JSON bodies from carrying them — an XSS payload
 cannot exfiltrate what was never serialized.
 
-- `shomei_session` — the access token. `Path=/`, `Max-Age` = `accessTokenTTL`.
-- `shomei_refresh` — the refresh token. `Path=/v1/auth/refresh`, `Max-Age` = `refreshTokenTTL`, so
+- `__Host-shomei_session` — the access token. `Path=/`, `Max-Age` = `accessTokenTTL`.
+- `__Secure-shomei_refresh` — the refresh token. `Path=/v1/auth/refresh`, `Max-Age` = `refreshTokenTTL`, so
   the browser presents this long-lived credential to exactly one endpoint.
 
 Both carry `HttpOnly`, `Secure` (`SHOMEI_COOKIE_SECURE`, default on — browsers exempt localhost
 from the HTTPS requirement), and `SameSite` (`SHOMEI_COOKIE_SAMESITE`, default `Lax`).
+The browser-enforced `__Host-` prefix also forbids a `Domain` attribute and requires `Path=/`;
+`__Secure-` requires `Secure`. If `SHOMEI_COOKIE_SECURE=false` is explicitly selected for a local
+development environment, Shōmei uses the bare `shomei_session` and `shomei_refresh` names instead.
 
 **Cookies buy XSS resistance and hand you a CSRF problem.** A browser attaches cookies to a
 request automatically, even one triggered by a page on an attacker's site. The attacker cannot
@@ -151,7 +154,7 @@ frontend to mirror a token into a header.
 native clients, and OAuth machine-token flows.
 
 **Bearer mode does not accept cookies.** A deployment configured for `bearer` ignores
-`shomei_session` entirely; presenting it yields `401`. (Before this was fixed, the cookie was read
+the configured session cookie entirely; presenting it yields `401`. (Before this was fixed, the cookie was read
 as a credential in *every* deployment regardless of configuration — a live read path for a feature
 nothing else implemented.)
 

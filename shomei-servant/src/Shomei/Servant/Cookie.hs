@@ -2,8 +2,10 @@
 --
 -- Two cookies, set together by every response that issues a token pair:
 --
--- * @shomei_session@ — the access token. @Path=\/@, @Max-Age@ = @accessTokenTTL@.
--- * @shomei_refresh@ — the refresh token. @Path=\/v1\/auth\/refresh@, @Max-Age@ =
+-- * @__Host-shomei_session@ — the access token when cookies are secure. @Path=\/@,
+--   @Max-Age@ = @accessTokenTTL@.
+-- * @__Secure-shomei_refresh@ — the refresh token when cookies are secure.
+--   @Path=\/v1\/auth\/refresh@, @Max-Age@ =
 --   @refreshTokenTTL@. Scoping it to the one endpoint that consumes it means the browser
 --   never presents this long-lived credential anywhere else.
 --
@@ -63,11 +65,15 @@ data CookiePair = CookiePair
   }
   deriving stock (Eq, Show)
 
-sessionCookieName :: ByteString
-sessionCookieName = "shomei_session"
+sessionCookieName :: CookieConfig -> ByteString
+sessionCookieName cfg
+  | cfg.secure = "__Host-shomei_session"
+  | otherwise = "shomei_session"
 
-refreshCookieName :: ByteString
-refreshCookieName = "shomei_refresh"
+refreshCookieName :: CookieConfig -> ByteString
+refreshCookieName cfg
+  | cfg.secure = "__Secure-shomei_refresh"
+  | otherwise = "shomei_refresh"
 
 -- | The refresh cookie's @Path@ scope: the browser sends it to exactly one endpoint, so an
 -- XSS anywhere else in the origin cannot read or replay it.
@@ -82,8 +88,8 @@ refreshCookiePath = "/v1/auth/refresh"
 tokenCookies :: ShomeiConfig -> TokenPair -> CookiePair
 tokenCookies cfg pair =
   CookiePair
-    { sessionCookie = render (base sessionCookieName "/" cfg.accessTokenTTL) {setCookieValue = accessBytes},
-      refreshCookie = render (base refreshCookieName refreshCookiePath cfg.refreshTokenTTL) {setCookieValue = refreshBytes}
+    { sessionCookie = render (base (sessionCookieName cfg.cookieConfig) "/" cfg.accessTokenTTL) {setCookieValue = accessBytes},
+      refreshCookie = render (base (refreshCookieName cfg.cookieConfig) refreshCookiePath cfg.refreshTokenTTL) {setCookieValue = refreshBytes}
     }
   where
     AccessToken accessText = pair.accessToken
@@ -98,8 +104,8 @@ tokenCookies cfg pair =
 clearedCookies :: ShomeiConfig -> CookiePair
 clearedCookies cfg =
   CookiePair
-    { sessionCookie = render (expire (cookieBase cfg sessionCookieName "/")),
-      refreshCookie = render (expire (cookieBase cfg refreshCookieName refreshCookiePath))
+    { sessionCookie = render (expire (cookieBase cfg (sessionCookieName cfg.cookieConfig) "/")),
+      refreshCookie = render (expire (cookieBase cfg (refreshCookieName cfg.cookieConfig) refreshCookiePath))
     }
   where
     expire c = c {setCookieValue = "", setCookieMaxAge = Just (secondsToDiffTime 0)}
@@ -131,7 +137,7 @@ applyCookies cfg pair body
   | transportUsesCookies cfg.tokenTransport = addHeader pair.sessionCookie (addHeader pair.refreshCookie body)
   | otherwise = noHeader (noHeader body)
 
--- | The @shomei_refresh@ value from a raw @Cookie@ request header.
-refreshTokenFromCookie :: Text -> Maybe Text
-refreshTokenFromCookie raw =
-  Text.decodeUtf8 <$> lookup refreshCookieName (parseCookies (Text.encodeUtf8 raw))
+-- | The configured refresh-cookie value from a raw @Cookie@ request header.
+refreshTokenFromCookie :: CookieConfig -> Text -> Maybe Text
+refreshTokenFromCookie cfg raw =
+  Text.decodeUtf8 <$> lookup (refreshCookieName cfg) (parseCookies (Text.encodeUtf8 raw))

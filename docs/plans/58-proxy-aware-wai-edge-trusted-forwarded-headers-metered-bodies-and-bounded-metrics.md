@@ -49,7 +49,8 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
       reverse proxy"; `docs/adr/` created with the trusted-proxy ADR.
 - [x] (2026-08-27T22:59:15Z) M2: seven rate-limit env vars and four missing Dhall keys; `normalizeOrigin` at load;
       `cookieTransportWarnings` at boot; ConfigSpec cases.
-- [ ] M3: `__Host-`/`__Secure-` names when `cookieSecure`; servant scenarios, docs, CHANGELOGs; cookie ADR.
+- [x] (2026-08-27T23:11:41Z) M3: `__Host-`/`__Secure-` names when `cookieSecure`; servant scenarios,
+      docs, CHANGELOGs; ADR-16.
 - [ ] M4: metered body; `pcPayloadTooLarge`; chunked test flipped; `problemExceptionResponse` installed;
       `decodeUtf8Lenient` in `Auth.hs`; hostile-header scenario; `openapi.json` regenerated.
 - [ ] M5: method-label whitelist and escaping; monotonic clock; `HealthPolicy` (2 s timeout, 1 s cache);
@@ -85,6 +86,11 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
   cookie-mode boot printed the single development-origin warning before listening, and a resolved
   client under `SHOMEI_PER_IP_BURST=3` produced `401 401 401 429`, proving the new knob reaches
   the running token bucket rather than only the decoded record.
+
+- M3's full `shomei-servant` gate passed 62 OpenAPI examples and 43 HTTP scenarios, including the
+  insecure-cookie fallback. A live secure cookie-mode signup returned 201 and emitted
+  `__Host-shomei_session` with `Path=/` and `Secure`, plus `__Secure-shomei_refresh` with
+  `Path=/v1/auth/refresh` and `Secure`; no bare cookie name was emitted.
 
 
 ## Decision Log

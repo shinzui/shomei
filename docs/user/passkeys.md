@@ -51,7 +51,8 @@ List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{pa
    `{ "accessToken", "refreshToken", "expiresIn" }`.
 
    In cookie transport (`SHOMEI_TOKEN_TRANSPORT=cookie`) this response sets the
-   `shomei_session`/`shomei_refresh` cookies instead and the body carries only `expiresIn` — see
+   `__Host-shomei_session`/`__Secure-shomei_refresh` cookies instead (bare names only when
+   `SHOMEI_COOKIE_SECURE=false`) and the body carries only `expiresIn` — see
    [Token transport](api.md#token-transport).
 
 If step 3 is never performed (or fails), no usable token is ever issued — possession of the

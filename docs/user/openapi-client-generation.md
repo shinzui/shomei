@@ -76,11 +76,11 @@ them, so unwrapping is safe there; write the null check anyway if your client mi
 cookie-mode server.
 
 `RefreshRequest.refreshToken` is likewise optional, because cookie clients post `{}` and let the
-`shomei_refresh` cookie carry the token.
+`__Secure-shomei_refresh` cookie carry the token (`shomei_refresh` when secure cookies are disabled).
 
 One thing the document under-describes, inherent to OpenAPI: cookie-issuing responses list
 **one** `Set-Cookie` header, because OpenAPI keys response headers by name. The server always
-sends two (`shomei_session` and `shomei_refresh`).
+sends two (`__Host-shomei_session` and `__Secure-shomei_refresh` by default).
 
 If you use cookie transport from a browser, your generated client must send credentials with each
 request (`fetch(..., { credentials: "include" })`) and an allow-listed `Origin` on every mutating
