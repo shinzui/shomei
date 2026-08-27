@@ -30,6 +30,7 @@ import Data.ByteString qualified as BS
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
+import Shomei.Account.LoginId.Domain (loginIdText)
 import Shomei.Account.User.Domain (User (..), UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
@@ -57,7 +58,8 @@ import Shomei.Passkey.Domain
   ( CeremonyKind (AuthenticationCeremony),
     PasskeyCredential (..),
     PendingCeremony (..),
-    WebAuthnCredentialId,
+    WebAuthnCredentialId (..),
+    b64urlEncode,
   )
 import Shomei.Passkey.Store
   ( PasskeyStore,
@@ -66,6 +68,10 @@ import Shomei.Passkey.Store
     updatePasskeySignCounter,
   )
 import Shomei.Prelude
+import Shomei.Session.Command (ProofContext, proofContextFor)
+import Shomei.Session.LoginAttempt.Domain (AttemptFactor (..))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.LoginAttempt.Workflow (AbuseGate (..), guardAbuse, recordProofFailure, recordProofSuccess)
 import Shomei.Session.Token.Domain (TokenPair)
 import Shomei.Session.Token.Generator (TokenGen)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
@@ -157,14 +163,16 @@ completeMfa ::
     RoleStore :> es,
     ClaimsEnricher :> es,
     AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
   ShomeiConfig ->
+  ProofContext ->
   CeremonyId ->
   MfaCompletion ->
   Eff es (Either AuthError (User, TokenPair))
-completeMfa cfg ceremonyId completion = runErrorNoCallStack do
+completeMfa cfg pctx ceremonyId completion = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, userId = mUid, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
@@ -176,20 +184,28 @@ completeMfa cfg ceremonyId completion = runErrorNoCallStack do
   -- 'login' already gates before handing out a ceremony id, so this rarely fires; it keeps
   -- the guarantee local to every path that can issue a token.
   either throwError pure (ensureEmailVerified cfg user)
+  let ctx = proofContextFor pctx (loginIdText user.loginId)
+      factor = completionFactor completion
+      failure = recordProofFailure cfg.rateLimitConfig ctx factor ts
+  gate <- guardAbuse cfg.rateLimitConfig ctx ts
+  when gate.locked do
+    publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "account_locked" ts))
+    throwError (completionError completion)
   -- Each arm proves the factor (spending the consume-once ceremony on any outcome); all three
   -- converge on the shared 'issueSession' tail.
   case completion of
     MfaPasskey assertion -> do
       -- The ceremony must have begun a WebAuthn challenge; a TOTP-only user's empty blob cannot
       -- carry an assertion, so refuse it rather than let the ceremony interpreter fail obscurely.
-      when (BS.null optionsBlob) (failMfa (Just uid) "no passkey ceremony was begun")
-      (passkey, verified) <- verifyAssertion (Just uid) optionsBlob assertion
+      when (BS.null optionsBlob) (failMfa failure (Just uid) "no passkey ceremony was begun")
+      (passkey, verified) <- verifyAssertion failure (Just uid) optionsBlob assertion
       let PasskeyCredential {userId = pkUid, passkeyId} = passkey
           VerifiedAuthentication {newSignCounter} = verified
-      when (pkUid /= uid) (failMfa (Just uid) "credential not owned by user")
+      when (pkUid /= uid) (failMfa failure (Just uid) "credential not owned by user")
       updatePasskeySignCounter passkeyId newSignCounter ts
-    MfaTotp code -> completeTotp uid ts code
-    MfaRecoveryCode code -> completeRecovery uid ts code
+    MfaTotp code -> completeTotp failure uid ts code
+    MfaRecoveryCode code -> completeRecovery failure uid ts code
+  recordProofSuccess ctx factor gate.standingLockout ts
   (sid, pair) <- issueSession cfg user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData uid sid ts))
   pure (user, pair)
@@ -198,47 +214,51 @@ completeMfa cfg ceremonyId completion = runErrorNoCallStack do
 -- accepted counter (RFC 6238 replay defense). Any failure — no credential, unconfirmed, wrong
 -- code, replayed counter — publishes 'MfaFailed' and throws 'TotpCodeInvalid'.
 completeTotp ::
-  (TotpCredentialStore :> es, AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  (TotpCredentialStore :> es, AuthEventPublisher :> es, Error AuthError :> es) =>
+  Eff es () ->
   UserId ->
   UTCTime ->
   Text ->
   Eff es ()
-completeTotp uid ts code = do
+completeTotp onFailure uid ts code = do
   mtc <- findTotpByUser uid
   case mtc of
     Just TotpCredential {totpCredentialId, secret, lastUsedCounter, confirmedAt}
       | isJust confirmedAt ->
           case verifyTotp secret lastUsedCounter ts code of
             Just accepted -> setTotpLastUsedCounter totpCredentialId accepted
-            Nothing -> failTyped (Just uid) "totp_invalid" TotpCodeInvalid
-    _ -> failTyped (Just uid) "totp_invalid" TotpCodeInvalid
+            Nothing -> failTyped onFailure (Just uid) "totp_invalid" TotpCodeInvalid ts
+    _ -> failTyped onFailure (Just uid) "totp_invalid" TotpCodeInvalid ts
 
 -- | Spend a recovery code to complete the challenge: normalize (strip the dash, casefold), hash,
 -- and consume via the store's compare-and-set. Success publishes 'RecoveryCodeUsed'; a miss
 -- publishes 'MfaFailed' and throws 'RecoveryCodeInvalid'.
 completeRecovery ::
-  (RecoveryCodeStore :> es, AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  (RecoveryCodeStore :> es, AuthEventPublisher :> es, Error AuthError :> es) =>
+  Eff es () ->
   UserId ->
   UTCTime ->
   Text ->
   Eff es ()
-completeRecovery uid ts code = do
+completeRecovery onFailure uid ts code = do
   ok <- consumeRecoveryCode uid (recoveryCodeHash code) ts
   if ok
     then publishAuthEvent (Event.RecoveryCodeUsed (Event.RecoveryCodeUsedData uid ts))
-    else failTyped (Just uid) "recovery_invalid" RecoveryCodeInvalid
+    else failTyped onFailure (Just uid) "recovery_invalid" RecoveryCodeInvalid ts
 
 -- | Publish 'MfaFailed' with the reason (recorded only in the audit event) and abort with a
 -- specific typed error. Unlike 'failMfa' (which always throws the generic 'MfaAssertionInvalid'),
 -- this lets the TOTP and recovery arms surface their own machine codes.
 failTyped ::
-  (AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  (AuthEventPublisher :> es, Error AuthError :> es) =>
+  Eff es () ->
   Maybe UserId ->
   Text ->
   AuthError ->
+  UTCTime ->
   Eff es a
-failTyped mUid reason err = do
-  ts <- now
+failTyped onFailure mUid reason err ts = do
+  onFailure
   publishAuthEvent (Event.MfaFailed (Event.MfaFailedData mUid reason ts))
   throwError err
 
@@ -281,19 +301,27 @@ completePasswordlessLogin ::
     RoleStore :> es,
     ClaimsEnricher :> es,
     AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
     Clock :> es,
     TokenGen :> es
   ) =>
   ShomeiConfig ->
+  ProofContext ->
   CeremonyId ->
   Value ->
   Eff es (Either AuthError (User, TokenPair))
-completePasswordlessLogin cfg ceremonyId assertion = runErrorNoCallStack do
+completePasswordlessLogin cfg pctx ceremonyId assertion = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
   when (kind /= AuthenticationCeremony) (throwError PendingCeremonyNotFound)
-  (passkey, verified) <- verifyAssertion Nothing optionsBlob assertion
+  let failureCtx = proofContextFor pctx (assertionAccountKey assertion)
+      failure = recordProofFailure cfg.rateLimitConfig failureCtx FactorPasskey ts
+  failureGate <- guardAbuse cfg.rateLimitConfig failureCtx ts
+  when failureGate.locked do
+    publishAuthEvent (Event.MfaFailed (Event.MfaFailedData Nothing "account_locked" ts))
+    throwError MfaAssertionInvalid
+  (passkey, verified) <- verifyAssertion failure Nothing optionsBlob assertion
   let PasskeyCredential {userId = pkUid, passkeyId} = passkey
       VerifiedAuthentication {newSignCounter} = verified
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById pkUid
@@ -301,7 +329,13 @@ completePasswordlessLogin cfg ceremonyId assertion = runErrorNoCallStack do
   when (userStatus /= UserActive) (throwError UserNotActive)
   -- The assertion is already verified above, so the account's existence is not in question.
   either throwError pure (ensureEmailVerified cfg user)
+  let ctx = proofContextFor pctx (loginIdText user.loginId)
+  gate <- guardAbuse cfg.rateLimitConfig ctx ts
+  when gate.locked do
+    publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just pkUid) "account_locked" ts))
+    throwError MfaAssertionInvalid
   updatePasskeySignCounter passkeyId newSignCounter ts
+  recordProofSuccess ctx FactorPasskey gate.standingLockout ts
   (sid, pair) <- issueSession cfg user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData pkUid sid ts))
   pure (user, pair)
@@ -319,13 +353,14 @@ verifyAssertion ::
     Clock :> es,
     Error AuthError :> es
   ) =>
+  Eff es () ->
   Maybe UserId ->
   ByteString ->
   Value ->
   Eff es (PasskeyCredential, VerifiedAuthentication)
-verifyAssertion mUid blob assertion = do
-  cid <- maybe (failMfa mUid "missing credential id") pure (assertionCredentialId assertion)
-  passkey <- maybe (failMfa mUid "unknown credential") pure =<< findPasskeyByCredentialId cid
+verifyAssertion onFailure mUid blob assertion = do
+  cid <- maybe (failMfa onFailure mUid "missing credential id") pure (assertionCredentialId assertion)
+  passkey <- maybe (failMfa onFailure mUid "unknown credential") pure =<< findPasskeyByCredentialId cid
   let PasskeyCredential {credentialId, userHandle, publicKey, signCounter, transports} = passkey
       stored =
         StoredCredentialForVerify
@@ -337,22 +372,24 @@ verifyAssertion mUid blob assertion = do
           }
   res <- completeAuthenticationCeremony blob stored assertion
   case res of
-    Left _ -> failMfa mUid "assertion verification failed"
+    Left _ -> failMfa onFailure mUid "assertion verification failed"
     Right verified ->
       let VerifiedAuthentication {cloneWarning} = verified
        in if cloneWarning
-            then failMfa mUid "signature counter clone warning"
+            then failMfa onFailure mUid "signature counter clone warning"
             else pure (passkey, verified)
 
 -- | Publish 'MfaFailed' and abort with the generic 'MfaAssertionInvalid'. The reason is
 -- recorded in the audit event only; the HTTP body the caller eventually returns stays generic.
 failMfa ::
   (AuthEventPublisher :> es, Clock :> es, Error AuthError :> es) =>
+  Eff es () ->
   Maybe UserId ->
   Text ->
   Eff es a
-failMfa mUid reason = do
+failMfa onFailure mUid reason = do
   ts <- now
+  onFailure
   publishAuthEvent (Event.MfaFailed (Event.MfaFailedData mUid reason ts))
   throwError MfaAssertionInvalid
 
@@ -367,3 +404,22 @@ assertionCredentialId v =
   parseField "credentialId" <|> parseField "rawId" <|> parseField "id"
   where
     parseField k = parseMaybe (withObject "assertion" (\o -> o .: k)) v
+
+completionFactor :: MfaCompletion -> AttemptFactor
+completionFactor = \case
+  MfaPasskey _ -> FactorPasskey
+  MfaTotp _ -> FactorTotp
+  MfaRecoveryCode _ -> FactorRecoveryCode
+
+completionError :: MfaCompletion -> AuthError
+completionError = \case
+  MfaPasskey _ -> MfaAssertionInvalid
+  MfaTotp _ -> TotpCodeInvalid
+  MfaRecoveryCode _ -> RecoveryCodeInvalid
+
+-- | A passwordless failure has no resolved login id yet. Hash the presented credential id as
+-- the account key (or a fixed miss key if it cannot be decoded) while the IP budget remains shared.
+assertionAccountKey :: Value -> Text
+assertionAccountKey assertion = case assertionCredentialId assertion of
+  Just (WebAuthnCredentialId bytes) -> b64urlEncode bytes
+  Nothing -> "unknown-credential"

@@ -23,13 +23,13 @@ import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses)
 import Shomei.Servant.Result (ApplicationContentTypes, BadRequestPreHandlerResponses)
 
-type MfaCompleteRoute = "mfa" :> "complete" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] MfaCompleteRequest :> MultiVerb 'POST ApplicationContentTypes MfaCompleteResponses MfaCompleteResult
+type MfaCompleteRoute = "mfa" :> "complete" :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] MfaCompleteRequest :> MultiVerb 'POST ApplicationContentTypes MfaCompleteResponses MfaCompleteResult
 
 type TotpEnrollRoute = "totp" :> "enroll" :> Authenticated :> CsrfProtected :> MultiVerb 'POST ApplicationContentTypes TotpEnrollResponses TotpEnrollResult
 
 type TotpVerifyRoute = "totp" :> "verify" :> Authenticated :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] TotpVerifyRequest :> MultiVerb 'POST ApplicationContentTypes TotpVerifyResponses TotpVerifyResult
 
-type TotpDeleteRoute = "totp" :> Authenticated :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] TotpRemoveRequest :> MultiVerb 'DELETE ApplicationContentTypes TotpDeleteResponses TotpDeleteResult
+type TotpDeleteRoute = "totp" :> Authenticated :> CsrfProtected :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] TotpRemoveRequest :> MultiVerb 'DELETE ApplicationContentTypes TotpDeleteResponses TotpDeleteResult
 
 type RecoveryCodesGenerateRoute = "recovery-codes" :> Authenticated :> CsrfProtected :> MultiVerb 'POST ApplicationContentTypes RecoveryCodesGenerateResponses RecoveryCodesGenerateResult
 

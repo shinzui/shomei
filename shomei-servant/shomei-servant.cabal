@@ -89,6 +89,7 @@ library
     Shomei.Servant.Oidc
     Shomei.Servant.OpenApi
     Shomei.Servant.PreHandler
+    Shomei.Servant.RemoteHost
     Shomei.Servant.Result
     Shomei.Servant.Seam
     Shomei.Servant.Server

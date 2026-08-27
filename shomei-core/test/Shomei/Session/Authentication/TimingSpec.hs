@@ -17,7 +17,7 @@
 -- and hits take measurably different times again.
 module Shomei.Session.Authentication.TimingSpec (tests) where
 
-import Control.Monad (void)
+import Control.Monad (replicateM_, void)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -104,6 +104,10 @@ tests =
       testCase "suspended account still verifies a password" do
         (result, hashCalls) <- afterSignup suspendEveryone (loginEmail aliceEmail strongPw)
         expectLeft UserNotActive result
+        hashCalls @?= 1,
+      testCase "locked account still verifies a password" do
+        (result, hashCalls) <- afterSignup lockAlice (loginEmail aliceEmail strongPw)
+        expectLeft InvalidCredentials result
         hashCalls @?= 1,
       testCase "successful login verifies exactly once" do
         (result, hashCalls) <- afterSignup (\_ -> pure ()) (loginEmail aliceEmail strongPw)
@@ -218,6 +222,13 @@ suspendEveryone ref = do
   w <- readIORef ref
   counter <- newIORef 0
   runCounting ref counter (mapM_ (\u -> updateUserStatus u.userId UserSuspended) (Map.elems w.users))
+
+-- | Exhaust Alice's default five-attempt account budget before the measured login.
+lockAlice :: IORef World -> IO ()
+lockAlice ref = do
+  counter <- newIORef 0
+  replicateM_ 5 do
+    void (runCounting ref counter (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail wrongPw)))
 
 expectLeft :: AuthError -> Either AuthError a -> IO ()
 expectLeft expected = \case

@@ -106,6 +106,7 @@ roundTrips =
     let d = PasswordResetRequestedData uid aliceEmail t0 in check "password_reset_requested" d (PasswordResetRequested d),
     let d = PasswordResetCompletedData uid t0 in check "password_reset_completed" d (PasswordResetCompleted d),
     let d = PasswordChangedData uid t0 in check "password_changed" d (PasswordChanged d),
+    let d = PasswordChangeFailedData uid t0 in check "password_change_failed" d (PasswordChangeFailed d),
     let d = UserSuspendedData uid (Just uid2) t0 in check "user_suspended" d (UserSuspended d),
     let d = UserDeletedData uid (Just uid2) t0 in check "user_deleted" d (UserDeleted d),
     let d = UserReinstatedData uid (Just uid2) t0 in check "user_reinstated" d (UserReinstated d),
@@ -163,10 +164,10 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 41).
+-- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 42).
 testConstructorCount :: TestTree
 testConstructorCount =
-  testCase "covers all 41 AuthEvent constructors" (length roundTrips @?= 41)
+  testCase "covers all 42 AuthEvent constructors" (length roundTrips @?= 42)
 
 -- | EP-2 widened 'SessionRevokedData' with @revokedBy@. Rows written before that exist in every
 -- deployment's @shomei_auth_events@ (logout, refresh-token reuse, stopping an impersonation all

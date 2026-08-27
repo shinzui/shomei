@@ -10,6 +10,8 @@ module Shomei.Session.Command
     RefreshOrigin (..),
     LogoutCommand (..),
     ClientContext (..),
+    ProofContext (..),
+    proofContextFor,
   )
 where
 
@@ -55,3 +57,18 @@ data ClientContext = ClientContext
     accountKey :: !AccountKey
   }
   deriving stock (Generic, Show)
+
+-- | Request data shared by credential-proof workflows whose account is discovered inside the
+-- workflow. The opaque function hashes a normalized login identifier without pulling crypto into
+-- @shomei-core@.
+data ProofContext = ProofContext
+  { clientIp :: !ClientIp,
+    accountKeyOf :: !(Text -> AccountKey)
+  }
+
+proofContextFor :: ProofContext -> Text -> ClientContext
+proofContextFor pctx principal =
+  ClientContext
+    { clientIp = pctx.clientIp,
+      accountKey = pctx.accountKeyOf principal
+    }

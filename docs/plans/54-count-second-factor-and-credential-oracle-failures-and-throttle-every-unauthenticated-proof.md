@@ -48,11 +48,15 @@ against today's code after five wrong codes and is locked out once M2 lands.
 
 ## Progress
 
-- [ ] M1: `AttemptFactor` vocabulary; accounting helpers in `Shomei.Session.LoginAttempt.Workflow`;
+- [x] (2026-08-27T17:33:39Z) M1: `AttemptFactor` vocabulary; accounting helpers in `Shomei.Session.LoginAttempt.Workflow`;
       `login` refactored: suspended branch counted, locked branch hashes, MFA branch records no
-      success and clears no lockout; `TimingSpec` and `LockoutSpec` cases.
-- [ ] M2: negative test observed failing pre-fix (transcript in Surprises); `ProofContext`; the four
-      proof workflows gated and counted; `PasswordChangeFailed`; `RemoteHost` on four routes; tests green.
+      success and clears no lockout; `TimingSpec` and `LockoutSpec` cases; 262 core and 61
+      PostgreSQL tests passed.
+- [x] (2026-08-27T17:27:58Z) M2 regression: added the HTTP TOTP-guessing scenario and observed
+      the pre-fix correct proof return `200` after the fifth wrong code (transcript in Surprises).
+- [x] (2026-08-27T17:48:45Z) M2: `ProofContext`; the four proof workflows gated and counted;
+      `PasswordChangeFailed`; `RemoteHost` on four routes; TOTP, passkey, password-change, and
+      removal lockout regressions green. The core, PostgreSQL, Servant, and server suites passed.
 - [ ] M3: `auth_time` on claims, sessions, and the wire; refresh preserves it; gates read it; TOTP
       removal requires freshness; docs reworded.
 - [ ] M4: `Shomei.Servant.Throttle`; thirteen routes marked; conformance test; `api.md` and
@@ -65,7 +69,29 @@ against today's code after five wrong codes and is locked out once M2 lands.
 Document unexpected behaviors, bugs, optimizations, or insights discovered during
 implementation. Provide concise evidence.
 
-(None yet. The first entry must be the pre-fix transcript of the M2 negative test.)
+- The M2 HTTP regression reproduced the unbounded TOTP oracle before any workflow changes. A
+  ceremony created before the fifth bad proof still minted tokens when completed with the correct
+  code afterward:
+
+  ```text
+  EP-4: a TOTP guessing loop is locked out after maxFailedLoginsPerAccount wrong codes: FAIL
+    locked completion body: Just (Object ... accessToken ...)
+    expected: 401
+     but got: 200
+  ```
+
+  The command was `cabal test shomei-servant --test-options='-p EP-4'
+  --test-show-details=direct`; the unrelated OpenAPI test executable rejected the forwarded tasty
+  pattern, while `shomei-servant-test` ran the scenario and produced the evidence above.
+
+- The migration allocator placed `login-attempts-factor` at `0033`, not the draft's illustrative
+  `0029`, because EP-1 through EP-3 had already landed migrations through `0032`. This confirms the
+  MasterPlan rule that migration slugs, rather than draft numbers, carry identity.
+
+- The initial HTTP regression advanced the proof clock but left the successful enrollment/login in
+  the future. Because failure counting deliberately starts after the latest success, those failures
+  were correctly excluded. Keeping the enrollment at the fixture clock and moving only the proof
+  clock forward made the test model real monotonic time and exposed the intended pre-fix `200`.
 
 
 ## Decision Log
@@ -143,6 +169,14 @@ implementation. Provide concise evidence.
   event (`password_change_failed`, subject `userId`) rather than reusing `LoginFailed`.
   Rationale: `LoginFailedData` carries a login id and no user id; a password-change failure has a
   proven user and no presented identifier, and `shomei-admin audit user <id>` should show it.
+  Date: 2026-08-27
+
+- Decision: Socket-address rendering lives in the lower-level `Shomei.Servant.RemoteHost` module;
+  `Shomei.Session.Handler` re-exports `clientIpText` for compatibility while account, MFA, and
+  passkey handlers import the lower module directly.
+  Rationale: Importing the existing session handler helper from the account handler introduced an
+  account/session handler cycle. The conversion is transport infrastructure shared by all handlers,
+  not session behavior.
   Date: 2026-08-27
 
 

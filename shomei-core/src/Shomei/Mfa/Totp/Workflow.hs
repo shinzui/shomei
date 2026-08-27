@@ -49,6 +49,10 @@ import Shomei.Mfa.Totp.Store
   )
 import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Command (ProofContext, proofContextFor)
+import Shomei.Session.LoginAttempt.Domain (AttemptFactor (..))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.LoginAttempt.Workflow (AbuseGate (..), guardAbuse, recordProofFailure, recordProofSuccess)
 import Shomei.Session.Token.Generator (TokenGen, generateRandomBytes)
 import Shomei.Time.Store (Clock, now)
 
@@ -137,21 +141,35 @@ removeTotp ::
   ( TotpCredentialStore :> es,
     RecoveryCodeStore :> es,
     AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
     Clock :> es
   ) =>
   ShomeiConfig ->
+  ProofContext ->
   User ->
   TotpRemovalProof ->
   Eff es (Either AuthError ())
-removeTotp _cfg user proof = runErrorNoCallStack do
+removeTotp cfg pctx user proof = runErrorNoCallStack do
   ts <- now
   let User {userId = uid} = user
+      ctx = proofContextFor pctx (loginIdText user.loginId)
+      factor = case proof of
+        RemoveWithCode _ -> FactorTotp
+        RemoveWithRecoveryCode _ -> FactorRecoveryCode
+      proofError = case proof of
+        RemoveWithCode _ -> TotpCodeInvalid
+        RemoveWithRecoveryCode _ -> RecoveryCodeInvalid
+  gate <- guardAbuse cfg.rateLimitConfig ctx ts
+  when gate.locked do
+    publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "account_locked" ts))
+    throwError proofError
   cred <- maybe (throwError TotpEnrollmentNotFound) pure =<< findTotpByUser uid
   case proof of
     RemoveWithCode code ->
       case verifyTotp (secretOf cred) (lastUsedOf cred) ts code of
         Just accepted -> setTotpLastUsedCounter (tcId cred) accepted
         Nothing -> do
+          recordProofFailure cfg.rateLimitConfig ctx FactorTotp ts
           publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_invalid" ts))
           throwError TotpCodeInvalid
     RemoveWithRecoveryCode rc -> do
@@ -159,8 +177,10 @@ removeTotp _cfg user proof = runErrorNoCallStack do
       if ok
         then publishAuthEvent (Event.RecoveryCodeUsed (Event.RecoveryCodeUsedData uid ts))
         else do
+          recordProofFailure cfg.rateLimitConfig ctx FactorRecoveryCode ts
           publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "recovery_invalid" ts))
           throwError RecoveryCodeInvalid
+  recordProofSuccess ctx factor gate.standingLockout ts
   deleteTotpByUser uid
   publishAuthEvent (Event.TotpRemoved (Event.TotpRemovedData uid ts))
 

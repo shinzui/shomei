@@ -118,6 +118,7 @@ library
     Shomei.Session.Domain
     Shomei.Session.LoginAttempt.Domain
     Shomei.Session.LoginAttempt.Store
+    Shomei.Session.LoginAttempt.Workflow
     Shomei.Session.RefreshToken.Domain
     Shomei.Session.RefreshToken.Store
     Shomei.Session.Store

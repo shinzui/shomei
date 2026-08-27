@@ -1,5 +1,6 @@
 module Shomei.AccountSpec (tests) where
 
+import Control.Monad (replicateM_)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -34,9 +35,9 @@ import Shomei.Error
     PasswordPolicyViolation (PasswordBreached, PasswordResemblesIdentity, PasswordTooCommon),
   )
 import Shomei.Session.Authentication.Workflow (login, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
-import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AttemptFactor (..), ClientIp (..), LoginAttempt (..), LoginOutcome (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
@@ -62,6 +63,9 @@ newPw = PlainPassword "correct horse battery staple two"
 
 wrongPw :: PlainPassword
 wrongPw = PlainPassword "totally the wrong password"
+
+proofContext :: ProofContext
+proofContext = ProofContext {clientIp = ClientIp "test-ip", accountKeyOf = AccountKey}
 
 mkEmail' :: Text -> Email
 mkEmail' t = case mkEmail t of
@@ -93,6 +97,7 @@ tests =
       testConfirmPasswordReset,
       testRejectConsumedReset,
       testChangePasswordWrongCurrent,
+      testChangePasswordFailuresLock,
       testChangePasswordRejectsCommon,
       testChangePasswordRejectsIdentity,
       testConfirmResetRejectsCommon,
@@ -165,7 +170,7 @@ testChangePasswordRejectsBreached = testCase "change password rejects a breached
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
   seedBreached ref newPw
-  result <- runInMemory ref (changePassword breachCfg (ChangePassword user.userId strongPw newPw))
+  result <- runInMemory ref (changePassword breachCfg proofContext (ChangePassword user.userId strongPw newPw))
   result @?= Left (WeakPassword PasswordBreached)
 
 testConfirmResetRejectsBreached :: TestTree
@@ -190,14 +195,14 @@ testChangePasswordRejectsCommon :: TestTree
 testChangePasswordRejectsCommon = testCase "change password rejects a common new password" do
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
-  result <- runInMemory ref (changePassword cfg (ChangePassword user.userId strongPw commonPw))
+  result <- runInMemory ref (changePassword cfg proofContext (ChangePassword user.userId strongPw commonPw))
   result @?= Left (WeakPassword PasswordTooCommon)
 
 testChangePasswordRejectsIdentity :: TestTree
 testChangePasswordRejectsIdentity = testCase "change password rejects an identity-derived new password" do
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- expectRight =<< runInMemory ref (signup smallMinCfg (signupEmail aliceEmail strongPw Nothing))
-  result <- runInMemory ref (changePassword smallMinCfg (ChangePassword user.userId strongPw (PlainPassword "alice")))
+  result <- runInMemory ref (changePassword smallMinCfg proofContext (ChangePassword user.userId strongPw (PlainPassword "alice")))
   result @?= Left (WeakPassword PasswordResemblesIdentity)
 
 testConfirmResetRejectsCommon :: TestTree
@@ -285,12 +290,31 @@ testChangePasswordWrongCurrent :: TestTree
 testChangePasswordWrongCurrent = testCase "change password with wrong current password is rejected" do
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
-  result <- runInMemory ref (changePassword cfg (ChangePassword user.userId wrongPw newPw))
+  result <- runInMemory ref (changePassword cfg proofContext (ChangePassword user.userId wrongPw newPw))
   result @?= Left InvalidCredentials
   w <- readIORef ref
   assertBool "password hash is unchanged" (all oldHash (Map.elems w.credsByLoginId))
   where
     oldHash c = c.passwordHash == PasswordHash "argon2-fake:correct horse battery staple"
+
+testChangePasswordFailuresLock :: TestTree
+testChangePasswordFailuresLock = testCase "five wrong current passwords lock and audit the account" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  replicateM_ 5 do
+    result <- runInMemory ref (changePassword cfg proofContext (ChangePassword user.userId wrongPw newPw))
+    result @?= Left InvalidCredentials
+  denied <- runInMemory ref (login cfg (ClientContext (ClientIp "other-ip") (AccountKey (emailText aliceEmail))) (loginEmail aliceEmail strongPw))
+  denied @?= Left InvalidCredentials
+  w <- readIORef ref
+  length [() | Event.PasswordChangeFailed _ <- w.publishedEvents] @?= 5
+  length
+    [ ()
+    | attempt <- w.loginAttempts,
+      attempt.factor == FactorPasswordChange,
+      attempt.outcome == LoginFailure
+    ]
+    @?= 5
 
 verificationRequestedWorld :: IO (IORef World, OneTimeToken)
 verificationRequestedWorld = do

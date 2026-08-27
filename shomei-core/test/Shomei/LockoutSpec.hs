@@ -16,6 +16,9 @@ import Effectful.Dispatch.Dynamic (interpose, passthrough, send)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
+import Shomei.Account.User.Store (updateUserStatus)
+import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Error (AuthError (..))
@@ -130,6 +133,7 @@ tests =
       testUnlockAfterCooldown,
       testSuccessClearsCounter,
       testPerIpThrottle,
+      testSuspendedAttemptsCount,
       testNoLockoutIssuesNoClear,
       testStandingLockoutStillCleared
     ]
@@ -255,3 +259,21 @@ testPerIpThrottle = testCase "per-IP failure throttle trips across different acc
   -- The SAME attempt from a DIFFERENT IP returns the ordinary generic error, not 429.
   other <- badLogin ref ip2 (mkEmail' "u6@example.com")
   other @?= Left InvalidCredentials
+
+testSuspendedAttemptsCount :: TestTree
+testSuspendedAttemptsCount = testCase "attempts against a suspended account count and publish LoginFailed" do
+  ref <- newIORef (emptyWorld t0)
+  seedAlice ref
+  w0 <- readIORef ref
+  case Map.elems w0.users of
+    [user] -> runInMemory ref (updateUserStatus user.userId UserSuspended)
+    users -> assertFailure ("expected one seeded user, got " <> show (length users))
+  r1 <- goodLogin ref ip1 aliceEmail
+  r2 <- goodLogin ref ip1 aliceEmail
+  r3 <- goodLogin ref ip1 aliceEmail
+  r1 @?= Left UserNotActive
+  r2 @?= Left UserNotActive
+  r3 @?= Left UserNotActive
+  w <- readIORef ref
+  assertBool "the suspended account is locked after three attempts" (isLocked w (keyOf aliceEmail))
+  length [() | Event.LoginFailed _ <- w.publishedEvents] @?= 3

@@ -35,7 +35,7 @@ import Shomei.Passkey.Domain
   )
 import Shomei.Passkey.Store (createPasskey)
 import Shomei.Session.Authentication.Workflow (login, refresh, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
 import Shomei.Session.Token.Domain (TokenPair (..))
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
@@ -85,7 +85,7 @@ tests =
         seedUserWithPasskey ref
         (cid, opts) <- expectRight =<< runInMemory ref (beginPasswordlessLogin gatedCfg)
         chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-        result <- runInMemory ref (completePasswordlessLogin gatedCfg cid (acceptedAssertion chal))
+        result <- runInMemory ref (completePasswordlessLogin gatedCfg proofContext cid (acceptedAssertion chal))
         expectBlocked result
     ]
 
@@ -99,6 +99,9 @@ expectBlocked = \case
 
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
+
+proofContext :: ProofContext
+proofContext = ProofContext {clientIp = ClientIp "test-ip", accountKeyOf = AccountKey}
 
 -- | The raw token from the most recent email-verification notification.
 verificationTokenOf :: IORef World -> IO OneTimeToken

@@ -33,7 +33,7 @@ type RemovePasskeyRoute = "passkeys" :> Authenticated :> CsrfProtected :> PreHan
 
 type PasskeyLoginBeginRoute = "login" :> "passkey" :> "begin" :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginBeginResponses PasskeyLoginBeginResult
 
-type PasskeyLoginCompleteRoute = "login" :> "passkey" :> "complete" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasskeyLoginCompleteRequest :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginCompleteResponses PasskeyLoginCompleteResult
+type PasskeyLoginCompleteRoute = "login" :> "passkey" :> "complete" :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] PasskeyLoginCompleteRequest :> MultiVerb 'POST ApplicationContentTypes PasskeyLoginCompleteResponses PasskeyLoginCompleteResult
 
 data PasskeyApi mode = PasskeyApi
   { registerBegin :: mode :- RegisterBeginRoute,

@@ -10,6 +10,7 @@
 -- rotation, the public JWKS document, and the @RequireRole "admin"@ guard (403/200).
 module Main (main) where
 
+import Control.Monad (replicateM_)
 import Crypto.JOSE.Compact (decodeCompact)
 import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.JWK (JWK, JWKSet)
@@ -1426,6 +1427,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "EP-7 TOTP: enroll → verify → mfa_required(methods) → complete; replay 401; recovery gen/use/count; impersonation 403; remove; freshness 403" $ do
         (r, e) <- freshTotpEnv
         testWithApplication (pure (app e)) (scenarioTotp r jwk cfg),
+      testCase "EP-4: a TOTP guessing loop is locked out after maxFailedLoginsPerAccount wrong codes" $ do
+        (r, e) <- freshTotpEnv
+        testWithApplication (pure (app e)) (scenarioTotpLockout r),
       testCase "GET /.well-known/openid-configuration: derived from the issuer when enabled, 404 in the OAuth shape when not" $ do
         e <- freshOidcEnv
         testWithApplication (pure (app e)) scenarioOidcDiscoveryEnabled
@@ -3477,6 +3481,75 @@ scenarioTotp r jwk cfg port = do
   (frStatus, frBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer totpAccess)
   frStatus @?= 403
   (frBody >>= dig ["code"] >>= asText) @?= Just "reauthentication_required"
+
+-- | Regression for EP-4's account-wide second-factor budget. Five wrong TOTP proofs must lock
+-- the account even when each proof follows a correct password, and a ceremony created before
+-- the lockout must not let the correct code through afterward.
+scenarioTotpLockout :: IORef World -> Int -> IO ()
+scenarioTotpLockout r port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "totp-lockout@example.com" :: Text
+      pw = "correct horse battery staple totp lockout" :: Text
+      login = postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= pw])
+      complete cid code =
+        postJSON
+          mgr
+          port
+          "/v1/auth/mfa/complete"
+          (object ["ceremonyId" .= cid, "proof" .= object ["type" .= ("totp" :: Text), "code" .= code]])
+      challenge = do
+        (status, body) <- login
+        status @?= 200
+        (body >>= dig ["status"] >>= asText) @?= Just "mfa_required"
+        must "lockout ceremonyId" (body >>= dig ["ceremonyId"] >>= asText)
+
+  (signupStatus, _) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/signup"
+      (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("Lockout" :: Text)])
+  signupStatus @?= 201
+  (loginStatus, loginBody) <- login
+  loginStatus @?= 200
+  access <- must "lockout login accessToken" (loginBody >>= dig ["token", "accessToken"] >>= asText)
+
+  now0 <- clock <$> readIORef r
+  let start = now0
+  setClock r start
+  (enrollStatus, enrollBody) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer access)
+  enrollStatus @?= 200
+  secretB32 <- must "lockout enroll secret" (enrollBody >>= dig ["secret"] >>= asText)
+  secret <- either (\e -> assertFailure ("bad base32 secret: " <> e)) pure (base32ToSecret secretB32)
+  let codeAt t = totpCode 6 secret (totpCounter t)
+  (verifyStatus, _) <-
+    postJSONAuth mgr port "/v1/auth/totp/verify" (bearer access) (object ["code" .= codeAt start])
+  verifyStatus @?= 200
+
+  let proofTime = addUTCTime 60 start
+      correct = codeAt proofTime
+      wrong = if correct == "000000" then "999999" else "000000"
+  setClock r proofTime
+
+  replicateM_ 4 do
+    cid <- challenge
+    (status, body) <- complete cid wrong
+    status @?= 401
+    (body >>= dig ["code"] >>= asText) @?= Just "totp_code_invalid"
+
+  cidA <- challenge
+  cidB <- challenge
+  (fifthStatus, fifthBody) <- complete cidA wrong
+  fifthStatus @?= 401
+  (fifthBody >>= dig ["code"] >>= asText) @?= Just "totp_code_invalid"
+
+  (lockedCompletionStatus, lockedCompletionBody) <- complete cidB correct
+  assertEqual ("locked completion body: " <> show lockedCompletionBody) 401 lockedCompletionStatus
+  (lockedCompletionBody >>= dig ["code"] >>= asText) @?= Just "totp_code_invalid"
+
+  (lockedLoginStatus, lockedLoginBody) <- login
+  assertEqual ("locked login body: " <> show lockedLoginBody) 401 lockedLoginStatus
+  (lockedLoginBody >>= dig ["code"] >>= asText) @?= Just "invalid_login"
 
 -- Request helpers (parseRequest does not throw on non-2xx, so 401/403/404 come back
 -- as ordinary responses).

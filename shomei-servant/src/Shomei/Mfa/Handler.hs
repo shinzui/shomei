@@ -2,6 +2,7 @@
 module Shomei.Mfa.Handler (mfaServer) where
 
 import Data.Time (addUTCTime)
+import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Handler (loadUser)
@@ -20,9 +21,12 @@ import Shomei.Servant.Application (ApplicationHandler, port, rejectProblem, runA
 import Shomei.Servant.Auth (AuthUser (..))
 import Shomei.Servant.Cookie (tokenCookies)
 import Shomei.Servant.Error (detailOccurrence, noProblemOccurrence, pcBadRequest, pcReauthenticationRequired)
+import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
+import Shomei.Session.Command (ProofContext (..))
 import Shomei.Session.Dto (tokenPairToResponse)
+import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
 import Shomei.Time.Store (now)
 
 mfaServer :: Env -> MfaApi (AsServerT Handler)
@@ -36,14 +40,14 @@ mfaServer env =
       recoveryCodesCount = recoveryCodesCountH env
     }
 
-completeH :: Env -> MfaCompleteRequest -> Handler MfaCompleteResult
-completeH env request = runApplicationHandler do
+completeH :: Env -> SockAddr -> MfaCompleteRequest -> Handler MfaCompleteResult
+completeH env peer request = runApplicationHandler do
   ceremonyId <-
     either
       (const (rejectProblem pcBadRequest (detailOccurrence "invalid ceremonyId")))
       pure
       (parseId request.ceremonyId)
-  (_, tokens) <- workflow env (Mfa.completeMfa env.config ceremonyId (mfaCompletionOf request))
+  (_, tokens) <- workflow env (Mfa.completeMfa env.config (proofContext env peer) ceremonyId (mfaCompletionOf request))
   pure (cookieResponse env.config (tokenCookies env.config tokens) (tokenPairToResponse env.config tokens))
 
 totpEnrollH :: Env -> AuthUser -> Handler TotpEnrollResult
@@ -58,11 +62,11 @@ totpVerifyH env authUser request = runApplicationHandler do
   user <- loadUser env authUser
   workflow env (Totp.verifyTotpEnrollment env.config user request.code)
 
-totpDeleteH :: Env -> AuthUser -> TotpRemoveRequest -> Handler TotpDeleteResult
-totpDeleteH env authUser request = runApplicationHandler do
+totpDeleteH :: Env -> AuthUser -> SockAddr -> TotpRemoveRequest -> Handler TotpDeleteResult
+totpDeleteH env authUser peer request = runApplicationHandler do
   denyUnderDelegation env "totp_remove" authUser
   user <- loadUser env authUser
-  workflow env (Totp.removeTotp env.config user (totpRemovalProofOf request))
+  workflow env (Totp.removeTotp env.config (proofContext env peer) user (totpRemovalProofOf request))
 
 recoveryCodesGenerateH :: Env -> AuthUser -> Handler RecoveryCodesGenerateResult
 recoveryCodesGenerateH env authUser = runApplicationHandler do
@@ -83,3 +87,10 @@ requireFreshAuth env user = do
   let window = env.config.impersonationConfig.actorFreshnessWindow
   when (timestamp > addUTCTime window user.authClaims.issuedAt) $
     rejectProblem pcReauthenticationRequired noProblemOccurrence
+
+proofContext :: Env -> SockAddr -> ProofContext
+proofContext env peer =
+  ProofContext
+    { clientIp = ClientIp (clientIpText peer),
+      accountKeyOf = env.accountKeyOf
+    }

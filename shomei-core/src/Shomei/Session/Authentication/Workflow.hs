@@ -62,19 +62,13 @@ import Shomei.Passkey.Store (PasskeyStore, countPasskeysByUser)
 import Shomei.Prelude
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
-import Shomei.Session.LoginAttempt.Domain
-  ( AccountLockout (..),
-    LoginOutcome (..),
-    NewLoginAttempt (..),
-  )
-import Shomei.Session.LoginAttempt.Store
-  ( LoginAttemptStore,
-    clearAccountLockout,
-    countRecentFailuresByAccount,
-    countRecentFailuresByIp,
-    getAccountLockout,
-    recordLoginAttempt,
-    setAccountLockout,
+import Shomei.Session.LoginAttempt.Domain (AttemptFactor (FactorPassword))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.LoginAttempt.Workflow
+  ( AbuseGate (..),
+    guardAbuse,
+    recordProofFailure,
+    recordProofSuccess,
   )
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..))
 import Shomei.Session.RefreshToken.Domain qualified as RT
@@ -224,26 +218,12 @@ login ::
 login cfg ctx cmd = runErrorNoCallStack do
   ts <- now
   let rl = cfg.rateLimitConfig
-      cutoff = addUTCTime (negate rl.lockoutWindow) ts
-  -- Per-IP throttle first: a read-only, account-agnostic gate that leaks nothing. We do
-  -- NOT record a new attempt here (that would let an attacker keep themselves throttled).
-  --
-  -- The lockout row this reads is carried to the success path below, which clears it only when
-  -- one actually exists. When rate limiting is off no lockout can exist — only the rate-limited
-  -- failure path ever writes one — so 'Nothing' is correct for that branch too.
-  mLock <-
-    if rl.rateLimitEnabled
-      then do
-        ipFails <- countRecentFailuresByIp ctx.clientIp cutoff
-        when (ipFails >= rl.maxFailedLoginsPerIp) do
-          publishAuthEvent (Event.LoginThrottled (Event.LoginThrottledData ctx.clientIp ipFails ts))
-          throwError TooManyRequests
-        -- Account lockout: a still-locked account returns the SAME generic error as a wrong
-        -- password (never 'AccountLocked'), so a locked account is indistinguishable.
-        lockRow <- getAccountLockout ctx.accountKey
-        when (maybe False (\lo -> maybe False (> ts) lo.lockedUntil) lockRow) (throwError InvalidCredentials)
-        pure lockRow
-      else pure Nothing
+  gate <- guardAbuse rl ctx ts
+  -- A locked account is still charged one Argon2id verification. Returning before hashing made
+  -- lock state observable through response time even though the HTTP error stayed generic.
+  when gate.locked do
+    verifyPasswordDummy cmd.password
+    throwError InvalidCredentials
   -- Every failure path below performs exactly one password-hashing operation. The paths that
   -- never reach a stored hash call 'verifyPasswordDummy' instead, which burns an equivalent
   -- amount of Argon2id work, so a miss cannot be told apart from a wrong password by response
@@ -254,29 +234,17 @@ login cfg ctx cmd = runErrorNoCallStack do
   user <- maybe (failLoginTimed rl ctx cmd ts) pure mUser
   when (user.status /= UserActive) do
     verifyPasswordDummy cmd.password
+    recordProofFailure rl ctx FactorPassword ts
+    publishAuthEvent (Event.LoginFailed (Event.LoginFailedData cmd.loginId ts))
     throwError UserNotActive
   ok <- verifyPassword cmd.password cred.passwordHash
   unless ok (failLogin rl ctx cmd.loginId ts)
-  recordLoginAttempt
-    NewLoginAttempt
-      { accountKey = ctx.accountKey,
-        clientIp = ctx.clientIp,
-        outcome = LoginSuccess,
-        occurredAt = ts
-      }
-  -- Only delete a lockout row that the read above actually found. Lockouts are rare, so the
-  -- unconditional DELETE this replaces cost a wasted round-trip on virtually every login. A row
-  -- whose 'lockedUntil' has already passed is still cleared, exactly as before.
-  when (isJust mLock) (clearAccountLockout ctx.accountKey)
   -- Gate before the MFA branch, so an account with an unverified email is not even offered a
   -- ceremony. The password was already proven correct here, so naming the reason discloses
   -- nothing the caller does not know (see 'EmailNotVerified').
   either throwError pure (ensureEmailVerified cfg user)
-  -- The password factor succeeded; success is recorded and the lockout cleared above,
-  -- regardless of whether a second factor is then demanded (so an attacker who guesses the
-  -- password but cannot pass MFA cannot lock out the legitimate user). NOW branch: if the
-  -- account has a passkey and MFA is required, return a challenge WITHOUT a token; otherwise
-  -- mint the session inline as before.
+  -- A password that leads to MFA is not yet a successful login: recording success here would let
+  -- every password proof reset the counter immediately before another second-factor guess.
   passkeyCount <- countPasskeysByUser user.userId
   totpEnrolled <- maybe False isTotpConfirmed <$> findTotpByUser user.userId
   let hasSecondFactor = passkeyCount > 0 || totpEnrolled
@@ -285,6 +253,7 @@ login cfg ctx cmd = runErrorNoCallStack do
       (cid, optionsJson, methods) <- prepareMfaChallenge cfg user ts
       pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson, methods = methods})
     else do
+      recordProofSuccess ctx FactorPassword gate.standingLockout ts
       (_sid, pair) <- issueSession cfg user ts
       pure (LoginComplete user pair)
 
@@ -322,22 +291,8 @@ failLogin ::
   UTCTime ->
   Eff es a
 failLogin rl ctx loginId ts = do
-  recordLoginAttempt
-    NewLoginAttempt
-      { accountKey = ctx.accountKey,
-        clientIp = ctx.clientIp,
-        outcome = LoginFailure,
-        occurredAt = ts
-      }
+  recordProofFailure rl ctx FactorPassword ts
   publishAuthEvent (Event.LoginFailed (Event.LoginFailedData loginId ts))
-  when rl.rateLimitEnabled do
-    let cutoff = addUTCTime (negate rl.lockoutWindow) ts
-    acctFails <- countRecentFailuresByAccount ctx.accountKey cutoff
-    when (acctFails >= rl.maxFailedLoginsPerAccount) do
-      let lockedUntil = addUTCTime rl.lockoutDuration ts
-      setAccountLockout (AccountLockout ctx.accountKey acctFails (Just lockedUntil) ts)
-      publishAuthEvent
-        (Event.AccountLocked (Event.AccountLockedData ctx.accountKey ctx.clientIp acctFails lockedUntil ts))
   throwError InvalidCredentials
 
 data Refreshed = Refreshed

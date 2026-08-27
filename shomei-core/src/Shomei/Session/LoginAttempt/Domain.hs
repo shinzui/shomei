@@ -3,6 +3,7 @@
 -- hash, never the plaintext email, so the abuse store cannot become an enumeration oracle.
 module Shomei.Session.LoginAttempt.Domain
   ( LoginOutcome (..),
+    AttemptFactor (..),
     AccountKey (..),
     ClientIp (..),
     LoginAttempt (..),
@@ -15,6 +16,16 @@ import Shomei.Prelude
 
 -- | Whether an attempt succeeded or failed. (We log both; success clears the counter.)
 data LoginOutcome = LoginSuccess | LoginFailure
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- | Which credential an attempt proved or failed to prove. All factors share one lockout.
+data AttemptFactor
+  = FactorPassword
+  | FactorTotp
+  | FactorRecoveryCode
+  | FactorPasskey
+  | FactorPasswordChange
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -33,7 +44,8 @@ data LoginAttempt = LoginAttempt
   { accountKey :: !AccountKey,
     clientIp :: !ClientIp,
     outcome :: !LoginOutcome,
-    occurredAt :: !UTCTime
+    occurredAt :: !UTCTime,
+    factor :: !AttemptFactor
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -43,7 +55,8 @@ data NewLoginAttempt = NewLoginAttempt
   { accountKey :: !AccountKey,
     clientIp :: !ClientIp,
     outcome :: !LoginOutcome,
-    occurredAt :: !UTCTime
+    occurredAt :: !UTCTime,
+    factor :: !AttemptFactor
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

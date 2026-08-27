@@ -37,7 +37,7 @@ type PasswordResetRequestRoute = "password-reset" :> "request" :> RateLimited :>
 
 type PasswordResetConfirmRoute = "password-reset" :> "confirm" :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ConfirmPasswordResetRequest :> MultiVerb 'POST ApplicationContentTypes PasswordResetConfirmResponses PasswordResetConfirmResult
 
-type PasswordChangeRoute = "password" :> "change" :> Authenticated :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ChangePasswordRequest :> MultiVerb 'POST ApplicationContentTypes PasswordChangeResponses PasswordChangeResult
+type PasswordChangeRoute = "password" :> "change" :> Authenticated :> CsrfProtected :> RemoteHost :> PreHandlerResponses BadRequestPreHandlerResponses :> ReqBody '[JSON] ChangePasswordRequest :> MultiVerb 'POST ApplicationContentTypes PasswordChangeResponses PasswordChangeResult
 
 type MeRoute = Authenticated :> "me" :> MultiVerb 'GET ApplicationContentTypes MeResponses MeResult
 

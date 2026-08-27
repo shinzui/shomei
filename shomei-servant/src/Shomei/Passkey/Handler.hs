@@ -2,6 +2,7 @@
 module Shomei.Passkey.Handler (passkeyServer) where
 
 import Data.Text (Text)
+import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Delegation.Handler (denyUnderDelegation)
@@ -15,9 +16,12 @@ import Shomei.Servant.Application (ApplicationHandler, port, rejectProblem, runA
 import Shomei.Servant.Auth (AuthUser (..))
 import Shomei.Servant.Cookie (tokenCookies)
 import Shomei.Servant.Error (detailOccurrence, pcBadRequest)
+import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
+import Shomei.Session.Command (ProofContext (..))
 import Shomei.Session.Dto (tokenPairToResponse)
+import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
 
 passkeyServer :: Env -> PasskeyApi (AsServerT Handler)
 passkeyServer env =
@@ -56,10 +60,11 @@ loginBeginH env = runApplicationHandler do
   (ceremonyId, options) <- workflow env (Mfa.beginPasswordlessLogin env.config)
   pure PasskeyLoginBeginResponse {ceremonyId = idText ceremonyId, options}
 
-loginCompleteH :: Env -> PasskeyLoginCompleteRequest -> Handler PasskeyLoginCompleteResult
-loginCompleteH env request = runApplicationHandler do
+loginCompleteH :: Env -> SockAddr -> PasskeyLoginCompleteRequest -> Handler PasskeyLoginCompleteResult
+loginCompleteH env peer request = runApplicationHandler do
   ceremonyId <- parseCeremonyId request.ceremonyId
-  (_, tokens) <- workflow env (Mfa.completePasswordlessLogin env.config ceremonyId request.assertion)
+  let pctx = ProofContext {clientIp = ClientIp (clientIpText peer), accountKeyOf = env.accountKeyOf}
+  (_, tokens) <- workflow env (Mfa.completePasswordlessLogin env.config pctx ceremonyId request.assertion)
   pure (cookieResponse env.config (tokenCookies env.config tokens) (tokenPairToResponse env.config tokens))
 
 parseCeremonyId :: Text -> ApplicationHandler CeremonyId

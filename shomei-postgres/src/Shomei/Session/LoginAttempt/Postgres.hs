@@ -11,7 +11,7 @@ module Shomei.Session.LoginAttempt.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip4, contrazip5)
+import Contravariant.Extras (contrazip2, contrazip4, contrazip6)
 import Data.Int (Int32, Int64)
 import Data.UUID (UUID)
 import Data.UUID.V4 qualified as UUIDv4
@@ -23,7 +23,7 @@ import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Shomei.Error (AuthError (..))
-import Shomei.Persistence.Codec.Postgres (loginOutcomeToText)
+import Shomei.Persistence.Codec.Postgres (attemptFactorToText, loginOutcomeToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
 import Shomei.Prelude
 import Shomei.Session.LoginAttempt.Domain
@@ -43,7 +43,7 @@ runLoginAttemptStorePostgres = interpret_ \case
     aid <- liftIO UUIDv4.nextRandom
     let AccountKey k = na.accountKey
         ClientIp ip = na.clientIp
-        row = (aid, k, ip, loginOutcomeToText na.outcome, na.occurredAt)
+        row = (aid, k, ip, loginOutcomeToText na.outcome, na.occurredAt, attemptFactorToText na.factor)
     res <- runSession (Session.statement row insertAttemptStmt)
     either dbFail (const (pure ())) res
   CountRecentFailuresByAccount (AccountKey k) cutoff -> do
@@ -76,22 +76,23 @@ rebuildLockout k (fc, lu, ua) =
       updatedAt = ua
     }
 
-type AttemptRow = (UUID, Text, Text, Text, UTCTime)
+type AttemptRow = (UUID, Text, Text, Text, UTCTime, Text)
 
 insertAttemptStmt :: Statement AttemptRow ()
 insertAttemptStmt =
   preparable
     """
     INSERT INTO shomei.shomei_login_attempts
-      (attempt_id, account_key, client_ip, outcome, occurred_at)
-    VALUES ($1, $2, $3, $4, $5)
+      (attempt_id, account_key, client_ip, outcome, occurred_at, factor)
+    VALUES ($1, $2, $3, $4, $5, $6)
     """
-    ( contrazip5
+    ( contrazip6
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.text))
         (E.param (E.nonNullable E.timestamptz))
+        (E.param (E.nonNullable E.text))
     )
     D.noResult
 

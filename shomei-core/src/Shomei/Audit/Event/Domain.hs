@@ -22,6 +22,7 @@ module Shomei.Audit.Event.Domain
     PasswordResetRequestedData (..),
     PasswordResetCompletedData (..),
     PasswordChangedData (..),
+    PasswordChangeFailedData (..),
     UserSuspendedData (..),
     UserDeletedData (..),
     UserReinstatedData (..),
@@ -155,6 +156,13 @@ data PasswordResetCompletedData = PasswordResetCompletedData
   deriving anyclass (FromJSON, ToJSON)
 
 data PasswordChangedData = PasswordChangedData
+  { userId :: !UserId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
+data PasswordChangeFailedData = PasswordChangeFailedData
   { userId :: !UserId,
     occurredAt :: !UTCTime
   }
@@ -509,6 +517,7 @@ data AuthEvent
   | PasswordResetRequested PasswordResetRequestedData
   | PasswordResetCompleted PasswordResetCompletedData
   | PasswordChanged PasswordChangedData
+  | PasswordChangeFailed PasswordChangeFailedData
   | UserSuspended UserSuspendedData
   | UserDeleted UserDeletedData
   | UserReinstated UserReinstatedData

@@ -17,6 +17,7 @@ module Shomei.Persistence.Codec.Postgres
     signingKeyStatusFromText,
     loginOutcomeToText,
     loginOutcomeFromText,
+    attemptFactorToText,
     emailFromDb,
     maybeEmailFromDb,
     loginIdFromDb,
@@ -31,7 +32,7 @@ import Shomei.Account.OneTimeToken.Domain (OneTimeTokenStatus (..))
 import Shomei.Account.User.Domain (UserStatus (..))
 import Shomei.Prelude
 import Shomei.Session.Domain (SessionKind (..), SessionStatus (..))
-import Shomei.Session.LoginAttempt.Domain (LoginOutcome (..))
+import Shomei.Session.LoginAttempt.Domain (AttemptFactor (..), LoginOutcome (..))
 import Shomei.Session.RefreshToken.Domain (RefreshTokenStatus (..))
 import Shomei.SigningKey.Domain (SigningKeyStatus (..))
 
@@ -132,6 +133,14 @@ loginOutcomeFromText = \case
   "success" -> Right LoginSuccess
   "failure" -> Right LoginFailure
   t -> Left ("unknown login outcome: " <> t)
+
+attemptFactorToText :: AttemptFactor -> Text
+attemptFactorToText = \case
+  FactorPassword -> "password"
+  FactorTotp -> "totp"
+  FactorRecoveryCode -> "recovery"
+  FactorPasskey -> "passkey"
+  FactorPasswordChange -> "password_change"
 
 -- | Rebuild an 'Email' from a stored value. The column only ever holds emails that were
 -- already normalized through 'mkEmail' on the way in, so this should never fail; a 'Left'

@@ -44,6 +44,7 @@ reconstructAuthEvent etype payload = case etype of
   "password_reset_requested" -> PasswordResetRequested <$> parse payload
   "password_reset_completed" -> PasswordResetCompleted <$> parse payload
   "password_changed" -> PasswordChanged <$> parse payload
+  "password_change_failed" -> PasswordChangeFailed <$> parse payload
   "user_suspended" -> UserSuspended <$> parse payload
   "user_deleted" -> UserDeleted <$> parse payload
   "user_reinstated" -> UserReinstated <$> parse payload
@@ -117,6 +118,8 @@ projectAuthEvent = \case
     (Just (userIdToUUID uid), Nothing, "password_reset_completed", toJSON d, occ)
   PasswordChanged d@(PasswordChangedData uid occ) ->
     (Just (userIdToUUID uid), Nothing, "password_changed", toJSON d, occ)
+  PasswordChangeFailed d@(PasswordChangeFailedData uid occ) ->
+    (Just (userIdToUUID uid), Nothing, "password_change_failed", toJSON d, occ)
   UserSuspended d ->
     (Just (userIdToUUID d.userId), Nothing, "user_suspended", toJSON d, d.occurredAt)
   UserDeleted d ->

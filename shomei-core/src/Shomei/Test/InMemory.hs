@@ -750,7 +750,8 @@ runLoginAttemptStore ref = interpret_ \case
         { accountKey = na.accountKey,
           clientIp = na.clientIp,
           outcome = na.outcome,
-          occurredAt = na.occurredAt
+          occurredAt = na.occurredAt,
+          factor = na.factor
         }
     -- Pure windowed failure count (used for the per-IP throttle).
     countWith p cutoff w =

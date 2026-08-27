@@ -19,13 +19,14 @@ import Effectful.Error.Static (runErrorNoCallStack, throwError)
 import Shomei.Account.Credential.Domain (Credential (..))
 import Shomei.Account.Credential.Store (CredentialStore, findPasswordCredentialByLoginId, updatePasswordHash)
 import Shomei.Account.Email.Domain (Email, emailText)
+import Shomei.Account.LoginId.Domain (loginIdText)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.Notification.Store (Notifier, sendNotification)
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Breach.Workflow (enforceBreachPolicy)
 import Shomei.Account.Password.Domain (PasswordContext (..), PlainPassword, validatePassword)
-import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPassword)
+import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Account.PasswordReset.Domain (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Account.PasswordReset.Store
   ( PasswordResetTokenStore,
@@ -48,6 +49,10 @@ import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId)
 import Shomei.Prelude
+import Shomei.Session.Command (ProofContext, proofContextFor)
+import Shomei.Session.LoginAttempt.Domain (AttemptFactor (FactorPasswordChange))
+import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
+import Shomei.Session.LoginAttempt.Workflow (AbuseGate (..), guardAbuse, recordProofFailure, recordProofSuccess)
 import Shomei.Session.RefreshToken.Domain (RefreshToken (..), RefreshTokenHash (..))
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore, revokeAllUserRefreshTokens)
 import Shomei.Session.Store (SessionStore, revokeAllUserSessions)
@@ -214,13 +219,21 @@ changePassword ::
     SessionStore :> es,
     RefreshTokenStore :> es,
     AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
     Clock :> es
   ) =>
   ShomeiConfig ->
+  ProofContext ->
   ChangePassword ->
   Eff es (Either AuthError ())
-changePassword cfg cmd = runErrorNoCallStack do
+changePassword cfg pctx cmd = runErrorNoCallStack do
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById cmd.userId
+  ts <- now
+  let ctx = proofContextFor pctx (loginIdText user.loginId)
+  gate <- guardAbuse cfg.rateLimitConfig ctx ts
+  when gate.locked do
+    verifyPasswordDummy cmd.currentPassword
+    throwError InvalidCredentials
   let pwContext =
         PasswordContext
           { contextEmail = emailText <$> user.email,
@@ -230,8 +243,11 @@ changePassword cfg cmd = runErrorNoCallStack do
   enforceBreachPolicy cfg.passwordPolicy cmd.newPassword
   cred <- maybe (throwError InvalidCredentials) pure =<< findPasswordCredentialByLoginId user.loginId
   ok <- verifyPassword cmd.currentPassword cred.passwordHash
-  unless ok (throwError InvalidCredentials)
-  ts <- now
+  unless ok do
+    recordProofFailure cfg.rateLimitConfig ctx FactorPasswordChange ts
+    publishAuthEvent (Event.PasswordChangeFailed (Event.PasswordChangeFailedData user.userId ts))
+    throwError InvalidCredentials
+  recordProofSuccess ctx FactorPasswordChange gate.standingLockout ts
   newHash <- hashPassword cmd.newPassword
   updatePasswordHash user.userId newHash
   revokeAllUserSessions user.userId ts

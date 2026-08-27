@@ -2,11 +2,11 @@
 module Shomei.Session.Handler
   ( sessionServer,
     adminSessionServer,
+    clientIpText,
   )
 where
 
-import Data.Text qualified as Text
-import Network.Socket (SockAddr (..))
+import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Admin.Workflow qualified as Admin
@@ -32,6 +32,7 @@ import Shomei.Servant.Error
     pcCsrfRejected,
     pcSessionNotFound,
   )
+import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (CookieResponse (..), cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Admin.Api (AdminSessionApi (..))
@@ -130,9 +131,3 @@ adminRevokeSessionH :: Env -> AuthUser -> SessionId -> Handler RevokeSessionResu
 adminRevokeSessionH env actor sessionId = runApplicationHandler do
   denyUnderDelegation env "admin_revoke_session" actor
   workflow env (Admin.revokeOneSession actor.authUserId sessionId)
-
-clientIpText :: SockAddr -> Text
-clientIpText = \case
-  SockAddrInet _ host -> Text.pack (show host)
-  SockAddrInet6 _ _ host _ -> Text.pack (show host)
-  other -> Text.pack (show other)

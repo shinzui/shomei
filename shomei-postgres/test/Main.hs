@@ -218,7 +218,7 @@ import Shomei.ServiceAccount.Store
 import Shomei.Session.Authentication.Workflow (login, refresh, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
-import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), AttemptFactor (..), ClientIp (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
 import Shomei.Session.LoginAttempt.Store
   ( LoginAttemptStore,
@@ -1480,9 +1480,30 @@ testLoginAttemptStore = testCase "login attempt store: record + windowed count +
   result <- runApp pool do
     t <- now
     let cutoff = addUTCTime (-900) t
-    recordLoginAttempt (NewLoginAttempt key ip LoginFailure t)
-    recordLoginAttempt (NewLoginAttempt key ip LoginFailure t)
-    recordLoginAttempt (NewLoginAttempt key (ClientIp "9.9.9.9") LoginFailure t)
+    recordLoginAttempt
+      NewLoginAttempt
+        { accountKey = key,
+          clientIp = ip,
+          outcome = LoginFailure,
+          occurredAt = t,
+          factor = FactorTotp
+        }
+    recordLoginAttempt
+      NewLoginAttempt
+        { accountKey = key,
+          clientIp = ip,
+          outcome = LoginFailure,
+          occurredAt = t,
+          factor = FactorTotp
+        }
+    recordLoginAttempt
+      NewLoginAttempt
+        { accountKey = key,
+          clientIp = ClientIp "9.9.9.9",
+          outcome = LoginFailure,
+          occurredAt = t,
+          factor = FactorTotp
+        }
     accFails <- countRecentFailuresByAccount key cutoff
     ipFails <- countRecentFailuresByIp ip cutoff
     future <- countRecentFailuresByAccount key (addUTCTime 3600 t)

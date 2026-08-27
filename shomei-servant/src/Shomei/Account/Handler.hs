@@ -8,6 +8,7 @@ module Shomei.Account.Handler
 where
 
 import Data.Text qualified as Text
+import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Admin.Api (AdminAccountApi (..))
@@ -39,11 +40,13 @@ import Shomei.Servant.Application (ApplicationHandler, port, rejectAuth, rejectP
 import Shomei.Servant.Auth (AuthUser (..))
 import Shomei.Servant.Cookie (tokenCookies)
 import Shomei.Servant.Error (noProblemOccurrence, pcSelfTargetForbidden)
+import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Authentication.Workflow qualified as Authentication
-import Shomei.Session.Command (SignupCommand (..))
+import Shomei.Session.Command (ProofContext (..), SignupCommand (..))
 import Shomei.Session.Dto (tokenPairToResponse)
+import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
 
 accountServer :: Env -> AccountApi (AsServerT Handler)
 accountServer env =
@@ -108,12 +111,13 @@ passwordResetConfirmH env request = runApplicationHandler do
       env.config
       (Account.ConfirmPasswordReset (OneTimeToken request.token) (PlainPassword request.newPassword))
 
-passwordChangeH :: Env -> AuthUser -> ChangePasswordRequest -> Handler PasswordChangeResult
-passwordChangeH env user request = runApplicationHandler do
+passwordChangeH :: Env -> AuthUser -> SockAddr -> ChangePasswordRequest -> Handler PasswordChangeResult
+passwordChangeH env user peer request = runApplicationHandler do
   denyUnderDelegation env "password_change" user
   workflow env $
     Account.changePassword
       env.config
+      ProofContext {clientIp = ClientIp (clientIpText peer), accountKeyOf = env.accountKeyOf}
       (Account.ChangePassword user.authUserId (PlainPassword request.currentPassword) (PlainPassword request.newPassword))
 
 meH :: Env -> AuthUser -> Handler MeResult

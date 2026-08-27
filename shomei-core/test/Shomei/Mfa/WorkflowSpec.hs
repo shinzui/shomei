@@ -8,9 +8,12 @@
 -- one matching the seeded passkey.
 module Shomei.Mfa.WorkflowSpec (tests) where
 
+import Control.Monad (replicateM_)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson.Types (parseMaybe, withObject, (.:))
-import Data.IORef (IORef, newIORef)
+import Data.IORef (IORef, newIORef, readIORef)
+import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime (..), fromGregorian)
@@ -20,8 +23,12 @@ import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..))
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
-import Shomei.Error (AuthError (MfaAssertionInvalid, PendingCeremonyNotFound))
-import Shomei.Id (CeremonyId, genCeremonyId)
+import Shomei.Error (AuthError (InvalidCredentials, MfaAssertionInvalid, PendingCeremonyNotFound, TotpCodeInvalid))
+import Shomei.Id (CeremonyId, genCeremonyId, genTotpCredentialId)
+import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), totpCode, totpCounter)
+import Shomei.Mfa.Totp.Domain (NewTotpCredential (..))
+import Shomei.Mfa.Totp.Store (confirmTotp, findTotpByUser, upsertTotpEnrollment)
+import Shomei.Mfa.Totp.Workflow (TotpRemovalProof (..), removeTotp)
 import Shomei.Mfa.Workflow (MfaCompletion (..), beginPasswordlessLogin, completeMfa, completePasswordlessLogin)
 import Shomei.Passkey.Domain
   ( NewPasskeyCredential (..),
@@ -32,10 +39,11 @@ import Shomei.Passkey.Domain
   )
 import Shomei.Passkey.Store (createPasskey)
 import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..), login, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), SignupCommand (..))
-import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), SignupCommand (..))
+import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..))
+import Shomei.Session.LoginAttempt.Store (setAccountLockout)
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
-import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
+import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -53,6 +61,9 @@ aliceEmail = mkEmail' "alice@example.com"
 
 strongPw :: PlainPassword
 strongPw = PlainPassword "correct horse battery staple"
+
+proofContext :: ProofContext
+proofContext = ProofContext {clientIp = ClientIp "test-ip", accountKeyOf = AccountKey}
 
 mkEmail' :: Text -> Email
 mkEmail' t = either (\e -> error ("bad test email: " <> show e)) id (mkEmail t)
@@ -125,6 +136,9 @@ tests =
       testCompleteMfa,
       testCeremonyHygiene,
       testBadAssertion,
+      testBadPasskeysLock,
+      testSecondFactorSuccessClearsLockout,
+      testTotpRemovalFailuresLock,
       testPasswordless
     ]
 
@@ -153,7 +167,7 @@ testCompleteMfa = testCase "completeMfa with a valid assertion yields a token pa
   seedUserWithPasskey ref
   (cid, opts) <- loginExpectingChallenge ref
   chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-  done <- expectRight =<< runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
+  done <- expectRight =<< runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey (acceptedAssertion chal)))
   assertTokenPresent done
 
 testCeremonyHygiene :: TestTree
@@ -162,13 +176,13 @@ testCeremonyHygiene = testCase "bogus or consumed ceremony is rejected (PendingC
   seedUserWithPasskey ref
   -- A ceremony id that was never stored.
   bogus <- genCeremonyId
-  bad <- runInMemory ref (completeMfa cfg bogus (MfaPasskey (acceptedAssertion "x")))
+  bad <- runInMemory ref (completeMfa cfg proofContext bogus (MfaPasskey (acceptedAssertion "x")))
   bad @?= Left PendingCeremonyNotFound
   -- A real challenge succeeds once; re-completing the now-consumed ceremony is a 404.
   (cid, opts) <- loginExpectingChallenge ref
   chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-  _ <- expectRight =<< runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
-  again <- runInMemory ref (completeMfa cfg cid (MfaPasskey (acceptedAssertion chal)))
+  _ <- expectRight =<< runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey (acceptedAssertion chal)))
+  again <- runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey (acceptedAssertion chal)))
   again @?= Left PendingCeremonyNotFound
 
 testBadAssertion :: TestTree
@@ -184,8 +198,59 @@ testBadAssertion = testCase "completeMfa with an unknown credential fails with M
             "userHandle" .= UserHandle "uh-x",
             "publicKey" .= PublicKeyBytes "pk-x"
           ]
-  res <- runInMemory ref (completeMfa cfg cid (MfaPasskey wrong))
+  res <- runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey wrong))
   res @?= Left MfaAssertionInvalid
+
+testBadPasskeysLock :: TestTree
+testBadPasskeysLock = testCase "five bad passkey assertions lock the account" do
+  ref <- newIORef (emptyWorld fixedTime)
+  seedUserWithPasskey ref
+  replicateM_ 5 do
+    (cid, opts) <- loginExpectingChallenge ref
+    chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
+    let wrong =
+          object
+            [ "challenge" .= chal,
+              "credentialId" .= WebAuthnCredentialId "cred-unknown",
+              "userHandle" .= UserHandle "uh-x",
+              "publicKey" .= PublicKeyBytes "pk-x"
+            ]
+    result <- runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey wrong))
+    result @?= Left MfaAssertionInvalid
+  denied <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
+  denied @?= Left InvalidCredentials
+
+testSecondFactorSuccessClearsLockout :: TestTree
+testSecondFactorSuccessClearsLockout = testCase "second-factor success clears an expired standing lockout" do
+  ref <- newIORef (emptyWorld fixedTime)
+  seedUserWithPasskey ref
+  let key = AccountKey (emailText aliceEmail)
+      expired = AccountLockout key 5 (Just fixedTime) fixedTime
+  runInMemory ref (setAccountLockout expired)
+  (cid, opts) <- loginExpectingChallenge ref
+  chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
+  _ <- expectRight =<< runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey (acceptedAssertion chal)))
+  w <- readIORef ref
+  assertBool "the standing lockout row is cleared" (not (Map.member key w.accountLockouts))
+
+testTotpRemovalFailuresLock :: TestTree
+testTotpRemovalFailuresLock = testCase "wrong TOTP removal codes count and a locked account cannot remove the factor" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
+  tcid <- genTotpCredentialId
+  let secret = TotpSecret "12345678901234567890"
+      correct = totpCode 6 secret (totpCounter fixedTime)
+      wrong = if correct == "000000" then "999999" else "000000"
+  runInMemory ref do
+    _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = user.userId, secret, createdAt = fixedTime}
+    confirmTotp tcid fixedTime
+  replicateM_ 5 do
+    result <- runInMemory ref (removeTotp cfg proofContext user (RemoveWithCode wrong))
+    result @?= Left TotpCodeInvalid
+  lockedResult <- runInMemory ref (removeTotp cfg proofContext user (RemoveWithCode correct))
+  lockedResult @?= Left TotpCodeInvalid
+  remaining <- runInMemory ref (findTotpByUser user.userId)
+  assertBool "the locked removal leaves the TOTP credential intact" (isJust remaining)
 
 testPasswordless :: TestTree
 testPasswordless = testCase "passwordless login resolves the user and mints tokens" do
@@ -193,7 +258,7 @@ testPasswordless = testCase "passwordless login resolves the user and mints toke
   seedUserWithPasskey ref
   (cid, opts) <- expectRight =<< runInMemory ref (beginPasswordlessLogin cfg)
   chal <- maybe (assertFailure "no challenge in options") pure (challengeOf opts)
-  done <- expectRight =<< runInMemory ref (completePasswordlessLogin cfg cid (acceptedAssertion chal))
+  done <- expectRight =<< runInMemory ref (completePasswordlessLogin cfg proofContext cid (acceptedAssertion chal))
   assertTokenPresent done
 
 -- | Log in (password) for the seeded user and expect an MFA challenge, returning its
