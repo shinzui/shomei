@@ -34,6 +34,7 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
+| `SHOMEI_NOTIFIER_QUEUE_SIZE` | maximum notifications held for the background delivery worker. Must be positive; a full queue drops new work with a `queue_full` audit reason instead of blocking a request | `1024` |
 | `SHOMEI_EMAIL_VERIFICATION_REQUIRED` | require a verified email before subsequent token issuance (the initial signup session is still issued) | `false` |
 | `SHOMEI_KEY_ENCRYPTION_KEY` | **Required.** 32 bytes, base64; envelope-encrypts every signing key at rest | — |
 | `SHOMEI_KEY_ENCRYPTION_KEY_OLD` | the previous KEK; read only by `shomei-admin keys rewrap` | unset |
@@ -335,9 +336,10 @@ and `dhall-to-json`). Its `deploy/entrypoint.sh` runs migrations, ensures an act
 computes container-aware GHC RTS options (see [GHC runtime options in
 containers](#ghc-runtime-options-in-containers)), then `exec`s the server so SIGTERM (e.g. on pod
 termination) reaches it; the server drains in-flight requests (up to
-`gracefulShutdownTimeoutSeconds`), closes the connection pool, and exits 0. A plain `Dockerfile`
-is provided as the documented, non-reproducible secondary path. Point the container at your own
-managed PostgreSQL with `PG_CONNECTION_STRING`.
+`gracefulShutdownTimeoutSeconds`), closes the notifier queue and gives its queued/in-flight
+deliveries the same bounded drain window, then closes the connection pools and exits 0. A plain
+`Dockerfile` is provided as the documented, non-reproducible secondary path. Point the container
+at your own managed PostgreSQL with `PG_CONNECTION_STRING`.
 
 The entrypoint's CPU-quota arithmetic is covered by `deploy/entrypoint-test.sh`, which runs the
 real script against cgroup v1/v2 fixtures with stubbed binaries and needs no container runtime:

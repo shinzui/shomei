@@ -212,7 +212,11 @@ a **locked** account — they are byte-for-byte identical at the boundary, and t
 workflow itself returns `InvalidCredentials` for all three so even a direct caller cannot
 distinguish them. The `verify-email/request` and `password-reset/request` endpoints always return
 `202` whether or not the email exists; the only difference (a notification side effect) is
-invisible to the requester.
+invisible to the requester. Built-in delivery is enqueued with one non-blocking STM transaction,
+so SMTP and webhook latency cannot turn that side effect into a seconds-wide timing oracle. The
+remaining hit/miss delta is limited to token generation plus one token insert, queue handoff, and
+audit insert on a hit; a miss performs only the email lookup. This small database-cost residual is
+accepted and pinned by a core cost test rather than padded with fake persistent records.
 
 Identical bytes are not enough on their own: a response that arrives sooner is just as much a
 disclosure. Verifying a password with Argon2id deliberately costs ~100 ms, so a login that

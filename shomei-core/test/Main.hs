@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Shomei.Account.Admin.WorkflowSpec qualified
+import Shomei.Account.Lifecycle.CostSpec qualified
 import Shomei.Account.Password.DomainSpec qualified
 import Shomei.Account.Verification.WorkflowSpec qualified
 import Shomei.AccountSpec qualified
@@ -35,6 +36,7 @@ main =
     ( testGroup
         "shomei-core-test"
         [ Shomei.Session.Authentication.WorkflowSpec.tests,
+          Shomei.Account.Lifecycle.CostSpec.tests,
           Shomei.Mfa.Totp.AlgorithmSpec.tests,
           Shomei.Mfa.Totp.StoreSpec.tests,
           Shomei.AccountSpec.tests,

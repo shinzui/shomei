@@ -52,9 +52,9 @@ breach setting, and can mark the bootstrap admin's email verified.
 - [x] (2026-08-27T21:27:00Z) M1: `DeliveryReason` vocabulary, `classifySmtpFailure`/`classifyWebhookFailure`, `redactDeliveryText`; `publishDeliveryFailed` takes a reason, never `displayException`
 - [x] (2026-08-27T21:27:00Z) M1: NotifySpec — `451` at `DATA`, webhook connection-refused with a query-string secret, webhook `500` echoing the body, classifier table; both pre-fix failures pasted into Surprises & Discoveries
 - [x] (2026-08-27T21:27:00Z) M1: [ADR-9](../adr/0009-transport-exception-text-is-never-persisted.md) added to the existing profile-governed bundle; `just adr-validate` and all four `shomei-server` suites green
-- [ ] M2: `Shomei.Notify.Queue` (bounded `TBQueue`, drop-with-audit, close/drain); `Env.envNotifierQueue`; request path enqueues
-- [ ] M2: `installNotifierWorker` on `supervisedLoopMicros` beside `installSweeper`; drained within `gracefulShutdownTimeoutSeconds` before the pool is released; `notifierQueueSize` in loader, `config/shomei-types.dhall`, `deployment.md`
-- [ ] M2: E2E webhook scenario installs the worker and polls; sub-second `202` against a receiver that sleeps 3 s; core `CostSpec` pins the hit/miss delta
+- [x] (2026-08-27T21:42:36Z) M2: `Shomei.Notify.Queue` (bounded `TBQueue`, drop-with-audit, close/drain); `Env.envNotifierQueue`; request path enqueues
+- [x] (2026-08-27T21:42:36Z) M2: `installNotifierWorker` on `supervisedLoopMicros` beside `installSweeper`; drained within `gracefulShutdownTimeoutSeconds` before the pool is released; `notifierQueueSize` in loader, `config/shomei-types.dhall`, `deployment.md`
+- [x] (2026-08-27T21:42:36Z) M2: E2E webhook scenario installs the worker and polls; sub-second `202` against a receiver that sleeps 3 s; core `CostSpec` pins the hit/miss delta; [ADR-10](../adr/0010-notification-delivery-is-a-bounded-background-responsibility.md) records the queue and shutdown boundary
 - [ ] M3: `password`/`secret` removed from `SmtpConfig`/`WebhookConfig` (shomei-core 0.2.0.0); `NotifierSecrets` in `Env`; env values stripped; `https://` unless `SHOMEI_WEBHOOK_ALLOW_INSECURE`; `plain` + username refused unless `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH`
 - [ ] M3: signature over `<unix-seconds>.<body>` with `X-Shomei-Timestamp`; NotifySpec, E2E, `notifications.md` updated with the 5-minute replay window
 - [ ] M4: redacting `Show`, no JSON, on `RefreshToken`, `AccessToken`, `TokenPair`, client `Token`; `LoginFailedData` carries `accountKey`/`userId`; codec, workflow, tests, runbook

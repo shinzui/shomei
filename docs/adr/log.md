@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-08-27
+* **Addition**: ADR-10 moves built-in notification delivery behind a bounded in-memory queue with explicit overflow and a timed shutdown drain.
 * **Addition**: ADR-9 maps outbound transport failures to a closed reason vocabulary so exception text containing payloads or URLs is never logged or persisted.
 * **Addition**: ADR-8 makes runtime configuration extensible through Dhall record completion, rejects unknown keys, and mechanically synchronizes schema fields with the loader.
 * **Addition**: ADR-7 makes single-use and monotonic security transitions conditional writes and uses transaction-scoped advisory locks where serialization must enclose a read.

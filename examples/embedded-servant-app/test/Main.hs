@@ -28,6 +28,7 @@ import Shomei.Client qualified as C
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Keys (bootstrapKeys)
@@ -58,8 +59,9 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (embeddedApplication env (pure Healthy) (pure Healthy))) \port -> do
             mgr <- newManager defaultManagerSettings
 

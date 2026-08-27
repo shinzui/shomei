@@ -44,13 +44,14 @@ import Shomei.Audit.Reader.Store (AuthEventReader)
 import Shomei.Authorization.Claims.Store (ClaimsEnricher, runClaimsEnricherNull)
 import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
 import Shomei.Authorization.Role.Store (RoleStore)
-import Shomei.Config (ShomeiConfig (passwordPolicy), webauthnConfig)
+import Shomei.Config (NotifierConfig (notifierTransport), ShomeiConfig (notifierConfig, passwordPolicy), webauthnConfig)
 import Shomei.Error (AuthError)
 import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, runTotpCredentialStorePostgres)
 import Shomei.Mfa.Totp.Store (TotpCredentialStore)
-import Shomei.Notify (runNotifierFromConfig)
+import Shomei.Notify (runNotifierEnqueue, transportChannel)
+import Shomei.Notify.Queue (NotifierQueue)
 import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
 import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore)
 import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
@@ -145,6 +146,9 @@ data Env = Env
     envTotpKey :: !TotpEncryptionKey,
     -- | shared TLS manager for the HIBP breach-check interpreter (EP-3)
     envHttpManager :: !Manager,
+    -- | bounded notification queue; request handlers only enqueue, while the supervised
+    --     server worker performs delivery outside request latency.
+    envNotifierQueue :: !NotifierQueue,
     -- | Argon2id cost parameters for hashing new passwords. Verification reads the parameters
     --     embedded in each stored hash, so this only affects hashes written from now on.
     envArgon2Params :: !Argon2Params,
@@ -181,7 +185,9 @@ runAppIO env action = do
     -- The standalone server adds no claims of its own. An embedding host swaps this for its
     -- own 'ClaimsEnricher' interpreter where it builds 'Shomei.Servant.Seam.Env'.
     . runClaimsEnricherNull
-    . runNotifierFromConfig env.envHttpManager env.envConfig
+    . runNotifierEnqueue
+      env.envNotifierQueue
+      (transportChannel env.envConfig.notifierConfig.notifierTransport)
     . runRecoveryCodeStorePostgres
     . runTotpCredentialStorePostgres env.envTotpKey
     . runOAuthCodeStorePostgres

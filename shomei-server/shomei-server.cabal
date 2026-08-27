@@ -55,6 +55,7 @@ library
   exposed-modules:
     Shomei.Health.Server
     Shomei.Notify
+    Shomei.Notify.Queue
     Shomei.Server.App
     Shomei.Server.Boot
     Shomei.Server.BreachChecker

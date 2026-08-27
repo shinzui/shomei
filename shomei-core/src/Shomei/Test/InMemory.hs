@@ -13,6 +13,7 @@
 -- through JSON.
 module Shomei.Test.InMemory
   ( World (..),
+    InMemoryPorts,
     emptyWorld,
     runInMemory,
     runInMemoryWith,

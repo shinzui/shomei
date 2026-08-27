@@ -43,6 +43,7 @@ let ConfigType =
       , webhookUrl : Optional Text
       , webhookTimeoutSeconds : Optional Natural
       , webhookMaxAttempts : Optional Natural
+      , notifierQueueSize : Optional Natural
       , rateLimitEnabled : Optional Bool
       , maxFailedLoginsPerAccount : Optional Natural
       , perIpRequestsPerMinute : Optional Natural
@@ -117,6 +118,7 @@ let default =
       , webhookUrl = None Text
       , webhookTimeoutSeconds = None Natural
       , webhookMaxAttempts = None Natural
+      , notifierQueueSize = None Natural
       , rateLimitEnabled = None Bool
       , maxFailedLoginsPerAccount = None Natural
       , perIpRequestsPerMinute = None Natural

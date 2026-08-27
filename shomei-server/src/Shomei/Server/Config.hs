@@ -81,6 +81,8 @@ data ServerSettings = ServerSettings
     serverDbPoolAcquisitionTimeoutMs :: !Int,
     -- | PostgreSQL statement and idle-in-transaction timeout installed on every connection
     serverDbStatementTimeoutMs :: !Int,
+    -- | bounded in-memory notification queue capacity
+    serverNotifierQueueSize :: !Int,
     -- | the background expired-data sweeper
     serverSweep :: !SweepSettings,
     -- | Argon2id cost parameters for hashing /new/ passwords. Existing hashes carry the
@@ -165,6 +167,9 @@ defaultDbPoolAcquisitionTimeoutMs = 10000
 defaultDbStatementTimeoutMs :: Int
 defaultDbStatementTimeoutMs = 30000
 
+defaultNotifierQueueSize :: Int
+defaultNotifierQueueSize = 1024
+
 -- | The flat, all-optional shape the Dhall config file is rendered into (via @dhall-to-json@).
 -- Every field is a 'Maybe' scalar so a partial file is valid and absent keys fall back to the
 -- defaults / env.
@@ -216,6 +221,7 @@ data FileConfig = FileConfig
     webhookUrl :: !(Maybe Text),
     webhookTimeoutSeconds :: !(Maybe Int),
     webhookMaxAttempts :: !(Maybe Int),
+    notifierQueueSize :: !(Maybe Int),
     rateLimitEnabled :: !(Maybe Bool),
     maxFailedLoginsPerAccount :: !(Maybe Int),
     perIpRequestsPerMinute :: !(Maybe Int),
@@ -314,6 +320,7 @@ baseDefaults =
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
           serverDbStatementTimeoutMs = defaultDbStatementTimeoutMs,
+          serverNotifierQueueSize = defaultNotifierQueueSize,
           serverSweep = defaultSweepSettings,
           serverArgon2 = defaultArgon2Params,
           serverHashingMaxConcurrency = defaultHashingMaxConcurrency
@@ -406,6 +413,7 @@ baseFromFile (Just fc) = do
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
             serverDbStatementTimeoutMs =
               fromMaybe defaultDbStatementTimeoutMs fc.dbStatementTimeoutMs,
+            serverNotifierQueueSize = fromMaybe defaultNotifierQueueSize fc.notifierQueueSize,
             serverSweep = mergeSweep defaultSweepSettings fc,
             serverArgon2 = mergeArgon2 defaultArgon2Params fc,
             serverHashingMaxConcurrency =
@@ -459,6 +467,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   statementTimeout <- intEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" baseSettings.serverDbStatementTimeoutMs
+  notifierQueueSize <- intEnv "SHOMEI_NOTIFIER_QUEUE_SIZE" baseSettings.serverNotifierQueueSize
   sweep <- overlaySweepFromEnv baseSettings.serverSweep
   argon2 <- overlayArgon2FromEnv baseSettings.serverArgon2
   hashingConcurrency <- intEnv "SHOMEI_HASHING_MAX_CONCURRENCY" baseSettings.serverHashingMaxConcurrency
@@ -480,6 +489,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
   requireNonNegative "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "dbStatementTimeoutMs" statementTimeout
+  requirePositive "SHOMEI_NOTIFIER_QUEUE_SIZE" "notifierQueueSize" notifierQueueSize
   -- A zero interval would spin the sweeper; a zero batch size would make it delete nothing
   -- forever. Neither is a survivable "disable" setting — sweepEnabled=false is.
   requirePositive "SHOMEI_SWEEP_INTERVAL_SECONDS" "sweepIntervalSeconds" sweep.sweepIntervalSeconds
@@ -521,6 +531,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverDbStatementTimeoutMs = statementTimeout,
+          serverNotifierQueueSize = notifierQueueSize,
           serverSweep = sweep,
           serverArgon2 = argon2,
           serverHashingMaxConcurrency = hashingConcurrency

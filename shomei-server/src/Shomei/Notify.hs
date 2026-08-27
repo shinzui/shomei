@@ -24,12 +24,15 @@ module Shomei.Notify
     classifySmtpFailure,
     classifyWebhookFailure,
     redactDeliveryText,
+    runNotifierEnqueue,
     runNotifierFromConfig,
     runNotifierLog,
     runNotifierSmtp,
     runNotifierWebhook,
     renderNotification,
     notificationTypeText,
+    transportChannel,
+    deliverNotification,
     webhookSignature,
   )
 where
@@ -81,6 +84,8 @@ import Shomei.Account.Password.Hash.Postgres (sha256Hex)
 import Shomei.Audit.Event.Domain (AuthEvent (NotificationDeliveryFailed), NotificationDeliveryFailedData (..))
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebhookConfig (..))
+import Shomei.Notify.Queue (NotifierQueue)
+import Shomei.Notify.Queue qualified as Queue
 import Shomei.Prelude
 import Shomei.Time.Store (Clock, now)
 import System.IO (hPutStrLn, stderr)
@@ -220,9 +225,39 @@ runNotifierFromConfig ::
   Eff (Notifier : es) a ->
   Eff es a
 runNotifierFromConfig mgr cfg = interpret_ \case
-  SendNotification n -> do
-    when tee (logNotification nc n)
-    deliver n
+  SendNotification notification -> deliverNotification mgr cfg notification
+
+-- | The standalone request-path interpreter. Enqueueing is one bounded STM transaction and
+-- never waits for a relay. Overflow and shutdown are still observable through the audit port.
+runNotifierEnqueue ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  NotifierQueue ->
+  Text ->
+  Eff (Notifier : es) a ->
+  Eff es a
+runNotifierEnqueue notifierQueue channel = interpret_ \case
+  SendNotification notification -> do
+    outcome <- liftIO (Queue.enqueueNotification notifierQueue notification)
+    case outcome of
+      Queue.Enqueued -> pure ()
+      Queue.QueueFull -> publishDeliveryFailed channel notification QueueFull
+      Queue.QueueClosed -> publishDeliveryFailed channel notification ShuttingDown
+
+-- | Deliver one dequeued notification. Expired work is audited and skipped before any network
+-- operation; otherwise this is exactly the synchronous interpreter's former dispatch path.
+deliverNotification ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  Manager ->
+  ShomeiConfig ->
+  Notification ->
+  Eff es ()
+deliverNotification mgr cfg notification = do
+  currentTime <- now
+  if notificationExpiresAt notification <= currentTime
+    then publishDeliveryFailed (transportChannel nc.notifierTransport) notification ExpiredInQueue
+    else do
+      when tee (logNotification nc notification)
+      deliver notification
   where
     nc = cfg.notifierConfig
     tee = nc.alsoLogNotifications && nc.notifierTransport /= LogNotifier
@@ -230,6 +265,17 @@ runNotifierFromConfig mgr cfg = interpret_ \case
       LogNotifier -> logNotification nc
       SmtpNotifier -> maybe (logFallback "smtp" nc) (deliverSmtp nc) nc.smtpConfig
       WebhookNotifier -> maybe (logFallback "webhook" nc) (deliverWebhook mgr) nc.webhookConfig
+
+transportChannel :: NotifierTransport -> Text
+transportChannel = \case
+  LogNotifier -> "log"
+  SmtpNotifier -> "smtp"
+  WebhookNotifier -> "webhook"
+
+notificationExpiresAt :: Notification -> UTCTime
+notificationExpiresAt = \case
+  EmailVerificationRequested _ _ expires -> expires
+  PasswordResetRequested _ _ expires -> expires
 
 -- | Fallback used only if a transport is selected with no sub-config (boot validation prevents
 -- this): warn once and log the notification rather than silently dropping it.

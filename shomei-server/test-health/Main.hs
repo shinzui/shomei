@@ -14,6 +14,7 @@ import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailab
 import Shomei.Health.Server (buildHealthChecks, buildHealthChecksWith)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude
 import Shomei.Server.App (Env (..), runAppIO)
@@ -75,6 +76,7 @@ buildTestEnv connectionString = do
   keys <- newIORef =<< bootstrapKeys testKek ES256 pool
   manager <- newManager defaultManagerSettings
   limiter <- newHashingLimiter 2
+  notifierQueue <- newNotifierQueue 64
   let config = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
   pure
     Env
@@ -83,6 +85,7 @@ buildTestEnv connectionString = do
         envKeys = keys,
         envKek = testKek,
         envHttpManager = manager,
+        envNotifierQueue = notifierQueue,
         envArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1},
         envHashingLimiter = limiter,
         envTotpKey = testTotpKey

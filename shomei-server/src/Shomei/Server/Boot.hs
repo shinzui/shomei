@@ -14,13 +14,15 @@ module Shomei.Server.Boot
     buildEnv,
     seamEnv,
     authContext,
+    NotifierWorker (..),
+    installNotifierWorker,
   )
 where
 
 -- 'Context' is hidden from the prelude (it re-exports lens's 'Context'); we mean
 -- servant's 'Servant.Context' here.
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, killThread)
 import Data.Aeson ((.=))
 import Data.Aeson.Key qualified as Key
 import Data.ByteString qualified as BS
@@ -46,6 +48,7 @@ import Servant
 import Servant.Health (ProbeCheck)
 import Servant.Server.Experimental.Auth (AuthHandler)
 import Shomei.Account.Password.Hash.Postgres (Argon2Failure (..), Argon2Params (..), argon2WarningFloor, hashingLimit, newHashingLimiter, sha256Hex, trialArgon2Derivation)
+import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
 import Shomei.Authorization.Claims.Domain (Issuer (..), Role (..))
 import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
@@ -54,6 +57,8 @@ import Shomei.Error (AuthError)
 import Shomei.Health.Server (buildHealthChecks)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
 import Shomei.Migrations (applyShomeiMigrations)
+import Shomei.Notify (deliverNotification)
+import Shomei.Notify.Queue (closeNotifierQueue, drainNotifierQueue, newNotifierQueue, withDequeued)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
@@ -74,8 +79,9 @@ import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimit
 import Shomei.Server.Middleware.RateLimit (newRateLimiterFor, rateLimitMiddleware)
 import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
-import Shomei.Server.Supervisor (logJsonLine, supervisedLoop)
+import Shomei.Server.Supervisor (logJsonLine, supervisedLoop, supervisedLoopMicros)
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
+import Shomei.Time.Postgres (runClockIO)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
@@ -116,6 +122,7 @@ main = do
   validateDefaultRoles cfg env
   installKeyReload cfg env
   releaseSweeper <- installSweeper settings env
+  notifierWorker <- installNotifierWorker env
   rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
@@ -158,6 +165,7 @@ main = do
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
   Warp.runSettings warpSettings (stack (application env liveness readiness))
+  drainNotifierWorker notifierWorker obs.gracefulShutdownTimeoutSeconds
   hPutStrLn stderr "[shomei] drain complete; closing connection pools"
   Pool.release env.envPool
   releaseSweeper
@@ -302,6 +310,57 @@ installSweeper settings _env
               <> ["duration_ms" .= elapsed]
           )
 
+-- | Handle returned by 'installNotifierWorker'. EP-9's embedding assembly lifts the install
+-- and drain calls verbatim so an embedding host receives the same delivery guarantees.
+newtype NotifierWorker = NotifierWorker
+  { drainNotifierWorker :: Int -> IO ()
+  }
+
+-- | Run one supervised delivery worker. Closing prevents new enqueue operations, then drain waits
+-- within the server's graceful-shutdown budget before cancelling any remaining network call.
+installNotifierWorker :: Env -> IO NotifierWorker
+installNotifierWorker env = do
+  workerThread <-
+    forkIO
+      ( supervisedLoopMicros
+          "notifier"
+          0
+          (5 * 1_000_000)
+          (300 * 1_000_000)
+          oneCycle
+      )
+  pure
+    NotifierWorker
+      { drainNotifierWorker = \timeoutSeconds -> do
+          closeNotifierQueue env.envNotifierQueue
+          dropped <- drainNotifierQueue env.envNotifierQueue timeoutSeconds
+          logJsonLine
+            [ "level" .= (if dropped == 0 then "info" else "warn" :: Text),
+              "msg" .= ("notifier drained" :: Text),
+              "dropped" .= dropped
+            ]
+          killThread workerThread
+      }
+  where
+    oneCycle =
+      withDequeued env.envNotifierQueue \notification -> do
+        result <-
+          runEff
+            . runErrorNoCallStack @AuthError
+            . runDatabasePool env.envPool
+            . runClockIO
+            . runAuthEventPublisherPostgres
+            $ deliverNotification env.envHttpManager env.envConfig notification
+        case result of
+          Right () -> pure ()
+          Left err ->
+            logJsonLine
+              [ "level" .= ("error" :: Text),
+                "msg" .= ("notifier delivery audit failed" :: Text),
+                "task" .= ("notifier" :: Text),
+                "error" .= Text.pack (show err)
+              ]
+
 -- | Run the schema migrations (idempotent), acquire the pool, and bootstrap the signing
 -- key, yielding the assembled 'Env'. Shared by 'main' and by host applications that embed
 -- the Shōmei API (the embedded demo builds its own 'Env' this way). Running
@@ -343,6 +402,7 @@ buildEnv cfg settings = do
   keysRef <- newIORef keys
   mgr <- newTlsManager
   limiter <- newHashingLimiter settings.serverHashingMaxConcurrency
+  notifierQueue <- newNotifierQueue settings.serverNotifierQueueSize
   hPutStrLn
     stderr
     ( "[shomei] hashing concurrency "
@@ -361,6 +421,7 @@ buildEnv cfg settings = do
         envKeys = keysRef,
         envKek = kek,
         envHttpManager = mgr,
+        envNotifierQueue = notifierQueue,
         envArgon2Params = settings.serverArgon2,
         envHashingLimiter = limiter,
         envTotpKey = totpKey

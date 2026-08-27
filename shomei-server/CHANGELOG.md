@@ -6,6 +6,11 @@ Shōmei packages.
 
 ## Unreleased
 
+- Notification delivery now runs on a supervised bounded in-memory queue, keeping SMTP/webhook
+  latency out of request handling. Queue capacity is configurable, overflow is audited without
+  blocking, and graceful shutdown drains queued work before releasing the database pool.
+- Notification delivery failures persist only stable reason codes; transport exceptions,
+  rendered messages, webhook response bodies, and request URLs never reach logs or audit rows.
 - Configuration adds `dbStatementTimeoutMs` / `SHOMEI_DB_STATEMENT_TIMEOUT_MS` (30 seconds by
   default), and the in-process sweeper uses a dedicated one-connection pool.
 - **Breaking:** the Dhall schema now exports `{ Type, default }` with every loader key optional;

@@ -7,6 +7,7 @@
 -- PostgreSQL and real ES256 signing.
 module Shomei.Server.E2ESpec (tests) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
 import Data.Aeson qualified as Aeson
@@ -26,6 +27,7 @@ import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
+import GHC.Clock (getMonotonicTime)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Pool (Pool)
@@ -66,6 +68,7 @@ import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (webhookSignature)
+import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
 import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
 import Shomei.OAuth.Client.Store (createOAuthClient)
@@ -73,7 +76,7 @@ import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
-import Shomei.Server.Boot (application)
+import Shomei.Server.Boot (NotifierWorker (..), application, installNotifierWorker)
 import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
@@ -107,8 +110,9 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
@@ -116,8 +120,9 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedServiceAccount pool
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
@@ -126,10 +131,11 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           -- OIDC needs an http(s) issuer (it doubles as the endpoint base URL) and the provider on.
           let baseCfg = defaultShomeiConfig (Issuer "http://localhost") (Audience "shomei-clients")
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedOAuthClient pool
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
@@ -139,8 +145,9 @@ tests =
           keysRef <- newIORef keys
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedExchangeServiceAccount pool
           -- The operator token must verify against the server's own key material, so it is signed
           -- with the active signing key (scope granting is host-side; here the host is the test).
@@ -171,9 +178,10 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) (totpScenario pool),
       testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
         withShomeiMigratedDatabase \connStr -> do
@@ -181,13 +189,14 @@ tests =
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
           captured <- newMVar []
           let whSecret = "e2e-webhook-secret" :: Text
               stubApp rq respond = do
                 b <- LBS.toStrict <$> Wai.strictRequestBody rq
                 modifyMVar_ captured (pure . (<> [(Wai.requestHeaders rq, b)]))
                 respond (Wai.responseLBS status200 [] "")
-          -- The stub receiver must be up before the app so the synchronous delivery lands.
+          -- The stub receiver and notifier worker must be up before the app accepts requests.
           testWithApplication (pure stubApp) \stubPort -> do
             let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
                 nc0 = baseCfg.notifierConfig
@@ -199,8 +208,39 @@ tests =
                       maxAttempts = 1
                     }
                 cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
-                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+            worker <- installNotifierWorker env
             testWithApplication (pure (application env healthyProbe healthyProbe)) (webhookScenario captured whSecret)
+            drainNotifierWorker worker 10,
+      testCase "E2E: password-reset/request answers 202 in under a second while the receiver sleeps 3 s" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
+          keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
+          captured <- newMVar []
+          let whSecret = "slow-webhook-secret" :: Text
+              stubApp rq respond = do
+                b <- LBS.toStrict <$> Wai.strictRequestBody rq
+                threadDelay 3_000_000
+                modifyMVar_ captured (pure . (<> [(Wai.requestHeaders rq, b)]))
+                respond (Wai.responseLBS status200 [] "")
+          testWithApplication (pure stubApp) \stubPort -> do
+            let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+                nc0 = baseCfg.notifierConfig
+                webhookCfg =
+                  WebhookConfig
+                    { url = Text.pack ("http://127.0.0.1:" <> show stubPort <> "/hook"),
+                      secret = whSecret,
+                      timeoutSeconds = 5,
+                      maxAttempts = 1
+                    }
+                cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
+                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+            worker <- installNotifierWorker env
+            testWithApplication (pure (application env healthyProbe healthyProbe)) (slowWebhookScenario captured)
+            drainNotifierWorker worker 10
     ]
 
 healthyProbe :: ProbeCheck
@@ -216,10 +256,9 @@ webhookScenario captured whSecret port = do
       pw = "correct horse battery staple" :: Text
   (sStatus, _) <- postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("" :: Text)])
   sStatus @?= 201
-  -- The delivery is synchronous inside the request handler, so the stub has captured it by 202.
   (reqStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= email])
   reqStatus @?= 202
-  reqs <- readMVar captured
+  reqs <- awaitNotifications captured 1 100
   case reqs of
     [(hdrs, body)] -> do
       lookup "X-Shomei-Notification-Type" hdrs @?= Just "email_verification_requested"
@@ -231,6 +270,37 @@ webhookScenario captured whSecret port = do
       (cStatus, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= token])
       cStatus @?= 200
     _ -> assertFailure ("expected exactly one webhook delivery, got " <> show (length reqs))
+
+awaitNotifications :: MVar [a] -> Int -> Int -> IO [a]
+awaitNotifications captured expected attempts = go attempts
+  where
+    go remaining = do
+      values <- readMVar captured
+      if length values >= expected || remaining <= 0
+        then pure values
+        else threadDelay 100_000 >> go (remaining - 1)
+
+slowWebhookScenario :: MVar [([Header], BS.ByteString)] -> Int -> IO ()
+slowWebhookScenario captured port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "slow-webhook-user@example.com" :: Text
+      pw = "correct horse battery staple" :: Text
+  (signupStatus, _) <-
+    postJSON mgr port "/v1/auth/signup" (object ["loginId" .= email, "email" .= email, "password" .= pw, "displayName" .= ("" :: Text)])
+  signupStatus @?= 201
+  (verifyStatus, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= email])
+  verifyStatus @?= 202
+  -- Let the setup notification finish so the timed reset starts with an idle worker.
+  firstDeliveries <- awaitNotifications captured 1 100
+  length firstDeliveries @?= 1
+
+  started <- getMonotonicTime
+  (resetStatus, _) <- postJSON mgr port "/v1/auth/password-reset/request" (object ["email" .= email])
+  elapsed <- subtract started <$> getMonotonicTime
+  resetStatus @?= 202
+  assertBool ("request waited on the three-second receiver: " <> show elapsed <> "s") (elapsed < 1.0)
+  deliveries <- awaitNotifications captured 2 100
+  length deliveries @?= 2
 
 -- | A fixed 32-byte AES-256-GCM key for the E2E TOTP secrets. Its value is irrelevant to the
 -- test; it only has to round-trip encrypt→decrypt through 'Shomei.Mfa.Totp.Postgres'.

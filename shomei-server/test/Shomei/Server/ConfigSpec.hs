@@ -39,6 +39,7 @@ dhallContents =
     <> ", dbPoolSize = 25"
     <> ", dbPoolAcquisitionTimeoutMs = 2500"
     <> ", dbStatementTimeoutMs = 5000"
+    <> ", notifierQueueSize = 12"
     <> ", maxFailedLoginsPerAccount = 7"
     <> ", metricsEnabled = False"
     <> ", keyRefreshIntervalSeconds = 15"
@@ -65,11 +66,13 @@ poolDefaults = do
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
+  unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   (_, settings) <- loadConfigFromEnv
   settings.serverDbPoolSize @?= 10
   settings.serverDbPoolAcquisitionTimeoutMs @?= 10000
   settings.serverDbStatementTimeoutMs @?= 30000
+  settings.serverNotifierQueueSize @?= 1024
   unsetEnv "PG_CONNECTION_STRING"
 
 -- | A zero-size pool deadlocks every request and a zero acquisition timeout fails every
@@ -90,6 +93,10 @@ poolRejectsNonPositive = do
   statementTimeoutResult <- try loadConfigFromEnv
   expectUserErrorNaming "SHOMEI_DB_STATEMENT_TIMEOUT_MS" statementTimeoutResult
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
+  setEnv "SHOMEI_NOTIFIER_QUEUE_SIZE" "0"
+  notifierQueueResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_NOTIFIER_QUEUE_SIZE" notifierQueueResult
+  unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   unsetEnv "PG_CONNECTION_STRING"
 
 sweepEnvVars :: [String]
@@ -305,6 +312,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
+  unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   (cfg, settings) <- loadConfig
   -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
   settings.serverPort @?= 8080
@@ -312,6 +320,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   settings.serverDbPoolSize @?= 25
   settings.serverDbPoolAcquisitionTimeoutMs @?= 2500
   settings.serverDbStatementTimeoutMs @?= 5000
+  settings.serverNotifierQueueSize @?= 12
   cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
   -- The signing-key refresh interval loads from the file (default is 60):
   cfg.signingKeyConfig.refreshIntervalSeconds @?= 15
@@ -338,6 +347,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   setEnv "SHOMEI_DB_POOL_SIZE" "33"
   setEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "2000"
   setEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "7000"
+  setEnv "SHOMEI_NOTIFIER_QUEUE_SIZE" "24"
   -- Concept-specific env vars override the file (twelve-factor precedence):
   setEnv "SHOMEI_WEBAUTHN_RP_ID" "auth.fromenv.test"
   setEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR" "true"
@@ -347,6 +357,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   settings2.serverDbPoolSize @?= 33
   settings2.serverDbPoolAcquisitionTimeoutMs @?= 2000
   settings2.serverDbStatementTimeoutMs @?= 7000
+  settings2.serverNotifierQueueSize @?= 24
   let WebAuthnConfig {rpId = envRpId} = webauthnConfig cfg2
   envRpId @?= "auth.fromenv.test"
   cfg2.mfaConfig.requireSecondFactor @?= True
@@ -372,6 +383,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
+  unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   unsetEnv "PG_CONNECTION_STRING"
   unsetEnv "SHOMEI_WEBAUTHN_RP_ID"
   unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
@@ -464,7 +476,8 @@ notifierEnvVars =
     "SHOMEI_WEBHOOK_URL",
     "SHOMEI_WEBHOOK_SECRET",
     "SHOMEI_WEBHOOK_TIMEOUT",
-    "SHOMEI_WEBHOOK_MAX_ATTEMPTS"
+    "SHOMEI_WEBHOOK_MAX_ATTEMPTS",
+    "SHOMEI_NOTIFIER_QUEUE_SIZE"
   ]
 
 -- | With no config and no env, the notifier is the log sender and both sub-configs are absent.

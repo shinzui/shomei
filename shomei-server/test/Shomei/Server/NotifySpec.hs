@@ -39,10 +39,12 @@ import Shomei.Notify
     SmtpStage (..),
     classifySmtpFailure,
     renderNotification,
+    runNotifierEnqueue,
     runNotifierSmtp,
     runNotifierWebhook,
     webhookSignature,
   )
+import Shomei.Notify.Queue qualified as Queue
 import Shomei.Time.Postgres (runClockIO)
 import System.IO (BufferMode (LineBuffering), Handle, IOMode (ReadWriteMode), hClose, hFlush, hGetLine, hIsEOF, hPutStr, hSetBuffering)
 import Test.Tasty (TestTree, testGroup)
@@ -80,6 +82,7 @@ tests =
       smtpFailureTest,
       smtpDataRejectTest,
       smtpClassifierTest,
+      notifierQueueTest,
       webhookDeliversTest,
       webhookRetriesThenSucceeds,
       webhookExhaustsThenAudits,
@@ -101,7 +104,7 @@ testEmail = either (\e -> assertFailure ("bad email: " <> show e)) pure (mkEmail
 -- SMTP interpreter (EP-8 M2) --------------------------------------------------
 
 fixtureExpiry :: UTCTime
-fixtureExpiry = UTCTime (fromGregorian 2026 7 8) 0
+fixtureExpiry = UTCTime (fromGregorian 2030 7 8) 0
 
 -- | The stock notifier config; only 'publicBaseUrl' (the link base) matters to these tests.
 baseNotifierCfg :: NotifierConfig
@@ -207,6 +210,40 @@ smtpClassifierTest = testCase "classifySmtpFailure maps smtp-mail messages to re
   classifySmtpFailure (toException (userError "authentication failed.")) @?= AuthFailed
   classifySmtpFailure (toException (userError "SMTP delivery timed out")) @?= Timeout
   classifySmtpFailure (toException (userError "unclassified SMTP failure")) @?= Unknown
+
+notifierQueueTest :: TestTree
+notifierQueueTest = testCase "queue: overflow and shutdown audit without blocking; drain reports remainder" do
+  email <- testEmail
+  let notification = PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry
+      enqueueThroughPort queue = do
+        events <- newIORef []
+        runEff . runClockIO . runAuthEventCapture events . runNotifierEnqueue queue "webhook" $ sendNotification notification
+        readIORef events
+
+  queue <- Queue.newNotifierQueue 2
+  enqueueThroughPort queue >>= (@?= [])
+  enqueueThroughPort queue >>= (@?= [])
+  fullEvents <- enqueueThroughPort queue
+  deliveryReason fullEvents @?= Just "queue_full"
+  Queue.closeNotifierQueue queue
+  closedEvents <- enqueueThroughPort queue
+  deliveryReason closedEvents @?= Just "shutting_down"
+
+  drained <- Queue.newNotifierQueue 1
+  Queue.enqueueNotification drained notification >>= (@?= Queue.Enqueued)
+  consumer <- forkIO (Queue.withDequeued drained (const (pure ())))
+  Queue.closeNotifierQueue drained
+  Queue.drainNotifierQueue drained 1 >>= (@?= 0)
+  killThread consumer
+
+  undrained <- Queue.newNotifierQueue 1
+  Queue.enqueueNotification undrained notification >>= (@?= Queue.Enqueued)
+  Queue.closeNotifierQueue undrained
+  Queue.drainNotifierQueue undrained 0 >>= (@?= 1)
+  where
+    deliveryReason = \case
+      [NotificationDeliveryFailed d] -> Just d.errorText
+      _ -> Nothing
 
 -- A minimal in-process SMTP sink -------------------------------------------------
 

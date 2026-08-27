@@ -13,6 +13,8 @@ in  Shomei::{
       -- provider relay or "webhook" for a signed JSON POST; their secrets stay in the environment.
       notifierTransport = Some
         "log"
+    , -- Requests never wait on SMTP/webhook delivery; this bounds the in-memory handoff.
+      notifierQueueSize = Some 1024
     , -- The localhost values work for development. Production must use the exact relying-party
       -- domain and page origins served to the browser.
       webauthnRpId = Some

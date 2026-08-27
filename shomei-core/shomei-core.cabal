@@ -160,6 +160,7 @@ test-suite shomei-core-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     Shomei.Account.Admin.WorkflowSpec
+    Shomei.Account.Lifecycle.CostSpec
     Shomei.Account.Password.DomainSpec
     Shomei.Account.Verification.WorkflowSpec
     Shomei.AccountSpec

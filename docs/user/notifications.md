@@ -15,6 +15,11 @@ The default remains `log`, so an existing deployment's behavior is unchanged unt
 transports. For a provider Shōmei does not ship, you can still supply your own `Notifier`
 interpreter (see [Bring your own interpreter](#bring-your-own-interpreter)).
 
+The standalone server hands notifications to a bounded in-memory queue. Request handlers never
+wait for SMTP or webhook I/O; one supervised worker performs delivery after the response path has
+moved on. The queue holds 1024 notifications by default and can be sized with
+`notifierQueueSize` / `SHOMEI_NOTIFIER_QUEUE_SIZE`.
+
 Secrets never live in the Dhall config file. The SMTP relay password comes from
 `SHOMEI_SMTP_PASSWORD` and the webhook signing secret from `SHOMEI_WEBHOOK_SECRET`, both
 environment-only.
@@ -148,10 +153,10 @@ def verify(raw_body: bytes, header: str, secret: bytes) -> bool:
 
 Delivery is best-effort with bounded in-process retries: `maxAttempts` total (default 3) with
 1 s and 4 s backoff, each under a per-attempt timeout (`timeoutSeconds`, default 5). A non-2xx
-response counts as a failure. There is no persistent queue, so a receiver may see a notification
-**0 times** (every attempt failed) or, rarely, **more than once** (a timeout after the receiver
-had already processed it). **Treat deliveries as idempotent by token** — the token is stable
-across retries, so de-duplicate on it.
+response counts as a failure. The bounded queue is memory-only, so a receiver may see a
+notification **0 times** (the queue was full, shutdown timed out, or every attempt failed) or,
+rarely, **more than once** (a timeout after the receiver had already processed it). **Treat
+deliveries as idempotent by token** — the token is stable across retries, so de-duplicate on it.
 
 ### Example
 
@@ -171,6 +176,7 @@ by environment variables; the two secrets are environment-only.
 |------------------------|-------------------------------|------------|-------|
 | `notifierTransport`    | `SHOMEI_NOTIFIER_TRANSPORT`   | all        | `log` \| `smtp` \| `webhook`. |
 | `alsoLogNotifications` | `SHOMEI_NOTIFIER_ALSO_LOG`    | all        | Also tee through the log sender. See below. |
+| `notifierQueueSize`    | `SHOMEI_NOTIFIER_QUEUE_SIZE`  | all        | Positive queue capacity; default 1024. |
 | `smtpHost`             | `SHOMEI_SMTP_HOST`            | smtp       | Provider submission host. |
 | `smtpPort`             | `SHOMEI_SMTP_PORT`           | smtp       | 587 (starttls) / 465 (implicit) / 25 (lab). |
 | `smtpTlsMode`          | `SHOMEI_SMTP_TLS_MODE`       | smtp       | `starttls` \| `implicit` \| `plain`. |
@@ -199,14 +205,22 @@ transport is already `log`.
 `SendNotification` returns `()`, and the workflows ignore the result — the request endpoints
 answer a generic `202 Accepted` whether or not the account exists, to avoid leaking which
 addresses are registered (see [security.md](security.md)). Provider failures therefore **never**
-surface to the HTTP caller.
+surface to the HTTP caller. Enqueue is one non-blocking STM transaction. If the queue is full,
+the new notification is dropped and audited as `queue_full`; once shutdown begins, late work is
+dropped and audited as `shutting_down`.
 
 The delivering interpreters are hardened accordingly: every exception is caught internally. When
-a delivery ultimately fails, the interpreter writes one **redacted** log line — recipient, type,
-and error, **never the token** — and publishes a `notification_delivery_failed` audit event
-(channel, notification type, recipient, truncated error, timestamp — again, no token). That is
-your operational signal; retry/queue/dead-letter beyond the webhook's bounded in-process retries
-is the operator's job (a webhook receiver, or a custom interpreter).
+a delivery ultimately fails, the worker writes one log line containing only recipient, type, and
+a stable reason such as `connect_failed`, `rejected_at_data:451`, or `http_status:500`. It publishes
+the same reason in a `notification_delivery_failed` audit event; exception messages, response
+bodies, rendered mail, URLs, and tokens never enter either sink. A notification that expires while
+waiting is skipped with `expired_in_queue`.
+
+On SIGTERM or SIGINT the server stops accepting new work, closes the notification queue, and waits
+up to `gracefulShutdownTimeoutSeconds` for queued and in-flight delivery before releasing the
+database pool. If the deadline expires, one structured summary line reports the number dropped;
+it does not emit one audit row per abandoned item. There is no persistent queue or dead-letter
+store, so durable retry remains the operator's responsibility (for example in a webhook receiver).
 
 The log sender's own redaction is unchanged: by default it prints only the first 8 hex characters
 of the token's SHA-256 (a correlation handle, not a secret), and `SHOMEI_NOTIFIER_LOG_SECRETS=true`
@@ -269,22 +283,12 @@ runNotifierMyProvider client baseUrl = interpret_ \case
                 (baseUrl <> "/v1/auth/password-reset/confirm?token=" <> oneTimeTokenText token)
 ```
 
-Wire it into the effect stack in `Shomei.Server.App.runAppIO`
-(`shomei-server/src/Shomei/Server/App.hs`) by replacing the one selection line:
-
-```haskell
-        . runNotifierFromConfig env.envHttpManager env.envConfig   -- the built-in transports
-```
-
-with your interpreter:
-
-```haskell
-        . runNotifierMyProvider client env.envConfig.notifierConfig.publicBaseUrl
-```
-
-`Notifier` is one entry in the canonical `AppEffects` stack; nothing else changes. If your
-interpreter can fail, catch inside it and preserve the fire-and-forget contract above — never let
-a delivery failure propagate to the HTTP request.
+Compose that interpreter at your embedding application's effect boundary. The standalone server's
+own request boundary deliberately installs the bounded queue interpreter and its boot sequence
+installs the built-in delivery worker. An embedding host that wants the same non-blocking behavior
+can reuse `Shomei.Notify.Queue`; otherwise its interpreter owns its delivery and shutdown model.
+If your interpreter can fail, catch inside it and preserve the fire-and-forget contract above —
+never let a delivery failure propagate to the HTTP request.
 
 ## Testing
 
