@@ -1,78 +1,156 @@
--- The typed schema for a Shōmei runtime configuration file (EP-5 / IP-6).
--- An operator's `config/shomei.dhall` should annotate itself with this type:
---     let Schema = ./shomei-types.dhall in ({ … } : Schema)
--- The server renders the file with `dhall-to-json` and decodes the result; every field maps
--- to a runtime setting. Secrets (database URL, etc.) live here, so the live file is gitignored.
-{ issuer : Text
-, audience : Text
-, databaseUrl : Text
-, port : Natural
-, accessTokenTtlSeconds : Natural
-, refreshTokenTtlSeconds : Natural
-, sessionTtlSeconds : Natural
-, publicBaseUrl : Text
-, emailVerificationRequired : Bool
--- Notification delivery (MasterPlan 7 EP-8). `notifierTransport` selects the built-in sender:
--- "log" (default; writes the link to the server log), "smtp" (deliver via a provider RELAY —
--- SES/SendGrid/Resend/Postmark — not a self-hosted mail server), or "webhook" (signed JSON POST).
--- Secrets are NEVER in this file: the SMTP password comes from SHOMEI_SMTP_PASSWORD and the
--- webhook signing secret from SHOMEI_WEBHOOK_SECRET. `alsoLogNotifications` additionally tees
--- every notification through the log sender (staged rollout). See docs/user/notifications.md.
--- smtpTlsMode: "starttls" (587) | "implicit" (465) | "plain" (25, lab sink only, never prod).
-, notifierTransport : Optional Text
-, alsoLogNotifications : Optional Bool
-, smtpHost : Optional Text
-, smtpPort : Optional Natural
-, smtpTlsMode : Optional Text
-, smtpUsername : Optional Text
-, smtpFromAddress : Optional Text
-, smtpTimeoutSeconds : Optional Natural
-, webhookUrl : Optional Text
-, webhookTimeoutSeconds : Optional Natural
-, webhookMaxAttempts : Optional Natural
-, rateLimitEnabled : Bool
-, maxFailedLoginsPerAccount : Natural
-, perIpRequestsPerMinute : Natural
-, metricsEnabled : Bool
-, requestLoggingEnabled : Bool
-, gracefulShutdownTimeoutSeconds : Natural
--- Roles granted to every new user at signup (MasterPlan 7 EP-1). Empty for none. Each name
--- must already exist in the `shomei_roles` registry (`shomei-admin roles define <name>`) or
--- the server refuses to start. Overridable with SHOMEI_DEFAULT_ROLES (comma-separated).
-, defaultRoles : List Text
--- Password policy (MasterPlan 4). Length bounds plus toggles for the local common/contextual
--- checks (EP-2) and the opt-in HIBP breach check (EP-3).
-, passwordMinLength : Natural
-, passwordMaxLength : Natural
-, passwordRejectCommon : Bool
-, passwordRejectContextual : Bool
-, passwordBreachCheckEnabled : Bool
-, passwordBreachCheckFailClosed : Bool
-, passwordBreachCheckTimeoutMs : Natural
--- WebAuthn / passkey relying-party identity and ceremony policy (MasterPlan 3).
-, webauthnRpId : Text                       -- registrable domain, e.g. "auth.example.com"
-, webauthnRpName : Text                      -- human label shown by the authenticator
-, webauthnOrigins : List Text                -- allowed page origins, e.g. [ "https://auth.example.com" ]
-, webauthnUserVerification : Text            -- "required" | "preferred" | "discouraged"
-, webauthnAttestation : Text                 -- "none" | "direct"
-, webauthnCeremonyTimeoutSeconds : Natural   -- browser ceremony timeout
-, webauthnPendingCeremonyTtlSeconds : Natural -- how long a begun ceremony stays valid server-side
-, mfaRequireSecondFactor : Bool              -- require a second factor for accounts with any enrolled factor
--- TOTP second factor (MasterPlan 7 EP-7). Disabled by default. When enabled, the environment
--- variable SHOMEI_TOTP_ENCRYPTION_KEY (base64 of 32 bytes) MUST be set — it is a secret and so is
--- never in this file — or the server refuses to start. Generate one with: openssl rand -base64 32.
-, totpEnabled : Bool
-, totpEnrollmentTtlSeconds : Natural          -- how long an unconfirmed enrollment stays activatable
-, machineTokenTtlSeconds : Natural            -- client-credentials and token-exchange token lifetime
--- OIDC provider surface (MasterPlan 7 EP-5). Disabled by default. When enabled, `issuer` above
--- MUST be this deployment's public http(s) base URL: every endpoint in the published discovery
--- document is derived from it, and the server refuses to start otherwise.
--- `oauthLoginUrl` is the host's own login page; an unauthenticated GET /oauth/authorize is
--- redirected there with the original authorize URL in a `return_to` query parameter. `None Text`
--- makes such a request a 401 instead. Shōmei ships no login UI. See docs/user/oidc.md.
-, oidcEnabled : Bool
-, oauthLoginUrl : Optional Text
-, oauthAuthorizationCodeTtlSeconds : Natural  -- single-use authorization code lifetime
-, oauthIdTokenTtlSeconds : Natural            -- ID token lifetime
-, allowedClockSkewSeconds : Optional Natural  -- verifier tolerance for exp/nbf/iat
-}
+-- The typed schema for a Shōmei runtime configuration file.
+-- Every field is optional; an absent field falls back to the built-in default, and any
+-- SHOMEI_* variable overrides the file. Use record completion so omitted fields become None:
+--     let Shomei = ./shomei-types.dhall
+--     in Shomei::{ databaseUrl = Some "host=localhost dbname=shomei" }
+--
+-- The server renders the completed file with `dhall-to-json` and decodes it. Database
+-- credentials may live here, so the live `config/shomei.dhall` file is gitignored. Notifier,
+-- signing-key, and TOTP encryption secrets remain environment-only.
+let ConfigType =
+      { issuer : Optional Text
+      , audience : Optional Text
+      , databaseUrl : Optional Text
+      , port : Optional Natural
+      , dbPoolSize : Optional Natural
+      , dbPoolAcquisitionTimeoutMs : Optional Natural
+      , sweepEnabled : Optional Bool
+      , sweepIntervalSeconds : Optional Natural
+      , sweepBatchSize : Optional Natural
+      , sweepDeadSessionGraceDays : Optional Natural
+      , sweepOneTimeTokenGraceDays : Optional Natural
+      , sweepCeremonyGraceMinutes : Optional Natural
+      , loginAttemptRetentionDays : Optional Natural
+      , authEventRetentionDays : Optional Natural
+      , argon2MemoryKiB : Optional Natural
+      , argon2Iterations : Optional Natural
+      , argon2Parallelism : Optional Natural
+      , hashingMaxConcurrency : Optional Natural
+      , accessTokenTtlSeconds : Optional Natural
+      , refreshTokenTtlSeconds : Optional Natural
+      , sessionTtlSeconds : Optional Natural
+      , publicBaseUrl : Optional Text
+      , emailVerificationRequired : Optional Bool
+      , notifierTransport : Optional Text
+      , alsoLogNotifications : Optional Bool
+      , smtpHost : Optional Text
+      , smtpPort : Optional Natural
+      , smtpTlsMode : Optional Text
+      , smtpUsername : Optional Text
+      , smtpFromAddress : Optional Text
+      , smtpTimeoutSeconds : Optional Natural
+      , webhookUrl : Optional Text
+      , webhookTimeoutSeconds : Optional Natural
+      , webhookMaxAttempts : Optional Natural
+      , rateLimitEnabled : Optional Bool
+      , maxFailedLoginsPerAccount : Optional Natural
+      , perIpRequestsPerMinute : Optional Natural
+      , metricsEnabled : Optional Bool
+      , requestLoggingEnabled : Optional Bool
+      , gracefulShutdownTimeoutSeconds : Optional Natural
+      , passwordMinLength : Optional Natural
+      , passwordMaxLength : Optional Natural
+      , passwordRejectCommon : Optional Bool
+      , passwordRejectContextual : Optional Bool
+      , passwordBreachCheckEnabled : Optional Bool
+      , passwordBreachCheckFailClosed : Optional Bool
+      , passwordBreachCheckTimeoutMs : Optional Natural
+      , webauthnRpId : Optional Text
+      , webauthnRpName : Optional Text
+      , webauthnOrigins : Optional (List Text)
+      , webauthnUserVerification : Optional Text
+      , webauthnAttestation : Optional Text
+      , webauthnCeremonyTimeoutSeconds : Optional Natural
+      , webauthnPendingCeremonyTtlSeconds : Optional Natural
+      , mfaRequireSecondFactor : Optional Bool
+      , totpEnabled : Optional Bool
+      , totpEnrollmentTtlSeconds : Optional Natural
+      , machineTokenTtlSeconds : Optional Natural
+      , oidcEnabled : Optional Bool
+      , oauthLoginUrl : Optional Text
+      , oauthAuthorizationCodeTtlSeconds : Optional Natural
+      , oauthIdTokenTtlSeconds : Optional Natural
+      , allowedClockSkewSeconds : Optional Natural
+      , signingAlgorithm : Optional Text
+      , keyRefreshIntervalSeconds : Optional Natural
+      , tokenTransport : Optional Text
+      , cookieSecure : Optional Bool
+      , cookieSameSite : Optional Text
+      , csrfAllowedOrigins : Optional (List Text)
+      , defaultRoles : Optional (List Text)
+      }
+
+let default =
+      { issuer = None Text
+      , audience = None Text
+      , databaseUrl = None Text
+      , port = None Natural
+      , dbPoolSize = None Natural
+      , dbPoolAcquisitionTimeoutMs = None Natural
+      , sweepEnabled = None Bool
+      , sweepIntervalSeconds = None Natural
+      , sweepBatchSize = None Natural
+      , sweepDeadSessionGraceDays = None Natural
+      , sweepOneTimeTokenGraceDays = None Natural
+      , sweepCeremonyGraceMinutes = None Natural
+      , loginAttemptRetentionDays = None Natural
+      , authEventRetentionDays = None Natural
+      , argon2MemoryKiB = None Natural
+      , argon2Iterations = None Natural
+      , argon2Parallelism = None Natural
+      , hashingMaxConcurrency = None Natural
+      , accessTokenTtlSeconds = None Natural
+      , refreshTokenTtlSeconds = None Natural
+      , sessionTtlSeconds = None Natural
+      , publicBaseUrl = None Text
+      , emailVerificationRequired = None Bool
+      , notifierTransport = None Text
+      , alsoLogNotifications = None Bool
+      , smtpHost = None Text
+      , smtpPort = None Natural
+      , smtpTlsMode = None Text
+      , smtpUsername = None Text
+      , smtpFromAddress = None Text
+      , smtpTimeoutSeconds = None Natural
+      , webhookUrl = None Text
+      , webhookTimeoutSeconds = None Natural
+      , webhookMaxAttempts = None Natural
+      , rateLimitEnabled = None Bool
+      , maxFailedLoginsPerAccount = None Natural
+      , perIpRequestsPerMinute = None Natural
+      , metricsEnabled = None Bool
+      , requestLoggingEnabled = None Bool
+      , gracefulShutdownTimeoutSeconds = None Natural
+      , passwordMinLength = None Natural
+      , passwordMaxLength = None Natural
+      , passwordRejectCommon = None Bool
+      , passwordRejectContextual = None Bool
+      , passwordBreachCheckEnabled = None Bool
+      , passwordBreachCheckFailClosed = None Bool
+      , passwordBreachCheckTimeoutMs = None Natural
+      , webauthnRpId = None Text
+      , webauthnRpName = None Text
+      , webauthnOrigins = None (List Text)
+      , webauthnUserVerification = None Text
+      , webauthnAttestation = None Text
+      , webauthnCeremonyTimeoutSeconds = None Natural
+      , webauthnPendingCeremonyTtlSeconds = None Natural
+      , mfaRequireSecondFactor = None Bool
+      , totpEnabled = None Bool
+      , totpEnrollmentTtlSeconds = None Natural
+      , machineTokenTtlSeconds = None Natural
+      , oidcEnabled = None Bool
+      , oauthLoginUrl = None Text
+      , oauthAuthorizationCodeTtlSeconds = None Natural
+      , oauthIdTokenTtlSeconds = None Natural
+      , allowedClockSkewSeconds = None Natural
+      , signingAlgorithm = None Text
+      , keyRefreshIntervalSeconds = None Natural
+      , tokenTransport = None Text
+      , cookieSecure = None Bool
+      , cookieSameSite = None Text
+      , csrfAllowedOrigins = None (List Text)
+      , defaultRoles = None (List Text)
+      }
+
+in  { Type = ConfigType, default }

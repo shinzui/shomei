@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** the Dhall schema now exports `{ Type, default }` with every loader key optional;
+  annotated files use `Shomei::{ field = Some value }`. A test keeps schema and loader fields equal.
 - **Breaking:** Dhall configuration rejects unknown fields and invalid WebAuthn policy names, and
   startup refuses empty WebAuthn origin sets. `SHOMEI_EMAIL_VERIFICATION_REQUIRED` now overlays the
   corresponding file setting.

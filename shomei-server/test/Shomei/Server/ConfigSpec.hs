@@ -6,20 +6,29 @@
 module Main (main) where
 
 import Control.Exception (try)
+import Data.Aeson (Value (Object), eitherDecodeStrict', toJSON)
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Shomei.Account.Password.Domain (PasswordPolicy (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
 import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
-import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
+import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
+import System.Directory (makeAbsolute)
 import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (isUserError)
+import System.Process (readProcess)
 import Test.Tasty (TestTree, defaultMain)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 
 configPath :: FilePath
 configPath = "/tmp/shomei-config-test.dhall"
+
+schemaProbePath :: FilePath
+schemaProbePath = "/tmp/shomei-schema-probe.dhall"
 
 -- A partial config (FileConfig's fields are all optional, so absent keys fall back to defaults).
 dhallContents :: String
@@ -248,6 +257,23 @@ strictConfigurationSettings = do
   writeFile configPath dhallContents
   unsetEnv "PG_CONNECTION_STRING"
 
+-- | Render the schema's completed default while preserving nulls, then compare its key set to
+-- the all-'Nothing' JSON representation of 'FileConfig'. This also asks Dhall to check that the
+-- shipped default still has exactly the exported 'Type'.
+dhallSchemaMatchesFileConfig :: Assertion
+dhallSchemaMatchesFileConfig = do
+  schema <- makeAbsolute "../config/shomei-types.dhall"
+  writeFile schemaProbePath ("(" <> schema <> ")::{=}")
+  rendered <- readProcess "dhall-to-json" ["--preserve-null", "--file", schemaProbePath] ""
+  dhallKeys <-
+    either assertFailure (pure . KeyMap.keys) $
+      (eitherDecodeStrict' (Text.encodeUtf8 (Text.pack rendered)) :: Either String (KeyMap.KeyMap Value))
+  blank <- either assertFailure pure (eitherDecodeStrict' "{}" :: Either String FileConfig)
+  loaderKeys <- case toJSON blank of
+    Object fields -> pure (KeyMap.keys fields)
+    _ -> assertFailure "FileConfig did not encode as an object"
+  Set.fromList dhallKeys @?= Set.fromList loaderKeys
+
 -- | Assert a config load failed with a 'userError' whose message names the offending variable.
 expectUserErrorNaming :: String -> Either IOError a -> Assertion
 expectUserErrorNaming name = \case
@@ -347,6 +373,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   sweepRejectsNonPositive
   argon2Settings
   strictConfigurationSettings
+  dhallSchemaMatchesFileConfig
   verifierSettings
   notifierDefaults
   notifierSmtpDhallAndEnv

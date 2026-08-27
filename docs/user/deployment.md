@@ -155,40 +155,32 @@ to defaults. Bare-metal and `cabal run` deployments are unaffected — they keep
 
 ### Dhall config file
 
-The schema is `config/shomei-types.dhall`; a worked example is `config/shomei.example.dhall`.
-Copy it to `config/shomei.dhall` (gitignored, holds secrets), edit, and point the server at it:
+The schema is `config/shomei-types.dhall`; it is the authoritative list of file keys and their
+types. A worked example is `config/shomei.example.dhall`. Copy it to `config/shomei.dhall`
+(gitignored, holds secrets), edit, and point the server at it:
 
 ```bash
 SHOMEI_CONFIG=config/shomei.dhall PG_CONNECTION_STRING=… cabal run exe:shomei-server
 ```
 
-Every field is optional; an absent field falls back to the default, and any `SHOMEI_*` env var
-overrides the file. Fields: `issuer`, `audience`, `databaseUrl`, `port`, `dbPoolSize`,
-`dbPoolAcquisitionTimeoutMs`, `accessTokenTtlSeconds`,
-`refreshTokenTtlSeconds`, `sessionTtlSeconds`, `publicBaseUrl`, `emailVerificationRequired`,
-`rateLimitEnabled`, `maxFailedLoginsPerAccount`, `perIpRequestsPerMinute`, `metricsEnabled`,
-`requestLoggingEnabled`, `gracefulShutdownTimeoutSeconds`, password policy fields
-`passwordMinLength`, `passwordMaxLength`, `passwordRejectCommon`, `passwordRejectContextual`,
-`passwordBreachCheckEnabled`, `passwordBreachCheckFailClosed`,
-`passwordBreachCheckTimeoutMs`, the WebAuthn keys `webauthnRpId`, `webauthnRpName`,
-`webauthnOrigins`, `webauthnUserVerification`, `webauthnAttestation`,
-`webauthnCeremonyTimeoutSeconds`, `webauthnPendingCeremonyTtlSeconds`,
-`mfaRequireSecondFactor`, `machineTokenTtlSeconds`, `allowedClockSkewSeconds`, `signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`,
-`cookieSecure`, `cookieSameSite`, `csrfAllowedOrigins`, the sweeper keys `sweepEnabled`,
-`sweepIntervalSeconds`, `sweepBatchSize`, `sweepDeadSessionGraceDays`,
-`sweepOneTimeTokenGraceDays`, `sweepCeremonyGraceMinutes`, `loginAttemptRetentionDays`,
-`authEventRetentionDays`, the hashing keys `argon2MemoryKiB`, `argon2Iterations`,
-`argon2Parallelism`, and `hashingMaxConcurrency` (see
-[passkeys.md](passkeys.md) for WebAuthn and [machine-tokens.md](machine-tokens.md) for service
-accounts).
+Every field is optional; an absent field falls back to the built-in default, and any `SHOMEI_*`
+environment variable overrides the file. Construct a partial, type-checked configuration with
+record completion; values you set are wrapped in `Some`:
 
-> **Note.** `config/shomei-types.dhall` is a *closed* record type, so it does not yet list the
-> newer keys (`signingAlgorithm`, `keyRefreshIntervalSeconds`, `tokenTransport`, `cookieSecure`,
-> `cookieSameSite`, `csrfAllowedOrigins`, `dbPoolSize`, `dbPoolAcquisitionTimeoutMs`, the
-> `sweep*` / `*RetentionDays` keys, and the `argon2*` / `hashingMaxConcurrency` keys). The
-> loader accepts them regardless — every field is
-> optional at decode time — but a file that annotates itself `: ./shomei-types.dhall` cannot use
-> them until the schema is widened. Use the environment variables, or drop the annotation.
+```dhall
+let Shomei = ./shomei-types.dhall
+
+in  Shomei::{
+    databaseUrl = Some "host=localhost dbname=shomei",
+    port = Some 8080,
+    webauthnOrigins = Some [ "http://localhost:8080" ]
+  }
+```
+
+Adding a later optional key to the schema does not require existing completed files to mention it.
+The configuration test compares the schema's keys with the loader's `FileConfig`, so either side
+changing alone fails the suite. See [passkeys.md](passkeys.md) for WebAuthn and
+[machine-tokens.md](machine-tokens.md) for service accounts.
 
 There is deliberately **no** Dhall key for `SHOMEI_NOTIFIER_LOG_SECRETS` or
 `SHOMEI_KEY_ENCRYPTION_KEY`: both are secrets or secret-revealing switches, and must be explicit

@@ -57,7 +57,7 @@ and the sweeper runs on its own connection.
 - [x] (2026-08-27T20:44:00Z) M3: `FileConfig` rejects unknown keys (silent acceptance observed first); strict WebAuthn enums
       on the Dhall path; `configSigningAlgorithm` returns `Either`; empty origins refused at boot and
       `originsOf` uses `NE.nonEmpty`; `SHOMEI_EMAIL_VERIFICATION_REQUIRED`.
-- [ ] M4: `config/shomei-types.dhall` as `{ Type, default }`, every field `Optional`; the twenty
+- [x] (2026-08-27T20:52:00Z) M4: `config/shomei-types.dhall` as `{ Type, default }`, every field `Optional`; the twenty
       lagging keys; example rewritten; ConfigSpec sync test.
 - [ ] M5: migration (number allocated by `just new-migration`; `0029` at the time of writing) with the unique index; `acquirePool` sets both timeouts from `dbStatementTimeoutMs`
       (default 30 000); sweeper on a dedicated one-connection pool.
@@ -126,6 +126,14 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   rebuilt executable also exits 1 on `{ cookieSecue = False }`, prints the unknown field, and never
   reaches migration or pool acquisition.
 
+- **The live loader has 70 fields, not the plan-time count of 69.** The prior review's twenty-field
+  schema gap was still exact, but `allowedClockSkewSeconds` had already brought both totals up by
+  one. The new schema/loader equality test observes 70 keys and eliminates hand-maintained counts.
+- **`dhall-to-json` omits `None` fields unless asked to preserve them.** Ordinary completed configs
+  therefore render only operator-supplied values, which is desirable. The drift probe uses the
+  converter's documented `--preserve-null` flag so the completed default exposes all 70 checked
+  field names before comparison with `FileConfig`.
+
 
 ## Decision Log
 
@@ -150,7 +158,8 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   field; `::` makes every omitted field `None` and type-checks `default` against `Type`, which lets later
   plans add keys without breaking every file. A closed record plus a shipped defaults record was
   rejected as a second source of truth for every default. Breaking for annotated files only; the loader
-  is unchanged. Date: 2026-08-27
+  is unchanged. Recorded in [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md).
+  Date: 2026-08-27
 - Decision: One key, `dbStatementTimeoutMs` / `SHOMEI_DB_STATEMENT_TIMEOUT_MS`, default 30 000, sets
   both `statement_timeout` (PostgreSQL's cap on one statement's server-side execution time) and
   `idle_in_transaction_session_timeout`; 0 disables both.

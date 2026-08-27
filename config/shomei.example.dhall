@@ -1,74 +1,27 @@
 -- Example Shōmei runtime configuration. Copy to `config/shomei.dhall`, edit, and point the
--- server/admin at it with `SHOMEI_CONFIG=config/shomei.dhall`. Environment variables
--- (PG_CONNECTION_STRING, SHOMEI_PORT, SHOMEI_ISSUER, …) override anything set here.
-let Schema = ./shomei-types.dhall
+-- server/admin at it with `SHOMEI_CONFIG=config/shomei.dhall`. Every omitted field uses the
+-- built-in default, and environment variables override values completed here.
+let Shomei = ./shomei-types.dhall
 
-in    { issuer = "shomei"
-      , audience = "shomei-clients"
-      , databaseUrl = "host=localhost dbname=shomei user=shomei password=shomei"
-      , port = 8080
-      , accessTokenTtlSeconds = 900
-      , refreshTokenTtlSeconds = 2592000
-      , sessionTtlSeconds = 2592000
-      , publicBaseUrl = "http://localhost:8080"
-      , emailVerificationRequired = False
-      -- Notification delivery (EP-8). Default "log" writes verification/reset links to the
-      -- server log. Switch to "smtp" for provider-relay email (SES/SendGrid/Resend/Postmark —
-      -- set smtpHost/smtpFromAddress here and SHOMEI_SMTP_PASSWORD in the environment) or
-      -- "webhook" for a signed JSON POST (set webhookUrl here and SHOMEI_WEBHOOK_SECRET in the
-      -- environment). smtpTlsMode is "starttls" (587) | "implicit" (465) | "plain" (lab only).
-      , notifierTransport = Some "log"
-      , alsoLogNotifications = Some False
-      , smtpHost = None Text
-      , smtpPort = None Natural
-      , smtpTlsMode = None Text
-      , smtpUsername = None Text
-      , smtpFromAddress = None Text
-      , smtpTimeoutSeconds = None Natural
-      , webhookUrl = None Text
-      , webhookTimeoutSeconds = None Natural
-      , webhookMaxAttempts = None Natural
-      , rateLimitEnabled = True
-      , maxFailedLoginsPerAccount = 7
-      , perIpRequestsPerMinute = 60
-      , metricsEnabled = True
-      , requestLoggingEnabled = True
-      , gracefulShutdownTimeoutSeconds = 30
-      -- Password policy (MasterPlan 4). Local common/contextual checks default on; the
-      -- network HIBP breach check is opt-in and, when enabled, fails open by default.
-      , passwordMinLength = 12
-      , passwordMaxLength = 256
-      , passwordRejectCommon = True
-      , passwordRejectContextual = True
-      , passwordBreachCheckEnabled = False
-      , passwordBreachCheckFailClosed = False
-      , passwordBreachCheckTimeoutMs = 1000
-      -- WebAuthn / passkeys. The localhost defaults work for local development; in production
-      -- set webauthnRpId to your registrable domain and webauthnOrigins to your exact page
-      -- origin(s). See docs/passkeys.md.
-      , webauthnRpId = "localhost"
-      , webauthnRpName = "Shōmei"
-      , webauthnOrigins = [ "http://localhost:8080" ]
-      , webauthnUserVerification = "preferred"
-      , webauthnAttestation = "none"
-      , webauthnCeremonyTimeoutSeconds = 300
-      , webauthnPendingCeremonyTtlSeconds = 300
-      , mfaRequireSecondFactor = True
-      , totpEnabled = False
-      , totpEnrollmentTtlSeconds = 900
-      , machineTokenTtlSeconds = 300
-      -- Roles every new user receives at signup. Define them first with
-      -- `shomei-admin roles define <name>`; the server refuses to start if a name here is not
-      -- in the registry. The empty list (the default) grants nothing.
-      , defaultRoles = [] : List Text
-      -- OIDC provider. Keep disabled until `issuer` above is this deployment's real public
-      -- base URL (e.g. "https://auth.example.com") — the server refuses to start otherwise,
-      -- because every endpoint in the discovery document is derived from it. Register clients
-      -- with `shomei-admin oauth-clients create`. See docs/user/oidc.md.
-      , oidcEnabled = False
-      , oauthLoginUrl = None Text
-      , oauthAuthorizationCodeTtlSeconds = 60
-      , oauthIdTokenTtlSeconds = 900
-      , allowedClockSkewSeconds = Some 30
-      }
-    : Schema
+in  Shomei::{
+    , -- Prefer PG_CONNECTION_STRING for deployed secrets; this value is convenient locally.
+      databaseUrl = Some
+        "host=localhost dbname=shomei user=shomei password=shomei"
+    , port = Some 8080
+    , publicBaseUrl = Some "http://localhost:8080"
+    , -- Default "log" writes verification/reset links to the server log. Use "smtp" for a
+      -- provider relay or "webhook" for a signed JSON POST; their secrets stay in the environment.
+      notifierTransport = Some
+        "log"
+    , -- The localhost values work for development. Production must use the exact relying-party
+      -- domain and page origins served to the browser.
+      webauthnRpId = Some
+        "localhost"
+    , webauthnOrigins = Some [ "http://localhost:8080" ]
+    , -- Define roles before listing them here. The empty list grants no default roles.
+      defaultRoles = Some
+        ([] : List Text)
+    , -- Keep OIDC disabled until issuer is this deployment's public HTTP(S) base URL.
+      oidcEnabled = Some
+        False
+    }
