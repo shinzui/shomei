@@ -33,3 +33,4 @@
 0033-login-attempts-factor.sql
 0034-sessions-authenticated-at.sql
 0035-status-checks-and-case-insensitive-identity.sql
+0036-unique-password-credential-per-user.sql

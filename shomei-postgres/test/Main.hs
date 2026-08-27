@@ -432,7 +432,7 @@ mkLoginId' t = case mkLoginId t of
 -- | Run an action over a fresh migrated database and a pool.
 withDb :: (Pool -> IO a) -> IO a
 withDb action = withShomeiMigratedDatabase \connStr -> do
-  pool <- acquirePool 4 10 connStr
+  pool <- acquirePool 4 10 30000 connStr
   action pool
 
 -- | Unwrap the @Either AuthError@ from 'runApp' (the interpreter-level failure channel).
@@ -521,6 +521,8 @@ tests =
     testUserStatusCasUnderRace,
     testListSessionsForUser,
     testCredentialRoundTrip,
+    testCredentialUniquePerUser,
+    testPoolStatementTimeoutIsApplied,
     testSessionRevoke,
     testSessionActorRoundTrip,
     testSessionKindRoundTrip,
@@ -1093,6 +1095,59 @@ testCredentialRoundTrip = testCase "create credential + find-by-email" $ withDb 
   duplicateLogin @?= Left LoginIdAlreadyRegistered
   duplicateEmail <- runApp pool (createPasswordCredential u.userId bobLogin (Just aliceEmail) h)
   duplicateEmail @?= Left EmailAlreadyRegistered
+
+testCredentialUniquePerUser :: TestTree
+testCredentialUniquePerUser = testCase "one password credential per user is a database invariant" $ withDb \pool -> do
+  execSql
+    pool
+    "INSERT INTO shomei.shomei_users (user_id, login_id, email, status, created_at, updated_at) VALUES ('10000000-0000-0000-0000-000000000001', 'unique-owner', 'unique-owner@example.com', 'active', now(), now()); INSERT INTO shomei.shomei_password_credentials (credential_id, user_id, login_id, email, password_hash, created_at, updated_at) VALUES ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'unique-owner', 'unique-owner@example.com', 'hash-one', now(), now())"
+  duplicate <-
+    Pool.use
+      pool
+      ( Session.script
+          "INSERT INTO shomei.shomei_password_credentials (credential_id, user_id, login_id, email, password_hash, created_at, updated_at) VALUES ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 'unique-owner-two', 'unique-owner-two@example.com', 'hash-two', now(), now())"
+      )
+  case duplicate of
+    Left err ->
+      assertBool
+        ("expected the user_id unique index, got: " <> show err)
+        ("23505" `Text.isInfixOf` Text.pack (show err) || "shomei_password_credentials_user_id_key" `Text.isInfixOf` Text.pack (show err))
+    Right () -> assertFailure "a second password credential for one user was accepted"
+  scalarInt
+    pool
+    "SELECT count(*) FROM pg_indexes WHERE schemaname = 'shomei' AND indexname = 'shomei_password_credentials_user_id_key'"
+    >>= (@?= 1)
+
+testPoolStatementTimeoutIsApplied :: TestTree
+testPoolStatementTimeoutIsApplied = testCase "pool connections bound statements and idle transactions" $
+  withShomeiMigratedDatabase \connStr -> do
+    pool <- acquirePool 1 10 200 connStr
+    configured <- Pool.use pool (Session.statement () timeoutSettingsStatement)
+    either (assertFailure . ("could not read pool timeout settings: " <>) . show) pure configured
+      >>= (@?= ("200ms", "200ms"))
+    statementResult <- Pool.use pool (Session.script "SELECT pg_sleep(1)")
+    assertPoolFailureMentions ["57014", "statement timeout"] statementResult
+
+    beginResult <- Pool.use pool (Session.script "BEGIN")
+    either (assertFailure . ("could not begin idle-timeout probe: " <>) . show) pure beginResult
+    threadDelay 400000
+    idleResult <- Pool.use pool (Session.script "SELECT 1")
+    case idleResult of
+      Left _ -> pure ()
+      Right () -> assertFailure "the connection survived past idle_in_transaction_session_timeout"
+    Pool.release pool
+  where
+    timeoutSettingsStatement =
+      preparable
+        "SELECT current_setting('statement_timeout'), current_setting('idle_in_transaction_session_timeout')"
+        E.noParams
+        (D.singleRow ((,) <$> D.column (D.nonNullable D.text) <*> D.column (D.nonNullable D.text)))
+    assertPoolFailureMentions needles = \case
+      Left err ->
+        assertBool
+          ("expected one of " <> show needles <> " in pool failure: " <> show err)
+          (any (\needle -> Text.toLower needle `Text.isInfixOf` Text.toLower (Text.pack (show err))) needles)
+      Right () -> assertFailure ("expected PostgreSQL timeout failure mentioning one of " <> show needles)
 
 testSessionRevoke :: TestTree
 testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do

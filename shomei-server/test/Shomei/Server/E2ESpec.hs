@@ -74,6 +74,7 @@ import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
+import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
@@ -102,7 +103,7 @@ tests =
     "auth lifecycle over HTTP against PostgreSQL"
     [ testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
@@ -111,7 +112,7 @@ tests =
           testWithApplication (pure (application env healthyProbe healthyProbe)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
@@ -121,7 +122,7 @@ tests =
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
@@ -133,7 +134,7 @@ tests =
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keys <- bootstrapKeys e2eKek ES256 pool
           keysRef <- newIORef keys
           envMgr <- newManager defaultManagerSettings
@@ -166,7 +167,7 @@ tests =
           testWithApplication (pure (application env healthyProbe healthyProbe)) (exchangeScenario pool clientId opTok),
       testCase "EP-7: enroll TOTP → verify → login(mfa) → complete → recovery codes → audited" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
@@ -176,7 +177,7 @@ tests =
           testWithApplication (pure (application env healthyProbe healthyProbe)) (totpScenario pool),
       testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2

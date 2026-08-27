@@ -25,7 +25,7 @@ import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
-import Shomei.Server.Config (defaultRolesFromEnv)
+import Shomei.Server.Config (defaultDbStatementTimeoutMs, defaultRolesFromEnv)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 
@@ -48,7 +48,7 @@ loadAdminEnv = do
   let base = defaultShomeiConfig (Issuer iss) (Audience aud)
       cfg = base {defaultRoles = fromMaybe base.defaultRoles roles}
   params <- argon2FromEnv
-  p <- acquirePool 4 10 cs
+  p <- acquirePool 4 10 defaultDbStatementTimeoutMs cs
   pure AdminEnv {config = cfg, pool = p, connStr = cs, argon2 = params}
 
 argon2FromEnv :: IO Argon2Params

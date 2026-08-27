@@ -54,7 +54,7 @@ tests =
     "embedded demo: mounted /auth + guarded /projects"
     [ testCase "/projects is 401 without a token and 200 with one" $
         withShomeiMigratedDatabase \connStr -> do
-          pool <- acquirePool 4 10 connStr
+          pool <- acquirePool 4 10 30000 connStr
           keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2

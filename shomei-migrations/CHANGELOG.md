@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Enforce one password credential per user with
+  `shomei_password_credentials_user_id_key`, which also indexes password update lookups.
 - Add database `CHECK` constraints for persisted status, outcome, ceremony-kind, and OAuth-client
   vocabulary, plus case-insensitive unique indexes for user and password-credential login ids and
   email addresses.

@@ -18,6 +18,7 @@ import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Boot (application)
+import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.Keys (bootstrapKeys)
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), SigningKeyStatus (KeyRevoked), StoredSigningKey (..))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
@@ -49,7 +50,7 @@ tests env =
         expectRight =<< runAppIO env (updateSigningKeyStatus key.keyId KeyRevoked timestamp)
         readiness >>= assertFailedAs "signing-key"
 
-        unavailablePool <- acquirePool 1 1 "postgresql://127.0.0.1:1/postgres"
+        unavailablePool <- acquirePool 1 1 defaultDbStatementTimeoutMs "postgresql://127.0.0.1:1/postgres"
         (_, unavailableReadiness) <- buildHealthChecks env {envPool = unavailablePool}
         unavailableReadiness >>= assertFailedAs "postgres"
         Pool.release unavailablePool,
@@ -70,7 +71,7 @@ tests env =
 
 buildTestEnv :: Text -> IO Env
 buildTestEnv connectionString = do
-  pool <- acquirePool 4 10 connectionString
+  pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connectionString
   keys <- newIORef =<< bootstrapKeys testKek ES256 pool
   manager <- newManager defaultManagerSettings
   limiter <- newHashingLimiter 2

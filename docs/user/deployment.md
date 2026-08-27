@@ -21,6 +21,7 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_PORT` | warp listen port | `8080` |
 | `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
+| `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
 | `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` | seconds of tolerance the verifier grants `exp`/`nbf`/`iat` (inherited by downstream hosts using `shomei-jwt`'s `verifyToken`); must be non-negative | `30` |
@@ -76,6 +77,14 @@ at all, so the pool only has to cover the write workflows (signup, login, refres
 replica, not against request concurrency, and prefer shedding load with a short acquisition
 timeout over queueing behind a saturated pool.
 
+Every new pooled connection sets PostgreSQL's `statement_timeout` and
+`idle_in_transaction_session_timeout` from `SHOMEI_DB_STATEMENT_TIMEOUT_MS`. The 30-second default
+is deliberately well above Shōmei's indexed single-row and bounded-batch statements, while still
+releasing a slot held by a lock wait, runaway plan, or leaked transaction. Set `0` only when the
+database or an embedding host supplies an equivalent bound. The in-process sweeper uses one
+additional dedicated connection, so budget `SHOMEI_DB_POOL_SIZE + 1` per server replica when it is
+enabled.
+
 ### PostgreSQL version
 
 Shōmei migrations run through pg-migrate's compatibility contract
@@ -89,6 +98,21 @@ required table lock, and each unique index scans its source table. This is negli
 0.1.0.0 installation; on a populated host, inspect and repair out-of-vocabulary status values and
 case-variant login/email collisions first, then schedule the migration for a maintenance window
 sized for those scans.
+
+Migration `0036-unique-password-credential-per-user.sql` makes the workflow's one-credential-per-
+user assumption a unique index. Before upgrading a populated database, this query must return no
+rows:
+
+```sql
+SELECT user_id, count(*)
+FROM shomei.shomei_password_credentials
+GROUP BY user_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Building the index takes a `SHARE` lock on
+`shomei_password_credentials` for its duration, so schedule the upgrade accordingly on a large
+credential table.
 
 ### Password hashing cost and concurrency
 
@@ -329,8 +353,11 @@ sh deploy/entrypoint-test.sh
 
 Shōmei's tables grow with use: a row per refresh, per login attempt, per audit event. The
 **sweeper** deletes rows that are past their expiry plus a grace period. It runs in-process by
-default — a background thread, every `SHOMEI_SWEEP_INTERVAL_SECONDS` — and logs one structured
-JSON line per cycle on stderr:
+default — a background thread, every `SHOMEI_SWEEP_INTERVAL_SECONDS` — on a dedicated
+one-connection pool, so a long drain never occupies request capacity. That connection counts
+toward PostgreSQL's `max_connections` budget and is released on graceful shutdown; the pool's
+idleness timeout closes it between hourly cycles. The task logs one structured JSON line per cycle
+on stderr:
 
 ```json
 {"level":"info","msg":"sweep","refresh_tokens":3,"sessions":1,"verification_tokens":0,"reset_tokens":0,"ceremonies":1,"lockouts":0,"login_attempts":0,"auth_events":0,"duration_ms":48.3}

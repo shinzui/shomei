@@ -14,6 +14,7 @@ let ConfigType =
       , port : Optional Natural
       , dbPoolSize : Optional Natural
       , dbPoolAcquisitionTimeoutMs : Optional Natural
+      , dbStatementTimeoutMs : Optional Natural
       , sweepEnabled : Optional Bool
       , sweepIntervalSeconds : Optional Natural
       , sweepBatchSize : Optional Natural
@@ -87,6 +88,7 @@ let default =
       , port = None Natural
       , dbPoolSize = None Natural
       , dbPoolAcquisitionTimeoutMs = None Natural
+      , dbStatementTimeoutMs = None Natural
       , sweepEnabled = None Bool
       , sweepIntervalSeconds = None Natural
       , sweepBatchSize = None Natural

@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Configuration adds `dbStatementTimeoutMs` / `SHOMEI_DB_STATEMENT_TIMEOUT_MS` (30 seconds by
+  default), and the in-process sweeper uses a dedicated one-connection pool.
 - **Breaking:** the Dhall schema now exports `{ Type, default }` with every loader key optional;
   annotated files use `Shomei::{ field = Some value }`. A test keeps schema and loader fields equal.
 - **Breaking:** Dhall configuration rejects unknown fields and invalid WebAuthn policy names, and

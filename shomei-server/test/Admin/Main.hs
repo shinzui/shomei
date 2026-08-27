@@ -72,6 +72,7 @@ import Shomei.Persistence.Maintenance.Postgres (SweepReport (..))
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 -- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
 
+import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Shomei.Server.Keys qualified as Keys
 import Shomei.ServiceAccount.ClientCredentials.Workflow (ClientCredentialsGrant (..), GrantedToken (..), grantClientCredentials)
@@ -107,7 +108,7 @@ testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism =
 
 withDb :: (Pool -> Text -> IO a) -> IO a
 withDb action = withShomeiMigratedDatabase \connStr -> do
-  pool <- acquirePool 4 10 connStr
+  pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
   action pool connStr
 
 scalarInt :: Pool -> Text -> IO Int

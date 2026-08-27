@@ -80,7 +80,7 @@ testKek = either (error . show) id (keyEncryptionKeyFromBase64 "AAAAAAAAAAAAAAAA
 main :: IO ()
 main =
   withShomeiMigratedDatabase \connStr -> do
-    pool <- acquirePool 4 10 connStr
+    pool <- acquirePool 4 10 30000 connStr
     keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool
     envMgr <- newManager defaultManagerSettings
     limiter <- newHashingLimiter 2

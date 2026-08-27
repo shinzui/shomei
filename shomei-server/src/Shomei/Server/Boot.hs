@@ -115,7 +115,7 @@ main = do
   (liveness, readiness) <- buildHealthChecks env
   validateDefaultRoles cfg env
   installKeyReload cfg env
-  installSweeper settings env
+  releaseSweeper <- installSweeper settings env
   rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
@@ -158,8 +158,9 @@ main = do
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
   Warp.runSettings warpSettings (stack (application env liveness readiness))
-  hPutStrLn stderr "[shomei] drain complete; closing connection pool"
+  hPutStrLn stderr "[shomei] drain complete; closing connection pools"
   Pool.release env.envPool
+  releaseSweeper
   hPutStrLn stderr "[shomei] shutdown complete"
 
 -- | Refuse to start with the OIDC provider enabled and an issuer that is not an absolute
@@ -241,31 +242,42 @@ installKeyReload cfg env = do
     onHup = hPutStrLn stderr "[shomei] SIGHUP: reloading signing keys" >> reload
 
 -- | Fork the background expired-data sweeper, unless the operator disabled it in favor of
--- scheduling @shomei-admin sweep@ externally. It shares the server's connection pool.
+-- scheduling @shomei-admin sweep@ externally. Its one-connection pool is deliberately separate
+-- from the request pool, so a long drain never consumes request capacity. The returned cleanup
+-- releases that pool during graceful shutdown.
 --
 -- A 'Left' from 'sweepOnce' means the database was unreachable or a statement failed. That is
 -- an ordinary outcome for periodic maintenance, not a crash: it is logged and the loop sleeps
 -- a normal interval rather than entering 'supervisedLoop''s backoff, which is reserved for
 -- genuine exceptions.
-installSweeper :: ServerSettings -> Env -> IO ()
-installSweeper settings env =
-  when sweep.sweepEnabled do
-    hPutStrLn
-      stderr
-      ( "[shomei] sweeper: every "
-          <> show sweep.sweepIntervalSeconds
-          <> "s, audit retention "
-          <> maybe "disabled (retain forever)" (\d -> show d <> " days") sweep.sweepAuthEventRetentionDays
-      )
-    void (forkIO (supervisedLoop "sweeper" sweep.sweepIntervalSeconds oneCycle))
+installSweeper :: ServerSettings -> Env -> IO (IO ())
+installSweeper settings _env
+  | not sweep.sweepEnabled = pure (pure ())
+  | otherwise = do
+      sweepPool <-
+        acquirePool
+          1
+          (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs)
+          settings.serverDbStatementTimeoutMs
+          settings.serverConnStr
+      hPutStrLn
+        stderr
+        ( "[shomei] sweeper: every "
+            <> show sweep.sweepIntervalSeconds
+            <> "s, audit retention "
+            <> maybe "disabled (retain forever)" (\d -> show d <> " days") sweep.sweepAuthEventRetentionDays
+            <> ", on its own connection"
+        )
+      void (forkIO (supervisedLoop "sweeper" sweep.sweepIntervalSeconds (oneCycle sweepPool)))
+      pure (Pool.release sweepPool)
   where
     sweep = settings.serverSweep
-    oneCycle = do
+    oneCycle sweepPool = do
       -- Wall-clock time decides which rows are expired; a monotonic clock measures how long
       -- the sweep took, so an NTP step cannot produce a negative duration.
       cutoffNow <- getCurrentTime
       startTick <- getMonotonicTimeNSec
-      result <- sweepOnce env.envPool (toSweepConfig sweep) cutoffNow
+      result <- sweepOnce sweepPool (toSweepConfig sweep) cutoffNow
       endTick <- getMonotonicTimeNSec
       logSweepCycle (durationMs startTick endTick) result
 
@@ -315,9 +327,16 @@ buildEnv cfg settings = do
         <> show settings.serverDbPoolSize
         <> ", acquisition timeout "
         <> show settings.serverDbPoolAcquisitionTimeoutMs
+        <> "ms, statement timeout "
+        <> show settings.serverDbStatementTimeoutMs
         <> "ms"
     )
-  pool <- acquirePool settings.serverDbPoolSize (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs) settings.serverConnStr
+  pool <-
+    acquirePool
+      settings.serverDbPoolSize
+      (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs)
+      settings.serverDbStatementTimeoutMs
+      settings.serverConnStr
   kek <- loadKekFromEnv
   totpKey <- loadTotpKeyFromEnv cfg
   keys <- bootstrapKeys kek alg pool

@@ -15,6 +15,7 @@ module Shomei.Server.Config
   ( ServerSettings (..),
     SweepSettings (..),
     defaultSweepSettings,
+    defaultDbStatementTimeoutMs,
     toSweepConfig,
     loadConfig,
     loadConfigFromEnv,
@@ -78,6 +79,8 @@ data ServerSettings = ServerSettings
     serverDbPoolSize :: !Int,
     -- | how long a request waits for a free pooled connection before failing
     serverDbPoolAcquisitionTimeoutMs :: !Int,
+    -- | PostgreSQL statement and idle-in-transaction timeout installed on every connection
+    serverDbStatementTimeoutMs :: !Int,
     -- | the background expired-data sweeper
     serverSweep :: !SweepSettings,
     -- | Argon2id cost parameters for hashing /new/ passwords. Existing hashes carry the
@@ -157,6 +160,11 @@ defaultDbPoolSize = 10
 defaultDbPoolAcquisitionTimeoutMs :: Int
 defaultDbPoolAcquisitionTimeoutMs = 10000
 
+-- | Bound one PostgreSQL statement or an idle transaction to 30 seconds by default. Zero is the
+-- explicit PostgreSQL off-switch for deployments that need an unbounded session.
+defaultDbStatementTimeoutMs :: Int
+defaultDbStatementTimeoutMs = 30000
+
 -- | The flat, all-optional shape the Dhall config file is rendered into (via @dhall-to-json@).
 -- Every field is a 'Maybe' scalar so a partial file is valid and absent keys fall back to the
 -- defaults / env.
@@ -169,6 +177,8 @@ data FileConfig = FileConfig
     dbPoolSize :: !(Maybe Int),
     -- | how long a request waits for a free pooled connection, in milliseconds
     dbPoolAcquisitionTimeoutMs :: !(Maybe Int),
+    -- | maximum statement or idle-in-transaction duration; zero disables both
+    dbStatementTimeoutMs :: !(Maybe Int),
     -- | run the background expired-data sweeper in-process
     sweepEnabled :: !(Maybe Bool),
     sweepIntervalSeconds :: !(Maybe Int),
@@ -303,6 +313,7 @@ baseDefaults =
           serverConnStr = "",
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
+          serverDbStatementTimeoutMs = defaultDbStatementTimeoutMs,
           serverSweep = defaultSweepSettings,
           serverArgon2 = defaultArgon2Params,
           serverHashingMaxConcurrency = defaultHashingMaxConcurrency
@@ -393,6 +404,8 @@ baseFromFile (Just fc) = do
             serverDbPoolSize = fromMaybe defaultDbPoolSize fc.dbPoolSize,
             serverDbPoolAcquisitionTimeoutMs =
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
+            serverDbStatementTimeoutMs =
+              fromMaybe defaultDbStatementTimeoutMs fc.dbStatementTimeoutMs,
             serverSweep = mergeSweep defaultSweepSettings fc,
             serverArgon2 = mergeArgon2 defaultArgon2Params fc,
             serverHashingMaxConcurrency =
@@ -445,6 +458,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
+  statementTimeout <- intEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" baseSettings.serverDbStatementTimeoutMs
   sweep <- overlaySweepFromEnv baseSettings.serverSweep
   argon2 <- overlayArgon2FromEnv baseSettings.serverArgon2
   hashingConcurrency <- intEnv "SHOMEI_HASHING_MAX_CONCURRENCY" baseSettings.serverHashingMaxConcurrency
@@ -465,6 +479,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
   -- checkout, so neither is a survivable "disable" setting: refuse to start.
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
+  requireNonNegative "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "dbStatementTimeoutMs" statementTimeout
   -- A zero interval would spin the sweeper; a zero batch size would make it delete nothing
   -- forever. Neither is a survivable "disable" setting — sweepEnabled=false is.
   requirePositive "SHOMEI_SWEEP_INTERVAL_SECONDS" "sweepIntervalSeconds" sweep.sweepIntervalSeconds
@@ -505,6 +520,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverConnStr = connStr,
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
+          serverDbStatementTimeoutMs = statementTimeout,
           serverSweep = sweep,
           serverArgon2 = argon2,
           serverHashingMaxConcurrency = hashingConcurrency

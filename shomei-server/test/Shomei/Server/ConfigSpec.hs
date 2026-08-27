@@ -38,6 +38,7 @@ dhallContents =
     <> ", port = 8080"
     <> ", dbPoolSize = 25"
     <> ", dbPoolAcquisitionTimeoutMs = 2500"
+    <> ", dbStatementTimeoutMs = 5000"
     <> ", maxFailedLoginsPerAccount = 7"
     <> ", metricsEnabled = False"
     <> ", keyRefreshIntervalSeconds = 15"
@@ -63,10 +64,12 @@ poolDefaults = do
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
+  unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   (_, settings) <- loadConfigFromEnv
   settings.serverDbPoolSize @?= 10
   settings.serverDbPoolAcquisitionTimeoutMs @?= 10000
+  settings.serverDbStatementTimeoutMs @?= 30000
   unsetEnv "PG_CONNECTION_STRING"
 
 -- | A zero-size pool deadlocks every request and a zero acquisition timeout fails every
@@ -83,6 +86,10 @@ poolRejectsNonPositive = do
   timeoutResult <- try loadConfigFromEnv
   expectUserErrorNaming "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" timeoutResult
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
+  setEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "-1"
+  statementTimeoutResult <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_DB_STATEMENT_TIMEOUT_MS" statementTimeoutResult
+  unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
   unsetEnv "PG_CONNECTION_STRING"
 
 sweepEnvVars :: [String]
@@ -297,12 +304,14 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
+  unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
   (cfg, settings) <- loadConfig
   -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
   settings.serverPort @?= 8080
   -- The pool knobs load from the file (defaults are 10 / 10000):
   settings.serverDbPoolSize @?= 25
   settings.serverDbPoolAcquisitionTimeoutMs @?= 2500
+  settings.serverDbStatementTimeoutMs @?= 5000
   cfg.rateLimitConfig.maxFailedLoginsPerAccount @?= 7
   -- The signing-key refresh interval loads from the file (default is 60):
   cfg.signingKeyConfig.refreshIntervalSeconds @?= 15
@@ -328,6 +337,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   -- and the file's pool knobs (file says 25 / 2500):
   setEnv "SHOMEI_DB_POOL_SIZE" "33"
   setEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "2000"
+  setEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "7000"
   -- Concept-specific env vars override the file (twelve-factor precedence):
   setEnv "SHOMEI_WEBAUTHN_RP_ID" "auth.fromenv.test"
   setEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR" "true"
@@ -336,6 +346,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   settings2.serverPort @?= 9999
   settings2.serverDbPoolSize @?= 33
   settings2.serverDbPoolAcquisitionTimeoutMs @?= 2000
+  settings2.serverDbStatementTimeoutMs @?= 7000
   let WebAuthnConfig {rpId = envRpId} = webauthnConfig cfg2
   envRpId @?= "auth.fromenv.test"
   cfg2.mfaConfig.requireSecondFactor @?= True
@@ -360,6 +371,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_PORT"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
+  unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
   unsetEnv "PG_CONNECTION_STRING"
   unsetEnv "SHOMEI_WEBAUTHN_RP_ID"
   unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"

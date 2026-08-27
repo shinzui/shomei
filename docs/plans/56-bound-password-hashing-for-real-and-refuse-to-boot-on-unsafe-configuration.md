@@ -59,7 +59,7 @@ and the sweeper runs on its own connection.
       `originsOf` uses `NE.nonEmpty`; `SHOMEI_EMAIL_VERIFICATION_REQUIRED`.
 - [x] (2026-08-27T20:52:00Z) M4: `config/shomei-types.dhall` as `{ Type, default }`, every field `Optional`; the twenty
       lagging keys; example rewritten; ConfigSpec sync test.
-- [ ] M5: migration (number allocated by `just new-migration`; `0029` at the time of writing) with the unique index; `acquirePool` sets both timeouts from `dbStatementTimeoutMs`
+- [x] (2026-08-27T21:02:00Z) M5: migration (number allocated by `just new-migration`; `0036` in the live manifest) with the unique index; `acquirePool` sets both timeouts from `dbStatementTimeoutMs`
       (default 30 000); sweeper on a dedicated one-connection pool.
 - [ ] `nix fmt`; `cabal build all --enable-tests`; `cabal test all`; CHANGELOG `Unreleased` entries;
       MasterPlan 8 Progress and registry; ADR distillation pass.
@@ -133,6 +133,21 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   therefore render only operator-supplied values, which is desirable. The drift probe uses the
   converter's documented `--preserve-null` flag so the completed default exposes all 70 checked
   field names before comparison with `FileConfig`.
+
+- **The live migration allocator assigned 0036, not the plan-time 0029.** Plans 53–55 added seven
+  migrations while this child waited. `just new-migration` updated the manifest safely, and
+  `just migration-check` validates all 36 files and the new checksum.
+- **The installed `hasql` API and error rendering lag the newer Mori corpus.** `hasql-pool` 1.4.2.3
+  accepts an initialization `Session`, but this workspace's `Hasql.Session` exports `script`, not
+  the corpus example's `sql`. PostgreSQL cancels the 200 ms statement with SQLSTATE 57014; after
+  the 200 ms idle-in-transaction guard closes the connection, the installed driver renders an
+  empty `ServerError` instead of 25P03. The regression therefore first asserts both live settings
+  equal `200ms`, then asserts the one-second statement and the 400 ms idle transaction both fail.
+- **The pool API is used outside the four call sites found during planning.** Full enabled-component
+  compilation found three additional harnesses in `shomei-client` and both examples; all callers
+  now pass the default bound. The full 76-case PostgreSQL suite and serialized config suite pass.
+  A real server boot applied 0036, logged the 30-second timeout and dedicated sweeper connection,
+  completed one sweep, and released both pools on SIGINT.
 
 
 ## Decision Log
