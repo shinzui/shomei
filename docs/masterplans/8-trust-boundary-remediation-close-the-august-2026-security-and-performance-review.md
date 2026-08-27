@@ -133,7 +133,7 @@ use following `.claude/skills/exec-plan/ADR.md`.
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
-| 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | In Progress |
+| 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | Complete |
 | 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Not Started |
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Not Started |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Not Started |
@@ -358,9 +358,9 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Progress
 
-- [ ] EP-1: `Session.kind` column and record field; every mint site names its kind
-- [ ] EP-1: `authorize` refuses `act` and non-interactive sessions in core and at the handler; tests for all three token kinds
-- [ ] EP-1: token exchange and delegation verify through the session-aware verifier and check actor status; email gate on code exchange
+- [x] EP-1: `Session.kind` column and record field; every mint site names its kind
+- [x] EP-1: `authorize` refuses `act` and non-interactive sessions in core and at the handler; tests for all three token kinds
+- [x] EP-1: token exchange and delegation verify through the session-aware verifier and check actor status; email gate on code exchange
 - [ ] EP-2: granted scopes persisted on the session and re-applied on every refresh path
 - [ ] EP-2: bespoke `/v1/auth/refresh` refuses client-bound sessions; `/oauth/revoke` checks ownership; refresh grant echoes `scope`
 - [ ] EP-2: reserved privilege scopes refused on OAuth clients and warned on service accounts (their intended holders); userinfo honours scopes; consumed-code replay revokes
@@ -389,7 +389,14 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Surprises & Discoveries
 
-(None yet.)
+- EP-1's regression-first Servant transcript reproduced the critical review finding exactly: both
+  delegated and `client_credentials` credentials received a `302` carrying an authorization code
+  before the authorize guard. The same scenarios now receive `401 login_required` and leave the
+  code store unchanged.
+
+- The architecture-decision profile's local Mori metadata lagged at `v0.8.0`; authoritative
+  upstream tags and a successful frozen import confirmed `v0.13.1`, which now governs Shōmei's
+  first ADR bundle at `docs/adr/`.
 
 
 ## Decision Log
@@ -459,4 +466,8 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+EP-1 is complete. Session provenance is persisted and compile-time-required at every mint;
+authorize admits only live interactive sessions; token exchange and impersonation see revocation
+and operator suspension immediately; and authorization-code exchange applies the email gate. ADR-1
+records the boundary, and the final serial workspace suite is green. The other nine plans remain
+open; EP-2 is now the next soft-dependency-ready plan in Phase 1.

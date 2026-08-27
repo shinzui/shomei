@@ -4,6 +4,16 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** `Session` and `NewSession` now carry a `kind` that records whether the session was
+  established interactively, by `client_credentials`, or by delegation.
+- OAuth authorize accepts only a live interactive session and refuses machine, delegated, or
+  explicit-actor credentials.
+- RFC 8693 exchange and impersonation always verify the presented session; impersonation also
+  requires an active operator account.
+- Authorization-code exchange now honours `emailVerificationRequired`.
+
 ## 0.1.0.0 — 2026-08-24
 
 Initial release. The transport-agnostic heart of the Shōmei authentication

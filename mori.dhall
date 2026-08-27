@@ -367,5 +367,12 @@ in  Schema.Project::{
         , description = Some
             "Commit-pinned records of reviews of Shomei artifacts"
         }
+      , Schema.OkfBundle::{
+        , name = "adrs"
+        , path = "docs/adr"
+        , profile = Some "docs/adr/profile.dhall"
+        , okfVersion = "0.2"
+        , description = Some "Shomei architecture decision records"
+        }
       ]
     }

@@ -55,6 +55,10 @@ outside the account's allow-list returns `invalid_scope`. The access token has n
 request another after it expires. `SHOMEI_MACHINE_TOKEN_TTL` or the Dhall
 `machineTokenTtlSeconds` field sets its lifetime, defaulting to 300 seconds.
 
+A `client_credentials` token names a **machine session**. It can authenticate to APIs that accept
+its scopes, but it cannot authorize an OAuth client at `GET /oauth/authorize`; that endpoint
+requires a live interactive session and answers the machine credential with `401 login_required`.
+
 OAuth failures use RFC 6749 error objects rather than Problem Details:
 
 ```json
@@ -97,7 +101,8 @@ curl -s -u "$CLIENT_ID:$CLIENT_SECRET" \
 The issued token has the user in `sub`, the service's backing user in `act`, narrowed scopes, the
 machine-token TTL, and no refresh token. The `token-exchange:subject` gate is never copied into the
 issued token. A resource server verifies the JWT against `/.well-known/jwks.json`, attributes the
-action to `sub`, and logs `act`.
+action to `sub`, and logs `act`. Token exchange refuses a subject token whose session is missing,
+expired, or revoked immediately, in every `sessionCheckMode`.
 
 An operator can use the same grant to obtain a delegated token for a target user. The operator
 sends the target user id as a Shōmei user-id subject token and their own access token as the actor:
@@ -114,8 +119,10 @@ curl -s \
 ```
 
 This mode requires the operator's configured `impersonate:user` scope and a fresh actor token.
-Delegated tokens are short-lived, refresh-less, carry the target in `sub` and operator in `act`,
-and cannot be exchanged again. Revoke a delegated token or its session through `POST /oauth/revoke`.
+The actor token must name a live session and the operator account must remain active, regardless
+of `sessionCheckMode`. Delegated tokens are short-lived, refresh-less, carry the target in `sub`
+and operator in `act`, and cannot be exchanged again or authorize an OAuth client at
+`GET /oauth/authorize`. Revoke a delegated token or its session through `POST /oauth/revoke`.
 
 ## Security checklist
 

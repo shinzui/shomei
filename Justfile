@@ -44,3 +44,7 @@ new-migration name:
 # Strictly enforce the shared assurance.reviews profile and its update log.
 reviews-validate:
     okf validate docs/reviews --strict --profile docs/reviews/profile.dhall --profile-enforce --log-enforce
+
+# Strictly enforce the shared architecture-decisions profile and its update log.
+adr-validate:
+    okf validate docs/adr --strict --profile docs/adr/profile.dhall --profile-enforce --log-enforce

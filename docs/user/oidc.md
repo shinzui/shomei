@@ -85,7 +85,12 @@ state; the request parameters round-trip through the URL.
    `return_to` across its own flow** and navigate back to it once the user is logged in; the
    authorize request then finds a session and issues the code. If no `oauthLoginUrl` is configured,
    an unauthenticated request is `401`.
-3. An **unknown/revoked `client_id`, or a `redirect_uri` that is not registered**, is `400` **with
+3. The credential must name a **live interactive session** established by signup, password or
+   passkey login, MFA completion, or a previous authorization-code exchange. A
+   `client_credentials` token, a delegated token, or any token carrying `act` is `401
+   login_required` in the OAuth error shape with **no redirect**. A missing, revoked, or expired
+   session is treated as unauthenticated in every `sessionCheckMode`.
+4. An **unknown/revoked `client_id`, or a `redirect_uri` that is not registered**, is `400` **with
    no redirect** — redirecting an unvalidated URI would make the endpoint an open redirector. Every
    *other* error (bad `response_type`, missing PKCE for a public client, a disallowed scope) is an
    error redirect to the validated `redirect_uri` carrying `?error=…&error_description=…&state=…`.

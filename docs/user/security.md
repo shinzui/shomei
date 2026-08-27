@@ -215,6 +215,8 @@ gates **token issuance** on a verified email address. With it on:
 
 - password login, refresh, MFA completion, and passwordless passkey login all refuse an account
   whose email is present but unverified, with `403 email_not_verified`;
+- authorization-code exchange also refuses the account, using OAuth's generic `invalid_grant`
+  response so the client cannot distinguish account state from another invalid code;
 - `POST /v1/auth/signup` still returns its initial token pair. The gate closes at the first refresh,
   so an unverified account keeps working for at most one access-token lifetime (default 15
   minutes) and cannot renew silently;
@@ -264,6 +266,29 @@ authenticated request. Shōmei's HTTP auth handler performs that lookup through
 returns `401 session_revoked`, and a token whose session id resolves to no row fails closed as
 `401 token_invalid`.
 
+## Session provenance
+
+Every session records how it was established:
+
+- **interactive** — a human completed signup, password login, passkey login, MFA completion, or an
+  authorization-code exchange;
+- **machine** — a service account completed the `client_credentials` grant; and
+- **delegated** — an operator impersonated a user or a service exchanged a user's token through
+  RFC 8693.
+
+The minting workflow chooses the kind; it is not caller-supplied. This makes the central trust
+boundary explicit: **only a live interactive session may authorize an OAuth client**. At
+`GET /oauth/authorize`, Shōmei reads the session even when ordinary route authentication uses the
+default `VerifyTokenOnly` mode. A machine or delegated session, or any token carrying `act`, is
+answered with `401 login_required` in the OAuth error shape and no redirect. A missing, revoked, or
+expired session is treated as unauthenticated.
+
+Privilege-minting exchanges are session-aware for the same reason. RFC 8693 token exchange checks
+the presented subject or actor token's session in every `sessionCheckMode`; impersonation also
+requires the operator's own session to be live and the operator account to remain active. A
+revoked credential or suspended operator therefore cannot mint authority for the remainder of an
+otherwise-valid access token's lifetime.
+
 ## Passkeys & MFA (MasterPlan 3)
 
 - **Phishing-resistant second factor.** A passkey signs a server challenge bound to the page
@@ -295,12 +320,17 @@ without shedding their own identity.
   real operator as `act` (RFC 8693 token-exchange convention). Every downstream service reads both
   out of the verified token to drive write-attribution, a UI banner, and business-action gating.
   The `act` claim is present **only** on delegated tokens; ordinary login tokens never carry it.
+  A delegated token cannot be turned into an ordinary session through `/oauth/authorize`; the
+  endpoint answers `401 login_required` without redirecting.
 - **Short-lived, no refresh.** A delegated session is a brand-new, separately-revocable row with a
   short TTL (`impersonationConfig.impersonationSessionTTL`, default 30 minutes) and **no refresh
   token**, so it cannot be silently renewed and dies at its TTL. The customer's own session is
-  never reused or copied.
+  never reused or copied, and the delegated credential cannot be laundered into a refreshable
+  session through the authorization-code flow.
 - **Scope + freshness gate.** Starting impersonation requires the `impersonate:user` scope and a
-  recently-issued caller token (`impersonationConfig.actorFreshnessWindow`, default 5 minutes).
+  recently-issued caller token (`impersonationConfig.actorFreshnessWindow`, default 5 minutes), a
+  live operator session, and an operator account that is still active. These liveness and status
+  checks apply in every `sessionCheckMode`.
   *(Recent authentication is enforced as a token-freshness window, not yet as an interactive MFA
   re-prompt — a future plan can add a step-up ceremony and require it here.)*
 - **Credential endpoints refuse delegated tokens.** Password change and passkey

@@ -75,9 +75,9 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 - [x] (2026-08-27 14:21Z) M3: `verifyTokenWith` in `Shomei.Session.Authentication.Workflow`; token exchange verifies subject and actor tokens with `VerifyTokenAndSession`; `startImpersonation` requires a live operator session and an active operator
 - [x] (2026-08-27 14:21Z) M3: `exchangeAuthorizationCode` calls `ensureEmailVerified`; new `Shomei.OAuth.TokenGrant.WorkflowSpec`
 - [x] (2026-08-27 14:21Z) M3: fixtures that hand-mint tokens now bind them to real sessions (core `TokenExchange.WorkflowSpec`, core `Delegation.WorkflowSpec`, servant `Main.hs`, server `E2ESpec.hs`); new refusal tests; `scenarioExchangeRequiresLiveSessions`; 244 core tests, 38 servant scenarios, and PostgreSQL EP-6 server test green; committed
-- [ ] M4: `docs/user/security.md`, `docs/user/oidc.md`, `docs/user/machine-tokens.md` updated; per-package changelogs carry an Unreleased entry
-- [ ] M4: `docs/adr/` bootstrapped as a profile-governed bundle; ADR-1 allocated with `okf id next` and validated with `okf validate --strict`; `mori.dhall` and `Justfile` updated
-- [ ] M4: `cabal test all -j1` green; MasterPlan 8 registry row and Progress boxes for EP-1 updated; Outcomes & Retrospective written; committed
+- [x] (2026-08-27 14:31Z) M4: `docs/user/security.md`, `docs/user/oidc.md`, `docs/user/machine-tokens.md` updated; per-package changelogs carry an Unreleased entry
+- [x] (2026-08-27 14:31Z) M4: `docs/adr/` bootstrapped as a profile-governed bundle; ADR-1 allocated with `okf id next` and validated with `okf validate --strict`; `mori.dhall` and `Justfile` updated
+- [x] (2026-08-27 14:31Z) M4: `cabal test all -j1` green; MasterPlan 8 registry row and Progress boxes for EP-1 updated; Outcomes & Retrospective written; committed
 
 
 ## Surprises & Discoveries
@@ -100,6 +100,20 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
   The 302 is a redirect to the registered client carrying a newly minted authorization code,
   proving that both a delegated credential and a machine credential reach the vulnerable code
   mint rather than merely failing elsewhere in the test setup.
+
+- Observation: The local Mori registry still reports the shared architecture-decision profile at
+  `v0.8.0`, while the authoritative upstream tags include `v0.13.1` and the v0.13.1 descriptor
+  freezes and evaluates successfully.
+  Evidence: `git ls-remote --tags https://github.com/shinzui/okf-profiles.git` resolves
+  `refs/tags/v0.13.1^{}` to `0bef757b573d114d6c6de1375376d871b754723d`, and `dhall freeze`
+  produced `sha256:8208a2172378b5ecb7c95867db1f328d8d2fd329dd349b202cde1f9e29699eaf`.
+
+- Observation: Raw Dhall evaluation of `mori.dhall` is already red at the pre-plan `HEAD` because
+  the pinned schema's `ApiDependency` type does not accept the existing `packageRef` fields.
+  This does not involve the new `adrs` bundle, and the ADR bundle validates independently.
+  Evidence: `git show HEAD:mori.dhall | dhall` fails at the existing line 319 with
+  `Expression doesn't match annotation { + packageRef : … }`; `just adr-validate` reports
+  `OK: 1 concepts (okf_version 0.2)`.
 
 
 ## Decision Log
@@ -215,7 +229,21 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+The plan is complete. Sessions now persist one of three provenance kinds and every minting path
+chooses one explicitly. The exact reviewed laundering chain was reproduced before the guard and
+now stops at authorize with `401 login_required`, no redirect, and no authorization code. Machine,
+delegated, explicit-actor, revoked, expired, and missing-session cases all have behavioral coverage.
+
+Token exchange and impersonation force live-session verification independently of the deployment's
+ordinary request mode, suspended operators cannot mint delegated authority, and authorization-code
+exchange shares the email-verification policy used by the other token-issuing paths. The final
+serial workspace run passed every suite (245 core tests, 58 PostgreSQL tests, 38 Servant scenarios,
+62 OpenAPI examples, and all remaining package and example suites).
+
+The durable boundary is recorded as ADR-1 under a strict, profile-governed `docs/adr/` bundle.
+The nullable-with-default migration preserved compatibility with pre-change rows and binaries; the
+cost is one intentional session read at authorize and privilege-minting exchange boundaries. EP-2
+can now add OAuth client binding and granted-scope persistence on top of this provenance boundary.
 
 
 ## Context and Orientation

@@ -4,6 +4,11 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Add the nullable, defaulted `shomei_sessions.kind` column for interactive, machine, and delegated
+  session provenance without rewriting existing rows.
+
 ## 0.1.0.0 — 2026-08-24
 
 Initial release. Owns Shōmei's PostgreSQL schema.

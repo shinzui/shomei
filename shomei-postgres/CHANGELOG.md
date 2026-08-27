@@ -4,6 +4,11 @@ All notable changes to `shomei-postgres` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Session-store and authentication-unit-of-work interpreters now write session provenance and
+  read legacy `NULL` provenance as `interactive`.
+
 ## 0.1.0.0 — 2026-08-24
 
 Initial release. Production `hasql` interpreters for Shōmei's ports.

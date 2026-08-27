@@ -4,6 +4,12 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- `GET /oauth/authorize` now requires a live interactive session. Machine, delegated, and
+  explicit-actor credentials receive `401 login_required` in the OAuth error shape with no
+  redirect; dead sessions follow the unauthenticated login branch.
+
 ## 0.1.0.0 — 2026-08-24
 
 Initial release. The HTTP layer of the Shōmei authentication toolkit.

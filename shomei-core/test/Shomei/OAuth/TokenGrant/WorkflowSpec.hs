@@ -37,6 +37,7 @@ tests =
   testGroup
     "Shomei.OAuth.TokenGrant.Workflow"
     [ testCase "authorization-code exchange refuses an unverified email when the gate is enabled" testUnverifiedEmail,
+      testCase "authorization-code exchange accepts an unverified email when the gate is disabled" testUngatedEmail,
       testCase "authorization-code exchange accepts a verified email when the gate is enabled" testVerifiedEmail,
       testCase "authorization-code exchange exempts a login-id-only account from the email gate" testNoEmail
     ]
@@ -67,8 +68,8 @@ mkEmail' = either (error . show) id . mkEmail
 
 data PrincipalShape = UnverifiedEmail | VerifiedEmail | NoEmail
 
-exchangeFor :: PrincipalShape -> IO (Either TokenGrantError ())
-exchangeFor shape = do
+exchangeFor :: ShomeiConfig -> PrincipalShape -> IO (Either TokenGrantError ())
+exchangeFor exchangeCfg shape = do
   ref <- newIORef (emptyWorld fixedTime)
   clientId <- runInMemory ref do
     let email = case shape of
@@ -113,7 +114,7 @@ exchangeFor shape = do
   result <-
     runInMemory ref $
       exchangeAuthorizationCode
-        gatedCfg
+        exchangeCfg
         ExchangeAuthorizationCode
           { clientId,
             clientSecret = Just testClientSecret,
@@ -125,17 +126,22 @@ exchangeFor shape = do
 
 testUnverifiedEmail :: IO ()
 testUnverifiedEmail = do
-  result <- exchangeFor UnverifiedEmail
+  result <- exchangeFor gatedCfg UnverifiedEmail
   result @?= Left (GrantInvalidGrant "the code's user has not verified their email")
+
+testUngatedEmail :: IO ()
+testUngatedEmail = do
+  result <- exchangeFor baseCfg UnverifiedEmail
+  assertBool "unverified email should exchange when the gate is off" (isRight result)
 
 testVerifiedEmail :: IO ()
 testVerifiedEmail = do
-  result <- exchangeFor VerifiedEmail
+  result <- exchangeFor gatedCfg VerifiedEmail
   assertBool "verified email should exchange" (isRight result)
 
 testNoEmail :: IO ()
 testNoEmail = do
-  result <- exchangeFor NoEmail
+  result <- exchangeFor gatedCfg NoEmail
   case result of
     Left err -> assertFailure ("login-id-only account was refused: " <> show err)
     Right () -> pure ()
