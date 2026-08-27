@@ -6,12 +6,13 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Monad (forM_, replicateM, void)
+import Control.Exception (evaluate)
+import Control.Monad (forM_, replicateM, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (sort)
+import Data.List (sort, tails)
 import Data.Maybe (isJust, isNothing)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -20,6 +21,8 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
+import GHC.Clock (getMonotonicTimeNSec)
+import GHC.Conc (getNumCapabilities)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
@@ -566,7 +569,7 @@ tests =
     testArgon2DummyHashTracksConfiguredParams,
     testHashingLimiterBoundsConcurrency 1,
     testHashingLimiterBoundsConcurrency 2,
-    testInterpreterHonorsTheLimiter,
+    testInterpreterForcesTheHashInsideThePermit,
     testDummyVerificationTakesAPermit,
     testSweepDeletesExpiredRows,
     testSweepIsIdempotent,
@@ -2316,6 +2319,10 @@ testHashingLimiterBoundsConcurrency limit =
         putMVar done (i, h)
     results <- mapM takeMVar dones
 
+    forM_ results \(_, h) -> do
+      let PasswordHash phc = h
+      void (evaluate (Text.length phc))
+
     peak <- peakHashingConcurrency limiter
     assertBool ("peak " <> show peak <> " exceeded the limit " <> show limit) (peak <= limit)
     assertEqual "the test must saturate the gate, or it proves nothing" limit peak
@@ -2329,10 +2336,10 @@ testHashingLimiterBoundsConcurrency limit =
 -- | The bound must hold through the effect interpreter, not merely around 'withHashingPermit'.
 -- A refactor that dropped the bracket from 'runPasswordHasherCrypto' would leave the previous
 -- test green and the server unbounded.
-testInterpreterHonorsTheLimiter :: TestTree
-testInterpreterHonorsTheLimiter =
-  testCase "hashing limiter: the PasswordHasher interpreter acquires a permit" do
-    limiter <- newHashingLimiter 2
+testInterpreterForcesTheHashInsideThePermit :: TestTree
+testInterpreterForcesTheHashInsideThePermit =
+  testCase "hashing limiter: the interpreter forces HashPassword inside its permit" do
+    limiter <- newHashingLimiter 1
     dones <- replicateM 8 newEmptyMVar
     forM_ (zip [1 :: Int ..] dones) \(i, done) ->
       void $ forkIO do
@@ -2340,14 +2347,34 @@ testInterpreterHonorsTheLimiter =
           runEff
             . runPasswordHasherCrypto limiter cheapParams
             $ hashPassword (PlainPassword ("pw" <> Text.pack (show i)))
-        putMVar done h
-    _ <- mapM takeMVar dones
+        forceStart <- getMonotonicTimeNSec
+        let PasswordHash phc = h
+        _ <- evaluate (Text.length phc)
+        forceEnd <- getMonotonicTimeNSec
+        putMVar done (i, h, forceStart, forceEnd)
+    results <- mapM takeMVar dones
     peak <- peakHashingConcurrency limiter
-    -- Both halves matter. @peak <= 2@ is the bound. @peak >= 1@ proves a permit was taken at
-    -- all: without it, deleting the bracket from the interpreter leaves @peak == 0@ and this
-    -- test would pass while the server hashed without limit.
-    assertBool ("interpreter allowed " <> show peak <> " concurrent hashes") (peak <= 2)
     assertBool "the interpreter never acquired a permit" (peak >= 1)
+    assertBool ("interpreter allowed " <> show peak <> " concurrent hashes") (peak <= 1)
+
+    let windows = [(forceStart, forceEnd) | (_, _, forceStart, forceEnd) <- results]
+        overlap (a0, a1) (b0, b1) = a0 < b1 && b0 < a1
+    caps <- getNumCapabilities
+    when (caps >= 2) $
+      forM_ [(a, b) | a : rest <- tails windows, b <- rest] \(a, b) ->
+        assertBool ("post-return forcing windows overlap: " <> show (a, b)) (not (overlap a b))
+
+    -- Capability-independent half: one cheap derivation sets the bar on this machine.
+    w0 <- getMonotonicTimeNSec
+    _ <- hashPasswordArgon2id cheapParams "warm"
+    w1 <- getMonotonicTimeNSec
+    forM_ results \(i, h, forceStart, forceEnd) -> do
+      assertBool
+        ("hash " <> show i <> " was forced after the interpreter returned")
+        ((forceEnd - forceStart) * 2 < (w1 - w0))
+      assertBool
+        ("hash " <> show i <> " must verify")
+        (verifyPasswordArgon2id ("pw" <> Text.pack (show i)) h)
 
 -- | A verification of a *dummy* hash also takes a permit — the miss path must be bounded
 -- exactly like the hit path, or a flood of logins for nonexistent accounts bypasses the gate.

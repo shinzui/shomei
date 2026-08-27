@@ -3,7 +3,8 @@
 -- here (not in @shomei-core@) because they need @crypton@/@ram@ — infrastructure we keep
 -- out of the transport-agnostic core.
 module Shomei.Account.Password.Hash.Postgres
-  ( Argon2Params (..),
+  ( Argon2Failure (..),
+    Argon2Params (..),
     defaultArgon2Params,
     argon2WarningFloor,
     hashPasswordArgon2id,
@@ -33,8 +34,8 @@ import Control.Concurrent.STM
     readTVarIO,
     writeTVar,
   )
-import Control.Exception (bracket_, evaluate)
-import Crypto.Error (CryptoFailable (..))
+import Control.Exception (ErrorCall (..), Exception, Handler (..), bracket_, catches, evaluate, throw, throwIO)
+import Crypto.Error (CryptoError, CryptoFailable (..))
 import Crypto.Hash (SHA256 (..), hashWith)
 import Crypto.KDF.Argon2 qualified as Argon2
 import Crypto.Random (getRandomBytes)
@@ -66,6 +67,14 @@ data Argon2Params = Argon2Params
     parallelism :: !Int
   }
   deriving stock (Show, Eq, Generic)
+
+-- | The Argon2 implementation refused to derive a password hash. Boot validation turns
+-- invalid configured parameters into an early, named failure; this exception keeps any
+-- unexpected runtime rejection equally explicit.
+newtype Argon2Failure = Argon2Failure Text
+  deriving stock (Show)
+
+instance Exception Argon2Failure
 
 -- | 64 MiB, 3 iterations, 1 lane: at or above every OWASP-recommended Argon2id configuration,
 -- and the values every Shōmei release has shipped.
@@ -118,7 +127,7 @@ deriveArgon2 :: Argon2.Options -> ByteString -> ByteString -> ByteString
 deriveArgon2 opts pw salt =
   case Argon2.hash opts pw salt hashLen of
     CryptoPassed digest -> digest
-    CryptoFailed e -> error ("Argon2 hashing failed: " <> show e)
+    CryptoFailed e -> throw e
 
 b64enc :: ByteString -> Text
 b64enc b = TE.decodeUtf8 (convertToBase Base64 b)
@@ -168,8 +177,15 @@ parsePhcParams t = case Text.splitOn "," t of
 hashPasswordArgon2id :: Argon2Params -> Text -> IO PasswordHash
 hashPasswordArgon2id params pw = do
   salt <- getRandomBytes saltLen :: IO ByteString
-  let digest = deriveArgon2 (toOptions params) (TE.encodeUtf8 pw) salt
-  pure (PasswordHash (phcEncode params salt digest))
+  -- A strict 'ByteString' in weak-head normal form is fully allocated. Force the digest here,
+  -- inside whatever limiter permit the caller holds, rather than returning a thunk that runs
+  -- later while hasql encodes a credential row on a checked-out connection.
+  digest <-
+    evaluate (deriveArgon2 (toOptions params) (TE.encodeUtf8 pw) salt)
+      `catches` [ Handler \(ErrorCall msg) -> throwIO (Argon2Failure (Text.pack msg)),
+                  Handler \(e :: CryptoError) -> throwIO (Argon2Failure (Text.pack (show e)))
+                ]
+  evaluate (PasswordHash (phcEncode params salt digest))
 
 -- | Re-derive the hash with the parameters the stored string carries, and compare in constant
 -- time.
@@ -279,16 +295,15 @@ withHashingPermit hl = bracket_ (atomically acquire) (atomically release)
 -- | Interpret the 'PasswordHasher' port with real Argon2id at @params@, admitting at most
 -- @limiter@'s worth of concurrent derivations.
 --
--- Every operation here is forced with 'evaluate' /inside/ the permit. @verifyPasswordArgon2id@
--- is a pure function costing ~100 ms; returned lazily it would be forced later, on whatever
--- thread first looked at the 'Bool' — possibly during response assembly, and certainly outside
--- the bound this interpreter installs. A thunk that escapes the bracket is a bound that does
--- nothing.
+-- Every operation here is forced with 'evaluate' /inside/ the permit. 'HashPassword' is
+-- deliberately forced too: the August 2026 review found that this was the one arm without an
+-- 'evaluate', so its derivation ran during row encoding inside 'Pool.use'. A thunk that escapes
+-- the bracket is a bound that does nothing.
 runPasswordHasherCrypto ::
   (IOE :> es) => HashingLimiter -> Argon2Params -> Eff (PasswordHasher : es) a -> Eff es a
 runPasswordHasherCrypto limiter params = interpret_ \case
   HashPassword (PlainPassword pw) ->
-    liftIO (withHashingPermit limiter (hashPasswordArgon2id params pw))
+    liftIO (withHashingPermit limiter (hashPasswordArgon2id params pw >>= evaluate))
   VerifyPassword (PlainPassword pw) hash ->
     liftIO (withHashingPermit limiter (evaluate (verifyPasswordArgon2id pw hash)))
   -- Derive against a dummy hash carrying the *configured* parameters, so this costs exactly

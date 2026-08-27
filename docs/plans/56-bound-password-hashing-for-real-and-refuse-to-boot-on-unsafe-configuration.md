@@ -49,8 +49,9 @@ and the sweeper runs on its own connection.
 
 ## Progress
 
-- [ ] M1: `hashPasswordArgon2id` forces the digest; `HashPassword` arm evaluates like the `Verify*`
-      arms; `Argon2Failure`; rewritten limiter test (pre-fix false pass recorded); load-test `SIGNUP_LOOPS`.
+- [x] (2026-08-27T20:30:00Z) M1: `hashPasswordArgon2id` forces the digest; `HashPassword` arm
+      evaluates like the `Verify*` arms; `Argon2Failure`; rewritten limiter test (pre-fix false
+      pass and regression failure recorded); load-test `SIGNUP_LOOPS`.
 - [ ] M2: `argon2HardFloor` in the loader and `shomei-admin`; `trialArgon2Derivation` in `Boot.main`
       before the pool is acquired.
 - [ ] M3: `FileConfig` rejects unknown keys (silent acceptance observed first); strict WebAuthn enums
@@ -79,6 +80,32 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
   `key : Type` lines of the schema): the loader has 69 fields, the schema 49.
 
 (Implementation discoveries go below this line.)
+
+- **The pre-fix limiter suite is a confirmed false pass.** Before changing production code,
+  `cabal test shomei-postgres --test-options='-p "hashing limiter"'` passed all four existing
+  cases in 0.52 seconds, including `the PasswordHasher interpreter acquires a permit`; none forced
+  the returned `PasswordHash`, so the suite did not observe where Argon2 actually ran.
+
+  ```text
+  hashing limiter: peak concurrency never exceeds the limit (1):     OK (0.52s)
+  hashing limiter: peak concurrency never exceeds the limit (2):     OK (0.31s)
+  hashing limiter: the PasswordHasher interpreter acquires a permit: OK
+  hashing limiter: the dummy verification path is bounded too:       OK (0.02s)
+  ```
+
+- **The replacement test catches the escaped thunk and the fix bounds real memory.** Against the
+  old interpreter it failed on overlapping post-return forcing windows. With the digest and
+  `PasswordHash` forced under the permit, the same case passed in 0.06 seconds and the full
+  73-case `shomei-postgres` suite passed. On the same local server and database, eight signup loops
+  reduced peak RSS from 626 MB to 237 MB; the lower 20.2 signups/s is the intended back-pressure
+  from a concurrency limit of two. The harness created and then removed 1,152 uniquely prefixed
+  users, 1,154 sessions and refresh tokens, their audit rows, 140 probe attempts, and the generated
+  test signing key.
+
+  ```text
+  pre-fix:  signups/s=37.3  signup_503s=0  peak_rss=626MB
+  post-fix: signups/s=20.2  signup_503s=0  peak_rss=237MB
+  ```
 
 
 ## Decision Log

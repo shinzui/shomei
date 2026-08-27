@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- Password hashes are fully evaluated inside the configured concurrency-limiter permit, before
+  a credential store acquires a database connection; Argon2 implementation rejections now surface
+  as the typed `Argon2Failure` exception.
 - **Breaking:** interpreters implement the new atomic login-attempt, counter, user-status,
   revocation, and credential-tail ports. Per-account failure counting uses a transaction-scoped
   advisory lock; conditional updates and unit-of-work transactions expose exactly one winner.

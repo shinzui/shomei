@@ -40,6 +40,7 @@
 #     LOAD_USERS=20      concurrent login loops
 #     PROBE_COUNT=200    hot-path samples per phase
 #     LOAD_SECONDS=20    duration of the load phase
+#     SIGNUP_LOOPS=0     when positive, run this many concurrent signup loops instead of logins
 #     SERVER_PID=        if set, peak RSS of that process is sampled once a second
 set -eu
 
@@ -47,6 +48,7 @@ BASE="${1:-http://localhost:8080}"
 LOAD_USERS="${LOAD_USERS:-20}"
 PROBE_COUNT="${PROBE_COUNT:-200}"
 LOAD_SECONDS="${LOAD_SECONDS:-20}"
+SIGNUP_LOOPS="${SIGNUP_LOOPS:-0}"
 SERVER_PID="${SERVER_PID:-}"
 
 # Long, unique, and not in the common-password dictionary; signup rejects weak passwords.
@@ -58,7 +60,7 @@ work="$(mktemp -d)"
 # which includes whatever invoked this script.
 children=""
 # shellcheck disable=SC2064
-trap 'rm -rf "$work"; [ -n "$children" ] && kill $children 2>/dev/null; true' EXIT
+trap 'rm -rf "$work"; if [ -n "$children" ]; then kill $children 2>/dev/null || true; fi' EXIT
 
 say() { printf '%s\n' "$*" >&2; }
 
@@ -126,13 +128,19 @@ ratio() { awk -v a="$1" -v b="$2" 'BEGIN { if (b == 0) print "n/a"; else printf 
 
 # --- set up users ------------------------------------------------------------
 
-say "creating 1 probe user and $LOAD_USERS load users..."
+if [ "$SIGNUP_LOOPS" -gt 0 ]; then
+  say "creating 1 probe user; signup load will use $SIGNUP_LOOPS concurrent loops..."
+else
+  say "creating 1 probe user and $LOAD_USERS load users..."
+fi
 signup "probe-$RUN@example.test"
-u=0
-while [ "$u" -lt "$LOAD_USERS" ]; do
-  signup "load-$u-$RUN@example.test"
-  u=$((u + 1))
-done
+if [ "$SIGNUP_LOOPS" -eq 0 ]; then
+  u=0
+  while [ "$u" -lt "$LOAD_USERS" ]; do
+    signup "load-$u-$RUN@example.test"
+    u=$((u + 1))
+  done
+fi
 
 TOKEN="$(login_token "probe-$RUN@example.test")"
 [ -n "$TOKEN" ] || { say "error: could not obtain an access token"; exit 1; }
@@ -146,24 +154,45 @@ probe "$work/idle"
 
 # --- load phase --------------------------------------------------------------
 
-say "load phase: $LOAD_USERS login loops for ${LOAD_SECONDS}s, measuring the hot path..."
-
 deadline=$(($(date +%s) + LOAD_SECONDS))
-u=0
-while [ "$u" -lt "$LOAD_USERS" ]; do
-  (
-    count=0
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-      curl -s -o /dev/null -X POST "$BASE/v1/auth/login" \
-        -H 'Content-Type: application/json' \
-        -d "{\"loginId\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true
-      count=$((count + 1))
-    done
-    printf '%s\n' "$count" >"$work/logins.$u"
-  ) &
-  children="$children $!"
-  u=$((u + 1))
-done
+if [ "$SIGNUP_LOOPS" -gt 0 ]; then
+  say "load phase: $SIGNUP_LOOPS signup loops for ${LOAD_SECONDS}s, measuring the hot path..."
+  u=0
+  while [ "$u" -lt "$SIGNUP_LOOPS" ]; do
+    (
+      count=0
+      unavailable=0
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/auth/signup" \
+          -H 'Content-Type: application/json' \
+          -d "{\"loginId\":\"signup-$u-$count-$RUN@example.test\",\"email\":\"signup-$u-$count-$RUN@example.test\",\"password\":\"$PASSWORD\",\"displayName\":\"loadtest\"}" || true)"
+        [ "$code" = "503" ] && unavailable=$((unavailable + 1))
+        count=$((count + 1))
+      done
+      printf '%s\n' "$count" >"$work/signups.$u"
+      printf '%s\n' "$unavailable" >"$work/signup-503s.$u"
+    ) &
+    children="$children $!"
+    u=$((u + 1))
+  done
+else
+  say "load phase: $LOAD_USERS login loops for ${LOAD_SECONDS}s, measuring the hot path..."
+  u=0
+  while [ "$u" -lt "$LOAD_USERS" ]; do
+    (
+      count=0
+      while [ "$(date +%s)" -lt "$deadline" ]; do
+        curl -s -o /dev/null -X POST "$BASE/v1/auth/login" \
+          -H 'Content-Type: application/json' \
+          -d "{\"loginId\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true
+        count=$((count + 1))
+      done
+      printf '%s\n' "$count" >"$work/logins.$u"
+    ) &
+    children="$children $!"
+    u=$((u + 1))
+  done
+fi
 
 # Sample the server's resident set while it is under load.
 if [ -n "$SERVER_PID" ]; then
@@ -181,12 +210,22 @@ fi
 
 probe "$work/loaded"
 wait
+children=""
 
 logins=0
 for f in "$work"/logins.*; do
-  [ -f "$f" ] && logins=$((logins + $(cat "$f")))
+  [ -f "$f" ] && logins=$((logins + $(sed -n '1p' "$f")))
 done
-throughput="$(awk -v n="$logins" -v s="$LOAD_SECONDS" 'BEGIN { printf "%.1f", n / s }')"
+signups=0
+for f in "$work"/signups.*; do
+  [ -f "$f" ] && signups=$((signups + $(sed -n '1p' "$f")))
+done
+signup_503s=0
+for f in "$work"/signup-503s.*; do
+  [ -f "$f" ] && signup_503s=$((signup_503s + $(sed -n '1p' "$f")))
+done
+login_throughput="$(awk -v n="$logins" -v s="$LOAD_SECONDS" 'BEGIN { printf "%.1f", n / s }')"
+signup_throughput="$(awk -v n="$signups" -v s="$LOAD_SECONDS" 'BEGIN { printf "%.1f", n / s }')"
 
 peak_rss="n/a"
 if [ -f "$work/rss" ]; then
@@ -200,6 +239,6 @@ l50="$(pctile "$work/loaded" 50)"; l95="$(pctile "$work/loaded" 95)"; l99="$(pct
 
 printf 'idle    p50=%sms  p95=%sms  p99=%sms\n' "$i50" "$i95" "$i99"
 printf 'loaded  p50=%sms  p95=%sms  p99=%sms\n' "$l50" "$l95" "$l99"
-printf 'degradation p50=%s p95=%s p99=%s   logins/s=%s   peak_rss=%s\n' \
+printf 'degradation p50=%s p95=%s p99=%s   logins/s=%s   signups/s=%s   signup_503s=%s   peak_rss=%s\n' \
   "$(ratio "$l50" "$i50")" "$(ratio "$l95" "$i95")" "$(ratio "$l99" "$i99")" \
-  "$throughput" "$peak_rss"
+  "$login_throughput" "$signup_throughput" "$signup_503s" "$peak_rss"
