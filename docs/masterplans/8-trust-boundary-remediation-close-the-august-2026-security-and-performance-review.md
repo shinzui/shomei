@@ -135,7 +135,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | Complete |
 | 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Complete |
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Complete |
-| 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | In Progress |
+| 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Complete |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Not Started |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Not Started |
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Not Started |
@@ -368,9 +368,9 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-3: verifier skew, whole-second times, pinned algorithm set, `typ`, `kid`-selecting key store, strict claim shapes, reserved `nbf`/`jti`, issuer/audience validated at boot
 - [x] EP-3: single-active-key partial unique index; transactional activate and rewrap; `retired_at`/`revoked_at` stamped; `assembleKeys` refuses two active rows; JWKS `alg`
 - [x] EP-3: ES256 timing trade-off documented; negative tests for `none`, HS256, cross-family, unknown `kid`, revoked key
-- [ ] EP-4: second-factor, recovery-code, passkey, password-change, and suspended-account failures counted against the account; lockout clear deferred to second-factor success
-- [ ] EP-4: `auth_time` claim; freshness gates read it; TOTP removal requires fresh authentication
-- [ ] EP-4: throttled-path set derived from `RateLimited` routes; completion, passkey, password-change, confirm, and `/oauth/token` routes limited; passwordless login requires user verification
+- [x] EP-4: second-factor, recovery-code, passkey, password-change, and suspended-account failures counted against the account; lockout clear deferred to second-factor success
+- [x] EP-4: `auth_time` claim; freshness gates read it; TOTP removal requires fresh authentication
+- [x] EP-4: throttled-path set derived from `RateLimited` routes; completion, passkey, password-change, confirm, and `/oauth/token` routes limited; passwordless login requires user verification
 - [ ] EP-5: record-before-hash lockout under a per-account advisory lock; concurrency test proving real hash evaluations ≤ threshold under 100 parallel wrong passwords
 - [ ] EP-5: TOTP and passkey counter updates are compare-and-swap; concurrent same-code completion test
 - [ ] EP-5: reset, change, reuse-detection, and logout tails in one transaction; admin status CAS; outstanding one-time tokens revoked; duplicate email is `409`; in-memory fake atomic
@@ -460,6 +460,22 @@ never by counting files. Every later plan allocates the next handle the same way
   existing zero-downtime overlap.
   Date: 2026-08-27
 
+- Decision: Every unauthenticated credential proof participates in one per-account failure budget,
+  regardless of factor or workflow; only a fully authenticated success clears it. The invariant is
+  recorded in [ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md).
+  Rationale: Separate workflow-local budgets leave second-factor and credential-management oracles
+  unbounded and let a challenged password reset the counter before an attacker guesses the second
+  factor. One vocabulary and one accounting seam make the security boundary reviewable.
+  Date: 2026-08-27
+
+- Decision: Authentication freshness is the time of the last credential proof, carried as managed
+  `auth_time` and preserved across refresh, rather than a token's issuance time. The invariant is
+  recorded in [ADR-6](../adr/0006-authentication-freshness-is-based-on-credential-proof-time.md).
+  Rationale: A refresh token proves session continuity, not recent credential possession. Letting
+  refresh advance the freshness clock would silently bypass recovery, impersonation, and factor
+  removal step-up gates.
+  Date: 2026-08-27
+
 - Decision: The OIDC consent step stays out of scope; EP-2 records "every registered client is
   fully trusted with every user's identity" as the stated trust model.
   Rationale: A consent UI is a feature with its own product decisions; the review's finding was
@@ -511,7 +527,8 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-3 are complete, closing Phase 1. Session provenance is persisted and
+EP-1 through EP-4 are complete, closing Phase 1 and the first abuse-protection plan in Phase 2.
+Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
 revocation and operator suspension immediately; and authorization-code exchange applies the email
@@ -521,7 +538,11 @@ claim scopes, and consumed-code replay ends the first session. ADR-1 and ADR-2 r
 boundaries. JWT verification now pins its algorithm and claim policy, selects exactly by `kid`,
 tolerates configured clock skew, and emits whole-second dates plus explicit metadata. Signing-key
 replacement is atomic, PostgreSQL enforces at most one active key, lifecycle timestamps persist,
-and JWKS entries carry `alg`. ADR-3 and ADR-4 record those trust-root decisions, and each child's
-final serial workspace suite is green. Seven plans remain open; EP-5 is the recommended next
-Phase 2 plan because EP-4 names it as a soft dependency and can then record new proof failures
-through the atomic lockout path from its first revision.
+and JWKS entries carry `alg`. ADR-3 and ADR-4 record those trust-root decisions. Every credential
+proof now shares one account failure budget, suspended and locked paths preserve the timing and
+audit contract, and a challenged password does not clear the budget. Credential freshness is
+persisted as `authenticated_at`, carried as `auth_time`, and preserved across refresh. The runtime
+limiter derives its exact thirteen-route coverage from `RateLimited`, and passwordless WebAuthn
+always requires user verification. ADR-5 and ADR-6 record the accounting and freshness boundaries;
+each child's final serial workspace suite is green. Six plans remain open. EP-5 is the recommended
+next Phase 2 plan because it makes EP-4's shared failure seam atomic under concurrent guesses.

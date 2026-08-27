@@ -16,7 +16,8 @@
 -- deterministic fake ceremony interpreter and the EP-3/EP-4 workflows move these values
 -- around as JSON; PostgreSQL persistence (EP-2) uses native @bytea@, not JSON.
 module Shomei.Passkey.Domain
-  ( WebAuthnCredentialId (..),
+  ( UserVerificationPolicy (..),
+    WebAuthnCredentialId (..),
     UserHandle (..),
     PublicKeyBytes (..),
     SignatureCounter (..),
@@ -39,6 +40,12 @@ import Data.Text.Encoding qualified as TE
 import Data.Word (Word32)
 import Shomei.Id (CeremonyId, PasskeyId, UserId)
 import Shomei.Prelude
+
+-- | Per-ceremony WebAuthn user-verification policy. Kept in the pure passkey domain so the
+-- ceremony port can choose a policy without depending on the aggregate runtime configuration.
+data UserVerificationPolicy = UVRequired | UVPreferred | UVDiscouraged
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
 
 -- | base64url-without-padding encode strict bytes to text.
 b64urlEncode :: ByteString -> Text

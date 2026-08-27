@@ -17,7 +17,7 @@ import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (runEff)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
-import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig, defaultWebAuthnConfig)
+import Shomei.Config (ShomeiConfig (..), UserVerificationPolicy (UVRequired), defaultShomeiConfig, defaultWebAuthnConfig)
 import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
@@ -91,7 +91,7 @@ registerThenAuthenticate = do
       completeRegistrationCeremony regBlob (credentialJson (challengeOf regBlob) cidBytes uhBytes pkBytes)
     wrongResult <-
       completeRegistrationCeremony regBlob (credentialJson "not-the-challenge" cidBytes uhBytes pkBytes)
-    BeginCeremony {optionsBlob = authBlob} <- beginAuthenticationCeremony [WebAuthnCredentialId cidBytes]
+    BeginCeremony {optionsBlob = authBlob} <- beginAuthenticationCeremony UVRequired [WebAuthnCredentialId cidBytes]
     let stored =
           StoredCredentialForVerify
             { credentialId = WebAuthnCredentialId cidBytes,

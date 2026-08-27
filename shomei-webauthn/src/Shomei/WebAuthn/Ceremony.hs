@@ -38,7 +38,6 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NE
-import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time (NominalDiffTime)
@@ -77,7 +76,7 @@ runWebAuthnCeremonyLibrary :: (IOE :> es) => WebAuthnConfig -> Eff (WebAuthnCere
 runWebAuthnCeremonyLibrary cfg = interpret_ \case
   BeginRegistrationCeremony userInfo excludeIds -> liftIO (beginRegistration cfg userInfo excludeIds)
   CompleteRegistrationCeremony blob credJson -> liftIO (completeRegistration cfg blob credJson)
-  BeginAuthenticationCeremony allowIds -> liftIO (beginAuthentication cfg allowIds)
+  BeginAuthenticationCeremony uv allowIds -> liftIO (beginAuthentication cfg uv allowIds)
   CompleteAuthenticationCeremony blob stored credJson ->
     pure (completeAuthentication cfg blob stored credJson)
 
@@ -120,8 +119,8 @@ beginRegistration cfg (CredentialUserInfo uh accountName displayName) excludeIds
       wjOpts = WJ.wjEncodeCredentialOptionsRegistration opts
   pure BeginCeremony {optionsJson = toJSON wjOpts, optionsBlob = LBS.toStrict (encode wjOpts)}
 
-beginAuthentication :: WebAuthnConfig -> [WebAuthnCredentialId] -> IO BeginCeremony
-beginAuthentication cfg allowIds = do
+beginAuthentication :: WebAuthnConfig -> UserVerificationPolicy -> [WebAuthnCredentialId] -> IO BeginCeremony
+beginAuthentication cfg uv allowIds = do
   challenge <- WA.generateChallenge
   let opts =
         WA.CredentialOptionsAuthentication
@@ -129,7 +128,7 @@ beginAuthentication cfg allowIds = do
             WA.coaTimeout = Just (mkTimeout (ceremonyTimeout cfg)),
             WA.coaChallenge = challenge,
             WA.coaAllowCredentials = map mkDescriptor allowIds,
-            WA.coaUserVerification = mapUV (userVerification cfg),
+            WA.coaUserVerification = mapUV uv,
             WA.coaHints = [],
             WA.coaExtensions = Nothing
           }

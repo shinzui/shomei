@@ -40,6 +40,7 @@ import Shomei.Passkey.Domain
   ( PublicKeyBytes,
     SignatureCounter,
     UserHandle,
+    UserVerificationPolicy,
     WebAuthnCredentialId,
   )
 import Shomei.Prelude
@@ -109,9 +110,9 @@ data WebAuthnCeremony :: Effect where
   -- optionsBlob, then the browser's credential JSON.
   CompleteRegistrationCeremony ::
     ByteString -> Value -> WebAuthnCeremony m (Either WebAuthnError VerifiedRegistration)
-  -- allowCredentials ([] = passwordless discovery).
+  -- User-verification policy, then allowCredentials ([] = passwordless discovery).
   BeginAuthenticationCeremony ::
-    [WebAuthnCredentialId] -> WebAuthnCeremony m BeginCeremony
+    UserVerificationPolicy -> [WebAuthnCredentialId] -> WebAuthnCeremony m BeginCeremony
   CompleteAuthenticationCeremony ::
     ByteString ->
     StoredCredentialForVerify ->
@@ -129,8 +130,8 @@ completeRegistrationCeremony ::
 completeRegistrationCeremony b v = send (CompleteRegistrationCeremony b v)
 
 beginAuthenticationCeremony ::
-  (WebAuthnCeremony :> es) => [WebAuthnCredentialId] -> Eff es BeginCeremony
-beginAuthenticationCeremony = send . BeginAuthenticationCeremony
+  (WebAuthnCeremony :> es) => UserVerificationPolicy -> [WebAuthnCredentialId] -> Eff es BeginCeremony
+beginAuthenticationCeremony uv ids = send (BeginAuthenticationCeremony uv ids)
 
 completeAuthenticationCeremony ::
   (WebAuthnCeremony :> es) =>

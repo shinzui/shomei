@@ -23,7 +23,7 @@ requires:
 evidence:
   - kind: test
     resource: shomei-webauthn/test/Shomei/WebAuthn/CeremonySpec.hs
-    proves: The registration and authentication ceremonies over the tweag/webauthn interpreter, including what a mismatched origin or rpId does.
+    proves: The registration and authentication ceremonies over the tweag/webauthn interpreter, including passwordless UV-required policy even when step-up discourages verification.
   - kind: test
     resource: shomei-core/test/Shomei/Passkey/WorkflowSpec.hs
     proves: Enrollment, listing, deletion, the step-up path, and the passwordless path over the in-memory world.
@@ -52,7 +52,8 @@ Three ceremonies, all built on `tweag/webauthn` behind a `WebAuthnCeremony` port
 2. **Step-up** — a password login for a user who has a passkey answers `mfa_required` with the
    available methods; the client completes at `/v1/auth/mfa/complete`.
 3. **Passwordless** — `/v1/auth/login/passkey/{begin,complete}` authenticates with the passkey
-   alone.
+   alone and always requires the authenticator's local user verification (PIN, biometric, or
+   equivalent), regardless of the configurable step-up policy.
 
 The pending-ceremony challenge is server-side state consumed exactly once and expiring on its own,
 so a challenge cannot be replayed. The user handle is derived from the user id, never from the

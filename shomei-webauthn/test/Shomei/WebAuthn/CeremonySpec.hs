@@ -21,13 +21,19 @@
 module Shomei.WebAuthn.CeremonySpec (tests) where
 
 import Crypto.WebAuthn.Encoding.WebAuthnJson qualified as WJ
-import Data.Aeson (eitherDecodeStrict', encode, object)
+import Data.Aeson (Value, eitherDecodeStrict', encode, object)
+import Data.Aeson.Types (parseEither, withObject, (.:))
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BC
 import Data.ByteString.Lazy qualified as LBS
 import Data.Either (isLeft)
+import Data.Text (Text)
 import Effectful (runEff)
-import Shomei.Config (defaultWebAuthnConfig)
+import Shomei.Config
+  ( UserVerificationPolicy (UVDiscouraged, UVRequired),
+    WebAuthnConfig (userVerification),
+    defaultWebAuthnConfig,
+  )
 import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
@@ -38,7 +44,7 @@ import Shomei.Passkey.Ceremony.Port
 import Shomei.Passkey.Domain (UserHandle (..))
 import Shomei.WebAuthn.Ceremony (runWebAuthnCeremonyLibrary)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase)
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -46,6 +52,7 @@ tests =
     "WebAuthn.Ceremony (real interpreter)"
     [ testCase "begin registration produces a round-tripping options blob" beginRegistrationRoundTrips,
       testCase "begin authentication produces a round-tripping options blob" beginAuthenticationRoundTrips,
+      testCase "passwordless authentication requires UV even when step-up discourages it" passwordlessRequiresUv,
       testCase "complete registration on malformed credential JSON fails closed" completeRejectsGarbage
     ]
 
@@ -67,9 +74,18 @@ beginRegistrationRoundTrips = do
 beginAuthenticationRoundTrips :: IO ()
 beginAuthenticationRoundTrips = do
   BeginCeremony {optionsBlob = blob} <-
-    runEff . runWebAuthnCeremonyLibrary defaultWebAuthnConfig $ beginAuthenticationCeremony []
+    runEff . runWebAuthnCeremonyLibrary defaultWebAuthnConfig $
+      beginAuthenticationCeremony (userVerification defaultWebAuthnConfig) []
   assertBool "authentication optionsBlob is non-empty" (not (BC.null blob))
   assertBool "authentication optionsBlob round-trips through webauthn-json" (authenticationBlobRoundTrips blob)
+  decodeUserVerification blob @?= Right "preferred"
+
+passwordlessRequiresUv :: IO ()
+passwordlessRequiresUv = do
+  let cfg = defaultWebAuthnConfig {userVerification = UVDiscouraged}
+  BeginCeremony {optionsBlob = blob} <-
+    runEff . runWebAuthnCeremonyLibrary cfg $ beginAuthenticationCeremony UVRequired []
+  decodeUserVerification blob @?= Right "required"
 
 completeRejectsGarbage :: IO ()
 completeRejectsGarbage = do
@@ -90,3 +106,8 @@ authenticationBlobRoundTrips :: ByteString -> Bool
 authenticationBlobRoundTrips blob = case eitherDecodeStrict' blob of
   Right opts -> LBS.toStrict (encode (opts :: WJ.WJCredentialOptionsAuthentication)) == blob
   Left _ -> False
+
+decodeUserVerification :: ByteString -> Either String Text
+decodeUserVerification blob = do
+  value <- eitherDecodeStrict' blob :: Either String Value
+  parseEither (withObject "authentication options" (.: "userVerification")) value

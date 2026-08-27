@@ -37,7 +37,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Store (ClaimsEnricher)
 import Shomei.Authorization.Role.Store (RoleStore)
-import Shomei.Config (ShomeiConfig (..), WebAuthnConfig (..))
+import Shomei.Config (ShomeiConfig (..), UserVerificationPolicy (UVRequired), WebAuthnConfig (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (CeremonyId, UserId, genCeremonyId)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore, consumeRecoveryCode, countUnusedRecoveryCodes)
@@ -128,7 +128,8 @@ prepareMfaChallenge cfg user ts = do
     if hasPasskey
       then do
         let allowIds = map (\PasskeyCredential {credentialId} -> credentialId) creds
-        BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony allowIds
+        BeginCeremony {optionsJson, optionsBlob} <-
+          beginAuthenticationCeremony (userVerification (webauthnConfig cfg)) allowIds
         pure (optionsJson, optionsBlob)
       else pure (object [], BS.empty)
   cid <- genCeremonyId
@@ -275,7 +276,7 @@ beginPasswordlessLogin ::
   Eff es (Either AuthError (CeremonyId, Value))
 beginPasswordlessLogin cfg = runErrorNoCallStack do
   ts <- now
-  BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony []
+  BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony UVRequired []
   cid <- genCeremonyId
   putPendingCeremony
     PendingCeremony

@@ -216,10 +216,10 @@ invisible to the requester.
 Identical bytes are not enough on their own: a response that arrives sooner is just as much a
 disclosure. Verifying a password with Argon2id deliberately costs ~100 ms, so a login that
 short-circuits before hashing — an unknown identifier, a credential row whose user is gone, a
-suspended account — would answer in microseconds and thereby announce that the account does not
-exist (or exists and is suspended). Every failing login therefore performs **exactly one**
-password verification: the paths that never reach a stored hash verify against a fixed dummy
-Argon2id hash instead, so all of them pay the same cost.
+locked or suspended account — would answer in microseconds and thereby announce account state.
+Every failing login therefore performs **exactly one** password verification: the paths that never
+reach a stored hash verify against a fixed dummy Argon2id hash instead, so all of them pay the same
+cost.
 
 ### Signup deliberately discloses existence
 
@@ -250,20 +250,35 @@ is not an enumeration leak: every path that can return it has already proven con
 account (a correct password, a valid refresh token, or a verified passkey assertion). A generic
 `401` would instead strand a legitimate user who has no way to learn they must click the link.
 
+## Passwordless passkeys require user verification
+
+A passwordless passkey is the whole login credential, not a second factor behind a password.
+Shōmei therefore always sends WebAuthn `userVerification: "required"` for
+`POST /v1/auth/login/passkey/begin`. The authenticator must verify the user locally with its PIN,
+biometric, or equivalent and return an assertion with the UV flag; the WebAuthn verifier refuses an
+assertion without it. `webauthnConfig.userVerification` applies only to the password-plus-passkey
+step-up ceremony, where the password is already one factor. Setting it to `preferred` or
+`discouraged` never weakens passwordless login.
+
 ## Abuse protection (EP-2)
 
 - **Per-account brute-force lockout** (PostgreSQL-backed, survives restarts): password, TOTP,
   recovery-code, passkey, password-change, and TOTP-removal proofs share one budget. After
   `maxFailedLoginsPerAccount` failures (default 5) within `lockoutWindow` (default 15 min) an
   account is locked for `lockoutDuration` (default 15 min). The account key stored in the abuse
-  tables is a SHA-256 of the normalized email, never the plaintext. Counting is "failures since
-  the most recent success", so a successful login resets the counter.
+  tables is a SHA-256 of the normalized login identifier, never the plaintext. Each attempt row's
+  `factor` says which proof failed (`password`, `totp`, `recovery`, `passkey`, or
+  `password_change`). Suspended-account attempts are still counted and audited. Counting is
+  "failures since the most recent success", but a password that leads to an MFA challenge records
+  no success: only the successful second factor clears the shared lockout.
 - **Per-IP failure throttle**: after `maxFailedLoginsPerIp` failures (default 20) from one IP the
   next attempt returns `429`. This count does **not** reset on a successful login (so an attacker
   cannot clear it by logging into their own account).
 - **Per-IP request-rate limit**: an in-process token bucket (default 60 req/min, burst 60) on the
-  unauthenticated POST endpoints rejects over-rate requests with `429` before they reach the
-  application or the database.
+  thirteen credential-proof operations rejects over-rate requests with `429` before they reach the
+  application or the database. The operation set is derived from the Servant API's `RateLimited`
+  markers, including MFA/passkey completion, confirmation and password-change routes,
+  `DELETE /v1/auth/totp`, and `POST /oauth/token`.
 
 These protections target a single-instance deployment; the lockout state is durable (PostgreSQL)
 while the request-rate buckets are in-memory and reset on restart.
@@ -761,4 +776,7 @@ $ shomei-admin audit user 019eb2eb-ac04-747e-9e70-ea4db1bd446e
 
 # Feed structured rows into jq / a SIEM:
 $ shomei-admin audit events --type account_locked --json | jq -c '{at: .createdAt, user: .userId, payload}'
+
+# Break down the underlying proof failures by credential factor:
+$ psql "$DATABASE_URL" -c "SELECT factor, count(*) FROM shomei.shomei_login_attempts WHERE outcome = 'failure' GROUP BY factor ORDER BY factor"
 ```

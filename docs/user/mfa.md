@@ -77,9 +77,12 @@ The completion body carries exactly one tagged proof: `passkey` with `assertion`
 `code`, or `recovery_code` with `code`. Unknown tags, missing payloads, and extra proof fields are
 decoding failures.
 
-**One guess per challenge.** A failed completion spends the consume-once ceremony, exactly as
-the passkey flow does — the client logs in again to get a fresh one. Brute force is therefore
-bounded to one code guess per password proof.
+**One guess per challenge, and every guess counts.** A failed completion spends the consume-once
+ceremony, exactly as the passkey flow does — the client logs in again to get a fresh one. The bad
+TOTP, recovery-code, or passkey proof is also recorded against the account's shared failure budget;
+after `maxFailedLoginsPerAccount` failures the account is locked even if every guess used a fresh
+password proof. The preceding password does not clear the budget: only a successful second factor
+records success and clears the lockout.
 
 ## Removing TOTP
 
@@ -93,7 +96,8 @@ bounded to one code guess per password proof.
 → `204`. The access token's `auth_time` must be within
 `impersonationConfig.actorFreshnessWindow` (default 5 minutes); refreshing rotates `iat` but does
 not renew `auth_time`, so a stale caller must log in again. Removal is also blocked under a
-delegated token.
+delegated token. A wrong TOTP or recovery code at removal is a credential failure and counts toward
+the same account lockout as login and MFA completion.
 
 ## Recovery codes
 

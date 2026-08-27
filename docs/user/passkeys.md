@@ -64,6 +64,9 @@ missing/expired/already-consumed ceremony returns `404 ceremony_not_found`.
    `{ "ceremonyId": "...", "options": { ... } }` — WebAuthn authentication options for
    discoverable credentials.
 2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`.
+   Shōmei sets WebAuthn's `userVerification` option to `required` for this flow, so the
+   authenticator must verify the user locally (for example with a PIN or biometric) and set the UV
+   flag. Possession of an unlocked security key alone is not enough.
 3. POST `/v1/auth/login/passkey/complete` with `{ "ceremonyId": "...", "assertion": <get()
    output> }`. On success the response is the token pair `{ "accessToken", "refreshToken",
    "expiresIn" }` directly (the passkey is the strong factor, so there is no second challenge).
@@ -81,7 +84,7 @@ wins). See [deployment.md](deployment.md) for the loader overview.
 | `rpId` | `webauthnRpId` | `SHOMEI_WEBAUTHN_RP_ID` | `localhost` | the registrable domain a passkey is bound to (no scheme, no port) |
 | `rpName` | `webauthnRpName` | `SHOMEI_WEBAUTHN_RP_NAME` | `Shōmei` | human label shown by the authenticator UI |
 | `origins` | `webauthnOrigins` | `SHOMEI_WEBAUTHN_ORIGINS` | `["http://localhost:8080"]` | exact page origins allowed to run ceremonies (env: comma-separated) |
-| `userVerification` | `webauthnUserVerification` | `SHOMEI_WEBAUTHN_USER_VERIFICATION` | `preferred` | `required` \| `preferred` \| `discouraged` |
+| `userVerification` | `webauthnUserVerification` | `SHOMEI_WEBAUTHN_USER_VERIFICATION` | `preferred` | `required` \| `preferred` \| `discouraged`; applies to the password-plus-passkey step-up ceremony. Passwordless login always requires user verification. |
 | `attestation` | `webauthnAttestation` | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` | `none` \| `direct` |
 | `ceremonyTimeout` | `webauthnCeremonyTimeoutSeconds` | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` | `300` | browser ceremony timeout (seconds) |
 | `pendingCeremonyTTL` | `webauthnPendingCeremonyTtlSeconds` | `SHOMEI_WEBAUTHN_PENDING_TTL` | `300` | how long a begun ceremony stays valid server-side (seconds) |

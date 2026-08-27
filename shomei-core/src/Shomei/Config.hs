@@ -53,6 +53,7 @@ import Data.Set qualified as Set
 import Data.Time (NominalDiffTime)
 import Shomei.Account.Password.Domain (PasswordPolicy, defaultPasswordPolicy)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Passkey.Domain (UserVerificationPolicy (..))
 import Shomei.Prelude
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
 
@@ -270,10 +271,6 @@ data ObservabilityConfig = ObservabilityConfig
 -- identity (the @rpId@ scope domain, the allowed @origins@, the human RP name) and
 -- ceremony policy. Every field has a default (see 'defaultWebAuthnConfig') so the
 -- record stays append-only per IP-3; the @shomei-webauthn@ interpreter reads this identity.
-data UserVerificationPolicy = UVRequired | UVPreferred | UVDiscouraged
-  deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
-
 data AttestationPolicy = AttestationNone | AttestationDirect
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

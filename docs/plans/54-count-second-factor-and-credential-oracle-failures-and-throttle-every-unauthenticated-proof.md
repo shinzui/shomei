@@ -63,7 +63,9 @@ against today's code after five wrong codes and is locked out once M2 lands.
 - [x] (2026-08-27T18:14:58Z) M4: `Shomei.Servant.Throttle`; thirteen routes marked and consumed by
       the runtime limiter; exact-set conformance test; `api.md` and `docs/api/openapi.json` updated.
       Servant (41 HTTP and 62 OpenAPI examples) and server (30 integration tests) passed.
-- [ ] M5: passwordless forces `UVRequired`; docs and capability catalog; ADR distillation; Outcomes.
+- [x] (2026-08-27T18:28:34Z) M5: passwordless forces `UVRequired` independently of the step-up
+      policy; user and capability documentation reconciled; ADR-5 and ADR-6 added; all 13 Cabal
+      suites, migration validation, ADR validation, and `nix flake check` passed.
 
 
 ## Surprises & Discoveries
@@ -110,6 +112,11 @@ implementation. Provide concise evidence.
   the first OpenAPI delta: its handler-owned failures remain OAuth JSON, while its new pre-routing
   429 is deliberately the shared Problem Details response. The protocol-boundary OpenAPI test now
   pins that single exception.
+
+- Importing `UserVerificationPolicy` from `Shomei.Config` into the ceremony port formed a module
+  cycle through password configuration and the port/error layer. The policy is a pure passkey
+  domain vocabulary, so moving it to `Shomei.Passkey.Domain` and re-exporting it from
+  `Shomei.Config` broke the cycle without changing the public configuration API.
 
 
 ## Decision Log
@@ -177,10 +184,13 @@ implementation. Provide concise evidence.
   Date: 2026-08-27
 
 - Decision: Passwordless login passes `UVRequired` to `BeginAuthenticationCeremony` unconditionally;
-  `webauthnConfig.userVerification` governs the step-up ceremony only; no new configuration key.
+  `webauthnConfig.userVerification` governs the step-up ceremony only; the policy type lives in
+  `Shomei.Passkey.Domain` and is re-exported by `Shomei.Config`; no new configuration key.
   Rationale: REV-4 finding 1. A key defaulting to `required` would exist only to weaken a
   single-factor login to possession-only, and every key costs Dhall, env, and `deployment.md` work
-  (Integration Point 7); PIN-less keys keep working for password + step-up.
+  (Integration Point 7); PIN-less keys keep working for password + step-up. Keeping the enum in the
+  pure domain also lets ceremony ports express the per-flow requirement without importing the
+  top-level configuration graph.
   Date: 2026-08-27
 
 - Decision: `changePassword`'s wrong-current-password path publishes a new `PasswordChangeFailed`
@@ -200,8 +210,27 @@ implementation. Provide concise evidence.
 
 ## Outcomes & Retrospective
 
-(To be filled in. Before completion, distill "every credential proof is a counted login attempt" and
-"`auth_time`, not `iat`, is the freshness clock" into `docs/adr/`, created per `ADR.md` if absent.)
+EP-4 is complete. Password, TOTP, recovery-code, passkey, password-change, and TOTP-removal
+failures now participate in the same per-account abuse budget; suspended-account attempts are
+counted and audited; locked password login still performs exactly one configured dummy hash; and a
+password success that requires MFA no longer clears the budget before the second factor succeeds.
+[ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md) records that durable
+boundary.
+
+Authentication freshness now follows the last credential proof rather than token issuance.
+Sessions persist `authenticated_at`, access and ID tokens carry managed `auth_time`, refresh keeps
+the original value, legacy rows and tokens fall back compatibly, and the recovery, impersonation,
+and TOTP-removal gates all read it. [ADR-6](../adr/0006-authentication-freshness-is-based-on-credential-proof-time.md)
+records the clock choice.
+
+The edge limiter now consumes the thirteen-route set derived from the API's `RateLimited` markers,
+including every unauthenticated proof and `/oauth/token`; passwordless WebAuthn always requests user
+verification while password-plus-passkey step-up retains its configurable policy. The regression
+first demonstrated the old TOTP oracle with a successful `200` after five bad codes; after the
+change the same scenario locks out. The final `cabal build all --enable-tests`, all 13 Cabal test
+suites, migration checksum validation, ADR and capability validation, and `nix flake check` passed.
+EP-5 remains the deliberate follow-up: it makes the now-complete shared accounting policy atomic
+under concurrent guesses.
 
 
 ## Context and Orientation
@@ -215,10 +244,11 @@ signer and verifier; `shomei-webauthn` the `webauthn` wrapper; `shomei-servant` 
 types in each concept's `Api.hs`, handlers in `Handler.hs`); `shomei-server` the standalone binary and
 its WAI middleware. Tests are tasty; database suites provision an ephemeral PostgreSQL themselves.
 
-Architecture Decision Records: this repository has no `docs/adr/` bundle (checked 2026-08-27;
-`mori.dhall` declares `improvement-requests`, `capabilities`, and `reviews` only), so no local ADR
-applies; the records the MasterPlan cites (`mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1`
-and `IR-2`) do not bear on abuse protection. Plans 51, 53, 55, and 58 are skeletons at HEAD `5dfd2a6`.
+Architecture Decision Records live in the profile-governed `docs/adr/` bundle. This plan adds
+[ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md) and
+[ADR-6](../adr/0006-authentication-freshness-is-based-on-credential-proof-time.md); the records the
+MasterPlan cites (`mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1` and `IR-2`) do not
+otherwise bear on abuse protection.
 
 **The login workflow today** — `shomei-core/src/Shomei/Session/Authentication/Workflow.hs`, `login`
 (194–282). The abuse gate (227–239) reads the per-IP failure count and the lockout row; line 237
@@ -558,7 +588,7 @@ Intention: intention_01m10kwqt9eedbjvk91rn726mq
 
 1. `Passkey/Ceremony/Port.hs`: `BeginAuthenticationCeremony :: UserVerificationPolicy ->
    [WebAuthnCredentialId] -> …` and `beginAuthenticationCeremony uv ids` (policy type from
-   `Shomei.Config`). `WebAuthn/Ceremony.hs` 80 and 123–137 take `uv` and set `WA.coaUserVerification
+   `Shomei.Passkey.Domain`, re-exported by `Shomei.Config`). `WebAuthn/Ceremony.hs` 80 and 123–137 take `uv` and set `WA.coaUserVerification
    = mapUV uv`. `Mfa/Workflow.hs` 125 → `beginAuthenticationCeremony (userVerification
    (webauthnConfig cfg)) allowIds`; 258 → `beginAuthenticationCeremony UVRequired []`. `InMemory.hs`
    1229 ignores the argument. Fix `shomei-webauthn/test/…/CeremonySpec.hs` 70 and
@@ -670,7 +700,7 @@ still switches the throttle off. Re-running the negative test against a locked a
 No new library dependencies. Definitions that must exist at the end (full module paths):
 
 - `Shomei.Session.LoginAttempt.Domain.AttemptFactor` (five constructors) on `LoginAttempt` and
-  `NewLoginAttempt`; migration `0029-login-attempts-factor.sql`;
+  `NewLoginAttempt`; migration `0033-login-attempts-factor.sql`;
   `Shomei.Persistence.Codec.Postgres.attemptFactorToText`;
   `Shomei.Session.LoginAttempt.Workflow.{AbuseGate(..), guardAbuse, recordProofFailure, recordProofSuccess}`
   with the M1 signatures — the single seam plan 55 rewrites.

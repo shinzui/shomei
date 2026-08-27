@@ -12,6 +12,7 @@ stability: experimental
 since: unreleased
 packages:
   - shomei-core
+  - shomei-servant
   - shomei-server
 interface:
   - Shomei.Session.LoginAttempt.Store
@@ -23,7 +24,7 @@ requires:
 evidence:
   - kind: test
     resource: shomei-core/test/Shomei/LockoutSpec.hs
-    proves: Lock after N failures, unlock after the cooldown, and that a locked account is indistinguishable from a wrong password.
+    proves: Password, TOTP, recovery-code, passkey, password-change, and TOTP-removal failures share one lockout budget; suspended attempts count; success clears only after the complete proof.
   - kind: test
     resource: shomei-postgres/test/Main.hs
     proves: The same lockout behavior over the real PostgreSQL store, with windowed failure counting and lockout upsert/clear.
@@ -32,7 +33,7 @@ evidence:
     proves: Every login attempt invokes the password hasher exactly once whatever the reason for failure, closing the timing oracle that would otherwise enumerate accounts.
   - kind: test
     resource: shomei-server/test/Shomei/Server/MiddlewareSpec.hs
-    proves: The token bucket throttles only the versioned unauthenticated auth endpoints, evicts idle buckets losslessly, stays bounded under 10k one-shot IPs, and that an oversized Content-Length is 413.
+    proves: The API-derived token-bucket inventory is exactly the thirteen credential-proof operations, evicts idle buckets losslessly, stays bounded under 10k one-shot IPs, and rejects an oversized Content-Length with 413.
   - kind: guide
     resource: docs/user/security.md
     proves: What each layer defends against and the no-leak guarantees.
@@ -53,7 +54,9 @@ Four independent layers:
 
 None of them leak account existence. A locked account returns exactly the same error as a wrong
 password — never `AccountLocked` — and a login for an account that does not exist performs a dummy
-Argon2id verification with the *configured* parameters, so a miss costs what a hit costs. The
+Argon2id verification with the *configured* parameters; locked and suspended branches hash too, so
+every login costs exactly one verification. Password, TOTP, recovery-code, passkey,
+password-change, and TOTP-removal failures share the same account budget. The
 per-IP throttle is checked before any attempt is recorded, so an attacker cannot keep a victim
 throttled by failing on their behalf.
 
@@ -68,8 +71,10 @@ address space cannot grow the map forever.
   targets a single-instance deployment: N replicas mean N times the limit, and a restart resets
   the state. The account lockout, which is the one that matters for credential attacks, is
   PostgreSQL-backed and does survive.
-- It is scoped to the unauthenticated `POST` auth endpoints. Authenticated traffic bearing a valid
-  token is never throttled by it.
+- Its exact method/path set is derived from the API's `RateLimited` markers and pinned by a
+  conformance test. It covers all thirteen credential-proof operations, including authenticated
+  password change and TOTP removal plus `/oauth/token`; ordinary authenticated traffic is not
+  throttled.
 - The body-size cap reads `Content-Length`. A **chunked** request body passes through — a
   documented caveat, asserted by a test rather than papered over.
 - **Client IP is the socket peer address.** `X-Forwarded-For` is explicitly not consulted — a

@@ -1263,7 +1263,7 @@ runTokenGen ref = interpret_ \case
 runWebAuthnCeremonyFake :: (IOE :> es) => IORef World -> Eff (WebAuthnCeremony : es) a -> Eff es a
 runWebAuthnCeremonyFake ref = interpret_ \case
   BeginRegistrationCeremony _userInfo _exclude -> liftIO (mkCannedCeremony ref)
-  BeginAuthenticationCeremony _allow -> liftIO (mkCannedCeremony ref)
+  BeginAuthenticationCeremony _userVerification _allow -> liftIO (mkCannedCeremony ref)
   CompleteRegistrationCeremony blob credJson -> pure (fakeCompleteRegistration blob credJson)
   CompleteAuthenticationCeremony blob stored credJson ->
     pure (fakeCompleteAuthentication blob stored credJson)
