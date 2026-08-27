@@ -151,8 +151,10 @@ import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthori
 import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
 import Shomei.OAuth.AuthorizationCode.Store
   ( OAuthCodeStore,
+    bindAuthorizationCodeSession,
     consumeAuthorizationCode,
     deleteExpiredAuthorizationCodes,
+    findConsumedAuthorizationCode,
     putAuthorizationCode,
   )
 import Shomei.OAuth.Client.Domain
@@ -1674,13 +1676,16 @@ testAuthorizationCodeRoundTrip =
       putAuthorizationCode (mk "hash-live" (addUTCTime 60 t))
       putAuthorizationCode (mk "hash-expired" (addUTCTime 60 t))
       first' <- consumeAuthorizationCode "hash-live" t
+      sid <- genSessionId
+      bindAuthorizationCodeSession "hash-live" sid
+      bound <- findConsumedAuthorizationCode "hash-live" t
       replay <- consumeAuthorizationCode "hash-live" t
       unknown <- consumeAuthorizationCode "hash-nope" t
       -- One second past its expiry: the row is there, but it must not consume.
       expired <- consumeAuthorizationCode "hash-expired" (addUTCTime 61 t)
       deleteExpiredAuthorizationCodes (addUTCTime 61 t)
-      pure (first', replay, unknown, expired, scopes)
-    (first', replay, unknown, expired, scopes) <- expectApp result
+      pure (first', sid, bound, replay, unknown, expired, scopes)
+    (first', sid, bound, replay, unknown, expired, scopes) <- expectApp result
     -- The consume returns every binding the exchange will re-check, and stamps consumed_at.
     case first' of
       Nothing -> assertFailure "the first consume must return the code"
@@ -1691,6 +1696,8 @@ testAuthorizationCodeRoundTrip =
         c.nonce @?= Just "n-0S6"
         c.codeChallenge @?= Just (Text.replicate 43 "a")
         assertBool "consumed_at is stamped" (isJust c.consumedAt)
+        c.sessionId @?= Nothing
+    fmap (.sessionId) bound @?= Just (Just sid)
     assertBool "a replay must miss" (isNothing replay)
     assertBool "an unknown hash must miss" (isNothing unknown)
     assertBool "an expired code must miss" (isNothing expired)

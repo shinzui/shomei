@@ -41,7 +41,8 @@ import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 
 import Shomei.Account.User.Domain (UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
-import Shomei.Audit.Publisher.Store (AuthEventPublisher)
+import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (AuthClaims, Scope (..))
 import Shomei.Authorization.Claims.Store (ClaimsEnricher)
 import Shomei.Authorization.Role.Store (RoleStore)
@@ -49,7 +50,7 @@ import Shomei.Config (ShomeiConfig)
 import Shomei.Error (AuthError)
 import Shomei.Id (SessionId)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode)
-import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore, consumeAuthorizationCode)
+import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore, bindAuthorizationCodeSession, consumeAuthorizationCode, findConsumedAuthorizationCode)
 import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient, OAuthClientStatus (..))
 import Shomei.OAuth.Client.Store (OAuthClientStore, findOAuthClientByClientId)
 import Shomei.OAuth.IdToken.Domain (IdToken, IdTokenClaims (..))
@@ -58,8 +59,9 @@ import Shomei.ServiceAccount.Secret (sha256Hex, verifyServiceSecret)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (RefreshCommand (..), RefreshOrigin (OAuthClientRefresh))
 import Shomei.Session.RefreshToken.Domain (RefreshToken)
-import Shomei.Session.RefreshToken.Store (RefreshTokenStore, findRefreshTokenByHash)
+import Shomei.Session.RefreshToken.Store (RefreshTokenStore, findRefreshTokenByHash, revokeSessionRefreshTokens)
 import Shomei.Session.Store (SessionStore, findSessionById)
+import Shomei.Session.Store qualified as SessionStore
 import Shomei.Session.Token.Domain (TokenPair)
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
@@ -143,6 +145,9 @@ exchangeAuthorizationCode ::
     TokenGen :> es,
     RoleStore :> es,
     ClaimsEnricher :> es,
+    SessionStore :> es,
+    RefreshTokenStore :> es,
+    AuthEventPublisher :> es,
     Clock :> es
   ) =>
   ShomeiConfig ->
@@ -151,9 +156,27 @@ exchangeAuthorizationCode ::
 exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
   _client <- authenticateClient (cmd ^. #clientId) (cmd ^. #clientSecret)
   ts <- now
-  row <-
-    maybe (throwError (GrantInvalidGrant "no such code, already consumed, or expired")) pure
-      =<< consumeAuthorizationCode (sha256Hex (cmd ^. #code)) ts
+  let presentedHash = sha256Hex (cmd ^. #code)
+  consumed <- consumeAuthorizationCode presentedHash ts
+  row <- case consumed of
+    Just fresh -> pure fresh
+    Nothing -> do
+      replay <- findConsumedAuthorizationCode presentedHash ts
+      forM_ replay \used ->
+        forM_ (used ^. #sessionId) \sid -> do
+          SessionStore.revokeSession sid ts
+          revokeSessionRefreshTokens sid ts
+          publishAuthEvent
+            ( Event.OAuthCodeReplayed
+                Event.OAuthCodeReplayedData
+                  { clientId = used ^. #clientId,
+                    presentedBy = cmd ^. #clientId,
+                    userId = used ^. #userId,
+                    sessionId = sid,
+                    occurredAt = ts
+                  }
+            )
+      throwError (GrantInvalidGrant "no such code, already consumed, or expired")
   -- The code was minted for one client at one redirect URI; both are re-checked here because the
   -- code travelled through the user's browser and anything in that path could have altered them.
   unless (row ^. #clientId == cmd ^. #clientId) $
@@ -173,6 +196,7 @@ exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
       SessionOptions {oauthClientId = Just (cmd ^. #clientId), extraScopes = granted}
       user
       ts
+  bindAuthorizationCodeSession (row ^. #codeHash) sid
   idToken <-
     if Scope "openid" `Set.member` granted
       then Just <$> signIdTokenFor cfg cmd row claims ts

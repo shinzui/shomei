@@ -16,7 +16,7 @@ where
 
 import Data.Set (Set)
 import Shomei.Authorization.Claims.Domain (Scope)
-import Shomei.Id (UserId)
+import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
 data AuthorizationCode = AuthorizationCode
@@ -39,7 +39,10 @@ data AuthorizationCode = AuthorizationCode
     createdAt :: !UTCTime,
     expiresAt :: !UTCTime,
     -- | stamped by the atomic consume. A code with this set has already been redeemed.
-    consumedAt :: !(Maybe UTCTime)
+    consumedAt :: !(Maybe UTCTime),
+    -- | the session minted by the successful exchange, bound immediately afterwards so a replay
+    --     can revoke the first exchange's result without changing the wire error.
+    sessionId :: !(Maybe SessionId)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

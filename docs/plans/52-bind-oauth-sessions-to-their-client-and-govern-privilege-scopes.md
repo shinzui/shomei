@@ -60,9 +60,9 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 - [x] (2026-08-27 15:18Z) M2: `Shomei.Authorization.Scope.Domain`; servant and token-exchange modules re-export its constants
 - [x] (2026-08-27 15:18Z) M2: `registerOAuthClient` refuses privilege scopes; CLI uses it (refusal observed failing first); `resolveScopes` refuses them; service-account CLI warns; tests
 - [x] (2026-08-27 15:18Z) M2: `security.md` subsection; `machine-tokens.md` note; ADR-2 written and indexed; strict OKF validation, all 252 core tests, all 27 admin tests, and `cabal build all` green
-- [ ] M3: `mayRevokeSession`; `oauthRevokeH` enforces ownership, `200` on mismatch; servant ownership scenario (observed failing first); impersonation scenario revokes as `shomei:admin`
-- [ ] M3: userinfo gated by `email`/`profile`; servant scenario
-- [ ] M3: `session_id` on codes (`just new-migration oauth-codes-session-id`); bind/find-consumed port ops; replay revokes and audits `oauth_code_replayed`; tests
+- [x] (2026-08-27 15:34Z) M3: `mayRevokeSession`; `oauthRevokeH` enforces ownership, `200` on mismatch; servant ownership scenario (observed failing first); impersonation scenario revokes as `shomei:admin`
+- [x] (2026-08-27 15:34Z) M3: userinfo gated by `email`/`profile`; servant scenario (observed leaking email first)
+- [x] (2026-08-27 15:34Z) M3: `session_id` on codes via migration 0031; bind/find-consumed port ops; replay revokes and audits `oauth_code_replayed`. All 260 core, 59 Postgres, 40 servant, and 62 OpenAPI cases pass; `cabal build all` is green.
 - [ ] M4: Basic credentials urldecoded; token-exchange in `grant_types_supported`; hint-less refresh introspection; `missingToken` challenge; assertions updated
 - [ ] M4: `oidc.md` trust model, ownership, userinfo claims; `api.md`; changelogs; `cabal test all` green; Outcomes written
 
@@ -89,6 +89,26 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 
   Registration accepted `shomei:admin` and persisted the client, confirming that the refusal must
   live in the core registration workflow rather than only in the CLI parser.
+
+- The three M3 HTTP regressions each failed at the intended boundary before their fixes:
+
+  ```text
+  POST /oauth/revoke: callers can revoke only sessions they own, except shomei:admin: FAIL
+    expected: 200
+     but got: 400
+
+  POST /oauth/token: authorization_code + PKCE + ID token; replay, wrong verifier, and a stolen code are one invalid_grant: FAIL
+    expected: Just (Bool False)
+     but got: Just (Bool True)
+
+  GET /oauth/userinfo: email and roles appear only under the email and profile scopes: FAIL
+    expected: Nothing
+     but got: Just (String "userinfo-scope@example.com")
+  ```
+
+  The first failure shows another client had already revoked the refresh token; the second shows
+  the first exchange's session remained active after replay; the third confirms an `openid`-only
+  token disclosed the email claim.
 
 
 ## Decision Log

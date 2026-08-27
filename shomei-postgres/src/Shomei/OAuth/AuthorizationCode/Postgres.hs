@@ -17,16 +17,16 @@ import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Shomei.Error (AuthError (..))
-import Shomei.Id (userIdFromUUID, userIdToUUID)
+import Shomei.Id (sessionIdFromUUID, sessionIdToUUID, userIdFromUUID, userIdToUUID)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore (..))
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
 import Shomei.Prelude
 
 -- | The stored row, column order matching @shomei_oauth_authorization_codes@:
--- @(code_hash, client_id, redirect_uri, user_id, scopes, nonce, code_challenge, auth_time,
--- created_at, expires_at, consumed_at)@.
-type CodeRow = (Text, Text, UUID, Text, Value, Maybe Text, Maybe Text, UTCTime, UTCTime, UTCTime, Maybe UTCTime)
+-- @(code_hash, client_id, user_id, redirect_uri, scopes, nonce, code_challenge, auth_time,
+-- created_at, expires_at, consumed_at, session_id)@.
+type CodeRow = (Text, Text, UUID, Text, Value, Maybe Text, Maybe Text, UTCTime, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID)
 
 runOAuthCodeStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -42,6 +42,13 @@ runOAuthCodeStorePostgres = interpret_ \case
     -- exchanges of the same code cannot both receive it. Filtering expiry inside the same WHERE
     -- means an expired code is never consumed and never returned.
     res <- runSession (Session.statement (h, t) consumeStmt)
+    row <- either dbFail pure res
+    traverse rebuild row
+  BindAuthorizationCodeSession h sid -> do
+    res <- runSession (Session.statement (h, sessionIdToUUID sid) bindSessionStmt)
+    either dbFail (const (pure ())) res
+  FindConsumedAuthorizationCode h t -> do
+    res <- runSession (Session.statement (h, t) findConsumedStmt)
     row <- either dbFail pure res
     traverse rebuild row
   DeleteExpiredAuthorizationCodes t -> do
@@ -69,7 +76,7 @@ toInsertRow NewAuthorizationCode {codeHash, clientId, redirectUri, userId, scope
   )
 
 rebuildCode :: CodeRow -> Either Text AuthorizationCode
-rebuildCode (h, cid, uid, uri, scopesJson, nonce, challenge, authTime, createdAt, expiresAt, consumedAt) = do
+rebuildCode (h, cid, uid, uri, scopesJson, nonce, challenge, authTime, createdAt, expiresAt, consumedAt, sessionId) = do
   scopes <- case fromJSON scopesJson of
     Success ss -> Right (Set.fromList ss)
     Error msg -> Left ("invalid scopes json: " <> Text.pack msg)
@@ -85,12 +92,13 @@ rebuildCode (h, cid, uid, uri, scopesJson, nonce, challenge, authTime, createdAt
         authTime,
         createdAt,
         expiresAt,
-        consumedAt
+        consumedAt,
+        sessionId = sessionIdFromUUID <$> sessionId
       }
 
 codeRowDecoder :: D.Row CodeRow
 codeRowDecoder =
-  (,,,,,,,,,,)
+  (,,,,,,,,,,,)
     <$> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.text)
     <*> D.column (D.nonNullable D.uuid)
@@ -102,6 +110,7 @@ codeRowDecoder =
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nullable D.timestamptz)
+    <*> D.column (D.nullable D.uuid)
 
 insertRowEncoder :: E.Params InsertRow
 insertRowEncoder =
@@ -120,7 +129,7 @@ insertRowEncoder =
 -- | The SELECT/RETURNING column list (matches 'CodeRow' / 'codeRowDecoder' order).
 selectCols :: Text
 selectCols =
-  "code_hash, client_id, user_id, redirect_uri, scopes, nonce, code_challenge, auth_time, created_at, expires_at, consumed_at"
+  "code_hash, client_id, user_id, redirect_uri, scopes, nonce, code_challenge, auth_time, created_at, expires_at, consumed_at, session_id"
 
 insertStmt :: Statement InsertRow ()
 insertStmt =
@@ -128,8 +137,8 @@ insertStmt =
     """
     INSERT INTO shomei.shomei_oauth_authorization_codes
       (code_hash, client_id, user_id, redirect_uri, scopes, nonce, code_challenge, auth_time,
-       created_at, expires_at, consumed_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL)
+       created_at, expires_at, consumed_at, session_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL)
     """
     insertRowEncoder
     D.noResult
@@ -148,6 +157,27 @@ consumeStmt =
         -- of its own or the statement reads `RETURNINGcode_hash`.
         <> " "
         <> selectCols
+    )
+    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
+    (D.rowMaybe codeRowDecoder)
+
+bindSessionStmt :: Statement (Text, UUID) ()
+bindSessionStmt =
+  preparable
+    """
+    UPDATE shomei.shomei_oauth_authorization_codes
+    SET session_id = $2
+    WHERE code_hash = $1 AND consumed_at IS NOT NULL AND session_id IS NULL
+    """
+    (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.uuid)))
+    D.noResult
+
+findConsumedStmt :: Statement (Text, UTCTime) (Maybe CodeRow)
+findConsumedStmt =
+  preparable
+    ( "SELECT "
+        <> selectCols
+        <> " FROM shomei.shomei_oauth_authorization_codes WHERE code_hash = $1 AND consumed_at IS NOT NULL AND expires_at > $2"
     )
     (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
     (D.rowMaybe codeRowDecoder)

@@ -24,11 +24,13 @@ import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
-import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText)
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genSessionId, genUserId, idText)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store
-  ( consumeAuthorizationCode,
+  ( bindAuthorizationCodeSession,
+    consumeAuthorizationCode,
     deleteExpiredAuthorizationCodes,
+    findConsumedAuthorizationCode,
     putAuthorizationCode,
   )
 import Shomei.OAuth.Authorize.Workflow
@@ -54,6 +56,7 @@ tests =
     [ testGroup
         "OAuthCodeStore (in-memory)"
         [ testCase "a stored code is consumable exactly once" consumeOnce,
+          testCase "a consumed code can be bound to and recover its minted session" bindAndFindConsumed,
           testCase "an expired code never consumes" expiredNeverConsumes,
           testCase "an unknown code hash consumes to Nothing" unknownConsumes,
           testCase "deleteExpired removes only what is past its expiry" deleteExpired
@@ -165,6 +168,21 @@ consumeOnce = do
   assertBool "the first consume returns the code" (isJust first')
   fmap (.consumedAt) first' @?= Just (Just t0)
   assertBool "the second consume returns nothing" (isNothing second')
+
+bindAndFindConsumed :: IO ()
+bindAndFindConsumed = do
+  ref <- newWorld
+  (sid, found, expired) <- runInMemory ref do
+    uid <- genUserId
+    sid <- genSessionId
+    putAuthorizationCode (newCode uid (addUTCTime 60 t0) "hash-bound")
+    _ <- consumeAuthorizationCode "hash-bound" t0
+    bindAuthorizationCodeSession "hash-bound" sid
+    found <- findConsumedAuthorizationCode "hash-bound" t0
+    expired <- findConsumedAuthorizationCode "hash-bound" (addUTCTime 61 t0)
+    pure (sid, found, expired)
+  fmap (.sessionId) found @?= Just (Just sid)
+  assertBool "an expired consumed row is no longer replay-actionable" (isNothing expired)
 
 expiredNeverConsumes :: IO ()
 expiredNeverConsumes = do

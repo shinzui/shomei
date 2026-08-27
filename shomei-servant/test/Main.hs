@@ -79,9 +79,11 @@ import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
 import Shomei.Account.User.Dto (UserResponse)
 import Shomei.Account.User.Store (updateUserStatus)
+import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
+import Shomei.Authorization.Scope.Domain (adminScope)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InternalAuthError))
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
@@ -484,7 +486,31 @@ main = do
         r <- newIORef (emptyWorld t0)
         gateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcgate" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
         noGateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcnogate" (Set.singleton ingestScope)
-        pure (r, gateId, noGateId, mkEnv r)
+        adminId <- seedExchangeAccount r jwk jwkset cfg t0 "svcadmin" (Set.singleton adminScope)
+        pure (r, gateId, noGateId, adminId, mkEnv r)
+      -- Plan 52 M3: two OAuth clients and service accounts on both sides of the global-admin
+      -- boundary, isolated from the broader token-exchange matrix.
+      freshRevokeEnv = do
+        r <- newIORef (emptyWorld t0)
+        (confId, _) <- seedOAuthClients r jwk jwkset oidcCfg t0
+        otherConfId <- runHybrid r jwk jwkset oidcCfg do
+          ocid <- genOAuthClientId
+          client <-
+            createOAuthClient
+              NewOAuthClient
+                { oauthClientId = ocid,
+                  clientId = idText ocid,
+                  secretHash = Just (sha256Hex confidentialClientSecret),
+                  clientType = ConfidentialClient,
+                  displayName = "other confidential",
+                  redirectUris = [authorizeRedirectUri],
+                  allowedScopes = Set.fromList [Scope "openid", Scope "profile", Scope "email"],
+                  createdAt = t0
+                }
+          pure (client ^. #clientId)
+        plainId <- seedExchangeAccount r jwk jwkset oidcCfg t0 "svcplain" (Set.singleton ingestScope)
+        adminId <- seedExchangeAccount r jwk jwkset oidcCfg t0 "svcrevokeadmin" (Set.singleton adminScope)
+        pure (confId, otherConfId, plainId, adminId, mkEnvWith oidcCfg r)
       -- Plan 51: OIDC on, a login URL configured (so a wrongful bounce is visible as a 302),
       -- both OAuth clients, and a service account holding the token-exchange gate scope.
       freshProvenanceEnv = do
@@ -501,7 +527,7 @@ main = do
         pure (r, mkEnvWith totpCfg r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1329,8 +1355,8 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
   (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
   afterStatus @?= 200
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (Text, Text, Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
@@ -1391,10 +1417,10 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
       testCase "POST /oauth/token: RFC 8693 token-exchange, both modes, denyUnderImpersonation inheritance, and wire refusals" $ do
-        (_, gateId, noGateId, e) <- freshExchangeEnv
-        testWithApplication (pure (app e)) (scenarioTokenExchange jwk cfg t0 gateId noGateId),
+        (_, gateId, noGateId, adminId, e) <- freshExchangeEnv
+        testWithApplication (pure (app e)) (scenarioTokenExchange jwk cfg t0 gateId noGateId adminId),
       testCase "POST /oauth/token: privilege-minting exchanges require live, active principals in the default auth mode" $ do
-        (r, gateId, _, e) <- freshExchangeEnv
+        (r, gateId, _, _, e) <- freshExchangeEnv
         testWithApplication (pure (app e)) (scenarioExchangeRequiresLiveSessions r jwk cfg t0 gateId),
       testCase "EP-7 TOTP: enroll → verify → mfa_required(methods) → complete; replay 401; recovery gen/use/count; impersonation 403; remove; freshness 403" $ do
         (r, e) <- freshTotpEnv
@@ -1425,14 +1451,20 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
         (_, confId', _, noLogin) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app noLogin)) (scenarioAuthorizeNoLoginUrl confId'),
       testCase "POST /oauth/token: authorization_code + PKCE + ID token; replay, wrong verifier, and a stolen code are one invalid_grant" $ do
-        (_, confId, pubId, e) <- freshAuthorizeEnv Nothing
-        testWithApplication (pure (app e)) (scenarioOAuthCodeExchange jwk confId pubId),
+        (r, confId, pubId, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioOAuthCodeExchange r jwk confId pubId),
       testCase "POST /oauth/token: refresh_token is bound to the client that minted the session" $ do
         (_, confId, _, e) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app e)) (scenarioOAuthRefreshRejectsUnboundSession confId),
       testCase "userinfo, introspection, and the revoke->introspect flip" $ do
         (_, confId, pubId, e) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app e)) (scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId),
+      testCase "POST /oauth/revoke: callers can revoke only sessions they own, except shomei:admin" $ do
+        (confId, otherConfId, plainId, adminId, e) <- freshRevokeEnv
+        testWithApplication (pure (app e)) (scenarioRevokeOwnership confId otherConfId plainId adminId),
+      testCase "GET /oauth/userinfo: email and roles appear only under the email and profile scopes" $ do
+        (_, confId, _, e) <- freshAuthorizeEnv Nothing
+        testWithApplication (pure (app e)) (scenarioUserinfoScopeGating confId),
       testCase "a human login token carries no scopes, so it still fails the scope-guarded route" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioOAuthScopeIsolation,
@@ -1534,7 +1566,7 @@ seedOAuthClients ref jwk jwkset cfg createdAt =
             clientType = ConfidentialClient,
             displayName = "confidential",
             redirectUris = [authorizeRedirectUri],
-            allowedScopes = Set.fromList [Scope "openid", Scope "profile"],
+            allowedScopes = Set.fromList [Scope "openid", Scope "profile", Scope "email"],
             createdAt
           }
     _ <-
@@ -1794,8 +1826,8 @@ scenarioAuthorizeProvenance ref jwk cfg issuedAt confId pubId svcId port = do
 --     token that satisfies the @RequireScope@ route and carries the user's @sub@ + the service's @act@.
 --
 -- Every failure is an RFC 6749 §5.2 object, never a problem document.
-scenarioTokenExchange :: JWK -> ShomeiConfig -> UTCTime -> Text -> Text -> Int -> IO ()
-scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId port = do
+scenarioTokenExchange :: JWK -> ShomeiConfig -> UTCTime -> Text -> Text -> Text -> Int -> IO ()
+scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId adminClientId port = do
   mgr <- newManager defaultManagerSettings
   let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
       userIdType = "urn:shomei:params:oauth:token-type:user-id"
@@ -1875,14 +1907,14 @@ scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId port = do
   introActiveDoc <- must "introspect (active) body" (bodyOf introActive)
   dig ["active"] introActiveDoc @?= Just (Bool True)
   assertBool "introspection reports the act member" (isJust (dig ["act", "sub"] introActiveDoc >>= asText))
-  -- RFC 7009 revocation is the single stop mechanism for a delegated token. Afterwards,
-  -- introspection flips to inactive because the delegated session has been revoked.
+  -- RFC 7009 revocation is the single stop mechanism for a delegated token. The gate service did
+  -- not mint this impersonation session, so the explicitly privileged admin principal stops it.
   (stopStatus, _, _) <-
     postForm
       mgr
       port
       "/oauth/revoke"
-      (Just (gateClientId, oauthClientSecret))
+      (Just (adminClientId, oauthClientSecret))
       [("token", enc impAccess), ("token_type_hint", "access_token")]
   stopStatus @?= 200
   introInactive <-
@@ -2254,8 +2286,8 @@ scenarioAuthorizeRejectsRevokedSession ref confId port = do
 -- exchange it with the PKCE verifier — and then attacks it: replay, wrong verifier, missing
 -- verifier, a different client, a mismatched @redirect_uri@. Every one of those must be an
 -- indistinguishable @invalid_grant@, and none may mint a token.
-scenarioOAuthCodeExchange :: JWK -> Text -> Text -> Int -> IO ()
-scenarioOAuthCodeExchange jwk confId pubId port = do
+scenarioOAuthCodeExchange :: IORef World -> JWK -> Text -> Text -> Int -> IO ()
+scenarioOAuthCodeExchange ref jwk confId pubId port = do
   mgr <- newManager defaultManagerSettings
   token <- signupToken mgr port "exchange-user"
   let verifier = "a-high-entropy-code-verifier-of-sufficient-length-1234567890" :: Text
@@ -2299,6 +2331,10 @@ scenarioOAuthCodeExchange jwk confId pubId port = do
   accessToken <- must "access_token" (dig ["access_token"] body >>= asText)
   refreshToken <- must "refresh_token" (dig ["refresh_token"] body >>= asText)
   idToken <- must "id_token" (dig ["id_token"] body >>= asText)
+  accessClaims <- verifyIdToken jwk accessToken
+  accessSessionId <- case KM.lookup "sid" accessClaims of
+    Just (String sid) -> pure sid
+    other -> assertFailure ("the access token has no string sid: " <> show other)
   (dig ["token_type"] body >>= asText) @?= Just "Bearer"
   (dig ["scope"] body >>= asText) @?= Just "openid profile"
 
@@ -2321,6 +2357,27 @@ scenarioOAuthCodeExchange jwk confId pubId port = do
   -- (2) Replay: the code is single-use, and the replay is indistinguishable from an unknown code.
   replay <- exchangeOf code
   assertOAuthError "replaying a code" 400 "invalid_grant" replay
+  afterReplay <- introspect mgr port basic accessToken
+  (dig ["active"] afterReplay) @?= Just (Aeson.Bool False)
+  replayKilledRefresh <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      basic
+      [("grant_type", "refresh_token"), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  assertOAuthError "the replayed code revokes the session's refresh family" 400 "invalid_grant" replayKilledRefresh
+  replayEvents <-
+    mapMaybe
+      (\case Event.OAuthCodeReplayed details -> Just details; _ -> Nothing)
+      . publishedEvents
+      <$> readIORef ref
+  case replayEvents of
+    [details] -> do
+      details.clientId @?= confId
+      details.presentedBy @?= confId
+      idText details.sessionId @?= accessSessionId
+    other -> assertFailure ("expected one oauth_code_replayed event, got " <> show other)
   unknown <- exchangeOf "not-a-real-code"
   assertOAuthError "an unknown code" 400 "invalid_grant" unknown
   assertEqual "a replay and an unknown code are indistinguishable" (bodyOf replay) (bodyOf unknown)
@@ -2384,31 +2441,35 @@ scenarioOAuthCodeExchange jwk confId pubId port = do
 
   -- (7) The refresh grant rotates, and is bound to the client that minted the session.
   let refreshWith who params = postForm mgr port "/oauth/token" who ([("grant_type", "refresh_token")] <> params)
+  rotationCode <- getCode confId
+  rotationGrant <- exchangeOf rotationCode
+  rotationBody <- must "rotation token body" (bodyOf rotationGrant)
+  rotatingRefresh <- must "rotation refresh_token" (dig ["refresh_token"] rotationBody >>= asText)
 
   -- The bespoke endpoint has no client identity, so it cannot rotate a client-bound token. The
   -- refusal must not spend the token: the owning OAuth client uses the same token below.
   (bespokeStatus, bespokeBody) <-
-    postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= refreshToken])
+    postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= rotatingRefresh])
   bespokeStatus @?= 401
   (bespokeBody >>= dig ["code"] >>= asText) @?= Just "token_invalid"
 
   -- A different client cannot rotate this token, and the refusal does NOT revoke the family.
-  wrongClient <- refreshWith Nothing [("client_id", Text.encodeUtf8 pubId), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  wrongClient <- refreshWith Nothing [("client_id", Text.encodeUtf8 pubId), ("refresh_token", Text.encodeUtf8 rotatingRefresh)]
   assertOAuthError "another client refreshing" 400 "invalid_grant" wrongClient
 
-  rotated <- refreshWith basic [("refresh_token", Text.encodeUtf8 refreshToken)]
+  rotated <- refreshWith basic [("refresh_token", Text.encodeUtf8 rotatingRefresh)]
   let (rotStatus, _, _) = rotated
   rotStatus @?= 200
   rotBody <- must "rotate body" (bodyOf rotated)
   newRefresh <- must "rotated refresh_token" (dig ["refresh_token"] rotBody >>= asText)
   (dig ["scope"] rotBody >>= asText) @?= Just "openid profile"
-  assertBool "the refresh token really rotated" (newRefresh /= refreshToken)
+  assertBool "the refresh token really rotated" (newRefresh /= rotatingRefresh)
   assertBool "the rotation mints a new access token" (isJust (dig ["access_token"] rotBody >>= asText))
   -- A refresh does not mint an ID token: its nonce and auth_time belong to the authorize request.
   dig ["id_token"] rotBody @?= Nothing
 
   -- Replaying the now-used refresh token is reuse: the family and the session die.
-  reuse <- refreshWith basic [("refresh_token", Text.encodeUtf8 refreshToken)]
+  reuse <- refreshWith basic [("refresh_token", Text.encodeUtf8 rotatingRefresh)]
   assertOAuthError "replaying a rotated refresh token" 400 "invalid_grant" reuse
   dead <- refreshWith basic [("refresh_token", Text.encodeUtf8 newRefresh)]
   assertOAuthError "the whole family is revoked after reuse" 400 "invalid_grant" dead
@@ -2556,6 +2617,140 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   -- Revoking an unknown token is still 200 (RFC 7009 forbids erroring, to prevent probing).
   (unknownRev, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", "nonexistent")]
   unknownRev @?= 200
+
+-- | Mint one authorization-code session through the seeded confidential client. These focused
+-- M3 scenarios care about the resulting session boundary, not the already-covered ID token.
+issueOAuthSession :: Manager -> Int -> Text -> Text -> Text -> IO (Text, Text)
+issueOAuthSession mgr port confId userToken requestedScopes = do
+  let verifier = "m3-session-verifier-with-enough-entropy-1234567890" :: Text
+      challenge = pkceChallengeFor verifier
+      basic = Just (confId, confidentialClientSecret)
+  authorize <-
+    getNoRedirect
+      mgr
+      port
+      ( authorizeUrl
+          [ ("client_id", confId),
+            ("response_type", "code"),
+            ("redirect_uri", authorizeRedirectUri),
+            ("scope", requestedScopes),
+            ("code_challenge", challenge),
+            ("code_challenge_method", "S256")
+          ]
+      )
+      (bearer userToken)
+  (_, params) <- locationOf "M3 authorize" authorize
+  code <- maybe (assertFailure "M3 authorize returned no code") pure (lookup "code" params)
+  grant <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      basic
+      [ ("grant_type", "authorization_code"),
+        ("code", Text.encodeUtf8 code),
+        ("redirect_uri", Text.encodeUtf8 authorizeRedirectUri),
+        ("code_verifier", Text.encodeUtf8 verifier)
+      ]
+  statusOf grant @?= 200
+  body <- must "M3 authorization-code response" (bodyOf grant)
+  access <- must "M3 access_token" (dig ["access_token"] body >>= asText)
+  refresh <- must "M3 refresh_token" (dig ["refresh_token"] body >>= asText)
+  pure (access, refresh)
+
+-- | RFC 7009 ownership matrix. A non-owner receives the RFC-mandated indistinguishable 200 but
+-- cannot change the session; a service account with @shomei:admin@ is the explicit global escape
+-- hatch.
+scenarioRevokeOwnership :: Text -> Text -> Text -> Text -> Int -> IO ()
+scenarioRevokeOwnership confId otherConfId plainId adminId port = do
+  mgr <- newManager defaultManagerSettings
+  userToken <- signupToken mgr port "revoke-owner-user"
+  (accessToken, refreshToken) <- issueOAuthSession mgr port confId userToken "openid profile"
+  let owner = Just (confId, confidentialClientSecret)
+
+  (otherStatus, _, _) <-
+    postForm
+      mgr
+      port
+      "/oauth/revoke"
+      (Just (otherConfId, confidentialClientSecret))
+      [("token", Text.encodeUtf8 refreshToken), ("token_type_hint", "refresh_token")]
+  otherStatus @?= 200
+
+  rotation <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      owner
+      [("grant_type", "refresh_token"), ("refresh_token", Text.encodeUtf8 refreshToken)]
+  statusOf rotation @?= 200
+  rotationBody <- must "owner rotation body" (bodyOf rotation)
+  rotatedAccess <- must "owner rotated access_token" (dig ["access_token"] rotationBody >>= asText)
+
+  (plainStatus, _, _) <-
+    postForm
+      mgr
+      port
+      "/oauth/revoke"
+      (Just (plainId, oauthClientSecret))
+      [("token", Text.encodeUtf8 rotatedAccess), ("token_type_hint", "access_token")]
+  plainStatus @?= 200
+  afterPlain <- introspect mgr port owner rotatedAccess
+  dig ["active"] afterPlain @?= Just (Aeson.Bool True)
+
+  (adminStatus, _, _) <-
+    postForm
+      mgr
+      port
+      "/oauth/revoke"
+      (Just (adminId, oauthClientSecret))
+      [("token", Text.encodeUtf8 rotatedAccess), ("token_type_hint", "access_token")]
+  adminStatus @?= 200
+  afterAdmin <- introspect mgr port owner rotatedAccess
+  dig ["active"] afterAdmin @?= Just (Aeson.Bool False)
+  -- The original access token named the same session and is dead too.
+  originalAfterAdmin <- introspect mgr port owner accessToken
+  dig ["active"] originalAfterAdmin @?= Just (Aeson.Bool False)
+
+-- | OIDC Core §5.4 claim filtering: the subject and the token's own scope list are always
+-- useful, while identity-profile fields require the scope bundles that name them.
+scenarioUserinfoScopeGating :: Text -> Int -> IO ()
+scenarioUserinfoScopeGating confId port = do
+  mgr <- newManager defaultManagerSettings
+  (signupStatus, signupBody) <-
+    postJSON
+      mgr
+      port
+      "/v1/auth/signup"
+      ( object
+          [ "loginId" .= ("userinfo-scope-user" :: Text),
+            "email" .= ("userinfo-scope@example.com" :: Text),
+            "password" .= ("correct horse battery staple" :: Text),
+            "displayName" .= ("Userinfo Scope" :: Text)
+          ]
+      )
+  signupStatus @?= 201
+  signup <- must "userinfo signup body" signupBody
+  userToken <- must "userinfo signup access token" (dig ["token", "accessToken"] signup >>= asText)
+
+  (minimalAccess, _) <- issueOAuthSession mgr port confId userToken "openid"
+  (minimalStatus, minimalBody) <- getJSON mgr port "/oauth/userinfo" (bearer minimalAccess)
+  minimalStatus @?= 200
+  minimal <- must "minimal userinfo" minimalBody
+  assertBool "minimal userinfo carries sub" (isJust (dig ["sub"] minimal >>= asText))
+  assertBool "minimal userinfo carries scopes" (isJust (dig ["scopes"] minimal))
+  dig ["email"] minimal @?= Nothing
+  dig ["email_verified"] minimal @?= Nothing
+  dig ["roles"] minimal @?= Nothing
+
+  (fullAccess, _) <- issueOAuthSession mgr port confId userToken "openid profile email"
+  (fullStatus, fullBody) <- getJSON mgr port "/oauth/userinfo" (bearer fullAccess)
+  fullStatus @?= 200
+  full <- must "full userinfo" fullBody
+  (dig ["email"] full >>= asText) @?= Just "userinfo-scope@example.com"
+  dig ["email_verified"] full @?= Just (Aeson.Bool False)
+  assertBool "profile scope includes roles" (isJust (dig ["roles"] full))
 
 introspect :: Manager -> Int -> Maybe (Text, Text) -> Text -> IO Value
 introspect mgr port basic tok = do

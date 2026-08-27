@@ -35,6 +35,7 @@ import Shomei.OAuth.Client.Domain qualified as OAuthClient
 import Shomei.OAuth.Client.Store (findOAuthClientByClientId)
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
 import Shomei.OAuth.Result
+import Shomei.OAuth.Revocation.Domain (RevocationCaller (..), mayRevokeSession)
 import Shomei.OAuth.TokenExchange.Workflow qualified as TokenExchange
 import Shomei.OAuth.TokenGrant.Workflow qualified as OAuthTokenGrant
 import Shomei.Prelude
@@ -498,21 +499,26 @@ grantError e = case OAuthTokenGrant.grantErrorCode e of
 -- turns a missing or invalid credential into OAuth @invalid_token@ rather than crossing into the
 -- application Problem Details envelope.
 --
--- Returns @sub@ (always), @roles@ and @scopes@ (from the presented token's claims, possibly empty
--- before EP-1's enrichment lands), and @email@\/@email_verified@ when the user row has them. The
--- roles\/scopes come from the verified claims, not a fresh store read: userinfo reports what /this
--- token/ carries, which is what a relying party correlating it with the ID token expects.
+-- Returns @sub@ and @scopes@ always, @roles@ under the OIDC @profile@ scope, and
+-- @email@\/@email_verified@ under @email@. Roles\/scopes come from the verified claims, not a fresh
+-- role-store read: userinfo reports what /this token/ carries, which is what a relying party
+-- correlating it with the ID token expects.
 oauthUserinfoH :: Env -> AuthUser -> Handler Value
 oauthUserinfoH env user = do
   mUser <- runOAuthPort env (findUserById user.authUserId)
   let base =
         [ "sub" Aeson..= idText user.authUserId,
-          "roles" Aeson..= [r | Role r <- Set.toList user.authRoles],
           "scopes" Aeson..= [s | Scope s <- Set.toList user.authScopes]
         ]
+      roleFields
+        | Scope "profile" `Set.member` user.authScopes = ["roles" Aeson..= [r | Role r <- Set.toList user.authRoles]]
+        | otherwise = []
       emailFields u =
         foldMap (\e -> ["email" Aeson..= emailText e, "email_verified" Aeson..= isJust u.emailVerifiedAt]) u.email
-  pure (Aeson.object (base <> maybe [] emailFields mUser))
+      scopedEmailFields
+        | Scope "email" `Set.member` user.authScopes = maybe [] emailFields mUser
+        | otherwise = []
+  pure (Aeson.object (base <> roleFields <> scopedEmailFields))
 
 -- | @POST \/oauth\/introspect@ (RFC 7662): session-aware token status for resource servers.
 --
@@ -527,7 +533,7 @@ oauthUserinfoH env user = do
 -- cannot — and it is what makes the revoke→introspect flip observable.
 oauthIntrospectH :: Env -> Maybe Text -> Form -> Handler Value
 oauthIntrospectH env mAuthHeader form = do
-  authenticateOAuthCaller env mAuthHeader form
+  _ <- authenticateOAuthCaller env mAuthHeader form
   case OAuth.lookupParam "token" form of
     Nothing -> pure inactive
     Just presented -> case OAuth.lookupParam "token_type_hint" form of
@@ -573,7 +579,7 @@ introspectRefresh env presented = do
 -- probing — so this only ever raises on a failed client authentication.
 oauthRevokeH :: Env -> Maybe Text -> Form -> Handler ()
 oauthRevokeH env mAuthHeader form = do
-  authenticateOAuthCaller env mAuthHeader form
+  caller <- authenticateOAuthCaller env mAuthHeader form
   case OAuth.lookupParam "token" form of
     Nothing -> pure ()
     Just presented -> do
@@ -583,18 +589,22 @@ oauthRevokeH env mAuthHeader form = do
       case mTok of
         -- A refresh token: revoke the family and the session it belongs to.
         Just tok -> do
-          runOAuthPort env do
-            revokeRefreshTokenFamily (tok ^. #refreshTokenId) now'
-            SessionStore.revokeSession (tok ^. #sessionId) now'
+          mSession <- runOAuthPort env (findSessionById (tok ^. #sessionId))
+          when (maybe False (mayRevokeSession caller) mSession) $
+            runOAuthPort env do
+              revokeRefreshTokenFamily (tok ^. #refreshTokenId) now'
+              SessionStore.revokeSession (tok ^. #sessionId) now'
           pure ()
         -- Otherwise try to read it as an access JWT and revoke its session.
         Nothing -> do
           verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
           case verified of
             Right claims -> do
-              runOAuthPort env do
-                SessionStore.revokeSession claims.sessionId now'
-                revokeSessionRefreshTokens claims.sessionId now'
+              mSession <- runOAuthPort env (findSessionById claims.sessionId)
+              when (maybe False (mayRevokeSession caller) mSession) $
+                runOAuthPort env do
+                  SessionStore.revokeSession claims.sessionId now'
+                  revokeSessionRefreshTokens claims.sessionId now'
               pure ()
             -- Neither a known refresh token nor a valid access token: nothing to do, still 200.
             Left _ -> pure ()
@@ -605,23 +615,26 @@ oauthRevokeH env mAuthHeader form = do
 -- A failure is @401 invalid_client@, the same shape the token endpoint uses. Public OAuth clients
 -- cannot introspect: they hold no secret, and an unauthenticated introspection endpoint is a
 -- probing oracle.
-authenticateOAuthCaller :: Env -> Maybe Text -> Form -> Handler ()
+authenticateOAuthCaller :: Env -> Maybe Text -> Form -> Handler RevocationCaller
 authenticateOAuthCaller env mAuthHeader form = do
   auth <- either throwError pure (OAuth.extractClientAuth mAuthHeader form)
   let clientId = auth ^. #clientId
       secret = auth ^. #clientSecret
-  ok <-
+  caller <-
     runOAuthPort env do
       mClient <- findOAuthClientByClientId clientId
       case mClient of
         Just client
           | Just h <- oauthClientSecretHash client,
-            client ^. #status == OAuthClientActive ->
-              pure (ServiceAccountSecret.verifyServiceSecret h secret)
+            client ^. #status == OAuthClientActive,
+            ServiceAccountSecret.verifyServiceSecret h secret ->
+              pure (Just (RevokingOAuthClient clientId))
         _ -> do
           mAccount <- findServiceAccountByClientId clientId
-          pure (maybe False (serviceAccountAuthenticates secret) mAccount)
-  unless ok (throwError OAuth.invalidClient)
+          pure case mAccount of
+            Just account | serviceAccountAuthenticates secret account -> Just (RevokingServiceAccount account)
+            _ -> Nothing
+  maybe (throwError OAuth.invalidClient) pure caller
 
 -- | A service account authenticates iff it is active and its secret matches. Read through record
 -- patterns because 'ServiceAccount' shares field names with 'User'.

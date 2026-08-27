@@ -49,6 +49,7 @@ module Shomei.Audit.Event.Domain
     OAuthClientCreatedData (..),
     OAuthClientRevokedData (..),
     OAuthCodeIssuedData (..),
+    OAuthCodeReplayedData (..),
     NotificationDeliveryFailedData (..),
   )
 where
@@ -468,6 +469,18 @@ data OAuthCodeIssuedData = OAuthCodeIssuedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+-- | A consumed authorization code was presented again while the row still named the session
+-- minted by its first exchange. The raw code and its digest never enter the audit trail.
+data OAuthCodeReplayedData = OAuthCodeReplayedData
+  { clientId :: !Text,
+    presentedBy :: !Text,
+    userId :: !UserId,
+    sessionId :: !SessionId,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 -- | A notifier interpreter (EP-8) failed to deliver a notification after exhausting its
 -- attempts. The triggering HTTP request still succeeds (fire-and-forget); this event is the
 -- operator's observability signal. It deliberately carries no session or user id — the row's
@@ -523,6 +536,7 @@ data AuthEvent
   | OAuthClientCreated OAuthClientCreatedData
   | OAuthClientRevoked OAuthClientRevokedData
   | OAuthCodeIssued OAuthCodeIssuedData
+  | OAuthCodeReplayed OAuthCodeReplayedData
   | NotificationDeliveryFailed NotificationDeliveryFailedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

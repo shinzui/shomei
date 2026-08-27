@@ -66,7 +66,7 @@ import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import Data.List (sortBy, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Ord (Down (..), comparing)
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -936,9 +936,6 @@ runOAuthClientStore ref = interpret_ \case
 
 -- | Field accessors for the EP-5 authorization-code records ('AuthorizationCode' shares
 -- @clientId@ / @createdAt@ / @expiresAt@ / @userId@ / @scopes@ with several other domain records).
-acCodeHash :: AuthorizationCode -> Text
-acCodeHash AuthorizationCode {codeHash} = codeHash
-
 acExpiresAt :: AuthorizationCode -> UTCTime
 acExpiresAt AuthorizationCode {expiresAt} = expiresAt
 
@@ -965,7 +962,8 @@ runOAuthCodeStore ref = interpret_ \case
               authTime,
               createdAt,
               expiresAt,
-              consumedAt = Nothing
+              consumedAt = Nothing,
+              sessionId = Nothing
             }
     liftIO (modifyWorld ref (#oauthCodes %~ Map.insert codeHash code))
   ConsumeAuthorizationCode h t ->
@@ -982,6 +980,25 @@ runOAuthCodeStore ref = interpret_ \case
             -- Unknown, already consumed, or expired: one indistinguishable miss.
             _ -> (w, Nothing)
       )
+  BindAuthorizationCodeSession h sid ->
+    liftIO
+      ( modifyWorld
+          ref
+          ( #oauthCodes
+              %~ Map.adjust
+                (\code -> if isJust (acConsumedAt code) then code & #sessionId .~ Just sid else code)
+                h
+          )
+      )
+  FindConsumedAuthorizationCode h t ->
+    liftIO do
+      code <- Map.lookup h . oauthCodes <$> readIORef ref
+      pure case code of
+        Just found
+          | isJust (acConsumedAt found),
+            acExpiresAt found > t ->
+              Just found
+        _ -> Nothing
   DeleteExpiredAuthorizationCodes t ->
     liftIO (modifyWorld ref (#oauthCodes %~ Map.filter (\c -> acExpiresAt c > t)))
 
