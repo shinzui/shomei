@@ -8,6 +8,8 @@ module Shomei.Session.Domain
   )
 where
 
+import Data.Set (Set)
+import Shomei.Authorization.Claims.Domain (Scope)
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
@@ -41,10 +43,14 @@ data Session = Session
     -- | the OAuth2 @client_id@ that minted this session through the authorization-code grant
     --     (EP-5); 'Nothing' for every other flow, including every session that predates the
     --     column. It exists to bind refresh: a token issued through client A must not be
-    --     rotatable by client B at @\/oauth\/token@. The bespoke @\/v1\/auth\/refresh@ ignores it.
+    --     rotatable by client B at @\/oauth\/token@. The bespoke @\/v1\/auth\/refresh@ refuses it.
     oauthClientId :: !(Maybe Text),
     -- | how this session was established; see 'SessionKind'.
-    kind :: !SessionKind
+    kind :: !SessionKind,
+    -- | the scopes the authorization-code grant granted, re-applied on every refresh so a
+    --     rotated access token keeps @openid@ and friends. Empty for every other flow and for
+    --     every row that predates the column.
+    grantedScopes :: !(Set Scope)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -58,7 +64,9 @@ data NewSession = NewSession
     -- | set to @Just client_id@ by the authorization-code grant; 'Nothing' otherwise.
     oauthClientId :: !(Maybe Text),
     -- | how this session was established; see 'SessionKind'.
-    kind :: !SessionKind
+    kind :: !SessionKind,
+    -- | the authorization-code grant's persisted scope set; empty for every other flow.
+    grantedScopes :: !(Set Scope)
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

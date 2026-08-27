@@ -488,7 +488,8 @@ seedOperatorPrincipal pool = do
                 expiresAt = addUTCTime 3600 ts,
                 actor = Nothing,
                 oauthClientId = Nothing,
-                kind = InteractiveSession
+                kind = InteractiveSession,
+                grantedScopes = Set.empty
               }
         pure (userId, session.sessionId)
   either (assertFailure . ("could not seed the operator user: " <>) . show) pure outcome

@@ -446,7 +446,8 @@ mkSession sid ns =
       revokedAt = Nothing,
       actor = ns.actor,
       oauthClientId = ns.oauthClientId,
-      kind = ns.kind
+      kind = ns.kind,
+      grantedScopes = ns.grantedScopes
     }
 
 runRefreshTokenStore :: (IOE :> es) => IORef World -> Eff (RefreshTokenStore : es) a -> Eff es a

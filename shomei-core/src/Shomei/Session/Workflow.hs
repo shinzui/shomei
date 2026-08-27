@@ -152,8 +152,8 @@ data SessionOptions = SessionOptions
   { -- | the OAuth2 @client_id@ that minted this session (EP-5's authorization-code grant), which
     --     binds the session's refresh token to that client. 'Nothing' for every other flow.
     oauthClientId :: !(Maybe Text),
-    -- | scopes to add to the minted access token's claims, beyond whatever the 'ClaimsEnricher'
-    --     supplies. EP-5's authorization-code grant puts the scopes it granted here.
+    -- | scopes the OAuth authorization-code grant granted, persisted on the session and added to
+    --     the minted access token beyond whatever the 'ClaimsEnricher' supplies.
     extraScopes :: !(Set Scope)
   }
   deriving stock (Generic, Eq, Show)
@@ -205,7 +205,8 @@ issueSessionWith cfg opts user ts = do
           actor = Nothing,
           oauthClientId = opts.oauthClientId,
           -- Every caller is an interactive login or a code exchange authorized by one.
-          kind = InteractiveSession
+          kind = InteractiveSession,
+          grantedScopes = opts.extraScopes
         }
       NewSessionToken
         { tokenHash = tokHash,

@@ -16,16 +16,20 @@ module Shomei.Session.Authentication.Workflow
   ( signup,
     login,
     refresh,
+    refreshFrom,
     logout,
     verifyToken,
     verifyTokenWith,
     LoginResult (..),
     MfaChallenge (..),
+    Refreshed (..),
     issueSession,
   )
 where
 
 import Data.Aeson (Value)
+import Data.Set (Set)
+import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
@@ -41,7 +45,7 @@ import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActi
 import Shomei.Account.User.Store (UserStore, createUser, findUserById, findUserByLoginId)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
-import Shomei.Authorization.Claims.Domain (AuthClaims (..))
+import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope)
 import Shomei.Authorization.Claims.Store (ClaimsEnricher)
 import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Authorization.Role.Workflow (applyDefaultRoles)
@@ -56,7 +60,7 @@ import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
 import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
 import Shomei.Passkey.Store (PasskeyStore, countPasskeysByUser)
 import Shomei.Prelude
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.LoginAttempt.Domain
   ( AccountLockout (..),
@@ -164,7 +168,8 @@ signup cfg cmd = runErrorNoCallStack do
           expiresAt = addUTCTime cfg.sessionTTL ts,
           actor = Nothing,
           oauthClientId = Nothing,
-          kind = InteractiveSession
+          kind = InteractiveSession,
+          grantedScopes = Set.empty
         }
       NewSessionToken
         { tokenHash = tokHash,
@@ -335,6 +340,13 @@ failLogin rl ctx loginId ts = do
         (Event.AccountLocked (Event.AccountLockedData ctx.accountKey ctx.clientIp acctFails lockedUntil ts))
   throwError InvalidCredentials
 
+data Refreshed = Refreshed
+  { tokens :: !TokenPair,
+    -- | the session's persisted OAuth grant; empty for sessions no OAuth client minted.
+    grantedScopes :: !(Set Scope)
+  }
+  deriving stock (Generic, Show)
+
 refresh ::
   ( SessionStore :> es,
     RefreshTokenStore :> es,
@@ -351,7 +363,25 @@ refresh ::
   ShomeiConfig ->
   RefreshCommand ->
   Eff es (Either AuthError TokenPair)
-refresh cfg cmd = do
+refresh cfg cmd = fmap (.tokens) <$> refreshFrom BespokeRefresh cfg cmd
+
+refreshFrom ::
+  ( SessionStore :> es,
+    RefreshTokenStore :> es,
+    AuthUnitOfWork :> es,
+    UserStore :> es,
+    TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
+    AuthEventPublisher :> es,
+    Clock :> es,
+    TokenGen :> es
+  ) =>
+  RefreshOrigin ->
+  ShomeiConfig ->
+  RefreshCommand ->
+  Eff es (Either AuthError Refreshed)
+refreshFrom origin cfg cmd = do
   ts <- now
   tokHash <- hashRefreshToken cmd.refreshToken
   mTok <- findRefreshTokenByHash tokHash
@@ -366,6 +396,7 @@ refresh cfg cmd = do
         case mSession of
           Nothing -> pure (Left SessionNotFound)
           Just s
+            | not (originMayRefresh origin s) -> pure (Left RefreshTokenInvalid)
             -- The session's absolute deadline is checked before the presented token's own
             -- expiry: rotation caps every child token at 's.expiresAt', so at the deadline
             -- both are expired and 'SessionExpired' ("log in again") is the informative one.
@@ -414,10 +445,15 @@ refresh cfg cmd = do
                       Rotated _ -> do
                         -- Re-running the enrichment here is what makes a role change take
                         -- effect on refresh (the staleness contract in docs/user/security.md).
-                        access <- signAccessToken =<< buildEnrichedClaims cfg s.userId s.sessionId ts
+                        base <- buildEnrichedClaims cfg s.userId s.sessionId ts
+                        let claims = base {scopes = base.scopes <> s.grantedScopes}
+                        access <- signAccessToken claims
                         pure
                           ( Right
-                              TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL}
+                              Refreshed
+                                { tokens = TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL},
+                                  grantedScopes = s.grantedScopes
+                                }
                           )
   where
     reuseDetected tok ts = do
@@ -426,6 +462,10 @@ refresh cfg cmd = do
       publishAuthEvent
         (Event.RefreshTokenReuseDetected (Event.RefreshTokenReuseDetectedData tok.sessionId tok.refreshTokenId ts))
       pure (Left RefreshTokenReuseDetected)
+
+originMayRefresh :: RefreshOrigin -> Session -> Bool
+originMayRefresh BespokeRefresh session = isNothing session.oauthClientId
+originMayRefresh (OAuthClientRefresh clientId) session = session.oauthClientId == Just clientId
 
 logout ::
   ( SessionStore :> es,

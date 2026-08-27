@@ -501,6 +501,7 @@ tests =
     testSessionRevoke,
     testSessionActorRoundTrip,
     testSessionKindRoundTrip,
+    testSessionGrantedScopesRoundTrip,
     testSessionKindNullReadsInteractive,
     testRefreshTokenMarkUsed,
     testVerificationTokenRoundTrip,
@@ -901,9 +902,9 @@ testListSessionsForUser = testCase "listSessionsForUser returns every status, ne
     alice <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     bob <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
     t <- now
-    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
-    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
-    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
+    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
+    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
     revokeSession s1.sessionId t
     aliceSessions <- listSessionsForUser alice.userId
     pure (s1, s2, aliceSessions)
@@ -940,7 +941,7 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
     revokeSession s.sessionId t
     findSessionById s.sessionId
   found <- expectApp result
@@ -960,10 +961,11 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
               expiresAt = addUTCTime 3600 t,
               actor = Just operator.userId,
               oauthClientId = Nothing,
-              kind = DelegatedSession
+              kind = DelegatedSession,
+              grantedScopes = Set.empty
             }
         )
-    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
     foundDelegated <- findSessionById delegated.sessionId
     foundNormal <- findSessionById normal.sessionId
     pure (operator.userId, foundDelegated, foundNormal)
@@ -976,9 +978,9 @@ testSessionKindRoundTrip = testCase "create session persists its kind (machine, 
   result <- runApp pool do
     subject <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    interactive <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
-    machine <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = MachineSession})
-    delegated <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Just subject.userId, oauthClientId = Nothing, kind = DelegatedSession})
+    interactive <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
+    machine <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = MachineSession, grantedScopes = Set.empty})
+    delegated <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Just subject.userId, oauthClientId = Nothing, kind = DelegatedSession, grantedScopes = Set.empty})
     foundInteractive <- findSessionById interactive.sessionId
     foundMachine <- findSessionById machine.sessionId
     foundDelegated <- findSessionById delegated.sessionId
@@ -988,12 +990,52 @@ testSessionKindRoundTrip = testCase "create session persists its kind (machine, 
   fmap (.kind) foundMachine @?= Just MachineSession
   fmap (.kind) foundDelegated @?= Just DelegatedSession
 
+testSessionGrantedScopesRoundTrip :: TestTree
+testSessionGrantedScopesRoundTrip = testCase "session granted scopes round-trip and legacy inserts default empty" $ withDb \pool -> do
+  let granted = Set.fromList [Scope "openid", Scope "kawa:read"]
+  created <- runApp pool do
+    user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+    t <- now
+    session <-
+      createSession
+        NewSession
+          { userId = user.userId,
+            createdAt = t,
+            expiresAt = addUTCTime 3600 t,
+            actor = Nothing,
+            oauthClientId = Just "oauthclient_roundtrip",
+            kind = InteractiveSession,
+            grantedScopes = granted
+          }
+    found <- findSessionById session.sessionId
+    pure found
+  found <- expectApp created
+  fmap (.grantedScopes) found @?= Just granted
+
+  execSql
+    pool
+    """
+    INSERT INTO shomei.shomei_sessions
+      (session_id, user_id, status, created_at, expires_at, kind)
+    SELECT
+      '00000000-0000-4000-8000-000000000052'::uuid,
+      user_id,
+      'active',
+      now(),
+      now() + interval '1 hour',
+      'interactive'
+    FROM shomei.shomei_users
+    LIMIT 1
+    """
+  defaulted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE granted_scopes = '{}'::text[]"
+  defaulted @?= 1
+
 testSessionKindNullReadsInteractive :: TestTree
 testSessionKindNullReadsInteractive = testCase "a session row whose kind is NULL reads as interactive" $ withDb \pool -> do
   created <- runApp pool do
     user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
   session <- expectApp created
   execSql pool "UPDATE shomei.shomei_sessions SET kind = NULL"
   found <- expectApp =<< runApp pool (findSessionById session.sessionId)
@@ -1008,7 +1050,7 @@ testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is 
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty})
     h <- hashRefreshToken (RefreshToken "token-1")
     persisted <-
       createRefreshToken

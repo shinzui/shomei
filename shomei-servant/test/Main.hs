@@ -2385,6 +2385,13 @@ scenarioOAuthCodeExchange jwk confId pubId port = do
   -- (7) The refresh grant rotates, and is bound to the client that minted the session.
   let refreshWith who params = postForm mgr port "/oauth/token" who ([("grant_type", "refresh_token")] <> params)
 
+  -- The bespoke endpoint has no client identity, so it cannot rotate a client-bound token. The
+  -- refusal must not spend the token: the owning OAuth client uses the same token below.
+  (bespokeStatus, bespokeBody) <-
+    postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= refreshToken])
+  bespokeStatus @?= 401
+  (bespokeBody >>= dig ["code"] >>= asText) @?= Just "token_invalid"
+
   -- A different client cannot rotate this token, and the refusal does NOT revoke the family.
   wrongClient <- refreshWith Nothing [("client_id", Text.encodeUtf8 pubId), ("refresh_token", Text.encodeUtf8 refreshToken)]
   assertOAuthError "another client refreshing" 400 "invalid_grant" wrongClient
@@ -2394,6 +2401,7 @@ scenarioOAuthCodeExchange jwk confId pubId port = do
   rotStatus @?= 200
   rotBody <- must "rotate body" (bodyOf rotated)
   newRefresh <- must "rotated refresh_token" (dig ["refresh_token"] rotBody >>= asText)
+  (dig ["scope"] rotBody >>= asText) @?= Just "openid profile"
   assertBool "the refresh token really rotated" (newRefresh /= refreshToken)
   assertBool "the rotation mints a new access token" (isJust (dig ["access_token"] rotBody >>= asText))
   -- A refresh does not mint an ID token: its nonce and auth_time belong to the authorize request.

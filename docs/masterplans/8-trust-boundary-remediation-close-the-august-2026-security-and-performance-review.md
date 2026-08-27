@@ -134,7 +134,7 @@ use following `.claude/skills/exec-plan/ADR.md`.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | Complete |
-| 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Not Started |
+| 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | In Progress |
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Not Started |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Not Started |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Not Started |

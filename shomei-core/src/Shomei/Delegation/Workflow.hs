@@ -154,7 +154,8 @@ mintDelegatedToken cfg ts mint = do
           expiresAt = expires,
           actor = Just mint.actorUserId,
           oauthClientId = Nothing,
-          kind = DelegatedSession
+          kind = DelegatedSession,
+          grantedScopes = Set.empty
         }
   let claims =
         AuthClaims

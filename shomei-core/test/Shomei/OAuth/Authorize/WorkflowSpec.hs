@@ -95,7 +95,8 @@ runAuthorize kind state carriesActor = do
               _ -> addUTCTime 3600 fixedTime,
             actor,
             oauthClientId = Nothing,
-            kind
+            kind,
+            grantedScopes = Set.empty
           }
     case state of
       Revoked -> revokeSession session.sessionId fixedTime

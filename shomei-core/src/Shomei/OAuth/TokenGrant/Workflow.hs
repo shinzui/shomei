@@ -56,7 +56,7 @@ import Shomei.OAuth.IdToken.Domain (IdToken, IdTokenClaims (..))
 import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex, verifyServiceSecret)
 import Shomei.Session.Authentication.Workflow qualified as Wf
-import Shomei.Session.Command (RefreshCommand (..))
+import Shomei.Session.Command (RefreshCommand (..), RefreshOrigin (OAuthClientRefresh))
 import Shomei.Session.RefreshToken.Domain (RefreshToken)
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore, findRefreshTokenByHash)
 import Shomei.Session.Store (SessionStore, findSessionById)
@@ -241,7 +241,7 @@ refreshViaOAuth ::
   ) =>
   ShomeiConfig ->
   RefreshViaOAuth ->
-  Eff es (Either TokenGrantError TokenPair)
+  Eff es (Either TokenGrantError Wf.Refreshed)
 refreshViaOAuth cfg cmd = do
   outcome <- runErrorNoCallStack do
     _client <- authenticateClient (cmd ^. #clientId) (cmd ^. #clientSecret)
@@ -254,7 +254,11 @@ refreshViaOAuth cfg cmd = do
     -- workflow's, unchanged. Its 'AuthError's collapse to one `invalid_grant`, because a caller
     -- must not learn from the token endpoint whether a token was expired, revoked, or reused.
     Right () -> do
-      result <- Wf.refresh cfg RefreshCommand {refreshToken = cmd ^. #refreshToken}
+      result <-
+        Wf.refreshFrom
+          (OAuthClientRefresh (cmd ^. #clientId))
+          cfg
+          RefreshCommand {refreshToken = cmd ^. #refreshToken}
       pure (first (GrantInvalidGrant . tshow) result)
   where
     tshow :: AuthError -> Text

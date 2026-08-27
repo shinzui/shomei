@@ -7,6 +7,7 @@ module Shomei.Session.Command
   ( SignupCommand (..),
     LoginCommand (..),
     RefreshCommand (..),
+    RefreshOrigin (..),
     LogoutCommand (..),
     ClientContext (..),
   )
@@ -36,6 +37,11 @@ data LoginCommand = LoginCommand
 
 newtype RefreshCommand = RefreshCommand {refreshToken :: RefreshToken}
   deriving stock (Generic, Show)
+
+-- | Which endpoint is rotating. The bespoke endpoint has no client identity, so it may not
+-- rotate a session an OAuth client minted; the OAuth grant may rotate only its own.
+data RefreshOrigin = BespokeRefresh | OAuthClientRefresh Text
+  deriving stock (Generic, Eq, Show)
 
 newtype LogoutCommand = LogoutCommand {sessionId :: SessionId}
   deriving stock (Generic, Show)

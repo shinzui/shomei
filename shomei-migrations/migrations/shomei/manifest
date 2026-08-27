@@ -27,3 +27,4 @@
 0027-shomei-recovery-codes.sql
 0028-shomei-role-permissions.sql
 0029-sessions-kind.sql
+0030-sessions-granted-scopes.sql

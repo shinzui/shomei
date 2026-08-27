@@ -207,7 +207,8 @@ runAuthorize clientType params = do
             expiresAt = addUTCTime 3600 t0,
             actor = Nothing,
             oauthClientId = Nothing,
-            kind = InteractiveSession
+            kind = InteractiveSession,
+            grantedScopes = Set.empty
           }
     ocid <- genOAuthClientId
     client <-

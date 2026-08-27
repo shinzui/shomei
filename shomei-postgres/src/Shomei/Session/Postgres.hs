@@ -14,7 +14,8 @@ module Shomei.Session.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip9)
+import Contravariant.Extras (contrazip10, contrazip2)
+import Data.Set qualified as Set
 import Data.UUID (UUID)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -23,6 +24,7 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, genSessionId, sessionIdFromUUID, sessionIdToUUID, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Codec.Postgres (sessionKindFromText, sessionKindToText, sessionStatusFromText, sessionStatusToText)
@@ -31,7 +33,7 @@ import Shomei.Prelude
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.Store (SessionStore (..))
 
-type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID, Maybe Text, Maybe Text)
+type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID, Maybe Text, Maybe Text, [Text])
 
 runSessionStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -50,7 +52,8 @@ runSessionStorePostgres = interpret_ \case
             Nothing,
             userIdToUUID <$> ns.actor,
             ns.oauthClientId,
-            Just (sessionKindToText ns.kind)
+            Just (sessionKindToText ns.kind),
+            [scope | Scope scope <- Set.toList ns.grantedScopes]
           )
     res <- runSession (Session.statement row insertSessionStmt)
     either dbFail (const (pure session)) res
@@ -83,11 +86,12 @@ mkSession sid ns =
       revokedAt = Nothing,
       actor = ns.actor,
       oauthClientId = ns.oauthClientId,
-      kind = ns.kind
+      kind = ns.kind,
+      grantedScopes = ns.grantedScopes
     }
 
 rebuildSession :: SessionRow -> Either Text Session
-rebuildSession (sid, uid, st, c, e, r, act, oauthClientId, mKind) = do
+rebuildSession (sid, uid, st, c, e, r, act, oauthClientId, mKind, scopeTexts) = do
   status <- sessionStatusFromText st
   kind <- maybe (Right InteractiveSession) sessionKindFromText mKind
   pure
@@ -100,12 +104,13 @@ rebuildSession (sid, uid, st, c, e, r, act, oauthClientId, mKind) = do
         revokedAt = r,
         actor = userIdFromUUID <$> act,
         oauthClientId,
-        kind
+        kind,
+        grantedScopes = Set.fromList (map Scope scopeTexts)
       }
 
 sessionRowDecoder :: D.Row SessionRow
 sessionRowDecoder =
-  (,,,,,,,,)
+  (,,,,,,,,,)
     <$> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.text)
@@ -115,16 +120,17 @@ sessionRowDecoder =
     <*> D.column (D.nullable D.uuid)
     <*> D.column (D.nullable D.text)
     <*> D.column (D.nullable D.text)
+    <*> D.column (D.nonNullable (D.listArray (D.nonNullable D.text)))
 
 insertSessionStmt :: Statement SessionRow ()
 insertSessionStmt =
   preparable
     """
     INSERT INTO shomei.shomei_sessions
-      (session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      (session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind, granted_scopes)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     """
-    ( contrazip9
+    ( contrazip10
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.text))
@@ -134,6 +140,7 @@ insertSessionStmt =
         (E.param (E.nullable E.uuid))
         (E.param (E.nullable E.text))
         (E.param (E.nullable E.text))
+        (E.param (E.nonNullable (E.foldableArray (E.nonNullable E.text))))
     )
     D.noResult
 
@@ -143,7 +150,7 @@ listSessionsForUserStmt :: Statement UUID [SessionRow]
 listSessionsForUserStmt =
   preparable
     """
-    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind, granted_scopes
     FROM shomei.shomei_sessions
     WHERE user_id = $1
     ORDER BY created_at DESC, session_id DESC
@@ -155,7 +162,7 @@ findSessionByIdStmt :: Statement UUID (Maybe SessionRow)
 findSessionByIdStmt =
   preparable
     """
-    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind, granted_scopes
     FROM shomei.shomei_sessions
     WHERE session_id = $1
     """

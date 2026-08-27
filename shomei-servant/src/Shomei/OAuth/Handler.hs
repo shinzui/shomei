@@ -358,19 +358,17 @@ refreshTokenGrant env mAuthHeader form = do
             refreshToken = RefreshToken presented
           }
   outcome <- runOAuthPort env (OAuthTokenGrant.refreshViaOAuth env.config grant)
-  pair <- either (throwError . grantError) pure outcome
+  refreshed <- either (throwError . grantError) pure outcome
   -- Read through lens labels: 'TokenPair' shares @accessToken@/@refreshToken@/@expiresIn@ with
   -- 'OAuth.TokenResponse' and 'ExchangedTokens', so dot access is ambiguous here.
-  let AccessToken access = pair ^. #accessToken
-      RefreshToken rotated = pair ^. #refreshToken
+  let AccessToken access = refreshed ^. #tokens . #accessToken
+      RefreshToken rotated = refreshed ^. #tokens . #refreshToken
       body =
         OAuth.TokenResponse
           { accessToken = access,
             tokenType = "Bearer",
-            expiresIn = round (pair ^. #expiresIn :: NominalDiffTime),
-            -- The rotated token carries the session's scopes, which the access token already
-            -- states; echoing the granted set would need a second claims read for no gain.
-            scope = "",
+            expiresIn = round (refreshed ^. #tokens . #expiresIn :: NominalDiffTime),
+            scope = Text.unwords [scope | Scope scope <- Set.toList (refreshed ^. #grantedScopes)],
             refreshToken = Just rotated,
             -- No ID token on refresh: the nonce and auth_time an ID token must carry belong to the
             -- authorize request, and Shōmei does not persist them past the code. A client that

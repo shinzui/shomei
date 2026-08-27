@@ -18,6 +18,7 @@ module Shomei.Session.UnitOfWork.Postgres
 where
 
 import Data.Foldable (traverse_)
+import Data.Set qualified as Set
 import Data.UUID.V4 qualified as UUIDv4
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -26,6 +27,7 @@ import Hasql.Transaction qualified as Tx
 import Shomei.Audit.Event.Codec (projectAuthEvent)
 import Shomei.Audit.Event.Domain (AuthEvent)
 import Shomei.Audit.Publisher.Postgres (AuthEventRow, insertAuthEventStmt)
+import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id
   ( RefreshTokenId,
@@ -117,7 +119,8 @@ sessionRow session =
     Nothing,
     userIdToUUID <$> session.actor,
     session.oauthClientId,
-    Just (sessionKindToText session.kind)
+    Just (sessionKindToText session.kind),
+    [scope | Scope scope <- Set.toList session.grantedScopes]
   )
 
 -- | The column tuple 'insertRefreshTokenStmt' encodes. A freshly inserted token is always

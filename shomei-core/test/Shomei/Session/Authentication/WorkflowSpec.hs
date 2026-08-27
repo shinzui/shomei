@@ -10,6 +10,7 @@ module Shomei.Session.Authentication.WorkflowSpec (tests) where
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
@@ -17,7 +18,7 @@ import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId)
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.User.Domain (User (..))
 import Shomei.Audit.Event.Domain qualified as Event
-import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (SessionCheckMode (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error
   ( AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
@@ -26,13 +27,14 @@ import Shomei.Error
 -- Qualified: 'Shomei.Error.SessionExpired' (an 'AuthError') and
 -- 'Shomei.Session.Domain.SessionExpired' (a 'SessionStatus') share a name.
 import Shomei.Error qualified as Err
-import Shomei.Session.Authentication.Workflow (LoginResult (..), login, logout, refresh, signup, verifyToken)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Authentication.Workflow (LoginResult (..), Refreshed (..), login, logout, refresh, refreshFrom, signup, verifyToken)
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Session.RefreshToken.Store (markRefreshTokenUsed)
 import Shomei.Session.Token.Domain (TokenPair (..))
+import Shomei.Session.Workflow (SessionOptions (..), issueSessionWith)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -109,6 +111,7 @@ tests =
     [ testSignupLogin,
       testSignupLoginByIdentifierNoEmail,
       testRefreshRotates,
+      testBespokeRefreshRejectsOAuthSession,
       testRefreshRejectsExpiredSession,
       testSlidingRefreshStillDiesAtDeadline,
       testVerifyTokenRejectsExpiredSession,
@@ -176,6 +179,40 @@ testRefreshRotates = testCase "refresh rotates token and old token becomes Used"
   let toks = Map.elems w.refreshTokens
   assertBool "exactly one token is marked Used" (length (filter (\t -> t.status == RefreshTokenUsed) toks) == 1)
   assertBool "the rotated token links to its parent" (any (\t -> isJust t.parentTokenId) toks)
+
+testBespokeRefreshRejectsOAuthSession :: TestTree
+testBespokeRefreshRejectsOAuthSession = testCase "bespoke refresh refuses a client-bound session without spending its token" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  let granted = Set.fromList [Scope "openid", Scope "kawa:read"]
+  (_, oauthPair, _) <-
+    runInMemory
+      ref
+      ( issueSessionWith
+          cfg
+          SessionOptions
+            { oauthClientId = Just "oauthclient_test",
+              extraScopes = granted
+            }
+          user
+          fixedTime
+      )
+  result <- runInMemory ref (refresh cfg (RefreshCommand oauthPair.refreshToken))
+  result @?= Left Err.RefreshTokenInvalid
+  wrongClient <- runInMemory ref (refreshFrom (OAuthClientRefresh "oauthclient_other") cfg (RefreshCommand oauthPair.refreshToken))
+  case wrongClient of
+    Left err -> err @?= Err.RefreshTokenInvalid
+    Right _ -> assertFailure "a different OAuth client rotated the session"
+  world <- readIORef ref
+  assertBool
+    "the refused binding mismatch leaves every token active"
+    (all ((== RefreshTokenActive) . (.status)) (Map.elems world.refreshTokens))
+  refreshed <-
+    expectRight
+      =<< runInMemory ref (refreshFrom (OAuthClientRefresh "oauthclient_test") cfg (RefreshCommand oauthPair.refreshToken))
+  refreshed.grantedScopes @?= granted
+  claims <- expectRight =<< runInMemory ref (verifyToken cfg refreshed.tokens.accessToken)
+  claims.scopes @?= granted
 
 testRefreshRejectsExpiredSession :: TestTree
 testRefreshRejectsExpiredSession = testCase "refresh rejects a session past its absolute expiry" do

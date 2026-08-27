@@ -126,10 +126,12 @@ rejected — Shōmei never silently falls back to `plain`.
 An authorization-code session always gets a refresh token (the `offline_access` scope is accepted
 and ignored). Refresh at `POST /oauth/token` with `grant_type=refresh_token`, authenticated as the
 same client. **A refresh token is bound to the client that minted it**: another client cannot rotate
-it, and a session created by any non-OIDC flow (password login, passkey, service account) cannot be
-refreshed at `/oauth/token` at all — it is refreshed at the endpoint that created it. Rotation and
-reuse detection are the standard Shōmei machinery: replaying a used refresh token revokes the whole
-family and the session.
+it, and it cannot be rotated at `POST /v1/auth/refresh` at all (`401 token_invalid`). A session
+created by any non-OIDC flow (password login, passkey, service account) cannot be refreshed at
+`/oauth/token` — it is refreshed at the endpoint that created it. Rotation and reuse detection are
+the standard Shōmei machinery: replaying a used refresh token revokes the whole family and the
+session. The refreshed access token and the response's `scope` field retain the session's original
+grant.
 
 ## Introspection and revocation
 

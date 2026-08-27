@@ -54,9 +54,9 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 
 ## Progress
 
-- [ ] M1: `grantedScopes` on `Session`/`NewSession`; migration via `just new-migration sessions-granted-scopes`; Postgres and in-memory interpreters round-trip it; every `NewSession` literal updated
-- [ ] M1: `RefreshOrigin`/`refreshFrom`; bespoke `refresh` refuses client-bound sessions; both refresh paths re-apply granted scopes; `refreshViaOAuth` returns `Refreshed`; refresh grant echoes `scope`
-- [ ] M1: core tests (bespoke refusal observed failing first), Postgres round-trip, servant inverse scenario; `oidc.md` and `api.md` refresh text corrected
+- [x] (2026-08-27 15:09Z) M1: `grantedScopes` on `Session`/`NewSession`; migration via `just new-migration sessions-granted-scopes`; Postgres and in-memory interpreters round-trip it; every `NewSession` literal updated
+- [x] (2026-08-27 15:09Z) M1: `RefreshOrigin`/`refreshFrom`; bespoke `refresh` refuses client-bound sessions; both refresh paths re-apply granted scopes; `refreshViaOAuth` returns `Refreshed`; refresh grant echoes `scope`
+- [x] (2026-08-27 15:09Z) M1: core tests (bespoke refusal observed failing first), Postgres round-trip, servant inverse scenario; `oidc.md` and `api.md` refresh text corrected. `cabal test shomei-core` (246), `cabal test shomei-servant` (38 plus 62 OpenAPI examples), and the new Postgres case pass; the full Postgres run's sole ephemeral-start timeout passed on immediate isolated retry.
 - [ ] M2: `Shomei.Authorization.Scope.Domain`; servant and token-exchange modules re-export its constants
 - [ ] M2: `registerOAuthClient` refuses privilege scopes; CLI uses it (refusal observed failing first); `resolveScopes` refuses them; service-account CLI warns; tests
 - [ ] M2: `security.md` subsection; `machine-tokens.md` note; `docs/adr/` bootstrapped (or next handle allocated if docs/plans/51 created it) and ADR written; strict OKF validation green
@@ -69,7 +69,16 @@ behavior above over HTTP, and by the transcripts in Validation and Acceptance.
 
 ## Surprises & Discoveries
 
-(None yet.)
+- The M1 regression test reproduced the bespoke-refresh binding failure before the fix:
+
+  ```text
+  bespoke refresh refuses a client-bound session without spending its token: FAIL
+    expected: Left RefreshTokenInvalid
+     but got: Right (TokenPair {…})
+  ```
+
+  This proves that the non-OAuth endpoint spends an OAuth client's refresh token today; the
+  corrected guard must run after the active token resolves its session but before rotation.
 
 
 ## Decision Log
