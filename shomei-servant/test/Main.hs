@@ -1417,6 +1417,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "signup/login by loginId with no email (email == null)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioNoEmail,
+      testCase "signup reports duplicate email and login-id conflicts as 409" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) scenarioSignupConflicts,
       testCase "signup rejects a missing loginId" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioSignupRequiresLoginId,
@@ -2798,6 +2801,19 @@ scenarioNoEmail port = do
   lStatus @?= 200
   lresp <- must "login body" lBody
   assertBool "login by identifier yields a token" (isJust (dig ["token", "accessToken"] lresp >>= asText))
+
+scenarioSignupConflicts :: Int -> IO ()
+scenarioSignupConflicts port = do
+  mgr <- newManager defaultManagerSettings
+  let email = "dup@example.com" :: Text
+      password = "correct horse battery staple" :: Text
+      signupBody loginId = object ["loginId" .= (loginId :: Text), "email" .= email, "password" .= password, "displayName" .= ("" :: Text)]
+  first <- postRaw mgr port "/v1/auth/signup" [] (signupBody "dup-one")
+  statusOf first @?= 201
+  duplicateEmail <- postRaw mgr port "/v1/auth/signup" [] (signupBody "dup-two")
+  assertProblem "duplicate email" 409 "email_taken" duplicateEmail
+  duplicateLogin <- postRaw mgr port "/v1/auth/signup" [] (signupBody "dup-one")
+  assertProblem "duplicate login id" 409 "login_id_taken" duplicateLogin
 
 -- | A signup principal is explicit: email is contact data and cannot stand in for @loginId@.
 scenarioSignupRequiresLoginId :: Int -> IO ()

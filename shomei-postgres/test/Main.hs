@@ -122,7 +122,7 @@ import Shomei.Authorization.Role.Store
   )
 import Shomei.Authorization.Role.Workflow (grantRoleTo)
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
-import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InvalidCredentials, PasswordResetTokenInvalid, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
+import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, EmailAlreadyRegistered, InvalidCredentials, LoginIdAlreadyRegistered, PasswordResetTokenInvalid, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Error qualified as Err
 import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
 import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
@@ -902,16 +902,17 @@ testUserNoEmailAndUniqueLoginId =
     fmap (.email) byLogin @?= Just Nothing
     fmap (.loginId) byLogin @?= Just svc
     fmap (.userId) byLogin @?= Just u.userId
-    -- a duplicate login id is rejected by the unique index (interpreter surfaces a Left)
+    -- Unique-index conflicts retain their domain meaning at the persistence boundary.
     dup <- runApp pool (createUser (NewUser {loginId = svc, email = Nothing, displayName = Nothing}))
-    case dup of
-      Left _ -> pure ()
-      Right _ -> assertFailure "expected duplicate login_id to be rejected by the unique index"
+    dup @?= Left LoginIdAlreadyRegistered
     -- a second no-email user with a distinct login id is allowed: NULL emails don't collide
     second <- runApp pool (createUser (NewUser {loginId = svc2, email = Nothing, displayName = Nothing}))
     _ <- expectApp second
     nullEmails <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users WHERE email IS NULL"
     nullEmails @?= 2
+    _ <- expectApp =<< runApp pool (createUser (NewUser {loginId = mkLoginId' "email-owner", email = Just aliceEmail, displayName = Nothing}))
+    dupEmail <- runApp pool (createUser (NewUser {loginId = mkLoginId' "email-collider", email = Just aliceEmail, displayName = Nothing}))
+    dupEmail @?= Left EmailAlreadyRegistered
 
 -- | The admin listing's three promises, against the real statement: newest-first order, the
 -- status filter, and a keyset walk that is both disjoint and complete.
@@ -1027,6 +1028,10 @@ testCredentialRoundTrip = testCase "create credential + find-by-email" $ withDb 
   fmap (.passwordHash) byEmail @?= Just h
   fmap (.userId) byLogin @?= Just u.userId
   fmap (.loginId) byLogin @?= Just aliceLogin
+  duplicateLogin <- runApp pool (createPasswordCredential u.userId aliceLogin (Just bobEmail) h)
+  duplicateLogin @?= Left LoginIdAlreadyRegistered
+  duplicateEmail <- runApp pool (createPasswordCredential u.userId bobLogin (Just aliceEmail) h)
+  duplicateEmail @?= Left EmailAlreadyRegistered
 
 testSessionRevoke :: TestTree
 testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do

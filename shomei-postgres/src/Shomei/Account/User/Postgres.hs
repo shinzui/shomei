@@ -22,7 +22,7 @@ import Shomei.Account.User.Store (UserCursor (..), UserListQuery (..), UserStore
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId, genUserId, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Codec.Postgres (loginIdFromDb, maybeEmailFromDb, userStatusFromText, userStatusToText)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, postgresWriteError, runSession)
 import Shomei.Prelude
 
 type InsertUserRow = (UUID, Text, Maybe Text, Maybe Text, Text, UTCTime, UTCTime)
@@ -39,7 +39,7 @@ runUserStorePostgres = interpret_ \case
     ts <- liftIO getCurrentTime
     let row = (userIdToUUID uid, loginIdText nu.loginId, emailText <$> nu.email, nu.displayName, userStatusToText UserActive, ts, ts)
     res <- runSession (Session.statement row insertUserStmt)
-    either dbFail (const (pure (mkUser uid nu ts))) res
+    either (throwError . postgresWriteError identityConflict) (const (pure (mkUser uid nu ts))) res
   FindUserById uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) findUserByIdStmt)
     row <- either dbFail pure res
@@ -66,6 +66,14 @@ runUserStorePostgres = interpret_ \case
   where
     dbFail = throwError . postgresUnavailable
     rebuild r = either (throwError . InternalAuthError) pure (rebuildUser r)
+
+identityConflict :: Text -> Maybe AuthError
+identityConflict = \case
+  "shomei_users_login_id_key" -> Just LoginIdAlreadyRegistered
+  "shomei_users_login_id_lower_key" -> Just LoginIdAlreadyRegistered
+  "shomei_users_email_key" -> Just EmailAlreadyRegistered
+  "shomei_users_email_lower_key" -> Just EmailAlreadyRegistered
+  _ -> Nothing
 
 -- | Flatten a 'UserListQuery' into the statement's parameter tuple: the optional cursor splits
 -- into its two columns, and the limit is clamped here so no caller can ask the database for an

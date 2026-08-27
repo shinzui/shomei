@@ -6,12 +6,17 @@ module Shomei.Persistence.Database.Postgres
     runSession,
     runTransaction,
     postgresUnavailable,
+    uniqueViolation,
+    postgresWriteError,
     runDatabasePool,
   )
 where
 
+import Data.Text (Text)
+import Data.Text qualified as Text
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpret_, send)
+import Hasql.Errors qualified as Hasql
 import Hasql.Pool (Pool, UsageError)
 import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
@@ -35,6 +40,40 @@ runTransaction = send . RunTransaction
 -- Driver messages and SQL must never cross the persistence boundary.
 postgresUnavailable :: UsageError -> AuthError
 postgresUnavailable _ = DependencyUnavailable PostgreSQL
+
+-- | The constraint name of a PostgreSQL unique violation (SQLSTATE 23505), when the server
+-- supplied one in its primary message. Other failures deliberately remain opaque.
+uniqueViolation :: UsageError -> Maybe Text
+uniqueViolation = \case
+  Pool.SessionUsageError
+    ( Hasql.StatementSessionError
+        _
+        _
+        _
+        _
+        _
+        (Hasql.ServerStatementError (Hasql.ServerError "23505" message _ _ _))
+      ) -> constraintName message
+  _ -> Nothing
+
+-- | Preserve a domain conflict for recognized unique indexes; otherwise keep the existing
+-- fail-closed dependency error and never expose SQL or driver text.
+postgresWriteError :: (Text -> Maybe AuthError) -> UsageError -> AuthError
+postgresWriteError classify err =
+  maybe (postgresUnavailable err) id (uniqueViolation err >>= classify)
+
+constraintName :: Text -> Maybe Text
+constraintName message =
+  case Text.breakOn marker message of
+    (_, rest)
+      | Text.null rest -> Nothing
+      | otherwise ->
+          case Text.breakOn "\"" (Text.drop (Text.length marker) rest) of
+            (name, closing)
+              | not (Text.null name) && not (Text.null closing) -> Just name
+            _ -> Nothing
+  where
+    marker = "unique constraint \""
 
 -- | Interpret @Database@ against a concrete @hasql@ 'Pool'. Transactions run
 -- read-committed, read-write (with @hasql-transaction@'s automatic retry on

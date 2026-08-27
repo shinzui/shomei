@@ -27,7 +27,7 @@ import Shomei.Account.Password.Domain (PasswordHash (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (CredentialId, UserId, credentialIdFromUUID, credentialIdToUUID, genCredentialId, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Codec.Postgres (loginIdFromDb, maybeEmailFromDb)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, postgresWriteError, runSession)
 import Shomei.Prelude
 
 type CredRow = (UUID, UUID, Text, Maybe Text, Text, UTCTime, UTCTime)
@@ -42,7 +42,7 @@ runCredentialStorePostgres = interpret_ \case
     ts <- liftIO getCurrentTime
     let row = (credentialIdToUUID cid, userIdToUUID uid, loginIdText loginId, emailText <$> mEmail, passwordHashText pwHash, ts, ts)
     res <- runSession (Session.statement row insertCredentialStmt)
-    either dbFail (const (pure (mkCredential cid uid loginId mEmail pwHash ts))) res
+    either (throwError . postgresWriteError identityConflict) (const (pure (mkCredential cid uid loginId mEmail pwHash ts))) res
   FindPasswordCredentialByLoginId loginId -> do
     res <- runSession (Session.statement (loginIdText loginId) findCredByLoginIdStmt)
     row <- either dbFail pure res
@@ -57,6 +57,14 @@ runCredentialStorePostgres = interpret_ \case
   where
     dbFail = throwError . postgresUnavailable
     rebuild r = either (throwError . InternalAuthError) pure (rebuildCredential r)
+
+identityConflict :: Text -> Maybe AuthError
+identityConflict = \case
+  "shomei_password_credentials_login_id_key" -> Just LoginIdAlreadyRegistered
+  "shomei_password_credentials_login_id_lower_key" -> Just LoginIdAlreadyRegistered
+  "shomei_password_credentials_email_key" -> Just EmailAlreadyRegistered
+  "shomei_password_credentials_email_lower_key" -> Just EmailAlreadyRegistered
+  _ -> Nothing
 
 passwordHashText :: PasswordHash -> Text
 passwordHashText (PasswordHash t) = t

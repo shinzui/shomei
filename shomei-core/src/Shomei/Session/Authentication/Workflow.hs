@@ -42,7 +42,7 @@ import Shomei.Account.Password.Breach.Workflow (enforceBreachPolicy)
 import Shomei.Account.Password.Domain (PasswordContext (..), validatePassword)
 import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive))
-import Shomei.Account.User.Store (UserStore, createUser, findUserById, findUserByLoginId)
+import Shomei.Account.User.Store (UserStore, createUser, findUserByEmail, findUserById, findUserByLoginId)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope)
@@ -140,6 +140,9 @@ signup cfg cmd = runErrorNoCallStack do
   enforceBreachPolicy cfg.passwordPolicy cmd.password
   existing <- findUserByLoginId cmd.loginId
   when (isJust existing) (throwError LoginIdAlreadyRegistered)
+  forM_ cmd.email \email -> do
+    existingByEmail <- findUserByEmail email
+    when (isJust existingByEmail) (throwError EmailAlreadyRegistered)
   pwHash <- hashPassword cmd.password
   ts <- now
   user <- createUser NewUser {loginId = cmd.loginId, email = cmd.email, displayName = cmd.displayName}

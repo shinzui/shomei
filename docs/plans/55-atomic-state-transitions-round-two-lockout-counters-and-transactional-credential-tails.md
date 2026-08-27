@@ -74,7 +74,12 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
       core and Postgres
 - [x] (2026-08-27T19:51:55Z) M4 gate: `nix fmt`, `cabal build all`, and the serialized
       all-package test matrix pass (core 273; PostgreSQL 72)
-- [ ] M5: `findUserByEmail` guard; SQLSTATE 23505 mapped to typed conflicts; tests
+- [x] (2026-08-27T19:54:45Z) M5 regressions observed red: duplicate email signup returned 201,
+      and a duplicate PostgreSQL login id collapsed to `DependencyUnavailable PostgreSQL`
+- [x] (2026-08-27T20:02:40Z) M5: `findUserByEmail` guard; SQLSTATE 23505 mapped to typed
+      conflicts; tests
+- [x] (2026-08-27T20:02:40Z) M5 gate: `nix fmt`, `cabal build all`, and the serialized
+      all-package test matrix pass (core 273; PostgreSQL 72; Servant 42)
 - [ ] M6: migration (number allocated by `just new-migration`; `0029` at the time of writing); PostgreSQL 17/18 floor documented; CHANGELOGs; ADR distillation
 
 
@@ -162,6 +167,11 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
     expected: 1
      but got: 5
   ```
+
+- Before M5, the in-memory workflow accepted a second account with the same email because it
+  checked only the principal login id; the HTTP regression therefore returned 201 instead of
+  `409 email_taken`. PostgreSQL enforced uniqueness, but the adapter erased SQLSTATE 23505 into
+  `DependencyUnavailable PostgreSQL`, so a genuine client conflict appeared retryable.
 
 
 ## Decision Log
@@ -319,6 +329,14 @@ any writer. Each is pinned by a test observed failing on the pre-fix code.
   fell from five successful suspensions to one, and the eight-connection PostgreSQL race also
   has exactly one winner. The complete core (273 tests) and PostgreSQL (72 tests) suites pass,
   as do `cabal build all` and the serialized all-package test matrix.
+
+- M5 restored identity conflicts at both layers. Signup now rejects an existing email before
+  hashing or writing, and the HTTP boundary answers duplicate email and login id with their
+  existing 409 problem codes. A narrow Hasql SQLSTATE 23505 classifier extracts only the quoted
+  constraint name and maps the known user and credential indexes to the same typed conflicts;
+  every unknown constraint or driver failure remains `DependencyUnavailable PostgreSQL` with no
+  SQL detail exposed. The complete core (273), PostgreSQL (72), and Servant (42) suites pass, as
+  do `cabal build all` and the serialized all-package test matrix.
 
 
 ## Context and Orientation
