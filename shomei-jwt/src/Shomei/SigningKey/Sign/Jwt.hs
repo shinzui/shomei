@@ -14,6 +14,7 @@
 module Shomei.SigningKey.Sign.Jwt
   ( claimsFromAuth,
     claimsFromIdToken,
+    wholeSeconds,
     signAccessToken,
     signIdToken,
     runTokenSignerJwt,
@@ -53,7 +54,7 @@ import Data.Set qualified as Set
 import Data.String (fromString)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
@@ -84,9 +85,9 @@ sou = fromString . Text.unpack
 claimsFromAuth :: AuthClaims -> ClaimsSet
 claimsFromAuth ac =
   withActor $
-    -- 'addExtra' seeds the custom claims into the base FIRST, then the standard
-    -- registered claims (iss/sub/aud/iat/exp via typed slots) and the managed
-    -- custom claims (sid/scopes/roles/permissions below, act in 'withActor') are
+    -- 'addExtra' seeds the custom claims into the base FIRST, then every claim in
+    -- 'Domain.reservedClaimKeys' is written through a registered slot or a managed
+    -- custom claim (sid/scopes/roles/permissions below, act in 'withActor') and is
     -- applied on top, so a same-named custom key is always overwritten by Shōmei's
     -- value. Combined with 'mkExtraClaims' dropping reserved keys at construction, a
     -- service (or attacker-influenced input) can never forge a standard claim.
@@ -98,9 +99,9 @@ claimsFromAuth ac =
       & claimAud
       ?~ Audience [sou (audienceText ac.audience)]
       & claimIat
-      ?~ NumericDate ac.issuedAt
+      ?~ NumericDate (wholeSeconds ac.issuedAt)
       & claimExp
-      ?~ NumericDate ac.expiresAt
+      ?~ NumericDate (wholeSeconds ac.expiresAt)
       & addClaim "sid" (Aeson.String (idText ac.sessionId))
       & addClaim "scopes" (Aeson.toJSON (Set.toList ac.scopes))
       & addClaim "roles" (Aeson.toJSON (Set.toList ac.roles))
@@ -134,6 +135,8 @@ signAccessToken jwk ac = do
         newJWSHeaderProtected (algForKey jwk)
           & JWS.kid
           ?~ newHeaderParamProtected (keyKid jwk)
+          & JWS.typ
+          ?~ newHeaderParamProtected "at+jwt"
   result <- runJOSE @JWTError $ do
     signed <- signClaims jwk hdr (claimsFromAuth ac)
     pure (encodeCompact (signed :: SignedJWT))
@@ -161,9 +164,9 @@ claimsFromIdToken idc =
       & claimAud
       ?~ Audience [sou idc.audience]
       & claimIat
-      ?~ NumericDate idc.issuedAt
+      ?~ NumericDate (wholeSeconds idc.issuedAt)
       & claimExp
-      ?~ NumericDate idc.expiresAt
+      ?~ NumericDate (wholeSeconds idc.expiresAt)
       & addClaim "auth_time" (Aeson.Number (fromIntegral (unixSeconds idc.authTime)))
   where
     unixSeconds :: UTCTime -> Integer
@@ -183,6 +186,8 @@ signIdToken jwk idc = do
         newJWSHeaderProtected (algForKey jwk)
           & JWS.kid
           ?~ newHeaderParamProtected (keyKid jwk)
+          & JWS.typ
+          ?~ newHeaderParamProtected "JWT"
   result <- runJOSE @JWTError $ do
     signed <- signClaims jwk hdr (claimsFromIdToken idc)
     pure (encodeCompact (signed :: SignedJWT))
@@ -208,3 +213,8 @@ runTokenSignerJwt jwk _cfg = interpret_ \case
     case r of
       Right tok -> pure tok
       Left e -> liftIO (throwIO (userError ("id token signing failed: " <> show e)))
+
+-- | JWT NumericDate values are whole Unix seconds. Truncating at the issuer
+-- avoids making successful verification depend on sub-second clock ordering.
+wholeSeconds :: UTCTime -> UTCTime
+wholeSeconds = posixSecondsToUTCTime . fromInteger . floor . utcTimeToPOSIXSeconds

@@ -11,7 +11,12 @@
 -- calls this ordinary-'IO' verifier directly. The @effectful@ interpreter
 -- 'runTokenVerifierJwt' is implemented on top of the same 'verifyToken'.
 module Shomei.SigningKey.Verify.Jwt
-  ( verifyToken,
+  ( VerifierSettings (..),
+    verifierSettingsFromConfig,
+    KidSelectingKeys (..),
+    checkStringOrUri,
+    verifyTokenWith,
+    verifyToken,
     runTokenVerifierJwt,
     jwtErrorToTokenError,
   )
@@ -19,7 +24,11 @@ where
 
 import Crypto.JOSE.Compact (decodeCompact)
 import Crypto.JOSE.Error (Error (..), runJOSE)
-import Crypto.JOSE.JWK (JWKSet)
+import Crypto.JOSE.Header (HasKid (kid), HasTyp (typ), param)
+import Crypto.JOSE.JWA.JWS (Alg (ES256, RS256))
+import Crypto.JOSE.JWK (JWKSet (JWKSet), jwkKid)
+import Crypto.JOSE.JWK.Store (VerificationKeyStore (getVerificationKeys))
+import Crypto.JOSE.JWS (header, signatures, validationSettingsAlgorithms)
 import Crypto.JWT
   ( Audience (Audience),
     ClaimsSet,
@@ -35,6 +44,7 @@ import Crypto.JWT
     claimSub,
     defaultJWTValidationSettings,
     issuerPredicate,
+    stringOrUri,
     unregisteredClaims,
     verifyClaims,
   )
@@ -46,14 +56,14 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.String (fromString)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Data.Time (NominalDiffTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Authorization.Claims.Domain qualified as Domain
-import Shomei.Config (ShomeiConfig (..))
+import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (parseId)
 import Shomei.Prelude
@@ -66,29 +76,74 @@ issuerText (Domain.Issuer t) = t
 audienceText :: Domain.Audience -> Text
 audienceText (Domain.Audience t) = t
 
--- | Build a 'StringOrURI' the same way 'Shomei.SigningKey.Sign.Jwt' does, so the issuer and
--- audience predicates compare equal to the values jose decodes from the token.
-sou :: Text -> StringOrURI
-sou = fromString . Text.unpack
+-- | Verification policy separated from the server's larger configuration so
+-- downstream hosts can choose strict token-type enforcement independently.
+data VerifierSettings = VerifierSettings
+  { issuer :: !Domain.Issuer,
+    audience :: !Domain.Audience,
+    allowedClockSkew :: !NominalDiffTime,
+    requireTokenType :: !Bool
+  }
+  deriving stock (Eq, Show)
 
--- | THE EP-4 ↔ EP-5 CONTRACT. Verify a compact JWT string against a public
--- 'JWKSet', applying the issuer and audience checks from the config with zero
--- clock skew. The 'JWKSet' supplies the candidate keys; jose tries each one.
-verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)
-verifyToken jwks cfg raw = do
-  let settings =
-        defaultJWTValidationSettings (== sou (audienceText cfg.audience))
+verifierSettingsFromConfig :: ShomeiConfig -> VerifierSettings
+verifierSettingsFromConfig cfg =
+  VerifierSettings
+    { issuer = cfg.issuer,
+      audience = cfg.audience,
+      allowedClockSkew = fromIntegral cfg.signingKeyConfig.allowedClockSkewSeconds,
+      requireTokenType = False
+    }
+
+-- | A verification key store that returns only the key named by the protected
+-- @kid@ header. Missing and unknown identifiers deliberately return no keys.
+newtype KidSelectingKeys = KidSelectingKeys JWKSet
+
+instance (Applicative m, HasKid h) => VerificationKeyStore m (h p) payload KidSelectingKeys where
+  getVerificationKeys hdr _payload (KidSelectingKeys (JWKSet keys)) =
+    pure case preview (kid . _Just . param) hdr of
+      Just wanted -> filter ((== Just wanted) . view jwkKid) keys
+      Nothing -> []
+
+-- | Validate the RFC 7519 StringOrURI shape without using its partial
+-- 'IsString' instance.
+checkStringOrUri :: Text -> Either Text ()
+checkStringOrUri value = case preview stringOrUri value of
+  Just (_ :: StringOrURI) -> Right ()
+  Nothing -> Left "contains ':' but is not a valid URI (RFC 7519 StringOrURI)"
+
+-- | Verify with explicit policy. The protected @kid@ chooses exactly one public
+-- key and the accepted JWS algorithms are pinned to Shōmei's ES256/RS256 set.
+verifyTokenWith :: VerifierSettings -> JWKSet -> Text -> IO (Either TokenError AuthClaims)
+verifyTokenWith verifierSettings jwks raw = do
+  let bytes = BSL.fromStrict (Text.encodeUtf8 raw)
+      matches wanted = maybe (const False) (==) (preview stringOrUri wanted)
+      settings =
+        defaultJWTValidationSettings (matches (audienceText verifierSettings.audience))
           & issuerPredicate
-          .~ (\iss -> iss == sou (issuerText cfg.issuer))
+          .~ matches (issuerText verifierSettings.issuer)
           & allowedSkew
-          .~ 0
-      bytes = BSL.fromStrict (Text.encodeUtf8 raw)
-  result <- runJOSE @JWTError $ do
+          .~ verifierSettings.allowedClockSkew
+          & validationSettingsAlgorithms
+          .~ Set.fromList [ES256, RS256]
+  decoded <- runJOSE @JWTError do
     signed <- decodeCompact bytes
-    verifyClaims settings jwks (signed :: SignedJWT)
-  pure $ case result of
-    Left e -> Left (jwtErrorToTokenError e)
-    Right cs -> claimsToAuth cs
+    pure (signed :: SignedJWT)
+  case decoded of
+    Left err -> pure (Left (jwtErrorToTokenError err))
+    Right signed -> do
+      let headerKid = signed ^? signatures . header . kid . _Just . param
+          headerType = signed ^? signatures . header . typ . _Just . param
+      result <- runJOSE @JWTError (verifyClaims settings (KidSelectingKeys jwks) signed)
+      pure case result of
+        Left (JWSError NoUsableKeys) -> Left (TokenKeyNotFound headerKid)
+        Left err -> Left (jwtErrorToTokenError err)
+        Right claims -> checkTokenType verifierSettings headerType *> claimsToAuth claims
+
+-- | THE core/Servant contract. Existing callers receive the hardened verifier
+-- through the unchanged public function.
+verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)
+verifyToken jwks cfg = verifyTokenWith (verifierSettingsFromConfig cfg) jwks
 
 -- | Interpret the 'TokenVerifier' effect over a fixed public 'JWKSet'.
 runTokenVerifierJwt ::
@@ -116,11 +171,23 @@ jwsErrorToTokenError :: Error -> TokenError
 jwsErrorToTokenError = \case
   CompactDecodeError _ -> TokenMalformed
   JSONDecodeError _ -> TokenMalformed
+  AlgorithmNotImplemented -> TokenSignatureInvalid
+  AlgorithmMismatch _ -> TokenSignatureInvalid
+  KeyMismatch _ -> TokenSignatureInvalid
   JWSInvalidSignature -> TokenSignatureInvalid
   JWSNoValidSignatures -> TokenSignatureInvalid
   JWSNoSignatures -> TokenSignatureInvalid
-  NoUsableKeys -> TokenSignatureInvalid
+  NoUsableKeys -> TokenKeyNotFound Nothing
   other -> TokenOtherError (Text.pack (show other))
+
+checkTokenType :: VerifierSettings -> Maybe Text -> Either TokenError ()
+checkTokenType settings = \case
+  Nothing
+    | settings.requireTokenType -> Left (TokenOtherError "missing typ header")
+    | otherwise -> Right ()
+  Just tokenType
+    | Text.toCaseFold tokenType `elem` ["at+jwt", "application/at+jwt"] -> Right ()
+    | otherwise -> Left (TokenOtherError ("typ " <> tokenType <> " is not at+jwt"))
 
 -- | Decode a verified jose 'ClaimsSet' back into Shōmei's 'AuthClaims'.
 claimsToAuth :: ClaimsSet -> Either TokenError AuthClaims
@@ -130,16 +197,19 @@ claimsToAuth cs = do
   sidTxt <- note "missing sid" (lookupString "sid")
   sess <- mapLeft (const TokenMalformed) (parseId sidTxt)
   issTxt <- note "missing iss" (cs ^. claimIss >>= soText)
-  audTxt <- note "missing aud" (firstAudience (cs ^. claimAud))
+  audTxt <- exactAudience (cs ^. claimAud)
   issuedAt' <- note "missing iat" (dateOf (cs ^. claimIat))
   expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
-  let scs = Set.fromList (map Domain.Scope (lookupStringList "scopes"))
-      rls = Set.fromList (map Domain.Role (lookupStringList "roles"))
-      perms = Set.fromList (map Domain.Permission (lookupStringList "permissions"))
+  scopeValues <- lookupStringList "scopes"
+  roleValues <- lookupStringList "roles"
+  permissionValues <- lookupStringList "permissions"
+  let scs = Set.fromList (map Domain.Scope scopeValues)
+      rls = Set.fromList (map Domain.Role roleValues)
+      perms = Set.fromList (map Domain.Permission permissionValues)
       -- The custom claims Shōmei manages itself; everything else in the
       -- unregistered map is the consuming service's extra bag, returned verbatim.
       -- (The registered iss/sub/aud/iat/exp claims are never in this map.)
-      managed = ["sid", "scopes", "roles", "permissions", "act"]
+      managed = Domain.reservedClaimKeys
       extra =
         KeyMap.fromList
           [ (Key.fromText k, v)
@@ -175,15 +245,15 @@ claimsToAuth cs = do
       Aeson.String t -> Just t
       _ -> Nothing
     dateOf = fmap (\(NumericDate t) -> t)
-    firstAudience mau =
-      mau >>= \(Audience xs) -> case xs of
-        (x : _) -> soText x
-        [] -> Nothing
+    exactAudience = \case
+      Nothing -> Left (TokenOtherError "missing aud")
+      Just (Audience [singleAudience]) -> maybe (Left TokenAudienceInvalid) Right (soText singleAudience)
+      Just _ -> Left TokenAudienceInvalid
     claims :: Map Text Aeson.Value
     claims = cs ^. unregisteredClaims
     lookupString k = case Map.lookup k claims of
       Just (Aeson.String s) -> Just s
       _ -> Nothing
     lookupStringList k = case Map.lookup k claims of
-      Just v -> either (const []) id (parseEither Aeson.parseJSON v)
-      Nothing -> []
+      Just v -> mapLeft (const TokenMalformed) (parseEither Aeson.parseJSON v)
+      Nothing -> Right []

@@ -72,11 +72,12 @@ data AuthClaims = AuthClaims
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
--- | The standard claim keys Shōmei owns; custom claims using these are dropped by
--- 'mkExtraClaims' so a service (or attacker-influenced input) can never forge a
--- standard claim through the extension bag.
+-- | The registered and private claim keys Shōmei owns. The signer writes every
+-- managed value after the extension bag, the verifier removes every managed value
+-- from the recovered extension bag, and 'mkExtraClaims' drops every managed value
+-- at construction. Adding a managed claim therefore starts by adding its name here.
 reservedClaimKeys :: [Text]
-reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "sid", "scopes", "roles", "permissions", "act"]
+reservedClaimKeys = ["iss", "sub", "aud", "iat", "exp", "nbf", "jti", "sid", "scopes", "roles", "permissions", "act"]
 
 -- | Build an extra-claims object, dropping any reserved key (see 'reservedClaimKeys').
 mkExtraClaims :: Object -> Object

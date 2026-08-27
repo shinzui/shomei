@@ -41,8 +41,11 @@ a `psql` session that can no longer activate a second row.
 
 ## Progress
 
-- [ ] M1: `nbf`/`jti` reserved; `allowedClockSkewSeconds` (30); `TokenKeyNotFound`; `VerifierSettings`,
-      kid-selecting store, pinned algorithms, `typ`, strict claims, whole seconds; negatives fail first.
+- [x] (2026-08-27 16:26Z) M1 regression step: added verifier-boundary tests and reproduced the
+      zero-skew, permissive list-claim, multi-audience, fractional-time, and reserved-name failures.
+- [x] (2026-08-27 16:35Z) M1 implementation: `nbf`/`jti` reserved; `allowedClockSkewSeconds` (30);
+      `TokenKeyNotFound`; `VerifierSettings`, kid-selecting store, pinned algorithms, `typ`, strict
+      claims, whole seconds; complete the unknown/missing-`kid`, `typ`, and algorithm negatives.
 - [ ] M2: env `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS`, Dhall key, deployment.md row;
       issuer/audience validated as StringOrURI at boot; config tests.
 - [ ] M3: migration (the number `just new-migration` allocates — `0029` at the time of writing); `revokedAt`; stamped `UpdateSigningKeyStatus`;
@@ -53,7 +56,23 @@ a `psql` session that can no longer activate a second row.
 
 ## Surprises & Discoveries
 
-(None yet. Record here the real pre-fix output of M1 step 1 and the `psql` transcript from M3.)
+- The M1 regression module reproduced all five pre-fix weaknesses that were expected to fail;
+  the three algorithm-confusion controls already held in the existing suite. The focused new
+  output was:
+
+  ```text
+  accepts an iat within the configured 30-second skew:          FAIL (iat in the future)
+  rejects a string-valued roles claim as malformed:             FAIL (verified with roles = [])
+  rejects a multi-element audience even when one value matches: FAIL (verified)
+  mints integral iat and exp values:                            FAIL (fractional NumericDate)
+  drops nbf and jti from the extension claim bag:               FAIL (nbf was retained)
+  ```
+
+- After the M1 implementation, `cabal test shomei-jwt` passed all 58 cases, including the new
+  unknown/missing-`kid`, `none`, HS256-public-key, cross-family, `typ`, strict-claim, and skew
+  cases. `cabal build all --enable-tests` succeeded, and the wider
+  `cabal test shomei-core shomei-servant shomei-server` run passed 260 core tests, 40 Servant
+  tests, 62 OpenAPI examples, and every server/config/health/admin suite.
 
 
 ## Decision Log

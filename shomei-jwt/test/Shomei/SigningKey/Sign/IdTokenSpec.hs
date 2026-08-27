@@ -78,6 +78,7 @@ verifiesAgainstJwks = do
   -- against the JWKS document the deployment already serves, with no new key work.
   header <- decodeSegment 0 wire
   KeyMap.lookup "kid" header @?= Just (String (keyKid jwk))
+  KeyMap.lookup "typ" header @?= Just (String "JWT")
   result <-
     runJOSE @JWTError do
       jwt <- decodeCompact (LBS.fromStrict (Text.encodeUtf8 wire))

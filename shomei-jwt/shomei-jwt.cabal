@@ -88,6 +88,7 @@ test-suite shomei-jwt-test
     Shomei.SigningKey.Sign.JwtSpec
     Shomei.SigningKey.Sign.RsaCustomClaimSpec
     Shomei.SigningKey.TestSupport
+    Shomei.SigningKey.Verify.JwtSpec
 
   build-depends:
     , aeson        >=2.1      && <2.3

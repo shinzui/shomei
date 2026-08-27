@@ -35,6 +35,8 @@ data PasswordPolicyViolation
 data TokenError
   = TokenMalformed
   | TokenSignatureInvalid
+  | -- | The protected JWT header omitted @kid@ or named no published key.
+    TokenKeyNotFound !(Maybe Text)
   | TokenExpired
   | TokenIssuerInvalid
   | TokenAudienceInvalid

@@ -8,6 +8,7 @@ import Shomei.SigningKey.Rotation.JwtSpec qualified as RotationSpec
 import Shomei.SigningKey.Sign.IdTokenSpec qualified as IdTokenSpec
 import Shomei.SigningKey.Sign.JwtSpec qualified as SignVerifySpec
 import Shomei.SigningKey.Sign.RsaCustomClaimSpec qualified as RsaCustomClaimSpec
+import Shomei.SigningKey.Verify.JwtSpec qualified as VerifySpec
 import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
@@ -22,5 +23,6 @@ main =
         JwksSpec.tests,
         InterpreterSpec.tests,
         RotationSpec.tests,
-        RsaCustomClaimSpec.tests
+        RsaCustomClaimSpec.tests,
+        VerifySpec.tests
       ]

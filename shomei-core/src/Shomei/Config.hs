@@ -126,7 +126,10 @@ data SigningKeyConfig = SigningKeyConfig
     -- | Seconds between background reloads of the signing-key material (signer, verifier
     -- key set, and published JWKS) from the database, so a key activation or revocation
     -- reaches a running server. 0 disables the periodic reload; @SIGHUP@ still reloads.
-    refreshIntervalSeconds :: !Int
+    refreshIntervalSeconds :: !Int,
+    -- | Seconds of tolerance granted to @exp@, @nbf@, and @iat@ by the JWT
+    -- verifier. Zero requires exact agreement between issuer and verifier clocks.
+    allowedClockSkewSeconds :: !Int
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -495,7 +498,7 @@ defaultShomeiConfig iss aud =
       sessionTTL = defaultSessionTTL,
       passwordPolicy = defaultPasswordPolicy,
       tokenTransport = BearerToken,
-      signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60},
+      signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30},
       sessionCheckMode = VerifyTokenOnly,
       notifierConfig =
         NotifierConfig
