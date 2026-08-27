@@ -18,7 +18,13 @@
 -- still succeeds. Their operational log lines never contain the one-time token. Operators who
 -- want a provider Shōmei does not ship supply their own 'Notifier' interpreter.
 module Shomei.Notify
-  ( runNotifierFromConfig,
+  ( DeliveryReason (..),
+    SmtpStage (..),
+    reasonText,
+    classifySmtpFailure,
+    classifyWebhookFailure,
+    redactDeliveryText,
+    runNotifierFromConfig,
     runNotifierLog,
     runNotifierSmtp,
     runNotifierWebhook,
@@ -29,13 +35,14 @@ module Shomei.Notify
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, displayException, try)
+import Control.Exception (IOException, SomeException, fromException, try)
 import Crypto.Hash.Algorithms (SHA256)
 import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (encode)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Char (isSpace)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Text.Lazy qualified as TL
@@ -43,7 +50,9 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Network.HTTP.Client
-  ( Manager,
+  ( HttpException (..),
+    HttpExceptionContent (..),
+    Manager,
     RequestBody (RequestBodyBS),
     httpLbs,
     method,
@@ -75,7 +84,125 @@ import Shomei.Config (NotifierConfig (..), NotifierTransport (..), ShomeiConfig 
 import Shomei.Prelude
 import Shomei.Time.Store (Clock, now)
 import System.IO (hPutStrLn, stderr)
+import System.IO.Error (ioeGetErrorString, isUserError)
 import System.Timeout (timeout)
+import Text.Read (readMaybe)
+
+-- | Stable, secret-free reasons that may be written to logs and persisted audit rows.
+-- Third-party exception text is inspected only long enough to select one of these values.
+data DeliveryReason
+  = ConnectFailed
+  | TlsFailed
+  | AuthFailed
+  | Timeout
+  | RejectedAt SmtpStage Int
+  | DataRefused
+  | InvalidUrl
+  | HttpStatus Int
+  | RedirectLoop
+  | TransportError
+  | QueueFull
+  | ShuttingDown
+  | ExpiredInQueue
+  | Unknown
+  deriving stock (Eq, Show)
+
+data SmtpStage = AtEhlo | AtStartTls | AtMail | AtRcpt | AtData
+  deriving stock (Eq, Show)
+
+reasonText :: DeliveryReason -> Text
+reasonText = \case
+  ConnectFailed -> "connect_failed"
+  TlsFailed -> "tls_failed"
+  AuthFailed -> "auth_failed"
+  Timeout -> "timeout"
+  RejectedAt stage code -> "rejected_at_" <> smtpStageText stage <> ":" <> Text.pack (show code)
+  DataRefused -> "data_refused"
+  InvalidUrl -> "invalid_url"
+  HttpStatus code -> "http_status:" <> Text.pack (show code)
+  RedirectLoop -> "redirect_loop"
+  TransportError -> "transport_error"
+  QueueFull -> "queue_full"
+  ShuttingDown -> "shutting_down"
+  ExpiredInQueue -> "expired_in_queue"
+  Unknown -> "unknown"
+
+smtpStageText :: SmtpStage -> Text
+smtpStageText = \case
+  AtEhlo -> "ehlo"
+  AtStartTls -> "starttls"
+  AtMail -> "mail"
+  AtRcpt -> "rcpt"
+  AtData -> "data"
+
+-- | Collapse smtp-mail failures into a vocabulary that cannot contain the rendered message.
+classifySmtpFailure :: SomeException -> DeliveryReason
+classifySmtpFailure err =
+  case fromException err :: Maybe IOException of
+    Just ioe
+      | not (isUserError ioe) -> ConnectFailed
+      | otherwise -> classifyUserError (Text.pack (ioeGetErrorString ioe))
+    Nothing
+      | looksLikeTls (Text.pack (show err)) -> TlsFailed
+      | looksLikeConnectFailure (Text.pack (show err)) -> ConnectFailed
+      | otherwise -> Unknown
+  where
+    classifyUserError msg
+      | "timed out" `Text.isInfixOf` lower = Timeout
+      | "authentication failed" `Text.isInfixOf` lower = AuthFailed
+      | "cannot connect to the server" `Text.isInfixOf` lower = ConnectFailed
+      | "connection refused" `Text.isInfixOf` lower = ConnectFailed
+      | "failed to connect" `Text.isInfixOf` lower = ConnectFailed
+      | "cannot accept any data" `Text.isInfixOf` lower = DataRefused
+      | Just rejected <- parseRejected msg = rejected
+      | otherwise = Unknown
+      where
+        lower = Text.toLower msg
+
+-- | Collapse http-client failures without retaining the request, URL, headers, or response body.
+classifyWebhookFailure :: SomeException -> DeliveryReason
+classifyWebhookFailure err =
+  case fromException err of
+    Just (InvalidUrlException _ _) -> InvalidUrl
+    Just (HttpExceptionRequest _ content) -> classifyHttpContent content
+    Nothing -> TransportError
+  where
+    classifyHttpContent = \case
+      ResponseTimeout -> Timeout
+      ConnectionTimeout -> Timeout
+      ConnectionFailure _ -> ConnectFailed
+      TooManyRedirects _ -> RedirectLoop
+      StatusCodeException response _ -> HttpStatus (statusCode (responseStatus response))
+      InternalException inner
+        | looksLikeTls (Text.pack (show inner)) -> TlsFailed
+      _ -> TransportError
+
+looksLikeTls :: Text -> Bool
+looksLikeTls rendered =
+  any (`Text.isInfixOf` rendered) ["HandshakeFailed", "TLSException", "TlsException"]
+
+looksLikeConnectFailure :: Text -> Bool
+looksLikeConnectFailure rendered =
+  any
+    (`Text.isInfixOf` rendered)
+    ["HostCannotConnect", "Network.Socket.connect", "Connection refused"]
+
+parseRejected :: Text -> Maybe DeliveryReason
+parseRejected msg = do
+  commandAndRest <- Text.stripPrefix "Unexpected reply to: " msg
+  stage <- parseStage commandAndRest
+  let (_, reply) = Text.breakOn "Got this instead: " commandAndRest
+  guard (not (Text.null reply))
+  code <- readMaybe (Text.unpack (Text.take 3 (Text.drop (Text.length "Got this instead: ") reply)))
+  pure (RejectedAt stage code)
+  where
+    parseStage command
+      | "EHLO" `Text.isPrefixOf` command || "HELO" `Text.isPrefixOf` command = Just AtEhlo
+      | "STARTTLS" `Text.isPrefixOf` command = Just AtStartTls
+      | "MAIL" `Text.isPrefixOf` command = Just AtMail
+      | "RCPT" `Text.isPrefixOf` command = Just AtRcpt
+      | "DATA" `Text.isPrefixOf` command = Just AtData
+      | otherwise = Nothing
 
 -- | Select the notifier interpreter from configuration and run it, reusing the server's shared
 -- TLS 'Manager' for the webhook transport. A single dispatching handler both implements the
@@ -198,7 +325,7 @@ deliverSmtp nc sc n = do
   outcome <- liftIO (try @SomeException (sendViaSmtp sc mail))
   case outcome of
     Right () -> pure ()
-    Left err -> publishDeliveryFailed "smtp" n (truncateError err)
+    Left err -> publishDeliveryFailed "smtp" n (classifySmtpFailure err)
 
 -- | Run the SMTP dialogue for one message under a timeout, choosing the connection mode from
 -- 'SmtpTlsMode' and using the authenticated variant when credentials are present. Boot
@@ -282,19 +409,19 @@ renderEmail nc = \case
 
 -- | Log one redacted line and publish a 'NotificationDeliveryFailed' audit event for a delivery
 -- that failed after exhausting its attempts. Shared by the SMTP and webhook interpreters. The
--- token appears __nowhere__: only channel, notification type, recipient, and a truncated,
--- single-line error (the caller passes the already-truncated text).
+-- token appears __nowhere__: only channel, notification type, recipient, and a closed reason
+-- code are emitted. The defence-in-depth redactor makes a future free-text reason safe too.
 publishDeliveryFailed ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   -- | channel: @"smtp"@ | @"webhook"@
   Text ->
   Notification ->
-  -- | truncated, single-line error text (never a token)
-  Text ->
+  DeliveryReason ->
   Eff es ()
-publishDeliveryFailed channel n errText = do
+publishDeliveryFailed channel n reason = do
   let recipient = notificationRecipient n
       kind = notificationTypeText n
+      safeReason = redactDeliveryText n (reasonText reason)
   liftIO
     ( hPutStrLn
         stderr
@@ -305,8 +432,8 @@ publishDeliveryFailed channel n errText = do
                 <> kind
                 <> " recipient="
                 <> recipient
-                <> " error="
-                <> errText
+                <> " reason="
+                <> safeReason
             )
         )
     )
@@ -317,15 +444,35 @@ publishDeliveryFailed channel n errText = do
           { channel = channel,
             notificationType = kind,
             recipient = recipient,
-            errorText = errText,
+            errorText = safeReason,
             occurredAt = occ
           }
     )
 
--- | A single-line, length-capped rendering of an exception for a log line and audit payload:
--- whitespace (including newlines) is collapsed, then the result is truncated to 500 characters.
-truncateError :: SomeException -> Text
-truncateError = truncateText . Text.pack . displayException
+-- | Defence in depth for text associated with a delivery. The public failure path uses only
+-- 'DeliveryReason', but this also removes the notification's token and any @token=@ parameter
+-- before bounding the text in case a future transport threads richer context through here.
+redactDeliveryText :: Notification -> Text -> Text
+redactDeliveryText notification =
+  truncateText
+    . redactTokenParameters
+    . Text.replace (oneTimeTokenText (notificationToken notification)) "<redacted>"
+
+notificationToken :: Notification -> OneTimeToken
+notificationToken = \case
+  EmailVerificationRequested _ token _ -> token
+  PasswordResetRequested _ token _ -> token
+
+redactTokenParameters :: Text -> Text
+redactTokenParameters input =
+  case Text.breakOn "token=" input of
+    (_, rest) | Text.null rest -> input
+    (prefix, rest) ->
+      let valueAndSuffix = Text.drop (Text.length "token=") rest
+          suffix = Text.dropWhile isTokenCharacter valueAndSuffix
+       in prefix <> "token=<redacted>" <> redactTokenParameters suffix
+  where
+    isTokenCharacter c = not (isSpace c || c `elem` ['&', '\'', '"'])
 
 -- | Collapse whitespace (including newlines) to single spaces and cap at 500 characters, so an
 -- error string is one safe line for a log and an audit payload.
@@ -362,13 +509,13 @@ deliverWebhook mgr wc n = do
   result <- liftIO (attemptWebhook mgr wc n)
   case result of
     Nothing -> pure ()
-    Just errText -> publishDeliveryFailed "webhook" n errText
+    Just reason -> publishDeliveryFailed "webhook" n reason
 
 -- | POST the notification, retrying up to 'WebhookConfig.maxAttempts' with @4^(k-1)@-second
 -- backoff (1 s, 4 s, …) between attempts, each under the configured per-attempt timeout. Returns
--- 'Nothing' on the first 2xx, or @Just errText@ after the last attempt fails. All exceptions are
+-- 'Nothing' on the first 2xx, or a secret-free reason after the last attempt fails. All exceptions are
 -- caught here; nothing escapes to the interpreter.
-attemptWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe Text)
+attemptWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe DeliveryReason)
 attemptWebhook mgr wc n = do
   let WebhookConfig {url = u, secret = s, timeoutSeconds = to, maxAttempts = maxA} = wc
       body = BSL.toStrict (encode n)
@@ -377,7 +524,7 @@ attemptWebhook mgr wc n = do
       attempts = max 1 maxA
   reqE <- try @SomeException (parseRequest (Text.unpack u))
   case reqE of
-    Left err -> pure (Just (truncateError err))
+    Left _ -> pure (Just InvalidUrl)
     Right req0 -> do
       let req =
             req0
@@ -399,8 +546,8 @@ attemptWebhook mgr wc n = do
             case outcome of
               Right resp
                 | statusIsSuccessful (responseStatus resp) -> pure Nothing
-                | otherwise -> failed ("webhook returned HTTP " <> Text.pack (show (statusCode (responseStatus resp))))
-              Left err -> failed (truncateError err)
+                | otherwise -> failed (HttpStatus (statusCode (responseStatus resp)))
+              Left err -> failed (classifyWebhookFailure err)
       go 1
 
 -- | The @X-Shomei-Signature@ header value for a raw body: @sha256=@ followed by the lowercase-hex

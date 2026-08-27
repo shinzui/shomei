@@ -49,9 +49,9 @@ breach setting, and can mark the bootstrap admin's email verified.
 
 ## Progress
 
-- [ ] M1: `DeliveryReason` vocabulary, `classifySmtpFailure`/`classifyWebhookFailure`, `redactDeliveryText`; `publishDeliveryFailed` takes a reason, never `displayException`
-- [ ] M1: NotifySpec — `451` at `DATA`, webhook connection-refused with a query-string secret, webhook `500` echoing the body, classifier table; both pre-fix failures pasted into Surprises & Discoveries
-- [ ] M1: `docs/adr/` created (or the next handle allocated) with the "transport exception text is never persisted" record
+- [x] (2026-08-27T21:27:00Z) M1: `DeliveryReason` vocabulary, `classifySmtpFailure`/`classifyWebhookFailure`, `redactDeliveryText`; `publishDeliveryFailed` takes a reason, never `displayException`
+- [x] (2026-08-27T21:27:00Z) M1: NotifySpec — `451` at `DATA`, webhook connection-refused with a query-string secret, webhook `500` echoing the body, classifier table; both pre-fix failures pasted into Surprises & Discoveries
+- [x] (2026-08-27T21:27:00Z) M1: [ADR-9](../adr/0009-transport-exception-text-is-never-persisted.md) added to the existing profile-governed bundle; `just adr-validate` and all four `shomei-server` suites green
 - [ ] M2: `Shomei.Notify.Queue` (bounded `TBQueue`, drop-with-audit, close/drain); `Env.envNotifierQueue`; request path enqueues
 - [ ] M2: `installNotifierWorker` on `supervisedLoopMicros` beside `installSweeper`; drained within `gracefulShutdownTimeoutSeconds` before the pool is released; `notifierQueueSize` in loader, `config/shomei-types.dhall`, `deployment.md`
 - [ ] M2: E2E webhook scenario installs the worker and polls; sub-second `202` against a receiver that sleeps 3 s; core `CostSpec` pins the hit/miss delta
@@ -64,8 +64,29 @@ breach setting, and can mark the bootstrap admin's email verified.
 
 ## Surprises & Discoveries
 
-(None yet. M1 requires running the two new NotifySpec cases against the unfixed code once and pasting the
-failing output here; see the quoted-printable hazard in Context.)
+- The regression-first SMTP case reproduced the persisted-token leak. smtp-mail quoted-printable-encoded and
+  split the raw token, but the first 500 characters still retained both halves of the account-takeover
+  credential:
+
+  ```text
+  SMTP: a 451 at DATA audits a reason code, never the message: FAIL
+    expected: "rejected_at_data:451"
+     but got: "user error (Unexpected reply to: DATA ... confirm?token=3Ds3cr3t-one-tim=\\r\\ne-token-do-not-log-me ..."
+  ```
+
+- The regression-first webhook case confirmed that http-client's request rendering persisted the configured
+  URL query string, along with transport metadata and the request signature:
+
+  ```text
+  webhook: a transport failure never persists the request: FAIL
+    expected: "connect_failed"
+     but got: "HttpExceptionRequest Request { host = \"127.0.0.1\" ... path = \"/hook\" queryString = \"?key=url-secret-hunter2\" ... }"
+  ```
+
+- smtp-mail delegates connection establishment to crypton-connection, whose current released source throws
+  `HostCannotConnect` rather than an `IOException` for a refused socket. The classifier therefore recognizes
+  that constructor's rendering only to select `connect_failed`; it still discards the rendering before any
+  output. The focused refused-connection test pins this dependency seam.
 
 
 ## Decision Log
@@ -79,6 +100,8 @@ failing output here; see the quoted-printable hazard in Context.)
   quoted-printable-encodes the body (`token=3D…`) and a soft line break can split the token; only a closed set
   is safe by construction. Matching `IOException` types, smtp-mail 0.5.0.1's message fragments,
   `HttpException`'s constructors, and the `show` text of TLS exceptions keeps `tls` out of the dependencies.
+  The durable rule is recorded in
+  [ADR-9](../adr/0009-transport-exception-text-is-never-persisted.md).
   Date: 2026-08-27
 
 - Decision: Delivery moves to a bounded in-memory queue (`Control.Concurrent.STM.TBQueue`; `stm` is already a

@@ -138,7 +138,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Complete |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Complete |
-| 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Not Started |
+| 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | In Progress |
 | 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Not Started |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Not Started |
 | 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | Not Started |
@@ -378,7 +378,7 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-6: `HashPassword` forced inside the permit; limiter test forces its results and measures overlap
 - [x] EP-6: Argon2 parameters validated at boot (`m ≥ max 8 (8·p)`); unknown Dhall keys rejected; strict enum parsing; empty WebAuthn origins refused
 - [x] EP-6: `config/shomei-types.dhall` widened to `Optional` fields and synced; `shomei_password_credentials (user_id)` unique index; statement and idle-transaction timeouts; sweeper isolated from request capacity
-- [ ] EP-7: transport exceptions mapped to reason codes; NotifySpec case for a DATA-stage `451`
+- [x] EP-7: transport exceptions mapped to reason codes; NotifySpec case for a DATA-stage `451`; ADR-9 records that exception text never crosses the persistence boundary
 - [ ] EP-7: notifier delivery moved to a supervised background worker; the request path answers `202` in sub-second bounded work with the hit/miss residual pinned by test
 - [ ] EP-7: SMTP password and webhook secret out of `ShomeiConfig`; env secrets trimmed; `http://` webhooks refused by default; timestamped HMAC; redacting `Show` for tokens; `LoginFailed` carries the hashed key
 - [ ] EP-8: trusted-proxy list with rightmost-untrusted `X-Forwarded-For`; dotted-quad IPs; per-IP knobs configurable

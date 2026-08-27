@@ -5,7 +5,7 @@ module Shomei.Server.NotifySpec (tests) where
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeException, bracket, catch, finally)
+import Control.Exception (SomeException, bracket, catch, finally, toException)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (decode)
@@ -34,7 +34,15 @@ import Shomei.Audit.Event.Domain (AuthEvent (NotificationDeliveryFailed), Notifi
 import Shomei.Audit.Publisher.Store (AuthEventPublisher (..))
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebhookConfig (..), defaultShomeiConfig)
-import Shomei.Notify (renderNotification, runNotifierSmtp, runNotifierWebhook, webhookSignature)
+import Shomei.Notify
+  ( DeliveryReason (..),
+    SmtpStage (..),
+    classifySmtpFailure,
+    renderNotification,
+    runNotifierSmtp,
+    runNotifierWebhook,
+    webhookSignature,
+  )
 import Shomei.Time.Postgres (runClockIO)
 import System.IO (BufferMode (LineBuffering), Handle, IOMode (ReadWriteMode), hClose, hFlush, hGetLine, hIsEOF, hPutStr, hSetBuffering)
 import Test.Tasty (TestTree, testGroup)
@@ -70,9 +78,13 @@ tests =
         assertBool "no hash prefix in raw mode" (not ("token_sha256=" `isInfixOf` out)),
       smtpDeliversTest,
       smtpFailureTest,
+      smtpDataRejectTest,
+      smtpClassifierTest,
       webhookDeliversTest,
       webhookRetriesThenSucceeds,
-      webhookExhaustsThenAudits
+      webhookExhaustsThenAudits,
+      webhookResponseBodyNeverAuditedTest,
+      webhookTransportFailureRedactsRequestTest
     ]
   where
     expires = fixtureExpiry
@@ -152,11 +164,49 @@ smtpFailureTest = testCase "SMTP: a refused connection audits a failure and neve
       d.channel @?= "smtp"
       d.notificationType @?= "password_reset_requested"
       d.recipient @?= "a@example.com"
-      assertBool "the failure carries some error text" (not (Text.null d.errorText))
+      d.errorText @?= "connect_failed"
       assertBool
         ("the token must not appear in the audit error: " <> Text.unpack d.errorText)
         (not (Text.unpack rawToken `isInfixOf` Text.unpack d.errorText))
     _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
+
+-- | smtp-mail includes the entire rendered message in the exception raised when the relay
+-- rejects DATA. Persisting that exception therefore persists the one-time token too.
+smtpDataRejectTest :: TestTree
+smtpDataRejectTest = testCase "SMTP: a 451 at DATA audits a reason code, never the message" do
+  email <- testEmail
+  bracket openSink (close . sinkSocket) \sink -> bracket (forkIO (acceptLoopWithDataReply "451 4.7.1 greylisted, try again later\r\n" sink)) killThread \_ -> do
+    events <- deliverViaSmtp (plainSmtpConfig (sinkPort sink)) (PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry)
+    case events of
+      [NotificationDeliveryFailed d] -> do
+        d.errorText @?= "rejected_at_data:451"
+        assertBool
+          ("the rendered message must not appear in the audit reason: " <> Text.unpack d.errorText)
+          (not ("token=" `Text.isInfixOf` unfoldQuotedPrintable d.errorText))
+        assertBool
+          ("the token must not appear in the audit reason: " <> Text.unpack d.errorText)
+          (not (rawToken `Text.isInfixOf` unfoldQuotedPrintable d.errorText))
+      _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
+
+unfoldQuotedPrintable :: Text.Text -> Text.Text
+unfoldQuotedPrintable =
+  Text.replace "=2E" "."
+    . Text.replace "=3D" "="
+    . Text.replace "=\\r\\n" ""
+    . Text.replace "=\r\n" ""
+
+smtpClassifierTest :: TestTree
+smtpClassifierTest = testCase "classifySmtpFailure maps smtp-mail messages to reasons" do
+  classifySmtpFailure
+    ( toException
+        ( userError
+            "Unexpected reply to: DATA \"rendered message\", Expected reply code: 250, Got this instead: 451 \"greylisted\""
+        )
+    )
+    @?= RejectedAt AtData 451
+  classifySmtpFailure (toException (userError "authentication failed.")) @?= AuthFailed
+  classifySmtpFailure (toException (userError "SMTP delivery timed out")) @?= Timeout
+  classifySmtpFailure (toException (userError "unclassified SMTP failure")) @?= Unknown
 
 -- A minimal in-process SMTP sink -------------------------------------------------
 
@@ -188,18 +238,21 @@ closedPort = bracket openSink (close . sinkSocket) (pure . sinkPort)
 -- All exceptions are swallowed: when the test kills this thread or closes the listening socket,
 -- the resulting @accept@/@threadWait@ error must not print or fail the suite.
 acceptLoop :: Sink -> IO ()
-acceptLoop sink = loop `catch` \(_ :: SomeException) -> pure ()
+acceptLoop = acceptLoopWithDataReply "250 OK queued\r\n"
+
+acceptLoopWithDataReply :: String -> Sink -> IO ()
+acceptLoopWithDataReply dataReply sink = loop `catch` \(_ :: SomeException) -> pure ()
   where
     loop = forever do
       (conn, _) <- accept (sinkSocket sink)
       h <- socketToHandle conn ReadWriteMode
-      _ <- forkIO ((serveSmtp (sinkTranscript sink) h `finally` hClose h) `catch` \(_ :: SomeException) -> pure ())
+      _ <- forkIO ((serveSmtp dataReply (sinkTranscript sink) h `finally` hClose h) `catch` \(_ :: SomeException) -> pure ())
       pure ()
 
 -- | The sink SMTP dialogue: greet, answer EHLO/MAIL/RCPT with 250, DATA with 354 then 250 after
 -- the terminating dot, and QUIT with 221. Every command line and DATA body line is recorded.
-serveSmtp :: MVar [String] -> Handle -> IO ()
-serveSmtp transcript h = do
+serveSmtp :: String -> MVar [String] -> Handle -> IO ()
+serveSmtp dataReply transcript h = do
   hSetBuffering h LineBuffering
   respond "220 shomei-test-sink ready\r\n"
   loop
@@ -218,7 +271,7 @@ serveSmtp transcript h = do
             "HELO" -> respond "250 shomei-test-sink\r\n" >> loop
             "MAIL" -> respond "250 OK\r\n" >> loop
             "RCPT" -> respond "250 OK\r\n" >> loop
-            "DATA" -> respond "354 end with .\r\n" >> readData >> respond "250 OK queued\r\n" >> loop
+            "DATA" -> respond "354 end with .\r\n" >> readData >> respond dataReply >> loop
             "QUIT" -> respond "221 Bye\r\n"
             _ -> respond "250 OK\r\n" >> loop
     readData = do
@@ -320,3 +373,43 @@ webhookExhaustsThenAudits = testCase "webhook: exhausts attempts then audits a r
           ("the token must not appear in the audit error: " <> Text.unpack d.errorText)
           (not (Text.unpack rawToken `isInfixOf` Text.unpack d.errorText))
       _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
+
+webhookResponseBodyNeverAuditedTest :: TestTree
+webhookResponseBodyNeverAuditedTest = testCase "webhook: a 500 that echoes the body audits only the status" do
+  email <- testEmail
+  mgr <- newManager defaultManagerSettings
+  captured <- newMVar []
+  let n = PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry
+      echoingStub req respond = do
+        body <- LBS.toStrict <$> strictRequestBody req
+        modifyMVar_ captured (pure . (<> [(requestHeaders req, body)]))
+        respond (responseLBS (mkStatus 500 "") [] (LBS.fromStrict body))
+  testWithApplication (pure echoingStub) \port -> do
+    events <- deliverViaWebhook mgr (webhookConfigFor port 1) n
+    case events of
+      [NotificationDeliveryFailed d] -> do
+        d.errorText @?= "http_status:500"
+        assertBool
+          ("the response body must not appear in the audit reason: " <> Text.unpack d.errorText)
+          (not (rawToken `Text.isInfixOf` d.errorText))
+      _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
+
+-- | http-client's Show instance includes the request query string. A transport exception must
+-- therefore be classified before it is persisted.
+webhookTransportFailureRedactsRequestTest :: TestTree
+webhookTransportFailureRedactsRequestTest = testCase "webhook: a transport failure never persists the request" do
+  email <- testEmail
+  mgr <- newManager defaultManagerSettings
+  port <- closedPort
+  let wc =
+        (webhookConfigFor port 1)
+          { url = Text.pack ("http://127.0.0.1:" <> show port <> "/hook?key=url-secret-hunter2")
+          }
+  events <- deliverViaWebhook mgr wc (PasswordResetRequested email (OneTimeToken rawToken) fixtureExpiry)
+  case events of
+    [NotificationDeliveryFailed d] -> do
+      d.errorText @?= "connect_failed"
+      assertBool
+        ("the request URL must not appear in the audit reason: " <> Text.unpack d.errorText)
+        (not ("hunter2" `Text.isInfixOf` d.errorText))
+    _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
