@@ -118,8 +118,8 @@ REV-7, and its fix spans three packages. A decomposition into fewer, larger plan
 concurrency work behind a security fix that should land first.
 
 Architecture Decision Records: at drafting time this repository had no `docs/adr/` bundle.
-EP-1 bootstrapped the profile-governed bundle, and EP-1 through EP-5 have now added ADR-1 through
-ADR-7. The cross-repository records that also constrain this initiative are
+EP-1 bootstrapped the profile-governed bundle, and EP-1 through EP-6 have now added ADR-1 through
+ADR-8. The cross-repository records that also constrain this initiative are
 `mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1`
 (scoped service-token issuance, which EP-2's privilege-scope policy must not break — the Kikan
 contract it carries treats `impersonate:user`-class scopes as Shōmei-owned and coarse) and
@@ -137,7 +137,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Complete |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Complete |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
-| 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | In Progress |
+| 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Complete |
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Not Started |
 | 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Not Started |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Not Started |
@@ -375,9 +375,9 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-5: TOTP and passkey counter updates are compare-and-swap; concurrent same-code completion test
 - [x] EP-5: reset, change, reuse-detection, and logout tails in one transaction; admin status CAS; outstanding one-time tokens revoked; duplicate email is `409`; in-memory fake atomic
 - [x] EP-5: schema hygiene — `CHECK` constraints on status columns, `lower()` unique indexes, PostgreSQL 17/18 floor documented
-- [ ] EP-6: `HashPassword` forced inside the permit; limiter test forces its results and measures overlap
-- [ ] EP-6: Argon2 parameters validated at boot (`m ≥ max 8 (8·p)`); unknown Dhall keys rejected; strict enum parsing; empty WebAuthn origins refused
-- [ ] EP-6: `config/shomei-types.dhall` widened to `Optional` fields and synced; `shomei_password_credentials (user_id)` unique index; statement timeout
+- [x] EP-6: `HashPassword` forced inside the permit; limiter test forces its results and measures overlap
+- [x] EP-6: Argon2 parameters validated at boot (`m ≥ max 8 (8·p)`); unknown Dhall keys rejected; strict enum parsing; empty WebAuthn origins refused
+- [x] EP-6: `config/shomei-types.dhall` widened to `Optional` fields and synced; `shomei_password_credentials (user_id)` unique index; statement and idle-transaction timeouts; sweeper isolated from request capacity
 - [ ] EP-7: transport exceptions mapped to reason codes; NotifySpec case for a DATA-stage `451`
 - [ ] EP-7: notifier delivery moved to a supervised background worker; the request path answers `202` in sub-second bounded work with the hit/miss residual pinned by test
 - [ ] EP-7: SMTP password and webhook secret out of `ShomeiConfig`; env secrets trimmed; `http://` webhooks refused by default; timestamped HMAC; redacting `Show` for tokens; `LoginFailed` carries the hashed key
@@ -425,6 +425,21 @@ never by counting files. Every later plan allocates the next handle the same way
   as 0029 but the live allocator returned 0035 after session provenance, OAuth, signing-key, factor,
   and authentication-time migrations. The slug remains the planned identity; the manifest and
   deployment contract now name the allocated number.
+
+- EP-6 confirmed the Argon2 limiter regression was a false pass caused by laziness. Forcing the
+  digest and returned hash under the permit reduced the eight-loop signup load's peak RSS from
+  626 MB to 237 MB; the lower throughput is the configured concurrency bound taking effect.
+
+- Strict configuration changed both failure behavior and schema evolution. A misspelled Dhall key
+  previously reached listening state; it now exits before migration or pool acquisition. The
+  loader/schema equality test grew from the reviewed 49-key schema to 70 synchronized fields, then
+  to 71 when EP-6 added the statement timeout. `dhall-to-json --preserve-null` is required only by
+  the drift probe because ordinary conversion intentionally omits completed `None` values.
+
+- The live migration allocator assigned EP-6's uniqueness migration 0036. The installed `hasql`
+  exposes `Session.script` rather than the newer corpus example's `Session.sql`, and erases the
+  idle-timeout SQLSTATE after PostgreSQL closes the connection; reading both session settings back
+  before exercising their failure paths made the regression independent of that rendering detail.
 
 
 ## Decision Log
@@ -544,10 +559,20 @@ never by counting files. Every later plan allocates the next handle the same way
   by landing, so the plans state the rule rather than pre-assigning numbers.
   Date: 2026-08-27
 
+- Decision: Runtime file configuration is an evolvable Dhall record-completion schema whose fields
+  are all optional, while the loader rejects unknown keys and a test keeps its field set equal to
+  the schema. The contract is recorded in
+  [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md).
+  Rationale: Adding optional behavior must not break every completed deployment file, but accepting
+  misspelled or newer keys in an older binary silently changes security policy. Record completion
+  supplies forward evolution, strict decoding supplies fail-closed intent, and mechanical equality
+  removes the hand-maintained schema gap found by the review.
+  Date: 2026-08-27
+
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-5 are complete, closing Phase 1 and two abuse-protection plans in Phase 2.
+EP-1 through EP-6 are complete, closing Phase 1 and Phase 2.
 Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
@@ -568,11 +593,19 @@ hashing; TOTP, passkey, session, and user-status transitions have one compare-an
 password reset/change and revocation tails commit atomically. Identity conflicts retain their 409
 domain meaning, while migration 0035 constrains persisted vocabulary and case-insensitive identity
 uniqueness. ADR-5 through ADR-7 record the accounting, freshness, and persistence-atomicity
-boundaries; each child's final serialized workspace suite is green. Five plans remain open. EP-6
-is the recommended next Phase 2 plan because it closes the remaining password-hashing and unsafe
-configuration work before the Phase 3 plans add configuration and runtime assembly surfaces.
+boundaries. EP-6 now forces password hashing inside the real limiter, rejects invalid Argon2 and
+trust-boundary configuration before serving work, and keeps an evolvable 71-field Dhall schema
+synchronized with the strict loader. Migration 0036 enforces one password credential per user;
+pooled work has statement and idle-transaction bounds; and maintenance no longer occupies request
+capacity. ADR-8 records the configuration contract. Each child's final serialized workspace suite
+is green. Four Phase 3 plans remain open. EP-7 is the recommended next plan: its notifier and secret
+hygiene work has no hard dependencies, and its soft dependency on EP-6's strict schema is complete.
 
 
 Revision note (2026-08-27): Reconciled EP-5 as complete, carried its concurrency and migration
 results into initiative state, and added ADR-7's atomic-persistence policy. The MasterPlan remains
 in progress with EP-6 through EP-10 open.
+
+Revision note (2026-08-27): Reconciled EP-6 as complete, recorded its load, strict-config, schema,
+migration, timeout, and isolated-sweeper evidence, and added ADR-8's synchronized-configuration
+policy. Phase 2 is complete; the MasterPlan remains in progress with EP-7 through EP-10 open.

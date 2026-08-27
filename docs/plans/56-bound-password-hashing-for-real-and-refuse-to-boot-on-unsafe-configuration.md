@@ -61,7 +61,7 @@ and the sweeper runs on its own connection.
       lagging keys; example rewritten; ConfigSpec sync test.
 - [x] (2026-08-27T21:02:00Z) M5: migration (number allocated by `just new-migration`; `0036` in the live manifest) with the unique index; `acquirePool` sets both timeouts from `dbStatementTimeoutMs`
       (default 30 000); sweeper on a dedicated one-connection pool.
-- [ ] `nix fmt`; `cabal build all --enable-tests`; `cabal test all`; CHANGELOG `Unreleased` entries;
+- [x] (2026-08-27T21:06:00Z) `nix fmt`; `cabal build all --enable-tests`; `cabal test all`; CHANGELOG `Unreleased` entries;
       MasterPlan 8 Progress and registry; ADR distillation pass.
 
 
@@ -200,7 +200,30 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+Completed 2026-08-27. Password creation now performs and forces the Argon2 derivation before it
+leaves the limiter permit or reaches a credential store. The replacement regression test observes
+the formerly escaped thunk, and the signup load harness measured the intended operational result:
+peak RSS fell from 626 MB to 237 MB while the configured limit of two supplied back-pressure.
+Unsupported Argon2 costs now fail a named pure rule and a real trial derivation before migrations or
+pool acquisition.
+
+Configuration now fails closed at every boundary this plan owns: unknown Dhall keys and invalid
+policy enums are errors; empty WebAuthn origins are rejected by the loader and remain a typed error
+for hand-built embedding configurations; signing-algorithm parsing is total; and the missing email
+verification env overlay exists. The Dhall package exports an evolvable `{ Type, default }` record
+completion schema. Its 71 fields (including M5's statement timeout) are mechanically equal to
+`FileConfig`, and ADR-8 records the open-but-strict synchronized contract.
+
+Migration 0036 enforces and indexes one password credential per user. Every request, admin, test,
+and example pool initializes PostgreSQL's statement and idle-in-transaction timeouts; the focused
+probe reads both settings back and proves both cancellation paths. The in-process sweeper owns a
+dedicated one-connection pool and returns its cleanup to graceful shutdown. A real boot applied all
+36 migrations, performed a sweep on that pool, and released both pools on SIGINT.
+
+Final verification passed unchanged formatting, the complete enabled-component build, all 13 Cabal
+test suites, the 36-file migration manifest check, Dhall evaluation, and strict validation of all
+eight ADRs. The package changelogs and deployment guide describe each compatibility or operational
+change. No EP-6 work remains; MasterPlan 8 can proceed to EP-7.
 
 
 ## Context and Orientation
@@ -208,9 +231,10 @@ Found while writing this plan (2026-08-27) against HEAD `5dfd2a6` (code identica
 The repository at `/Users/shinzui/Keikaku/bokuno/shomei` is a multi-package Haskell workspace (GHC
 9.12.4); build with `cabal build all --enable-tests`, test with `cabal test all`, format with `nix fmt`,
 all inside `nix develop`. Database tests start an ephemeral PostgreSQL themselves
-(`Shomei.Migrations.TestSupport.withShomeiMigratedDatabase`). Architecture Decision Records: `docs/adr/`
-does not exist (re-checked 2026-08-27) and no ADR in any registered Mori project concerns this work; if
-the completion pass creates the bundle, follow `.claude/skills/exec-plan/ADR.md`.
+(`Shomei.Migrations.TestSupport.withShomeiMigratedDatabase`). Architecture Decision Records live in
+the profile-governed `docs/adr/` bundle; this plan added
+[ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) for its durable
+configuration contract.
 
 **Where hashing lives.** `shomei-postgres/src/Shomei/Account/Password/Hash/Postgres.hs`. The derivation
 is lazy today:
