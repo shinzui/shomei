@@ -38,9 +38,9 @@ import Shomei.Id (UserId)
 import Shomei.Prelude
 import Shomei.Servant.Application (ApplicationHandler, port, rejectAuth, rejectProblem, runApplicationHandler, workflow)
 import Shomei.Servant.Auth (AuthUser (..))
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Cookie (tokenCookies)
 import Shomei.Servant.Error (noProblemOccurrence, pcSelfTargetForbidden)
-import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Authentication.Workflow qualified as Authentication

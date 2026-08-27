@@ -64,6 +64,7 @@ library
     Shomei.Server.Keys
     Shomei.Server.Middleware.BodyLimit
     Shomei.Server.Middleware.RateLimit
+    Shomei.Server.Middleware.TrustedProxy
     Shomei.Server.Observability.Logging
     Shomei.Server.Observability.Metrics
     Shomei.Server.Supervisor
@@ -81,6 +82,7 @@ library
     , http-client           >=0.7      && <0.8
     , http-client-tls       >=0.3      && <0.5
     , http-types            >=0.12     && <0.13
+    , iproute               >=1.7.8    && <1.8
     , jose                  >=0.13     && <0.14
     , mime-mail             >=0.5      && <0.6
     , network               >=3.1      && <3.3

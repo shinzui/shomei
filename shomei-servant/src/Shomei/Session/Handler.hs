@@ -20,6 +20,7 @@ import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 import Shomei.Servant.Application (port, rejectAuth, rejectProblem, runApplicationHandler, workflow)
 import Shomei.Servant.Auth (AuthUser (..), originHeaderAllowed)
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Cookie
   ( clearedCookies,
     refreshTokenFromCookie,
@@ -32,7 +33,6 @@ import Shomei.Servant.Error
     pcCsrfRejected,
     pcSessionNotFound,
   )
-import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (CookieResponse (..), cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Admin.Api (AdminSessionApi (..))

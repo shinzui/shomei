@@ -50,14 +50,14 @@ where
 
 import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Data.ByteString (ByteString)
-import Data.ByteString.Char8 qualified as Char8
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Network.Socket (SockAddr (..))
 import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
 import Shomei.Servant.Api (shomeiThrottledRoutes)
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
 import Shomei.Servant.Middleware (problemResponse)
 import Shomei.Servant.Throttle (ThrottledRoute, matchesThrottledRoute)
@@ -174,7 +174,4 @@ throttledPath rl req = matchesThrottledRoute rl.throttled (requestMethod req) (p
 -- each connection would get its own bucket). Behind a reverse proxy this is the proxy address; a
 -- trusted @X-Forwarded-For@ policy is out of scope for this single-instance plan.
 clientKey :: Request -> ByteString
-clientKey req = case remoteHost req of
-  SockAddrInet _ host -> Char8.pack (show host)
-  SockAddrInet6 _ _ host _ -> Char8.pack (show host)
-  other -> Char8.pack (show other)
+clientKey = encodeUtf8 . clientIpText . remoteHost

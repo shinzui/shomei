@@ -12,6 +12,8 @@ let ConfigType =
       , audience : Optional Text
       , databaseUrl : Optional Text
       , port : Optional Natural
+      , trustedProxies : Optional (List Text)
+      , proxyProtocol : Optional Text
       , dbPoolSize : Optional Natural
       , dbPoolAcquisitionTimeoutMs : Optional Natural
       , dbStatementTimeoutMs : Optional Natural
@@ -87,6 +89,8 @@ let default =
       , audience = None Text
       , databaseUrl = None Text
       , port = None Natural
+      , trustedProxies = None (List Text)
+      , proxyProtocol = None Text
       , dbPoolSize = None Natural
       , dbPoolAcquisitionTimeoutMs = None Natural
       , dbStatementTimeoutMs = None Natural

@@ -42,8 +42,8 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
 
 ## Progress
 
-- [ ] Step 0: pre-fix observations recorded in Surprises & Discoveries.
-- [ ] M1: `Shomei.Servant.ClientIp` used at all four sites; `Shomei.Server.Middleware.TrustedProxy` with
+- [x] (2026-08-27T22:40:52Z) Step 0: pre-fix observations recorded in Surprises & Discoveries.
+- [x] (2026-08-27T22:52:42Z) M1: `Shomei.Servant.ClientIp` used at all four sites; `Shomei.Server.Middleware.TrustedProxy` with
       the four MiddlewareSpec cases; `trustedProxies`/`proxyProtocol` keys (env + Dhall); boot refuses an
       invalid entry; `edgeMiddleware` in `Boot.hs`; warp `setProxyProtocol*`; `deployment.md` "Behind a
       reverse proxy"; `docs/adr/` created with the trusted-proxy ADR.
@@ -59,7 +59,27 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
 
 ## Surprises & Discoveries
 
-(None yet. Step 0's pre-fix transcripts are recorded here first; dependency facts live in Context.)
+- The regression-first run needed port `18080` because a local container already owned
+  `127.0.0.1:8080`, and it used a clean `shomei_ep8` database so the signing-key envelope had a
+  known test key. The behavior matched the review: twenty requests with twenty-five distinct
+  `X-Forwarded-For` values were all attributed to the socket peer, then five shared-bucket
+  responses were throttled; the stored rows collapsed to one decimal IPv4 value. The oversized
+  chunked body reached JSON decoding and answered 400, and invalid UTF-8 in `Authorization`
+  escaped as warp's plain 500. Evidence:
+
+  ```text
+  401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 401 429 429 429 429 429
+  16777343|20
+  400
+  HTTP/1.1 500 Internal Server Error
+  {"error":"Cannot decode byte '\\xff': Data.Text.Encoding: Invalid UTF-8 stream","level":"error","method":"GET","msg":"unhandled exception","path":"/v1/auth/me"}
+  ```
+
+- EP-4 had already extracted `Shomei.Servant.RemoteHost` while landing the expanded credential
+  accounting surface. M1 kept it as a compatibility re-export and moved the implementation and
+  every in-tree reader to `Shomei.Servant.ClientIp`. The focused suite passed 21 cases, and the
+  live rerun with `SHOMEI_TRUSTED_PROXIES=127.0.0.1/32` returned twenty-five 401s while persisting
+  `203.0.113.1` through `203.0.113.25` once each; `SHOMEI_TRUSTED_PROXIES=nope` exited 1 before boot.
 
 
 ## Decision Log
@@ -115,6 +135,13 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
   not multiply queries. Twenty-five testable lines are not worth a dependency (plan 36's rule). Login
   attempts are counted over a 15-minute window, so old-format rows matter for fifteen minutes after the
   upgrade; audit payloads are historical facts. Date: 2026-08-27
+
+
+- Decision: Keep `Shomei.Servant.RemoteHost` as a compatibility re-export while moving canonical
+  rendering and all in-tree consumers to `Shomei.Servant.ClientIp`.
+  Rationale: EP-4 extracted `RemoteHost` after this plan was drafted and exposed it from the package.
+  Deleting that module would create an unrelated source break for embedding hosts; a zero-cost re-export
+  preserves compatibility while the new name makes the shared policy explicit. Date: 2026-08-27
 
 
 ## Outcomes & Retrospective

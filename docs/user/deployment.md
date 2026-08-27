@@ -19,6 +19,8 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `PG_CONNECTION_STRING` | libpq connection string (required for the server) | — |
 | `SHOMEI_CONFIG` | path to a Dhall config file (optional) | unset |
 | `SHOMEI_PORT` | warp listen port | `8080` |
+| `SHOMEI_TRUSTED_PROXIES` | comma-separated proxy addresses or CIDR blocks whose `X-Forwarded-For` chain may supply client identity | empty (trust nobody) |
+| `SHOMEI_PROXY_PROTOCOL` | warp PROXY protocol v1 mode: `none` or `required` | `none` |
 | `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
 | `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |
@@ -180,6 +182,45 @@ never boots. `+RTS` is consumed by the server's own runtime and never reaches a 
 Override with `SHOMEI_RTS_OPTS` (set it to the empty string to pass nothing). The RTS **rejects
 unknown options and exits**, so a typo fails the container at boot rather than silently reverting
 to defaults. Bare-metal and `cabal run` deployments are unaffected — they keep GHC's plain `-N`.
+
+### Behind a reverse proxy
+
+`shomei-server` serves plaintext HTTP; it does not include `warp-tls`. Production deployments
+normally terminate TLS at a reverse proxy. The public URL must still use HTTPS because
+`cookieSecure` and the browser `Origin` check describe the public connection, not the proxy-to-
+Shōmei hop.
+
+By default Shōmei trusts no forwarded header. Every request is therefore attributed to the TCP
+peer, which is the proxy in this topology. The default `maxFailedLoginsPerIp` policy then shares
+one twenty-failure, fifteen-minute budget across every user. Set `SHOMEI_TRUSTED_PROXIES` to the
+exact proxy address or subnet so Shōmei can walk `X-Forwarded-For` from the right and select the
+rightmost untrusted client. If that is impossible, raise `SHOMEI_MAX_FAILED_LOGINS_PER_IP` and
+enforce an equivalent limit at the proxy.
+
+For a proxy on loopback, an nginx deployment can use:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+
+location /metrics {
+    allow 10.0.0.0/8;
+    deny all;
+    proxy_pass http://127.0.0.1:8080;
+}
+```
+
+```bash
+SHOMEI_TRUSTED_PROXIES=127.0.0.1/32 shomei-server
+```
+
+The same settings are available as the Dhall keys `trustedProxies` and `proxyProtocol`.
+`SHOMEI_PROXY_PROTOCOL=required` is the alternative for a TCP proxy such as HAProxy configured
+with `send-proxy`. Warp reads only PROXY protocol v1. Required means every connection must carry
+the header, including orchestrator HTTP probes; Shōmei deliberately does not expose warp's
+optional mode because accepting both forms lets a direct client spoof its address.
 
 ### Dhall config file
 

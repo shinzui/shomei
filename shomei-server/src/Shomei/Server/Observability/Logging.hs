@@ -40,7 +40,6 @@ import Data.UUID.V4 qualified as UUIDv4
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Types (Status (statusCode))
-import Network.Socket (SockAddr (..), hostAddressToTuple)
 import Network.Wai
   ( Middleware,
     Request,
@@ -53,6 +52,7 @@ import Network.Wai
   )
 import Servant.Health.Paths (healthRawPaths)
 import Shomei.Config (LogFormat (..), ObservabilityConfig (..))
+import Shomei.Servant.ClientIp (clientIpText)
 import System.IO (Handle, stdout)
 
 requestLoggingMiddleware :: ObservabilityConfig -> Middleware
@@ -153,9 +153,4 @@ resolveRequestId req =
 
 -- | The peer host as text (dotted-quad for IPv4), with the ephemeral port dropped.
 clientIp :: Request -> Text
-clientIp req = case remoteHost req of
-  SockAddrInet _ host ->
-    let (a, b, c, d) = hostAddressToTuple host
-     in Text.intercalate "." (map (Text.pack . show) [a, b, c, d])
-  SockAddrInet6 _ _ host _ -> Text.pack (show host)
-  other -> Text.pack (show other)
+clientIp = clientIpText . remoteHost

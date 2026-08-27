@@ -13,6 +13,7 @@
 -- remains as the env-only entry point used by EP-4's @shomei-admin@.
 module Shomei.Server.Config
   ( ServerSettings (..),
+    ProxyProtocolMode (..),
     SweepSettings (..),
     defaultSweepSettings,
     defaultDbStatementTimeoutMs,
@@ -37,7 +38,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime)
 import Shomei.Account.Password.Domain (PasswordPolicy (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor, defaultArgon2Params)
-import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Role (..))
 import Shomei.Config
   ( AttestationPolicy (..),
     CookieConfig (..),
@@ -64,6 +65,7 @@ import Shomei.Config
 import Shomei.Notify (NotifierSecrets (..), SmtpPassword (..), WebhookSecret (..))
 import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
+import Shomei.Server.Middleware.TrustedProxy (TrustedProxies, emptyTrustedProxies, parseTrustedProxies)
 import Shomei.SigningKey.Verify.Jwt (checkStringOrUri)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
@@ -78,6 +80,10 @@ import Text.Read (readMaybe)
 data ServerSettings = ServerSettings
   { serverPort :: !Int,
     serverConnStr :: !Text,
+    -- | socket peers allowed to supply X-Forwarded-For client identity
+    serverTrustedProxies :: !TrustedProxies,
+    -- | whether every TCP connection must carry a PROXY protocol v1 header
+    serverProxyProtocol :: !ProxyProtocolMode,
     -- | connections held open by the @hasql@ pool
     serverDbPoolSize :: !Int,
     -- | how long a request waits for a free pooled connection before failing
@@ -99,6 +105,11 @@ data ServerSettings = ServerSettings
     serverHashingMaxConcurrency :: !Int
   }
   deriving stock (Show, Generic)
+
+data ProxyProtocolMode
+  = ProxyProtocolOff
+  | ProxyProtocolRequired
+  deriving stock (Eq, Show, Generic)
 
 -- | Two concurrent hashes bound the transient allocation at ~128 MiB and cap the capabilities
 -- that can be pinned in unsafe FFI simultaneously, while still sustaining ~13–40 logins/second
@@ -183,6 +194,8 @@ data FileConfig = FileConfig
     audience :: !(Maybe Text),
     databaseUrl :: !(Maybe Text),
     port :: !(Maybe Int),
+    trustedProxies :: !(Maybe [Text]),
+    proxyProtocol :: !(Maybe Text),
     -- | connections held open by the @hasql@ pool
     dbPoolSize :: !(Maybe Int),
     -- | how long a request waits for a free pooled connection, in milliseconds
@@ -332,6 +345,8 @@ baseDefaults =
       ServerSettings
         { serverPort = 8080,
           serverConnStr = "",
+          serverTrustedProxies = emptyTrustedProxies,
+          serverProxyProtocol = ProxyProtocolOff,
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
           serverDbStatementTimeoutMs = defaultDbStatementTimeoutMs,
@@ -353,6 +368,8 @@ baseFromFile (Just fc) = do
   attestationFile <- traverse (parseAttestationPolicy "webauthnAttestation (config file)") fc.webauthnAttestation
   notifierTransportFile <- traverse (parseNotifierTransport "notifierTransport (config file)") fc.notifierTransport
   smtpTlsModeFile <- traverse (parseSmtpTlsMode "smtpTlsMode (config file)") fc.smtpTlsMode
+  trustedProxiesFile <- parseTrustedProxyList (fromMaybe [] fc.trustedProxies)
+  proxyProtocolFile <- traverse (parseProxyProtocol "proxyProtocol (config file)") fc.proxyProtocol
   let iss = fromMaybe "shomei" fc.issuer
       aud = fromMaybe "shomei-clients" fc.audience
       cfg0 = defaultShomeiConfig (Issuer iss) (Audience aud)
@@ -424,6 +441,8 @@ baseFromFile (Just fc) = do
         ServerSettings
           { serverPort = fromMaybe 8080 fc.port,
             serverConnStr = fromMaybe "" fc.databaseUrl,
+            serverTrustedProxies = trustedProxiesFile,
+            serverProxyProtocol = fromMaybe ProxyProtocolOff proxyProtocolFile,
             serverDbPoolSize = fromMaybe defaultDbPoolSize fc.dbPoolSize,
             serverDbPoolAcquisitionTimeoutMs =
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
@@ -481,6 +500,9 @@ overlayFromEnvBoth :: ShomeiConfig -> ServerSettings -> IO (ShomeiConfig, Server
 overlayFromEnvBoth baseCfg baseSettings = do
   connStr <- textEnv "PG_CONNECTION_STRING" baseSettings.serverConnStr
   portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
+  trustedProxyOverride <- trustedProxiesEnv
+  trustedProxies <- maybe (pure baseSettings.serverTrustedProxies) parseTrustedProxyList trustedProxyOverride
+  proxyProtocol <- proxyProtocolEnv baseSettings.serverProxyProtocol
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   statementTimeout <- intEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" baseSettings.serverDbStatementTimeoutMs
@@ -545,6 +567,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
       ServerSettings
         { serverPort = portV,
           serverConnStr = connStr,
+          serverTrustedProxies = trustedProxies,
+          serverProxyProtocol = proxyProtocol,
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverDbStatementTimeoutMs = statementTimeout,
@@ -1185,6 +1209,44 @@ sameSiteEnv = do
     Nothing -> pure Nothing
     Just "" -> pure Nothing
     Just s -> Just <$> parseSameSite "SHOMEI_COOKIE_SAMESITE" (Text.pack s)
+
+parseTrustedProxyList :: [Text] -> IO TrustedProxies
+parseTrustedProxyList values =
+  case parseTrustedProxies values of
+    Left reason -> ioError (userError (Text.unpack reason))
+    Right proxies -> pure proxies
+
+-- | A comma-separated CIDR list. An explicitly empty value clears a file-supplied list.
+trustedProxiesEnv :: IO (Maybe [Text])
+trustedProxiesEnv = do
+  value <- lookupEnv "SHOMEI_TRUSTED_PROXIES"
+  pure case value of
+    Nothing -> Nothing
+    Just raw ->
+      Just
+        ( filter
+            (not . Text.null)
+            (Text.strip <$> Text.splitOn "," (Text.pack raw))
+        )
+
+parseProxyProtocol :: Text -> Text -> IO ProxyProtocolMode
+parseProxyProtocol label value =
+  case Text.toLower (Text.strip value) of
+    "none" -> pure ProxyProtocolOff
+    "required" -> pure ProxyProtocolRequired
+    other ->
+      ioError
+        ( userError
+            (Text.unpack label <> " must be none|required, got " <> Text.unpack other)
+        )
+
+proxyProtocolEnv :: ProxyProtocolMode -> IO ProxyProtocolMode
+proxyProtocolEnv fallback = do
+  value <- lookupEnv "SHOMEI_PROXY_PROTOCOL"
+  case value of
+    Nothing -> pure fallback
+    Just "" -> pure fallback
+    Just raw -> parseProxyProtocol "SHOMEI_PROXY_PROTOCOL" (Text.pack raw)
 
 -- | A comma-separated origin allow-list, e.g. @https://app.example.com,https://admin.example.com@.
 csrfOriginsEnv :: IO (Maybe [Text])

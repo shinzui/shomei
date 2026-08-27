@@ -14,9 +14,9 @@ import Shomei.Passkey.Result
 import Shomei.Passkey.Workflow qualified as Passkey
 import Shomei.Servant.Application (ApplicationHandler, port, rejectProblem, runApplicationHandler, workflow)
 import Shomei.Servant.Auth (AuthUser (..))
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Cookie (tokenCookies)
 import Shomei.Servant.Error (detailOccurrence, pcBadRequest)
-import Shomei.Servant.RemoteHost (clientIpText)
 import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Command (ProofContext (..))

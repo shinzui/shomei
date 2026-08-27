@@ -139,7 +139,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Complete |
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Complete |
-| 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Not Started |
+| 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | In Progress |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Not Started |
 | 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | Not Started |
 

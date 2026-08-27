@@ -18,7 +18,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Effectful (Eff)
 import Network.HTTP.Types.Status (status400, status401, status404, status500, status503)
 import Network.HTTP.Types.URI (renderSimpleQuery)
-import Network.Socket (SockAddr (..))
+import Network.Socket (SockAddr)
 import Servant (Handler, ServerError (..), throwError)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Email.Domain (emailText)
@@ -40,6 +40,7 @@ import Shomei.OAuth.TokenExchange.Workflow qualified as TokenExchange
 import Shomei.OAuth.TokenGrant.Workflow qualified as OAuthTokenGrant
 import Shomei.Prelude
 import Shomei.Servant.Auth (AuthUser (..), resolveAuthUser)
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Oidc qualified as Oidc
 import Shomei.Servant.Seam (AppEffects, Env (..), runPortResult)
@@ -78,12 +79,6 @@ oauthInfrastructureError :: AuthError -> ServerError
 oauthInfrastructureError = \case
   DependencyUnavailable _ -> OAuth.oauthError status503 "temporarily_unavailable" "a required dependency is unavailable"
   _ -> OAuth.oauthError status500 "server_error" "the authorization server encountered an unexpected condition"
-
-clientIpText :: SockAddr -> Text
-clientIpText = \case
-  SockAddrInet _ host -> Text.pack (show host)
-  SockAddrInet6 _ _ host _ -> Text.pack (show host)
-  other -> Text.pack (show other)
 
 -- | @GET \/.well-known\/openid-configuration@ (EP-5).
 --

@@ -20,17 +20,20 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
-import Data.Word (Word64)
+import Data.Word (Word16, Word64, Word8)
 import Network.HTTP.Types (methodDelete, methodPost, statusCode)
 import Network.HTTP.Types.Status (status200)
+import Network.Socket (SockAddr (..), tupleToHostAddress, tupleToHostAddress6)
 import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, responseHeaders, responseLBS, responseStatus)
 import Network.Wai.Internal (ResponseReceived (..))
 import Servant.Health.Paths (healthRawPaths)
 import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultObservabilityConfig, defaultRateLimitConfig)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
+import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Throttle (PathSegment (Literal), ThrottledRoute (..))
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
+import Shomei.Server.Middleware.TrustedProxy (parseTrustedProxies, trustedProxyMiddleware)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
@@ -43,6 +46,19 @@ tests =
   testGroup
     "middleware hardening"
     [ testGroup
+        "trusted proxies"
+        [ testUntrustedPeerIgnoresForwardedFor,
+          testTrustedPeerUsesRightmostUntrustedHop,
+          testSpoofedForwardedHopIsIgnored,
+          testAllTrustedHopsUseOrigin,
+          testInvalidTrustedProxyRefused
+        ],
+      testGroup
+        "client ip rendering"
+        [ testIpv4Rendering,
+          testIpv6Rendering
+        ],
+      testGroup
         "rate limiter"
         [ testIdleBucketsEvicted,
           testDrainedBucketSurvivesSweep,
@@ -69,6 +85,64 @@ tests =
           testChunkedBodyPassesThrough
         ]
     ]
+
+-- Trusted proxies and canonical client identity --------------------------------
+
+testUntrustedPeerIgnoresForwardedFor :: TestTree
+testUntrustedPeerIgnoresForwardedFor = testCase "an untrusted peer's X-Forwarded-For is ignored" do
+  actual <- observedClient ["10.0.0.0/8"] (ipv4 198 51 100 9) "203.0.113.7"
+  actual @?= "198.51.100.9"
+
+testTrustedPeerUsesRightmostUntrustedHop :: TestTree
+testTrustedPeerUsesRightmostUntrustedHop = testCase "a trusted peer yields the rightmost untrusted hop" do
+  actual <- observedClient ["10.0.0.0/8"] (ipv4 10 0 0 5) "203.0.113.7, 10.0.0.6"
+  actual @?= "203.0.113.7"
+
+testSpoofedForwardedHopIsIgnored :: TestTree
+testSpoofedForwardedHopIsIgnored = testCase "a spoofed hop behind a trusted proxy is not the client" do
+  actual <- observedClient ["10.0.0.0/8"] (ipv4 10 0 0 5) "1.2.3.4, 203.0.113.7"
+  actual @?= "203.0.113.7"
+
+testAllTrustedHopsUseOrigin :: TestTree
+testAllTrustedHopsUseOrigin = testCase "every hop trusted falls back to the chain's origin" do
+  actual <- observedClient ["10.0.0.0/8"] (ipv4 10 0 0 5) "10.0.0.1, 10.0.0.2"
+  actual @?= "10.0.0.1"
+
+testInvalidTrustedProxyRefused :: TestTree
+testInvalidTrustedProxyRefused = testCase "an invalid trusted-proxy entry is refused" do
+  case parseTrustedProxies ["10.0.0.0/8", "nope"] of
+    Left _ -> pure ()
+    Right _ -> fail "expected the invalid proxy entry to be rejected"
+
+testIpv4Rendering :: TestTree
+testIpv4Rendering = testCase "IPv4 renders as a dotted quad" do
+  clientIpText (ipv4 127 0 0 1) @?= "127.0.0.1"
+
+testIpv6Rendering :: TestTree
+testIpv6Rendering = testCase "IPv6 renders per RFC 5952" do
+  clientIpText (ipv6 (0x2001, 0x0db8, 0, 0, 0, 0, 0, 1)) @?= "2001:db8::1"
+  clientIpText (ipv6 (0, 0, 0, 0, 0, 0, 0, 1)) @?= "::1"
+  clientIpText (ipv6 (0x2001, 0x0db8, 0, 1, 0, 0, 0, 0)) @?= "2001:db8:0:1::"
+  clientIpText (ipv6 (0x2001, 0, 0, 1, 0, 0, 0, 1)) @?= "2001:0:0:1::1"
+
+observedClient :: [Text] -> SockAddr -> ByteString -> IO Text
+observedClient proxyRanges peer forwarded = do
+  proxies <- either (fail . show) pure (parseTrustedProxies proxyRanges)
+  observed <- newIORef ""
+  let req =
+        defaultRequest
+          { remoteHost = peer,
+            requestHeaders = [("X-Forwarded-For", forwarded)]
+          }
+      inner request' respond = writeIORef observed (clientIpText (remoteHost request')) >> respond okResponse
+  ResponseReceived <- trustedProxyMiddleware proxies inner req (const (pure ResponseReceived))
+  readIORef observed
+
+ipv4 :: Word8 -> Word8 -> Word8 -> Word8 -> SockAddr
+ipv4 a b c d = SockAddrInet 4711 (tupleToHostAddress (a, b, c, d))
+
+ipv6 :: (Word16, Word16, Word16, Word16, Word16, Word16, Word16, Word16) -> SockAddr
+ipv6 groups = SockAddrInet6 4711 0 (tupleToHostAddress6 groups) 0
 
 -- Rate limiter ---------------------------------------------------------------
 

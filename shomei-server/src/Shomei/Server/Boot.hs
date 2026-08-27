@@ -11,6 +11,7 @@
 module Shomei.Server.Boot
   ( main,
     application,
+    edgeMiddleware,
     buildEnv,
     seamEnv,
     authContext,
@@ -38,7 +39,7 @@ import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Pool qualified as Pool
 import Network.HTTP.Client.TLS (newTlsManager)
-import Network.Wai (Application, Request)
+import Network.Wai (Application, Middleware, Request)
 import Network.Wai.Handler.Warp qualified as Warp
 import Servant
   ( Context (EmptyContext, (:.)),
@@ -73,12 +74,13 @@ import Shomei.Servant.Oidc (isAbsoluteHttpUrl)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
-import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
+import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
-import Shomei.Server.Middleware.RateLimit (newRateLimiterFor, rateLimitMiddleware)
+import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddleware)
+import Shomei.Server.Middleware.TrustedProxy (TrustedProxies, trustedProxyMiddleware, trustedProxyTexts)
 import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
-import Shomei.Server.Observability.Metrics (metricsEndpointMiddleware, metricsMiddleware, newMetrics)
+import Shomei.Server.Observability.Metrics (Metrics, metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop, supervisedLoopMicros)
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
 import Shomei.Time.Postgres (runClockIO)
@@ -96,6 +98,20 @@ main = do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   (cfg, settings) <- loadConfig
+  let trustedProxySummary =
+        case trustedProxyTexts settings.serverTrustedProxies of
+          [] -> "none"
+          entries -> Text.intercalate "," entries
+      proxyProtocolSummary = case settings.serverProxyProtocol of
+        ProxyProtocolOff -> "none"
+        ProxyProtocolRequired -> "required"
+  hPutStrLn
+    stderr
+    ( "[shomei] trusted proxies: "
+        <> Text.unpack trustedProxySummary
+        <> "; proxy protocol: "
+        <> proxyProtocolSummary
+    )
   traverse_
     (\warning -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack warning))
     settings.serverWarnings
@@ -129,22 +145,7 @@ main = do
   rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
-      -- IP-4 realized middleware order (outermost first): EP-3 request-id + JSON logging,
-      -- then EP-3 HTTP metrics, then EP-3's raw /metrics endpoint, then EP-4's request-body
-      -- cap, then EP-2's rate limiter, then the Servant app. Logging is outermost so even a
-      -- 429 is logged with a correlation id; metrics wrap the limiter so a throttled request
-      -- is still counted. The body cap sits inside metrics so its 413s are counted and logged
-      -- like any other response, and outside the limiter so a flood of oversized bodies is
-      -- refused without draining anyone's token bucket.
-      withMetrics =
-        if obs.metricsEnabled
-          then metricsMiddleware metrics . metricsEndpointMiddleware metrics
-          else id
-      stack =
-        requestLoggingMiddleware obs
-          . withMetrics
-          . bodyLimitMiddleware defaultBodyLimitBytes
-          . rateLimitMiddleware rl
+      stack = edgeMiddleware obs settings.serverTrustedProxies rl metrics
       -- Graceful shutdown: SIGTERM (orchestrator stop) and SIGINT (Ctrl-C) trigger warp's
       -- shutdown action, which stops accepting new connections and waits up to the
       -- configured timeout for in-flight requests to finish. After warp returns we close the
@@ -160,11 +161,15 @@ main = do
       -- mid-request is not an incident).
       onServerException mreq e =
         when (Warp.defaultShouldDisplayException e) (logServerError mreq e)
+      proxyProtocolSettings = case settings.serverProxyProtocol of
+        ProxyProtocolOff -> Warp.setProxyProtocolNone
+        ProxyProtocolRequired -> Warp.setProxyProtocolRequired
       warpSettings =
         Warp.setPort settings.serverPort
           . Warp.setGracefulShutdownTimeout (Just obs.gracefulShutdownTimeoutSeconds)
           . Warp.setServerName "shomei"
           . Warp.setOnException onServerException
+          . proxyProtocolSettings
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
   Warp.runSettings warpSettings (stack (application env liveness readiness))
@@ -173,6 +178,20 @@ main = do
   Pool.release env.envPool
   releaseSweeper
   hPutStrLn stderr "[shomei] shutdown complete"
+
+-- | The WAI edge every host must install. The trusted-proxy rewrite is outermost so logging,
+-- metrics, the limiter, and Servant's 'RemoteHost' all observe the same client address.
+edgeMiddleware :: ObservabilityConfig -> TrustedProxies -> RateLimiter -> Metrics -> Middleware
+edgeMiddleware obs proxies limiter metrics =
+  trustedProxyMiddleware proxies
+    . requestLoggingMiddleware obs
+    . withMetrics
+    . bodyLimitMiddleware defaultBodyLimitBytes
+    . rateLimitMiddleware limiter
+  where
+    withMetrics
+      | obs.metricsEnabled = metricsMiddleware metrics . metricsEndpointMiddleware metrics
+      | otherwise = id
 
 -- | Refuse to start with the OIDC provider enabled and an issuer that is not an absolute
 -- @http(s)@ URL.

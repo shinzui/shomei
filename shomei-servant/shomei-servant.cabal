@@ -82,6 +82,7 @@ library
     Shomei.Servant.Application
     Shomei.Servant.Auth
     Shomei.Servant.Authz
+    Shomei.Servant.ClientIp
     Shomei.Servant.Cookie
     Shomei.Servant.Error
     Shomei.Servant.Middleware
