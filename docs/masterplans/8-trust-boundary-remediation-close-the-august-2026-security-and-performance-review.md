@@ -134,7 +134,7 @@ use following `.claude/skills/exec-plan/ADR.md`.
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 1 | Bind Sessions to Their Provenance and Refuse Non-Interactive Tokens at OAuth Authorize | docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md | None | None | Complete |
-| 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | In Progress |
+| 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Complete |
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Not Started |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Not Started |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Not Started |
@@ -361,9 +361,10 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-1: `Session.kind` column and record field; every mint site names its kind
 - [x] EP-1: `authorize` refuses `act` and non-interactive sessions in core and at the handler; tests for all three token kinds
 - [x] EP-1: token exchange and delegation verify through the session-aware verifier and check actor status; email gate on code exchange
-- [ ] EP-2: granted scopes persisted on the session and re-applied on every refresh path
-- [ ] EP-2: bespoke `/v1/auth/refresh` refuses client-bound sessions; `/oauth/revoke` checks ownership; refresh grant echoes `scope`
-- [ ] EP-2: reserved privilege scopes refused on OAuth clients and warned on service accounts (their intended holders); userinfo honours scopes; consumed-code replay revokes
+- [x] EP-2: granted scopes persisted on the session and re-applied on every refresh path
+- [x] EP-2: bespoke `/v1/auth/refresh` refuses client-bound sessions; `/oauth/revoke` checks ownership; refresh grant echoes `scope`
+- [x] EP-2: reserved privilege scopes refused on OAuth clients and warned on service accounts (their intended holders); userinfo honours scopes; consumed-code replay revokes
+- [x] EP-2: Basic credentials form-decoded; discovery advertises token exchange; hint-less refresh introspection and missing-bearer challenge corrected; trust model documented
 - [ ] EP-3: verifier skew, whole-second times, pinned algorithm set, `typ`, `kid`-selecting key store, strict claim shapes, reserved `nbf`/`jti`, issuer/audience validated at boot
 - [ ] EP-3: single-active-key partial unique index; transactional activate and rewrap; `retired_at`/`revoked_at` stamped; `assembleKeys` refuses two active rows; JWKS `alg`
 - [ ] EP-3: ES256 timing trade-off documented; negative tests for `none`, HS256, cross-family, unknown `kid`, revoked key
@@ -398,6 +399,13 @@ never by counting files. Every later plan allocates the next handle the same way
   upstream tags and a successful frozen import confirmed `v0.13.1`, which now governs Shōmei's
   first ADR bundle at `docs/adr/`.
 
+- EP-2's regression-first cases reproduced five distinct boundary failures before correction: the
+  bespoke refresh endpoint spent a client-bound token; another client revoked the owner's token;
+  a consumed authorization code left its first session active; an `openid`-only UserInfo response
+  leaked email; and OAuth-client registration accepted `shomei:admin`. Keeping each assertion at
+  the core workflow or HTTP boundary made the resulting ownership and scope policy independently
+  observable.
+
 
 ## Decision Log
 
@@ -430,6 +438,16 @@ never by counting files. Every later plan allocates the next handle the same way
   Rationale: A consent UI is a feature with its own product decisions; the review's finding was
   that the trust model is undocumented, not that it is wrong for a single-organization
   deployment.
+  Date: 2026-08-27
+
+- Decision: The configured impersonation scope, `shomei:admin`, and
+  `token-exchange:subject` are reserved principal privileges. OAuth-client registration refuses
+  them, authorize is the backstop for legacy or hand-written rows, and service accounts may hold
+  them as their own authority with an operator warning. The policy and its single domain owner are
+  recorded in [ADR-2](../adr/0002-reserved-privilege-scopes-are-service-account-authority.md).
+  Rationale: An OAuth-client allow-list is copied into a human user's token, while a service-account
+  allow-list is authority of the machine principal itself. Treating those lists alike either
+  escalates every authorizing user or breaks the intended scoped service-token contract.
   Date: 2026-08-27
 
 - Decision: One rei intention (`intention_01m10kwqt9eedbjvk91rn726mq`) for the initiative,
@@ -466,8 +484,11 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 is complete. Session provenance is persisted and compile-time-required at every mint;
-authorize admits only live interactive sessions; token exchange and impersonation see revocation
-and operator suspension immediately; and authorization-code exchange applies the email gate. ADR-1
-records the boundary, and the final serial workspace suite is green. The other nine plans remain
-open; EP-2 is now the next soft-dependency-ready plan in Phase 1.
+EP-1 and EP-2 are complete. Session provenance is persisted and compile-time-required at every
+mint; authorize admits only live interactive sessions; token exchange and impersonation see
+revocation and operator suspension immediately; and authorization-code exchange applies the email
+gate. OAuth sessions retain their granted scopes, refresh and revocation obey client ownership,
+reserved principal privileges cannot be conferred through OAuth clients, UserInfo honours its
+claim scopes, and consumed-code replay ends the first session. ADR-1 and ADR-2 record the two trust
+boundaries, and each child's final serial workspace suite is green. Eight plans remain open; EP-3
+is now the next priority-ready plan in Phase 1.
