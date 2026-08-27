@@ -1,6 +1,8 @@
 # Bundle Update Log
 
 ## 2026-08-27
+* **Addition**: ADR-12 binds every notification webhook signature to a fresh attempt timestamp and documents a five-minute receiver replay window.
+* **Addition**: ADR-11 moves notifier credentials out of printable configuration into non-printable runtime types and makes secure transport posture the boot default.
 * **Addition**: ADR-10 moves built-in notification delivery behind a bounded in-memory queue with explicit overflow and a timed shutdown drain.
 * **Addition**: ADR-9 maps outbound transport failures to a closed reason vocabulary so exception text containing payloads or URLs is never logged or persisted.
 * **Addition**: ADR-8 makes runtime configuration extensible through Dhall record completion, rejects unknown keys, and mechanically synchronizes schema fields with the loader.

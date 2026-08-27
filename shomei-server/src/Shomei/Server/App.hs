@@ -50,7 +50,7 @@ import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, runTotpCredentialStorePostgres)
 import Shomei.Mfa.Totp.Store (TotpCredentialStore)
-import Shomei.Notify (runNotifierEnqueue, transportChannel)
+import Shomei.Notify (NotifierSecrets, runNotifierEnqueue, transportChannel)
 import Shomei.Notify.Queue (NotifierQueue)
 import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
 import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore)
@@ -146,6 +146,8 @@ data Env = Env
     envTotpKey :: !TotpEncryptionKey,
     -- | shared TLS manager for the HIBP breach-check interpreter (EP-3)
     envHttpManager :: !Manager,
+    -- | runtime-only SMTP/webhook credentials; intentionally outside 'envConfig'
+    envNotifierSecrets :: !NotifierSecrets,
     -- | bounded notification queue; request handlers only enqueue, while the supervised
     --     server worker performs delivery outside request latency.
     envNotifierQueue :: !NotifierQueue,

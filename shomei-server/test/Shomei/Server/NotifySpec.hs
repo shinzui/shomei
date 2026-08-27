@@ -37,6 +37,7 @@ import Shomei.Config (NotifierConfig (..), ShomeiConfig (..), SmtpConfig (..), S
 import Shomei.Notify
   ( DeliveryReason (..),
     SmtpStage (..),
+    WebhookSecret (..),
     classifySmtpFailure,
     renderNotification,
     runNotifierEnqueue,
@@ -118,7 +119,6 @@ plainSmtpConfig p =
       port = p,
       tlsMode = SmtpPlain,
       username = Nothing,
-      password = Nothing,
       fromAddress = "auth@example.com",
       timeoutSeconds = 5
     }
@@ -133,7 +133,7 @@ runAuthEventCapture ref = interpret_ \case
 deliverViaSmtp :: SmtpConfig -> Notification -> IO [AuthEvent]
 deliverViaSmtp sc n = do
   events <- newIORef []
-  runEff . runClockIO . runAuthEventCapture events . runNotifierSmtp baseNotifierCfg sc $ sendNotification n
+  runEff . runClockIO . runAuthEventCapture events . runNotifierSmtp baseNotifierCfg sc Nothing $ sendNotification n
   readIORef events
 
 -- | The delivered message reaches a sink with the right recipient, subject, and confirm link, and
@@ -327,7 +327,6 @@ webhookConfigFor :: Int -> Int -> WebhookConfig
 webhookConfigFor p maxA =
   WebhookConfig
     { url = Text.pack ("http://127.0.0.1:" <> show p <> "/hook"),
-      secret = webhookSecretText,
       timeoutSeconds = 5,
       maxAttempts = maxA
     }
@@ -335,7 +334,7 @@ webhookConfigFor p maxA =
 deliverViaWebhook :: Manager -> WebhookConfig -> Notification -> IO [AuthEvent]
 deliverViaWebhook mgr wc n = do
   events <- newIORef []
-  runEff . runClockIO . runAuthEventCapture events . runNotifierWebhook mgr wc $ sendNotification n
+  runEff . runClockIO . runAuthEventCapture events . runNotifierWebhook mgr wc (WebhookSecret webhookSecretText) $ sendNotification n
   readIORef events
 
 -- | A stub receiver that records every @(headers, raw body)@ it gets and answers the k-th
@@ -369,7 +368,10 @@ webhookDeliversTest = testCase "webhook: signed JSON POST the receiver can verif
         lookup "Content-Type" hdrs @?= Just "application/json"
         lookup "X-Shomei-Notification-Type" hdrs @?= Just "email_verification_requested"
         decode (LBS.fromStrict body) @?= Just n
-        lookup "X-Shomei-Signature" hdrs @?= Just (webhookSignature (TE.encodeUtf8 webhookSecretText) body)
+        case lookup "X-Shomei-Timestamp" hdrs of
+          Nothing -> assertFailure "missing X-Shomei-Timestamp"
+          Just timestamp ->
+            lookup "X-Shomei-Signature" hdrs @?= Just (webhookSignature (TE.encodeUtf8 webhookSecretText) timestamp body)
       _ -> assertFailure ("expected exactly one delivery, got " <> show (length reqs))
     assertBool ("no failure event on success, got: " <> show events) (null events)
 
@@ -386,6 +388,15 @@ webhookRetriesThenSucceeds = testCase "webhook: retries a 5xx then succeeds, no 
     events <- deliverViaWebhook mgr (webhookConfigFor port 2) n
     reqs <- readMVar captured
     length reqs @?= 2
+    let timestamps = map (lookup "X-Shomei-Timestamp" . fst) reqs
+    assertBool ("each retry must be re-stamped, got: " <> show timestamps) (case timestamps of [Just first, Just second] -> first /= second; _ -> False)
+    mapM_
+      ( \(headers, body) -> case lookup "X-Shomei-Timestamp" headers of
+          Nothing -> assertFailure "retry missing X-Shomei-Timestamp"
+          Just timestamp ->
+            lookup "X-Shomei-Signature" headers @?= Just (webhookSignature (TE.encodeUtf8 webhookSecretText) timestamp body)
+      )
+      reqs
     assertBool ("no failure event on eventual success, got: " <> show events) (null events)
 
 -- | A receiver that always 5xxes is attempted exactly @maxAttempts@ times, then a redacted

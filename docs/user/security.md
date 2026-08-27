@@ -202,8 +202,11 @@ every outstanding token dies.
 (Vault, AWS KMS, GCP Secret Manager, …) into the process environment. Shōmei deliberately
 knows nothing about where it came from.
 
-Note that `SHOMEI_KEY_ENCRYPTION_KEY` is **not** part of `ShomeiConfig`. That record derives
-`Show` and `ToJSON` and is logged; a secret in it would be one debug line from disclosure.
+Note that `SHOMEI_KEY_ENCRYPTION_KEY`, `SHOMEI_TOTP_ENCRYPTION_KEY`, `SHOMEI_SMTP_PASSWORD`, and
+`SHOMEI_WEBHOOK_SECRET` are **not** part of `ShomeiConfig`. That record derives `Show` and
+`ToJSON` and is logged; a secret in it would be one debug line from disclosure. The standalone
+server strips these environment values and carries typed, non-printable credential values in its
+runtime `Env` instead.
 
 ## No account-existence leakage
 

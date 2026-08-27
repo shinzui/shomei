@@ -56,6 +56,7 @@ import Shomei.Client qualified as C
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
@@ -87,7 +88,7 @@ main =
     limiter <- newHashingLimiter 2
     notifierQueue <- newNotifierQueue 64
     let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-        env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+        env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
     testWithApplication (pure (application env (pure Healthy) (pure Healthy))) \authPort -> do
       mgr <- newManager defaultManagerSettings
       let jwksUrl = "http://127.0.0.1:" <> show authPort <> "/.well-known/jwks.json"

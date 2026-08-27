@@ -80,12 +80,14 @@ requireEnv :: Text -> IO Text
 requireEnv name = do
   m <- lookupEnv (Text.unpack name)
   case m of
-    Just v | not (null v) -> pure (Text.pack v)
+    Just v
+      | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> pure stripped
     _ -> ioError (userError (Text.unpack name <> " is not set"))
 
 envOr :: Text -> Text -> IO Text
 envOr name def = do
   m <- lookupEnv (Text.unpack name)
   pure $ case m of
-    Just v | not (null v) -> Text.pack v
+    Just v
+      | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> stripped
     _ -> def

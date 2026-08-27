@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               shomei-core
-version:            0.1.0.0
+version:            0.2.0.0
 synopsis:
   Transport-agnostic domain: types, commands, events, errors, and effects
 
@@ -197,7 +197,7 @@ test-suite shomei-core-test
     , effectful       >=2.5      && <2.8
     , effectful-core  >=2.5      && <2.8
     , generic-lens    >=2.2      && <2.4
-    , shomei-core     ^>=0.1.0.0
+    , shomei-core     ^>=0.2.0.0
     , tasty           >=1.4      && <1.6
     , tasty-hunit     >=0.10     && <0.11
     , text            >=2.0      && <2.2

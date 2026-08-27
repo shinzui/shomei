@@ -14,6 +14,7 @@ import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailab
 import Shomei.Health.Server (buildHealthChecks, buildHealthChecksWith)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude
@@ -85,6 +86,7 @@ buildTestEnv connectionString = do
         envKeys = keys,
         envKek = testKek,
         envHttpManager = manager,
+        envNotifierSecrets = noNotifierSecrets,
         envNotifierQueue = notifierQueue,
         envArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1},
         envHashingLimiter = limiter,

@@ -35,6 +35,8 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
 | `SHOMEI_NOTIFIER_QUEUE_SIZE` | maximum notifications held for the background delivery worker. Must be positive; a full queue drops new work with a `queue_full` audit reason instead of blocking a request | `1024` |
+| `SHOMEI_WEBHOOK_ALLOW_INSECURE` | **lab only.** Allow an `http://` notification receiver; production webhooks must use HTTPS | `false` |
+| `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH` | **lab only.** Allow SMTP credentials over `smtpTlsMode=plain`; production authentication must use STARTTLS or implicit TLS | `false` |
 | `SHOMEI_EMAIL_VERIFICATION_REQUIRED` | require a verified email before subsequent token issuance (the initial signup session is still issued) | `false` |
 | `SHOMEI_KEY_ENCRYPTION_KEY` | **Required.** 32 bytes, base64; envelope-encrypts every signing key at rest | — |
 | `SHOMEI_KEY_ENCRYPTION_KEY_OLD` | the previous KEK; read only by `shomei-admin keys rewrap` | unset |
@@ -207,9 +209,10 @@ The configuration test compares the schema's keys with the loader's `FileConfig`
 changing alone fails the suite. See [passkeys.md](passkeys.md) for WebAuthn and
 [machine-tokens.md](machine-tokens.md) for service accounts.
 
-There is deliberately **no** Dhall key for `SHOMEI_NOTIFIER_LOG_SECRETS` or
-`SHOMEI_KEY_ENCRYPTION_KEY`: both are secrets or secret-revealing switches, and must be explicit
-per-process decisions rather than lines that linger in a committed file.
+There is deliberately **no** Dhall key for `SHOMEI_NOTIFIER_LOG_SECRETS`,
+`SHOMEI_WEBHOOK_ALLOW_INSECURE`, `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH`, or
+`SHOMEI_KEY_ENCRYPTION_KEY`: these are secrets or security-posture escape switches, and must be
+explicit per-process decisions rather than lines that linger in a committed file.
 
 ## The `shomei-admin` CLI
 

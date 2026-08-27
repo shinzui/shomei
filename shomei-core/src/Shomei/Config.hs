@@ -168,9 +168,9 @@ data SmtpTlsMode = SmtpPlain | SmtpStartTls | SmtpImplicitTls
   deriving anyclass (FromJSON, ToJSON)
 
 -- | Provider-relay SMTP settings (EP-8). This is a __relay client__ aimed at a provider's
--- authenticated submission endpoint, not a mail server. 'password' is populated from the
--- environment only (@SHOMEI_SMTP_PASSWORD@), never from the Dhall file; 'username' and
--- 'password' must be both present (authenticated relay) or both absent (a lab sink).
+-- authenticated submission endpoint, not a mail server. Relay credentials deliberately live
+-- outside this public, printable configuration record; the standalone server carries them in
+-- its runtime environment.
 data SmtpConfig = SmtpConfig
   { host :: !Text,
     -- | conventional: 25 plaintext (lab only), 587 STARTTLS, 465 implicit-TLS
@@ -178,8 +178,6 @@ data SmtpConfig = SmtpConfig
     tlsMode :: !SmtpTlsMode,
     -- | 'Nothing' = unauthenticated (lab sinks only)
     username :: !(Maybe Text),
-    -- | populated from @SHOMEI_SMTP_PASSWORD@ only; never from Dhall
-    password :: !(Maybe Text),
     fromAddress :: !Text,
     -- | per-attempt send timeout in seconds (default 10)
     timeoutSeconds :: !Int
@@ -187,13 +185,11 @@ data SmtpConfig = SmtpConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
--- | Webhook-notifier settings (EP-8). The notification is POSTed as JSON, signed with an
--- HMAC-SHA256 header (see @Shomei.Notify.runNotifierWebhook@). 'secret' is populated from the
--- environment only (@SHOMEI_WEBHOOK_SECRET@), never from the Dhall file.
+-- | Webhook-notifier settings (EP-8). The notification is POSTed as JSON and signed by the
+-- server transport. The signing secret deliberately lives outside this public, printable
+-- configuration record.
 data WebhookConfig = WebhookConfig
   { url :: !Text,
-    -- | populated from @SHOMEI_WEBHOOK_SECRET@ only; never from Dhall
-    secret :: !Text,
     -- | per-attempt request timeout in seconds (default 5)
     timeoutSeconds :: !Int,
     -- | total delivery attempts, initial + retries (default 3)

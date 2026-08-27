@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** `SmtpConfig` and `WebhookConfig` no longer carry credentials. The server loads
+  stripped secrets into non-printable runtime types, requires HTTPS webhooks and encrypted SMTP
+  authentication unless env-only lab flags opt out, and signs webhooks over
+  `<X-Shomei-Timestamp>.<raw body>` for receiver replay windows.
 - Notification delivery now runs on a supervised bounded in-memory queue, keeping SMTP/webhook
   latency out of request handling. Queue capacity is configurable, overflow is audited without
   blocking, and graceful shutdown drains queued work before releasing the database pool.

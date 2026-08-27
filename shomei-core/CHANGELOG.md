@@ -4,8 +4,11 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## Unreleased (0.2.0.0)
 
+- **Breaking:** `SmtpConfig` no longer contains the SMTP password and `WebhookConfig` no longer
+  contains the webhook signing secret. Runtime credentials belong to the server or embedding
+  host, so `Show`/`ToJSON` of `ShomeiConfig` cannot expose them.
 - **Breaking:** `configSigningAlgorithm` now returns `Either Text SigningAlgorithm`; embedding
   applications must reject invalid hand-built signing configuration instead of receiving an
   implicit `ES256` fallback.

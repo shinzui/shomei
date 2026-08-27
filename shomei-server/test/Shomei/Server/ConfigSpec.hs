@@ -6,8 +6,10 @@
 module Main (main) where
 
 import Control.Exception (try)
-import Data.Aeson (Value (Object), eitherDecodeStrict', toJSON)
+import Data.Aeson (Value (Object), eitherDecodeStrict', encode, toJSON)
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as LBS8
+import Data.List (isInfixOf)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
@@ -15,7 +17,8 @@ import Shomei.Account.Password.Domain (PasswordPolicy (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..))
 import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
-import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv)
+import Shomei.Notify (NotifierSecrets (..), smtpPasswordText, webhookSecretBytes)
+import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv, loadNotifierSecretsFromEnv)
 import Shomei.Server.Keys (loadKekFromEnv)
 import System.Directory (makeAbsolute)
 import System.Environment (setEnv, unsetEnv)
@@ -405,6 +408,8 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierSmtpMissingHostFails
   notifierSmtpUsernameWithoutPasswordFails
   notifierWebhookMissingSecretFails
+  notifierSecretsAreStrippedAndConfigIsSecretFree
+  notifierInsecureTransportFlags
   kekIsRequired
 
 -- | The verifier skew has a safe default, supports env override, and rejects
@@ -477,6 +482,8 @@ notifierEnvVars =
     "SHOMEI_WEBHOOK_SECRET",
     "SHOMEI_WEBHOOK_TIMEOUT",
     "SHOMEI_WEBHOOK_MAX_ATTEMPTS",
+    "SHOMEI_WEBHOOK_ALLOW_INSECURE",
+    "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH",
     "SHOMEI_NOTIFIER_QUEUE_SIZE"
   ]
 
@@ -497,8 +504,8 @@ notifierDefaults = do
 smtpConfigPath :: FilePath
 smtpConfigPath = "/tmp/shomei-config-smtp-test.dhall"
 
--- | The SMTP transport loads from the Dhall file, and the relay password enters from the
--- environment only (never the file) — the username/password pair is completed at load time.
+-- | The SMTP transport loads from the Dhall file, while the relay password enters the separate
+-- runtime-only secret value.
 notifierSmtpDhallAndEnv :: Assertion
 notifierSmtpDhallAndEnv = do
   mapM_ unsetEnv notifierEnvVars
@@ -525,21 +532,23 @@ notifierSmtpDhallAndEnv = do
   nc.notifierTransport @?= SmtpNotifier
   nc.publicBaseUrl @?= "https://auth.env.example.com"
   case nc.smtpConfig of
-    Just (SmtpConfig {host = h, port = p, tlsMode = tls, username = u, password = pw, fromAddress = fromA, timeoutSeconds = to}) -> do
+    Just (SmtpConfig {host = h, port = p, tlsMode = tls, username = u, fromAddress = fromA, timeoutSeconds = to}) -> do
       h @?= "email-smtp.us-east-1.amazonaws.com"
       p @?= 587
       tls @?= SmtpStartTls
       u @?= Just "AKIAEXAMPLE"
-      pw @?= Just "smtp-secret-from-env"
       fromA @?= "auth@example.com"
       to @?= 20
     Nothing -> assertFailure "expected smtpConfig to be populated for transport=smtp"
+  secrets <- loadNotifierSecretsFromEnv cfg
+  fmap smtpPasswordText secrets.smtpPassword @?= Just "smtp-secret-from-env"
   unsetEnv "SHOMEI_SMTP_PASSWORD"
   unsetEnv "SHOMEI_PUBLIC_BASE_URL"
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "PG_CONNECTION_STRING"
 
--- | The webhook transport can be configured entirely from the environment, secret included.
+-- | The webhook transport can be configured entirely from the environment, with its secret
+-- held separately from the printable config.
 notifierWebhookEnv :: Assertion
 notifierWebhookEnv = do
   unsetEnv "SHOMEI_CONFIG"
@@ -555,11 +564,12 @@ notifierWebhookEnv = do
   nc.notifierTransport @?= WebhookNotifier
   nc.alsoLogNotifications @?= True
   case nc.webhookConfig of
-    Just (WebhookConfig {url = u, secret = s, maxAttempts = ma}) -> do
+    Just (WebhookConfig {url = u, maxAttempts = ma}) -> do
       u @?= "https://hooks.example.com/shomei"
-      s @?= "webhook-secret"
       ma @?= 5
     Nothing -> assertFailure "expected webhookConfig to be populated for transport=webhook"
+  secrets <- loadNotifierSecretsFromEnv cfg
+  fmap webhookSecretBytes secrets.webhookSecret @?= Just "webhook-secret"
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -587,7 +597,8 @@ notifierSmtpUsernameWithoutPasswordFails = do
   setEnv "SHOMEI_SMTP_HOST" "smtp.example.com"
   setEnv "SHOMEI_SMTP_FROM" "auth@example.com"
   setEnv "SHOMEI_SMTP_USERNAME" "relay-user"
-  result <- try loadConfigFromEnv
+  (cfg, _) <- loadConfigFromEnv
+  result <- try (loadNotifierSecretsFromEnv cfg)
   expectUserErrorNaming "SHOMEI_SMTP_PASSWORD" result
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
@@ -600,7 +611,80 @@ notifierWebhookMissingSecretFails = do
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
   setEnv "SHOMEI_WEBHOOK_URL" "https://hooks.example.com/shomei"
-  result <- try loadConfigFromEnv
+  (cfg, _) <- loadConfigFromEnv
+  result <- try (loadNotifierSecretsFromEnv cfg)
   expectUserErrorNaming "SHOMEI_WEBHOOK_SECRET" result
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+notifierSecretsAreStrippedAndConfigIsSecretFree :: Assertion
+notifierSecretsAreStrippedAndConfigIsSecretFree = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "  host=localhost dbname=shomei  "
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
+  setEnv "SHOMEI_WEBHOOK_URL" "  https://hooks.example.com/shomei  "
+  setEnv "SHOMEI_WEBHOOK_SECRET" "  webhook-secret\n"
+  (cfg, settings) <- loadConfigFromEnv
+  settings.serverConnStr @?= "host=localhost dbname=shomei"
+  secrets <- loadNotifierSecretsFromEnv cfg
+  fmap webhookSecretBytes secrets.webhookSecret @?= Just "webhook-secret"
+  let notifier = cfg.notifierConfig
+      fullConfig =
+        cfg
+          { notifierConfig =
+              notifier
+                { smtpConfig =
+                    Just
+                      SmtpConfig
+                        { host = "smtp.example.com",
+                          port = 587,
+                          tlsMode = SmtpStartTls,
+                          username = Just "relay-user",
+                          fromAddress = "auth@example.com",
+                          timeoutSeconds = 10
+                        }
+                }
+          }
+      encoded = LBS8.unpack (encode fullConfig)
+  assertBool "ShomeiConfig JSON must not have an SMTP password field" (not ("\"password\":" `isInfixOf` encoded))
+  assertBool "ShomeiConfig JSON must not have a webhook secret field" (not ("\"secret\":" `isInfixOf` encoded))
+  mapM_ unsetEnv notifierEnvVars
+  unsetEnv "PG_CONNECTION_STRING"
+
+notifierInsecureTransportFlags :: Assertion
+notifierInsecureTransportFlags = do
+  unsetEnv "SHOMEI_CONFIG"
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
+  setEnv "SHOMEI_WEBHOOK_URL" "http://127.0.0.1:9999/hook"
+  setEnv "SHOMEI_WEBHOOK_SECRET" "secret"
+  insecureWebhook <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_WEBHOOK_ALLOW_INSECURE" insecureWebhook
+  setEnv "SHOMEI_WEBHOOK_ALLOW_INSECURE" "true"
+  (webhookCfg, _) <- loadConfigFromEnv
+  _ <- loadNotifierSecretsFromEnv webhookCfg
+
+  mapM_ unsetEnv notifierEnvVars
+  setEnv "SHOMEI_NOTIFIER_TRANSPORT" "smtp"
+  setEnv "SHOMEI_SMTP_HOST" "smtp.example.com"
+  setEnv "SHOMEI_SMTP_FROM" "auth@example.com"
+  setEnv "SHOMEI_SMTP_TLS_MODE" "plain"
+  setEnv "SHOMEI_SMTP_USERNAME" "relay-user"
+  setEnv "SHOMEI_SMTP_PASSWORD" "relay-password"
+  plaintextAuth <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" plaintextAuth
+  setEnv "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" "true"
+  (smtpCfg, _) <- loadConfigFromEnv
+  _ <- loadNotifierSecretsFromEnv smtpCfg
+
+  unsetEnv "SHOMEI_SMTP_USERNAME"
+  unsetEnv "SHOMEI_SMTP_PASSWORD"
+  unsetEnv "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH"
+  (_, warningSettings) <- loadConfigFromEnv
+  assertBool
+    "unauthenticated plaintext SMTP warns"
+    ("smtpTlsMode=plain sends mail in the clear; lab sinks only" `elem` warningSettings.serverWarnings)
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"

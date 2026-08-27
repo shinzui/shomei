@@ -11,6 +11,9 @@ project-level roundup of what shipped together.
 
 ## Unreleased
 
+- **Breaking (`shomei-core` 0.2.0.0):** notifier credentials no longer live in `ShomeiConfig`;
+  the standalone server holds stripped, non-printable runtime secrets, requires secure transport
+  defaults, and timestamps webhook signatures for receiver replay windows.
 - OAuth authorization-code sessions retain their granted scopes across refresh and can be rotated
   only by their minting client; the bespoke refresh endpoint refuses them.
 - OAuth clients cannot receive Shōmei's reserved privilege scopes, revocation enforces caller

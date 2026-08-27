@@ -19,6 +19,7 @@ module Shomei.Server.Config
     toSweepConfig,
     loadConfig,
     loadConfigFromEnv,
+    loadNotifierSecretsFromEnv,
     defaultRolesFromEnv,
     FileConfig (..),
   )
@@ -59,6 +60,7 @@ import Shomei.Config
     WebhookConfig (..),
     defaultShomeiConfig,
   )
+import Shomei.Notify (NotifierSecrets (..), SmtpPassword (..), WebhookSecret (..))
 import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
 import Shomei.SigningKey.Verify.Jwt (checkStringOrUri)
@@ -83,6 +85,8 @@ data ServerSettings = ServerSettings
     serverDbStatementTimeoutMs :: !Int,
     -- | bounded in-memory notification queue capacity
     serverNotifierQueueSize :: !Int,
+    -- | non-fatal configuration posture warnings printed by the standalone boot path
+    serverWarnings :: ![Text],
     -- | the background expired-data sweeper
     serverSweep :: !SweepSettings,
     -- | Argon2id cost parameters for hashing /new/ passwords. Existing hashes carry the
@@ -321,6 +325,7 @@ baseDefaults =
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
           serverDbStatementTimeoutMs = defaultDbStatementTimeoutMs,
           serverNotifierQueueSize = defaultNotifierQueueSize,
+          serverWarnings = [],
           serverSweep = defaultSweepSettings,
           serverArgon2 = defaultArgon2Params,
           serverHashingMaxConcurrency = defaultHashingMaxConcurrency
@@ -414,6 +419,7 @@ baseFromFile (Just fc) = do
             serverDbStatementTimeoutMs =
               fromMaybe defaultDbStatementTimeoutMs fc.dbStatementTimeoutMs,
             serverNotifierQueueSize = fromMaybe defaultNotifierQueueSize fc.notifierQueueSize,
+            serverWarnings = [],
             serverSweep = mergeSweep defaultSweepSettings fc,
             serverArgon2 = mergeArgon2 defaultArgon2Params fc,
             serverHashingMaxConcurrency =
@@ -522,7 +528,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
     cfg.signingKeyConfig.allowedClockSkewSeconds
   -- Validated after the overlay so a selected notifier transport is proven fully configured
   -- whichever layer supplied its fields (secrets always come from the environment).
-  validateNotifierConfig cfg.notifierConfig
+  notifierWarnings <- validateNotifierConfig cfg.notifierConfig
   pure
     ( cfg,
       ServerSettings
@@ -532,6 +538,7 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverDbStatementTimeoutMs = statementTimeout,
           serverNotifierQueueSize = notifierQueueSize,
+          serverWarnings = notifierWarnings,
           serverSweep = sweep,
           serverArgon2 = argon2,
           serverHashingMaxConcurrency = hashingConcurrency
@@ -781,8 +788,8 @@ smtpTlsModeEnv = do
     Just s -> Just <$> parseSmtpTlsMode "SHOMEI_SMTP_TLS_MODE" (Text.pack s)
 
 -- | Build a partial 'SmtpConfig' from the Dhall file's flat @smtp*@ fields, whenever any is
--- present. The password is never here — it comes from @SHOMEI_SMTP_PASSWORD@. Missing scalars
--- take their conventional defaults (port 587, STARTTLS, 10 s); completeness is validated at boot.
+-- present. Credentials never enter this record. Missing scalars take their conventional defaults
+-- (port 587, STARTTLS, 10 s); completeness is validated at boot.
 smtpFromFile :: Maybe SmtpTlsMode -> FileConfig -> Maybe SmtpConfig
 smtpFromFile tls fc
   | anyPresent =
@@ -792,7 +799,6 @@ smtpFromFile tls fc
             port = fromMaybe 587 fc.smtpPort,
             tlsMode = fromMaybe SmtpStartTls tls,
             username = fc.smtpUsername,
-            password = Nothing,
             fromAddress = fromMaybe "" fc.smtpFromAddress,
             timeoutSeconds = fromMaybe defaultSmtpTimeoutSeconds fc.smtpTimeoutSeconds
           }
@@ -807,14 +813,13 @@ smtpFromFile tls fc
         || isJust fc.smtpTimeoutSeconds
 
 -- | Build a partial 'WebhookConfig' from the Dhall file's flat @webhook*@ fields. The signing
--- secret is never here — it comes from @SHOMEI_WEBHOOK_SECRET@.
+-- secret never enters this record.
 webhookFromFile :: FileConfig -> Maybe WebhookConfig
 webhookFromFile fc
   | anyPresent =
       Just
         WebhookConfig
           { url = fromMaybe "" fc.webhookUrl,
-            secret = "",
             timeoutSeconds = fromMaybe defaultWebhookTimeoutSeconds fc.webhookTimeoutSeconds,
             maxAttempts = fromMaybe defaultWebhookMaxAttempts fc.webhookMaxAttempts
           }
@@ -844,16 +849,15 @@ overlayNotifierFromEnv base logSecrets = do
         webhookConfig = webhook
       }
 
--- | Overlay the SMTP environment variables onto the file-supplied 'SmtpConfig' (or build one if
--- the file supplied none but the environment does). @SHOMEI_SMTP_PASSWORD@ is read here — it is
--- the only place the relay password ever enters, never the Dhall file.
+-- | Overlay the non-secret SMTP environment variables onto the file-supplied 'SmtpConfig' (or
+-- build one if the environment supplies settings). The password is loaded separately into the
+-- runtime-only 'NotifierSecrets'.
 overlaySmtpFromEnv :: Maybe SmtpConfig -> IO (Maybe SmtpConfig)
 overlaySmtpFromEnv base = do
   host <- textEnvMaybe "SHOMEI_SMTP_HOST"
   port <- intEnvMaybe "SHOMEI_SMTP_PORT"
   tls <- smtpTlsModeEnv
   username <- textEnvMaybe "SHOMEI_SMTP_USERNAME"
-  password <- textEnvMaybe "SHOMEI_SMTP_PASSWORD"
   fromAddr <- textEnvMaybe "SHOMEI_SMTP_FROM"
   timeout <- intEnvMaybe "SHOMEI_SMTP_TIMEOUT"
   let anyEnv =
@@ -861,7 +865,6 @@ overlaySmtpFromEnv base = do
           || isJust port
           || isJust tls
           || isJust username
-          || isJust password
           || isJust fromAddr
           || isJust timeout
   case base of
@@ -872,7 +875,6 @@ overlaySmtpFromEnv base = do
               port = bPort,
               tlsMode = bTls,
               username = bUser,
-              password = bPass,
               fromAddress = bFrom,
               timeoutSeconds = bTimeout
             } = fromMaybe emptySmtp base
@@ -883,7 +885,6 @@ overlaySmtpFromEnv base = do
                     port = fromMaybe bPort port,
                     tlsMode = fromMaybe bTls tls,
                     username = username <|> bUser,
-                    password = password <|> bPass,
                     fromAddress = fromMaybe bFrom fromAddr,
                     timeoutSeconds = fromMaybe bTimeout timeout
                   }
@@ -895,27 +896,24 @@ overlaySmtpFromEnv base = do
           port = 587,
           tlsMode = SmtpStartTls,
           username = Nothing,
-          password = Nothing,
           fromAddress = "",
           timeoutSeconds = defaultSmtpTimeoutSeconds
         }
 
--- | Overlay the webhook environment variables onto the file-supplied 'WebhookConfig' (or build
--- one from the environment). @SHOMEI_WEBHOOK_SECRET@ is read here — the only place the signing
--- secret ever enters, never the Dhall file.
+-- | Overlay the non-secret webhook environment variables onto the file-supplied 'WebhookConfig'
+-- (or build one from the environment). The signing secret is loaded separately into
+-- runtime-only 'NotifierSecrets'.
 overlayWebhookFromEnv :: Maybe WebhookConfig -> IO (Maybe WebhookConfig)
 overlayWebhookFromEnv base = do
   url <- textEnvMaybe "SHOMEI_WEBHOOK_URL"
-  secret <- textEnvMaybe "SHOMEI_WEBHOOK_SECRET"
   timeout <- intEnvMaybe "SHOMEI_WEBHOOK_TIMEOUT"
   maxAttempts <- intEnvMaybe "SHOMEI_WEBHOOK_MAX_ATTEMPTS"
-  let anyEnv = isJust url || isJust secret || isJust timeout || isJust maxAttempts
+  let anyEnv = isJust url || isJust timeout || isJust maxAttempts
   case base of
     Nothing | not anyEnv -> pure Nothing
     _ ->
       let WebhookConfig
             { url = bUrl,
-              secret = bSecret,
               timeoutSeconds = bTimeout,
               maxAttempts = bMax
             } = fromMaybe emptyWebhook base
@@ -923,7 +921,6 @@ overlayWebhookFromEnv base = do
             ( Just
                 WebhookConfig
                   { url = fromMaybe bUrl url,
-                    secret = fromMaybe bSecret secret,
                     timeoutSeconds = fromMaybe bTimeout timeout,
                     maxAttempts = fromMaybe bMax maxAttempts
                   }
@@ -932,39 +929,65 @@ overlayWebhookFromEnv base = do
     emptyWebhook =
       WebhookConfig
         { url = "",
-          secret = "",
           timeoutSeconds = defaultWebhookTimeoutSeconds,
           maxAttempts = defaultWebhookMaxAttempts
         }
 
--- | Refuse to boot when the selected notifier transport is not fully configured. The default
--- ('LogNotifier') needs nothing. @smtp@ needs a host and from-address (and, if authenticated, a
--- username/password pair, both or neither) plus a non-empty @publicBaseUrl@ (the body embeds
--- links). @webhook@ needs an http(s) URL and a non-empty signing secret.
-validateNotifierConfig :: NotifierConfig -> IO ()
-validateNotifierConfig nc = case nc.notifierTransport of
-  LogNotifier -> pure ()
-  SmtpNotifier -> case nc.smtpConfig of
-    Nothing ->
-      failWith "SHOMEI_NOTIFIER_TRANSPORT=smtp requires SMTP settings (at least SHOMEI_SMTP_HOST and SHOMEI_SMTP_FROM)"
-    Just sc -> do
-      let SmtpConfig {host = h, fromAddress = fromA, username = u, password = p} = sc
-      when (Text.null (Text.strip h)) (failWith "notifier transport smtp requires a non-empty SMTP host (SHOMEI_SMTP_HOST / smtpHost)")
-      when (Text.null (Text.strip fromA)) (failWith "notifier transport smtp requires a non-empty from address (SHOMEI_SMTP_FROM / smtpFromAddress)")
-      when (isJust u /= isJust p) (failWith "SMTP username and password must be set together (SHOMEI_SMTP_USERNAME / SHOMEI_SMTP_PASSWORD): both for an authenticated relay, or neither for a lab sink")
-      when (Text.null (Text.strip nc.publicBaseUrl)) (failWith "notifier transport smtp requires a non-empty publicBaseUrl (the email body embeds confirm links)")
-  WebhookNotifier -> case nc.webhookConfig of
-    Nothing ->
-      failWith "SHOMEI_NOTIFIER_TRANSPORT=webhook requires SHOMEI_WEBHOOK_URL and SHOMEI_WEBHOOK_SECRET"
-    Just wc -> do
-      let WebhookConfig {url = u, secret = s} = wc
-      unless (isHttpUrl u) (failWith "notifier transport webhook requires an http(s) SHOMEI_WEBHOOK_URL / webhookUrl")
-      when (Text.null s) (failWith "notifier transport webhook requires a non-empty SHOMEI_WEBHOOK_SECRET")
+-- | Load credential material into a runtime-only value after the printable config is complete.
+-- Values are stripped, and selected transports fail closed if their credential pair is partial.
+loadNotifierSecretsFromEnv :: ShomeiConfig -> IO NotifierSecrets
+loadNotifierSecretsFromEnv cfg = do
+  smtpSecret <- fmap SmtpPassword <$> textEnvMaybe "SHOMEI_SMTP_PASSWORD"
+  webhookSigningSecret <- fmap WebhookSecret <$> textEnvMaybe "SHOMEI_WEBHOOK_SECRET"
+  case cfg.notifierConfig.notifierTransport of
+    LogNotifier -> pure ()
+    SmtpNotifier -> do
+      let hasUsername = maybe False (isJust . (.username)) cfg.notifierConfig.smtpConfig
+          hasPassword = isJust smtpSecret
+      when (hasUsername /= hasPassword) $
+        failWith
+          "SMTP username and password must be set together (SHOMEI_SMTP_USERNAME / SHOMEI_SMTP_PASSWORD): both for an authenticated relay, or neither for a lab sink"
+    WebhookNotifier ->
+      when (isNothing webhookSigningSecret) $
+        failWith "notifier transport webhook requires a non-empty SHOMEI_WEBHOOK_SECRET"
+  pure NotifierSecrets {smtpPassword = smtpSecret, webhookSecret = webhookSigningSecret}
   where
     failWith = ioError . userError
-    isHttpUrl u =
-      let u' = Text.toLower (Text.strip u)
-       in Text.isPrefixOf "http://" u' || Text.isPrefixOf "https://" u'
+
+-- | Refuse incomplete or unsafe non-secret notifier settings. Lab escape hatches are env-only;
+-- plaintext unauthenticated SMTP is permitted but returned as a boot warning.
+validateNotifierConfig :: NotifierConfig -> IO [Text]
+validateNotifierConfig nc = do
+  allowInsecureWebhook <- fromMaybe False <$> boolEnv "SHOMEI_WEBHOOK_ALLOW_INSECURE"
+  allowPlaintextAuth <- fromMaybe False <$> boolEnv "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH"
+  case nc.notifierTransport of
+    LogNotifier -> pure []
+    SmtpNotifier -> case nc.smtpConfig of
+      Nothing ->
+        failWith "SHOMEI_NOTIFIER_TRANSPORT=smtp requires SMTP settings (at least SHOMEI_SMTP_HOST and SHOMEI_SMTP_FROM)"
+      Just sc -> do
+        let SmtpConfig {host = h, fromAddress = fromA, username = u, tlsMode = tls} = sc
+        when (Text.null (Text.strip h)) (failWith "notifier transport smtp requires a non-empty SMTP host (SHOMEI_SMTP_HOST / smtpHost)")
+        when (Text.null (Text.strip fromA)) (failWith "notifier transport smtp requires a non-empty from address (SHOMEI_SMTP_FROM / smtpFromAddress)")
+        when (Text.null (Text.strip nc.publicBaseUrl)) (failWith "notifier transport smtp requires a non-empty publicBaseUrl (the email body embeds confirm links)")
+        when (tls == SmtpPlain && isJust u && not allowPlaintextAuth) $
+          failWith "smtpTlsMode=plain with authentication is refused (set SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH=true for a lab relay)"
+        pure
+          [ "smtpTlsMode=plain sends mail in the clear; lab sinks only"
+          | tls == SmtpPlain && isNothing u
+          ]
+    WebhookNotifier -> case nc.webhookConfig of
+      Nothing ->
+        failWith "SHOMEI_NOTIFIER_TRANSPORT=webhook requires SHOMEI_WEBHOOK_URL"
+      Just wc -> do
+        let normalizedUrl = Text.toLower (Text.strip wc.url)
+            isHttps = Text.isPrefixOf "https://" normalizedUrl
+            isHttp = Text.isPrefixOf "http://" normalizedUrl
+        unless (isHttps || (isHttp && allowInsecureWebhook)) $
+          failWith "webhookUrl must be https:// (set SHOMEI_WEBHOOK_ALLOW_INSECURE=true for a lab receiver)"
+        pure []
+  where
+    failWith = ioError . userError
 
 -- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
 -- 'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot
@@ -1072,7 +1095,8 @@ textEnv :: Text -> Text -> IO Text
 textEnv name def = do
   m <- lookupEnv (Text.unpack name)
   pure $ case m of
-    Just v | not (null v) -> Text.pack v
+    Just v
+      | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> stripped
     _ -> def
 
 intEnv :: Text -> Int -> IO Int
@@ -1092,7 +1116,8 @@ textEnvMaybe :: Text -> IO (Maybe Text)
 textEnvMaybe name = do
   m <- lookupEnv (Text.unpack name)
   pure $ case m of
-    Just v | not (null v) -> Just (Text.pack v)
+    Just v
+      | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> Just stripped
     _ -> Nothing
 
 -- | Like 'intEnv' but overlay-only: absent/empty → Nothing, non-integer → error.

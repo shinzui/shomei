@@ -19,6 +19,7 @@ import Shomei.Config (defaultShomeiConfig)
 import Shomei.Id (parseId)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
+import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
@@ -58,7 +59,7 @@ tests =
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 

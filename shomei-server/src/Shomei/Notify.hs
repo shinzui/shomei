@@ -18,7 +18,13 @@
 -- still succeeds. Their operational log lines never contain the one-time token. Operators who
 -- want a provider Shōmei does not ship supply their own 'Notifier' interpreter.
 module Shomei.Notify
-  ( DeliveryReason (..),
+  ( SmtpPassword (..),
+    WebhookSecret (..),
+    NotifierSecrets (..),
+    noNotifierSecrets,
+    smtpPasswordText,
+    webhookSecretBytes,
+    DeliveryReason (..),
     SmtpStage (..),
     reasonText,
     classifySmtpFailure,
@@ -49,6 +55,7 @@ import Data.Char (isSpace)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Text.Lazy qualified as TL
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -114,6 +121,28 @@ data DeliveryReason
 
 data SmtpStage = AtEhlo | AtStartTls | AtMail | AtRcpt | AtData
   deriving stock (Eq, Show)
+
+-- | SMTP credential material. Deliberately has no 'Show', 'Eq', or JSON instances: placing it
+-- in a printable configuration or diagnostic structure is a type error.
+newtype SmtpPassword = SmtpPassword Text
+
+-- | Webhook HMAC key. Deliberately has no 'Show', 'Eq', or JSON instances.
+newtype WebhookSecret = WebhookSecret Text
+
+-- | Runtime-only notifier credentials, carried beside (never inside) 'ShomeiConfig'.
+data NotifierSecrets = NotifierSecrets
+  { smtpPassword :: !(Maybe SmtpPassword),
+    webhookSecret :: !(Maybe WebhookSecret)
+  }
+
+noNotifierSecrets :: NotifierSecrets
+noNotifierSecrets = NotifierSecrets {smtpPassword = Nothing, webhookSecret = Nothing}
+
+smtpPasswordText :: SmtpPassword -> Text
+smtpPasswordText (SmtpPassword password) = password
+
+webhookSecretBytes :: WebhookSecret -> ByteString
+webhookSecretBytes (WebhookSecret secret) = TE.encodeUtf8 secret
 
 reasonText :: DeliveryReason -> Text
 reasonText = \case
@@ -221,11 +250,12 @@ parseRejected msg = do
 runNotifierFromConfig ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   Manager ->
+  NotifierSecrets ->
   ShomeiConfig ->
   Eff (Notifier : es) a ->
   Eff es a
-runNotifierFromConfig mgr cfg = interpret_ \case
-  SendNotification notification -> deliverNotification mgr cfg notification
+runNotifierFromConfig mgr secrets cfg = interpret_ \case
+  SendNotification notification -> deliverNotification mgr secrets cfg notification
 
 -- | The standalone request-path interpreter. Enqueueing is one bounded STM transaction and
 -- never waits for a relay. Overflow and shutdown are still observable through the audit port.
@@ -248,10 +278,11 @@ runNotifierEnqueue notifierQueue channel = interpret_ \case
 deliverNotification ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   Manager ->
+  NotifierSecrets ->
   ShomeiConfig ->
   Notification ->
   Eff es ()
-deliverNotification mgr cfg notification = do
+deliverNotification mgr secrets cfg notification = do
   currentTime <- now
   if notificationExpiresAt notification <= currentTime
     then publishDeliveryFailed (transportChannel nc.notifierTransport) notification ExpiredInQueue
@@ -263,8 +294,10 @@ deliverNotification mgr cfg notification = do
     tee = nc.alsoLogNotifications && nc.notifierTransport /= LogNotifier
     deliver = case nc.notifierTransport of
       LogNotifier -> logNotification nc
-      SmtpNotifier -> maybe (logFallback "smtp" nc) (deliverSmtp nc) nc.smtpConfig
-      WebhookNotifier -> maybe (logFallback "webhook" nc) (deliverWebhook mgr) nc.webhookConfig
+      SmtpNotifier -> maybe (logFallback "smtp" nc) (\sc -> deliverSmtp nc sc secrets.smtpPassword) nc.smtpConfig
+      WebhookNotifier -> case (nc.webhookConfig, secrets.webhookSecret) of
+        (Just wc, Just secret) -> deliverWebhook mgr wc secret
+        _ -> \undeliverable -> publishDeliveryFailed "webhook" undeliverable AuthFailed
 
 transportChannel :: NotifierTransport -> Text
 transportChannel = \case
@@ -350,10 +383,11 @@ runNotifierSmtp ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   NotifierConfig ->
   SmtpConfig ->
+  Maybe SmtpPassword ->
   Eff (Notifier : es) a ->
   Eff es a
-runNotifierSmtp nc sc = interpret_ \case
-  SendNotification n -> deliverSmtp nc sc n
+runNotifierSmtp nc sc password = interpret_ \case
+  SendNotification n -> deliverSmtp nc sc password n
 
 -- | Deliver one notification over SMTP: build the message, send it under a timeout, and on any
 -- failure publish the redacted 'NotificationDeliveryFailed' event. The per-notification primitive
@@ -362,34 +396,37 @@ deliverSmtp ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   NotifierConfig ->
   SmtpConfig ->
+  Maybe SmtpPassword ->
   Notification ->
   Eff es ()
-deliverSmtp nc sc n = do
+deliverSmtp nc sc password n = do
   let (subject, body) = renderEmail nc n
       recipient = notificationRecipient n
       mail = simpleMail' (Address Nothing recipient) (Address Nothing sc.fromAddress) subject body
-  outcome <- liftIO (try @SomeException (sendViaSmtp sc mail))
+  outcome <- liftIO (try @SomeException (sendViaSmtp sc password mail))
   case outcome of
     Right () -> pure ()
     Left err -> publishDeliveryFailed "smtp" n (classifySmtpFailure err)
 
 -- | Run the SMTP dialogue for one message under a timeout, choosing the connection mode from
 -- 'SmtpTlsMode' and using the authenticated variant when credentials are present. Boot
--- validation guarantees username and password are both present or both absent, so a lone
--- credential never silently downgrades to an unauthenticated send here.
-sendViaSmtp :: SmtpConfig -> Mail -> IO ()
-sendViaSmtp sc mail = do
-  let SmtpConfig {host = h, port = p, tlsMode = tls, username = mu, password = mp, timeoutSeconds = to} = sc
+-- validation guarantees username and password are both present or both absent. The explicit
+-- mismatch branch keeps a hand-built embedding configuration from silently downgrading.
+sendViaSmtp :: SmtpConfig -> Maybe SmtpPassword -> Mail -> IO ()
+sendViaSmtp sc mp mail = do
+  let SmtpConfig {host = h, port = p, tlsMode = tls, username = mu, timeoutSeconds = to} = sc
       host' = Text.unpack h
       port' = fromIntegral p
-      creds = (,) <$> mu <*> mp
-      send = case (tls, creds) of
-        (SmtpPlain, Just (u, pw)) -> sendMailWithLogin' host' port' (Text.unpack u) (Text.unpack pw) mail
-        (SmtpPlain, Nothing) -> sendMail' host' port' mail
-        (SmtpStartTls, Just (u, pw)) -> sendMailWithLoginSTARTTLS' host' port' (Text.unpack u) (Text.unpack pw) mail
-        (SmtpStartTls, Nothing) -> sendMailSTARTTLS' host' port' mail
-        (SmtpImplicitTls, Just (u, pw)) -> sendMailWithLoginTLS' host' port' (Text.unpack u) (Text.unpack pw) mail
-        (SmtpImplicitTls, Nothing) -> sendMailTLS' host' port' mail
+      creds = (,) <$> mu <*> fmap smtpPasswordText mp
+      send = case (mu, mp, tls, creds) of
+        (Just _, Nothing, _, _) -> ioError (userError "SMTP credentials are incomplete")
+        (Nothing, Just _, _, _) -> ioError (userError "SMTP credentials are incomplete")
+        (_, _, SmtpPlain, Just (u, pw)) -> sendMailWithLogin' host' port' (Text.unpack u) (Text.unpack pw) mail
+        (_, _, SmtpPlain, Nothing) -> sendMail' host' port' mail
+        (_, _, SmtpStartTls, Just (u, pw)) -> sendMailWithLoginSTARTTLS' host' port' (Text.unpack u) (Text.unpack pw) mail
+        (_, _, SmtpStartTls, Nothing) -> sendMailSTARTTLS' host' port' mail
+        (_, _, SmtpImplicitTls, Just (u, pw)) -> sendMailWithLoginTLS' host' port' (Text.unpack u) (Text.unpack pw) mail
+        (_, _, SmtpImplicitTls, Nothing) -> sendMailTLS' host' port' mail
   result <- timeout (max 1 to * 1_000_000) send
   case result of
     Just () -> pure ()
@@ -537,10 +574,11 @@ runNotifierWebhook ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   Manager ->
   WebhookConfig ->
+  WebhookSecret ->
   Eff (Notifier : es) a ->
   Eff es a
-runNotifierWebhook mgr wc = interpret_ \case
-  SendNotification n -> deliverWebhook mgr wc n
+runNotifierWebhook mgr wc secret = interpret_ \case
+  SendNotification n -> deliverWebhook mgr wc secret n
 
 -- | Deliver one notification over the webhook and, on ultimate failure, publish the redacted
 -- 'NotificationDeliveryFailed' event. The per-notification primitive shared by
@@ -549,10 +587,11 @@ deliverWebhook ::
   (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
   Manager ->
   WebhookConfig ->
+  WebhookSecret ->
   Notification ->
   Eff es ()
-deliverWebhook mgr wc n = do
-  result <- liftIO (attemptWebhook mgr wc n)
+deliverWebhook mgr wc secret n = do
+  result <- attemptWebhook mgr wc secret n
   case result of
     Nothing -> pure ()
     Just reason -> publishDeliveryFailed "webhook" n reason
@@ -560,45 +599,51 @@ deliverWebhook mgr wc n = do
 -- | POST the notification, retrying up to 'WebhookConfig.maxAttempts' with @4^(k-1)@-second
 -- backoff (1 s, 4 s, …) between attempts, each under the configured per-attempt timeout. Returns
 -- 'Nothing' on the first 2xx, or a secret-free reason after the last attempt fails. All exceptions are
--- caught here; nothing escapes to the interpreter.
-attemptWebhook :: Manager -> WebhookConfig -> Notification -> IO (Maybe DeliveryReason)
-attemptWebhook mgr wc n = do
-  let WebhookConfig {url = u, secret = s, timeoutSeconds = to, maxAttempts = maxA} = wc
+-- caught here; nothing escapes to the interpreter. Each retry gets a fresh timestamp and
+-- signature so a receiver's replay window measures the actual attempt, not initial enqueue.
+attemptWebhook :: (IOE :> es, Clock :> es) => Manager -> WebhookConfig -> WebhookSecret -> Notification -> Eff es (Maybe DeliveryReason)
+attemptWebhook mgr wc secret n = do
+  let WebhookConfig {url = u, timeoutSeconds = to, maxAttempts = maxA} = wc
       body = BSL.toStrict (encode n)
-      sig = webhookSignature (TE.encodeUtf8 s) body
       kind = notificationTypeText n
       attempts = max 1 maxA
-  reqE <- try @SomeException (parseRequest (Text.unpack u))
+  reqE <- liftIO (try @SomeException (parseRequest (Text.unpack u)))
   case reqE of
     Left _ -> pure (Just InvalidUrl)
-    Right req0 -> do
-      let req =
+    Right req0 -> go req0 body kind attempts to 1
+  where
+    go req0 body kind attempts to k = do
+      attemptTime <- now
+      let timestamp = TE.encodeUtf8 (Text.pack (show (floor (utcTimeToPOSIXSeconds attemptTime) :: Integer)))
+          sig = webhookSignature (webhookSecretBytes secret) timestamp body
+          req =
             req0
               { method = "POST",
                 requestBody = RequestBodyBS body,
                 requestHeaders =
                   [ ("Content-Type", "application/json"),
                     ("X-Shomei-Signature", sig),
+                    ("X-Shomei-Timestamp", timestamp),
                     ("X-Shomei-Notification-Type", TE.encodeUtf8 kind),
                     ("User-Agent", "shomei")
                   ],
                 responseTimeout = responseTimeoutMicro (max 1 to * 1_000_000)
               }
-          go k = do
-            outcome <- try @SomeException (httpLbs req mgr)
-            let failed errText
-                  | k >= attempts = pure (Just errText)
-                  | otherwise = threadDelay (4 ^ (k - 1) * 1_000_000) >> go (k + 1)
-            case outcome of
-              Right resp
-                | statusIsSuccessful (responseStatus resp) -> pure Nothing
-                | otherwise -> failed (HttpStatus (statusCode (responseStatus resp)))
-              Left err -> failed (classifyWebhookFailure err)
-      go 1
+      outcome <- liftIO (try @SomeException (httpLbs req mgr))
+      let failed reason
+            | k >= attempts = pure (Just reason)
+            | otherwise = liftIO (threadDelay (4 ^ (k - 1) * 1_000_000)) >> go req0 body kind attempts to (k + 1)
+      case outcome of
+        Right resp
+          | statusIsSuccessful (responseStatus resp) -> pure Nothing
+          | otherwise -> failed (HttpStatus (statusCode (responseStatus resp)))
+        Left err -> failed (classifyWebhookFailure err)
 
--- | The @X-Shomei-Signature@ header value for a raw body: @sha256=@ followed by the lowercase-hex
--- HMAC-SHA256 of the exact bytes under the shared secret. Signing the strict body that is sent
--- (never a re-encoding) is what lets a receiver verify byte-for-byte.
-webhookSignature :: ByteString -> ByteString -> ByteString
-webhookSignature secret body =
-  "sha256=" <> convertToBase Base16 (hmacGetDigest (hmac secret body :: HMAC SHA256))
+-- | The @X-Shomei-Signature@ header value: @sha256=@ followed by the lowercase-hex
+-- HMAC-SHA256 of @<unix-seconds>.<exact raw body>@ under the shared secret.
+webhookSignature :: ByteString -> ByteString -> ByteString -> ByteString
+webhookSignature secret timestamp body =
+  "sha256="
+    <> convertToBase
+      Base16
+      (hmacGetDigest (hmac secret (timestamp <> "." <> body) :: HMAC SHA256))

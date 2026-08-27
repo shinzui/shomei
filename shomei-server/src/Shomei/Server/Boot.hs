@@ -73,7 +73,7 @@ import Shomei.Servant.Oidc (isAbsoluteHttpUrl)
 import Shomei.Servant.Seam qualified as Seam
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
-import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, toSweepConfig)
+import Shomei.Server.Config (ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
 import Shomei.Server.Middleware.RateLimit (newRateLimiterFor, rateLimitMiddleware)
@@ -96,6 +96,9 @@ main = do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   (cfg, settings) <- loadConfig
+  traverse_
+    (\warning -> hPutStrLn stderr ("[shomei] WARNING: " <> Text.unpack warning))
+    settings.serverWarnings
   -- Warn, never refuse: a resource-starved dev box legitimately wants cheap hashing, but an
   -- operator must not weaken password storage without seeing it said out loud.
   traverse_
@@ -350,7 +353,7 @@ installNotifierWorker env = do
             . runDatabasePool env.envPool
             . runClockIO
             . runAuthEventPublisherPostgres
-            $ deliverNotification env.envHttpManager env.envConfig notification
+            $ deliverNotification env.envHttpManager env.envNotifierSecrets env.envConfig notification
         case result of
           Right () -> pure ()
           Left err ->
@@ -398,6 +401,7 @@ buildEnv cfg settings = do
       settings.serverConnStr
   kek <- loadKekFromEnv
   totpKey <- loadTotpKeyFromEnv cfg
+  notifierSecrets <- loadNotifierSecretsFromEnv cfg
   keys <- bootstrapKeys kek alg pool
   keysRef <- newIORef keys
   mgr <- newTlsManager
@@ -421,6 +425,7 @@ buildEnv cfg settings = do
         envKeys = keysRef,
         envKek = kek,
         envHttpManager = mgr,
+        envNotifierSecrets = notifierSecrets,
         envNotifierQueue = notifierQueue,
         envArgon2Params = settings.serverArgon2,
         envHashingLimiter = limiter,

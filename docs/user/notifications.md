@@ -49,7 +49,9 @@ Point it at your provider's submission endpoint:
   authenticating. The most common submission mode.
 - `implicit` (port 465) — TLS from the first byte.
 - `plain` (port 25) — **plaintext, no TLS. A lab/test sink only** (e.g. a local debugging
-  server). Never use it in production: it sends your credentials and mail in the clear.
+  server). Never use it in production: it sends mail in the clear. The server warns for an
+  unauthenticated plain sink and refuses plain authentication unless the process explicitly sets
+  `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH=true`.
 
 Authentication uses `AUTH PLAIN`/`AUTH LOGIN` when a username and password are configured;
 `SHOMEI_SMTP_USERNAME` and `SHOMEI_SMTP_PASSWORD` must be set together (both, for an authenticated
@@ -115,6 +117,7 @@ Each delivery is a `POST` with these headers:
 ```text
 Content-Type: application/json
 X-Shomei-Notification-Type: email_verification_requested   (or password_reset_requested)
+X-Shomei-Timestamp: <Unix seconds>
 X-Shomei-Signature: sha256=<64 lowercase hex chars>
 User-Agent: shomei
 ```
@@ -133,20 +136,28 @@ The body is the `Notification`'s JSON (a tagged object carrying `email`, `token`
 The body **carries the raw one-time token** — that is its purpose; your receiver builds the link
 the user clicks. Treat the endpoint accordingly: **HTTPS only, an internal/trusted receiver, and
 rotate the secret**. This is the same warning that has always applied to sending tokens over any
-transport.
+transport. The server refuses an `http://` receiver unless the process explicitly sets
+`SHOMEI_WEBHOOK_ALLOW_INSECURE=true`; that lab escape hatch has no Dhall key.
 
 ### Verifying the signature
 
-`X-Shomei-Signature` is `sha256=` followed by the lowercase-hex HMAC-SHA256 of the **exact raw
-request body bytes** under `SHOMEI_WEBHOOK_SECRET`. Verify over the raw bytes, not a re-serialized
-copy, and compare in constant time:
+> **Breaking change:** receivers must now verify the timestamped payload, not the body alone.
+
+`X-Shomei-Signature` is `sha256=` followed by the lowercase-hex HMAC-SHA256 of
+`<X-Shomei-Timestamp>.<exact raw request body bytes>` under `SHOMEI_WEBHOOK_SECRET`. Verify over
+the raw bytes, not a re-serialized copy, compare in constant time, and reject timestamps more than
+five minutes from the receiver's clock:
 
 ```python
 # Receiver-side verification (pseudo-code)
 import hmac, hashlib
-def verify(raw_body: bytes, header: str, secret: bytes) -> bool:
-    expected = "sha256=" + hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header)   # constant-time compare
+import time
+def verify(raw_body: bytes, timestamp: str, header: str, secret: bytes) -> bool:
+    if abs(int(time.time()) - int(timestamp)) > 300:
+        return False
+    signed = timestamp.encode("ascii") + b"." + raw_body
+    expected = "sha256=" + hmac.new(secret, signed, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header)
 ```
 
 ### Delivery semantics (at-most-once-ish)
@@ -181,17 +192,18 @@ by environment variables; the two secrets are environment-only.
 | `smtpPort`             | `SHOMEI_SMTP_PORT`           | smtp       | 587 (starttls) / 465 (implicit) / 25 (lab). |
 | `smtpTlsMode`          | `SHOMEI_SMTP_TLS_MODE`       | smtp       | `starttls` \| `implicit` \| `plain`. |
 | `smtpUsername`         | `SHOMEI_SMTP_USERNAME`       | smtp       | With password, both or neither. |
-| _(none)_               | `SHOMEI_SMTP_PASSWORD`       | smtp       | **Env-only secret.** |
+| _(none)_               | `SHOMEI_SMTP_PASSWORD`       | smtp       | **Env-only secret; stripped and held in server `Env`, never `ShomeiConfig`.** |
 | `smtpFromAddress`      | `SHOMEI_SMTP_FROM`          | smtp       | Envelope/from address. |
 | `smtpTimeoutSeconds`   | `SHOMEI_SMTP_TIMEOUT`       | smtp       | Per-send timeout (default 10). |
-| `webhookUrl`           | `SHOMEI_WEBHOOK_URL`        | webhook    | `http(s)://…`. |
-| _(none)_               | `SHOMEI_WEBHOOK_SECRET`     | webhook    | **Env-only secret.** |
+| `webhookUrl`           | `SHOMEI_WEBHOOK_URL`        | webhook    | `https://…` unless the env-only lab flag is set. |
+| _(none)_               | `SHOMEI_WEBHOOK_SECRET`     | webhook    | **Env-only secret; stripped and held in server `Env`, never `ShomeiConfig`.** |
 | `webhookTimeoutSeconds`| `SHOMEI_WEBHOOK_TIMEOUT`    | webhook    | Per-attempt timeout (default 5). |
 | `webhookMaxAttempts`   | `SHOMEI_WEBHOOK_MAX_ATTEMPTS`| webhook   | Total attempts, initial + retries (default 3). |
 
 The server refuses to boot if the selected transport is not fully configured: `smtp` needs a host
 and from-address (and a username/password pair, both or neither) plus a non-empty `publicBaseUrl`;
-`webhook` needs an `http(s)` URL and a non-empty secret.
+`webhook` needs an HTTPS URL and a non-empty secret. The two insecure-transport flags are env-only
+and intended solely for lab receivers.
 
 ### Staged rollout
 

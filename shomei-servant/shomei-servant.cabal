@@ -122,7 +122,7 @@ library
     , servant-health      >=0.1      && <0.2
     , servant-openapi-hs  >=5.1      && <5.2
     , servant-server      >=0.20.3   && <0.21
-    , shomei-core         ^>=0.1.0.0
+    , shomei-core         ^>=0.2.0.0
     , sop-core            >=0.5      && <0.6
     , text                >=2.0      && <2.2
     , time                >=1.12     && <1.15
@@ -194,7 +194,7 @@ test-suite shomei-servant-test
     , servant           >=0.20.3   && <0.21
     , servant-health    >=0.1      && <0.2
     , servant-server    >=0.20.3   && <0.21
-    , shomei-core       ^>=0.1.0.0
+    , shomei-core       ^>=0.2.0.0
     , shomei-jwt        ^>=0.1.0.0
     , shomei-servant    ^>=0.1.0.0
     , tasty             >=1.4      && <1.6

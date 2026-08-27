@@ -56,7 +56,7 @@ library
     , effectful       >=2.5      && <2.8
     , effectful-core  >=2.5      && <2.8
     , mtl             >=2.3      && <2.4
-    , shomei-core     ^>=0.1.0.0
+    , shomei-core     ^>=0.2.0.0
     , text            >=2.0      && <2.2
     , time            >=1.12     && <1.15
     , time-hourglass  >=0.3      && <0.4
@@ -74,7 +74,7 @@ test-suite shomei-webauthn-test
     , base             >=4.18     && <5
     , bytestring       >=0.11     && <0.13
     , effectful        >=2.5      && <2.8
-    , shomei-core      ^>=0.1.0.0
+    , shomei-core      ^>=0.2.0.0
     , shomei-webauthn  ^>=0.1.0.0
     , tasty            >=1.4      && <1.6
     , tasty-hunit      >=0.10     && <0.11
