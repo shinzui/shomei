@@ -139,7 +139,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Complete |
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Complete |
-| 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | In Progress |
+| 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Complete |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Not Started |
 | 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | Not Started |
 
@@ -382,8 +382,8 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-7: notifier delivery moved to a supervised background worker; the request path answers `202` in sub-second bounded work with the hit/miss residual pinned by test; ADR-10 records the bounded queue and drain policy
 - [x] EP-7: SMTP password and webhook secret out of `ShomeiConfig`; env secrets trimmed; `http://` webhooks refused by default; timestamped HMAC; redacting `Show` for tokens; `LoginFailed` carries the hashed key
 - [x] EP-7: administrative bootstrap reads passwords outside argv, shares the deployment password/breach policy, can explicitly verify email, and reduces PostgreSQL and breach diagnostics to safe categories
-- [ ] EP-8: trusted-proxy list with rightmost-untrusted `X-Forwarded-For`; dotted-quad IPs; per-IP knobs configurable
-- [ ] EP-8: chunked bodies metered; metrics method label bounded and escaped; monotonic clock; readiness timed and cached; problem-shaped 413 and 500; lenient header decoding
+- [x] EP-8: trusted-proxy list with rightmost-untrusted `X-Forwarded-For`; dotted-quad IPs; per-IP knobs configurable
+- [x] EP-8: chunked bodies metered; metrics method label bounded and escaped; monotonic clock; readiness timed and cached; problem-shaped 413 and 500; lenient header decoding
 - [ ] EP-9: `installHostBackgroundTasks` and `hostMiddleware` exported and used by both embedded examples; embedding checklist documented
 - [ ] EP-9: downstream template uses TLS, clamps `max-age`, refreshes on an unknown key, sends an en API key; runbooks boot as written
 - [ ] EP-10: `security.md`, `authorization.md`, `architecture.md`, `deployment.md`, `api.md`, `README.md`, `CHANGELOG.md`, MasterPlan 6, and the capability catalog reconciled; docs-wide grep for every flagged sentence
@@ -451,6 +451,13 @@ never by counting files. Every later plan allocates the next handle the same way
   and `NotifierQueue`, install `installNotifierWorker`, and run `drainNotifierWorker` during bounded
   shutdown. The standalone server already follows that lifecycle, and the slow-receiver E2E case
   proves the request path remains sub-second while delivery continues asynchronously.
+
+- EP-8 reproduced the proxy-attribution, chunked-body, and hostile-header findings against a clean
+  local database before correction. Its final focused suites passed 26 middleware and 8 health
+  cases; a live hostile method collapsed to the bounded `other` metrics series; and the serialized
+  workspace gate built every package and passed all 13 test suites. The readiness timeout was
+  verified with an injected five-second dependency stall rather than by stopping the shared
+  PostgreSQL service.
 
 
 ## Decision Log
@@ -583,7 +590,7 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-7 are complete, closing Phase 1 and Phase 2 and the first Phase 3 work stream.
+EP-1 through EP-8 are complete, closing Phase 1 and Phase 2 and the first two Phase 3 work streams.
 Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
@@ -613,9 +620,12 @@ reason vocabulary, moves delivery behind a bounded supervised queue, carries not
 outside printable config, binds webhook signatures to attempt time, redacts bearer credentials,
 hashes failed-login subjects, and makes administrative bootstrap share the deployment password and
 breach policy without putting secrets in argv. ADR-9 through ADR-14 record those boundaries. Each
-child's final serialized workspace suite is green. Three Phase 3 plans remain open. EP-8 is the
-recommended next plan: it has no hard dependencies and owns the inbound proxy, body, metrics,
-readiness, and problem-response boundaries.
+child's final serialized workspace suite is green. EP-8 now resolves client identity only through
+declared proxies, meters streamed bodies, preserves problem documents at the WAI/warp boundary,
+prefixes secure cookies, bounds metrics labels and time sources, and makes readiness timed,
+single-flight, and briefly cached. ADR-15 and ADR-16 record its proxy and cookie trust policies. Two
+Phase 3 plans remain open. EP-9 is the recommended next plan: its soft prerequisites are complete,
+and it owns embedding parity, background-task installation, and the downstream verification template.
 
 
 Revision note (2026-08-27): Reconciled EP-5 as complete, carried its concurrency and migration
@@ -629,3 +639,7 @@ policy. Phase 2 is complete; the MasterPlan remains in progress with EP-7 throug
 Revision note (2026-08-27): Reconciled EP-7 as complete, recorded its redaction, bounded-delivery,
 runtime-secret, timestamped-signature, audit-identity, and safe-bootstrap boundaries, and added ADR-9
 through ADR-14. The MasterPlan remains in progress with EP-8 through EP-10 open.
+
+Revision note (2026-08-27): Reconciled EP-8 as complete, recorded its proxy attribution, body and
+exception envelope, cookie-prefix, bounded-metrics, monotonic-time, and readiness policies, and added
+ADR-15 and ADR-16. The MasterPlan remains in progress with EP-9 and EP-10 open.

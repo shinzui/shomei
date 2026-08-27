@@ -544,11 +544,15 @@ passes. It is dependency-free and drives restart decisions.
 ### `GET /health/ready` (readiness)
 → the same healthy 200 body only when PostgreSQL is reachable and an active signing key exists.
 Otherwise it returns `503 {"status":"failed","check":"postgres|signing-key","failingSince":"…"}`.
-`failingSince` preserves the onset of the current failure run. Use readiness to gate traffic and
-liveness to decide restarts. Bare `/health` and `/ready` do not exist.
+The PostgreSQL check is bounded to two seconds and its verdict is cached for one second; concurrent
+refreshes share one query. `failingSince` preserves the onset of the current failure run. Use
+readiness to gate traffic and liveness to decide restarts. Bare `/health` and `/ready` do not exist.
 
 ### `GET /metrics`
-→ `200` Prometheus text exposition (raw WAI, bypassing the typed API): `http_requests_total{method,status}`, `http_requests_in_flight`, the `http_request_duration_seconds` histogram, and the domain counters `shomei_logins_succeeded_total` / `shomei_logins_failed_total` / `shomei_tokens_issued_total`.
+→ `200` Prometheus text exposition (raw WAI, bypassing the typed API): `http_requests_total{method,status}`, `http_requests_in_flight`, the `http_request_duration_seconds` histogram, and the domain counters `shomei_logins_succeeded_total` / `shomei_logins_failed_total` / `shomei_tokens_issued_total`. Method labels are bounded to `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, and `other`.
+
+This is an unauthenticated **internal operations endpoint**. Do not publish it on the public
+virtual host; restrict it to the monitoring network at the reverse proxy.
 
 ## Correlation ids
 

@@ -1,7 +1,10 @@
 # Bundle Update Log
 
-## 2026-08-24
+## 2026-08-27
+* **Update**: CAP-22 now documents bounded metrics labels, monotonic timing, and timed single-flight readiness caching.
+* **Update**: CAP-21 now documents trusted-proxy client attribution and metering for both declared and chunked request bodies.
 
+## 2026-08-24
 * **Addition**: Establish the capability bundle — CAP-1 through CAP-24 describe what Shōmei
   provides today across its eight packages, each with its compatibility promise, the packages a
   consumer depends on, evidence a reader can open, and a truthful `Limits` section.

@@ -22,10 +22,10 @@ requires:
 evidence:
   - kind: test
     resource: shomei-server/test/Shomei/Server/MiddlewareSpec.hs
-    proves: One valid JSON line per request, control characters stripped, health paths excluded, 200 concurrent writers producing 1000 intact lines, the in-flight gauge returning to zero even when a handler throws, and a structured warp exception log.
+    proves: One valid JSON line per request, control characters stripped, health paths excluded, 200 concurrent writers producing 1000 intact lines, the in-flight gauge returning to zero even when a handler throws, bounded method-label cardinality, and a structured warp exception log.
   - kind: test
     resource: shomei-server/test-health/Main.hs
-    proves: Readiness distinguishes an active signing key, missing keys, and PostgreSQL being unavailable; tracked readiness preserves onset and resets after recovery.
+    proves: Readiness distinguishes an active signing key, missing keys, and PostgreSQL being unavailable; tracked readiness preserves onset, one-second caching shares a query, and a slow query times out as a PostgreSQL failure.
   - kind: test
     resource: shomei-server/test/Shomei/Server/SupervisorSpec.hs
     proves: A crashing background cycle is retried rather than fatal, backoff resets after a clean cycle, and an async exception stops the loop.
@@ -43,7 +43,8 @@ evidence:
   answers with a `{"status","database","signingKey"}` document naming which check failed, so an
   orchestrator's probe output says *why*.
 - **`GET /metrics`** — a hand-rolled Prometheus exposition: request counts, an in-flight gauge,
-  and latency. The gauge is decremented even when a handler throws.
+  and latency. The gauge is decremented even when a handler throws, method labels have a fixed
+  vocabulary, and label values are escaped for the exposition format.
 - **Request logs** — one JSON object per line with a correlation id, safe to ship to any
   line-oriented collector. Control characters are stripped, health paths are skipped so probe
   traffic does not drown the log, and concurrent writers cannot interleave a line.
@@ -58,8 +59,9 @@ configurable timeout.
 - The Prometheus exposition is **hand-rolled**, not `prometheus-client`. The metric set is what
   the module implements; there is no registry a host can add its own metrics to.
 - `/metrics` is served by middleware with **no authentication**. Do not expose it publicly.
-- Readiness is computed fresh on every request — one database round-trip per probe. Probe
-  intervals are the orchestrator's problem.
+- Readiness is bounded to two seconds and cached for one second. Cache refresh is single-flight,
+  so concurrent probes share one database round-trip; this intentionally permits a verdict to be
+  at most one second stale.
 - There is **no tracing**. No OpenTelemetry spans, no context propagation; the correlation id in
   the log line is the only request-stitching mechanism.
 - Supervised loops die with the process and are not respawned by a monitor. That is safe only

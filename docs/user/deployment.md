@@ -515,7 +515,8 @@ never takes the server down, and `GET /health/live` keeps answering throughout.
 - **Liveness** `GET /health/live` (restart decisions); **readiness**
   `GET /health/ready` (traffic gating). Both return the servant-health
   `{"status","check","failingSince"}` shape at 200 or 503.
-- **Metrics** `GET /metrics` (Prometheus); scrape it from your monitoring stack.
+- **Metrics** `GET /metrics` (Prometheus) is unauthenticated and internal. Deny it on the public
+  virtual host and allow only the monitoring network, as in the reverse-proxy example above.
 - **Logs** are one structured JSON line per request on stdout, each with an `X-Request-Id`
   correlation id that is also returned to the client. Background tasks (the sweeper, key
   reloads) log JSON lines on stderr.

@@ -37,7 +37,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Types (Status (statusCode), methodGet, status200)
 import Network.Wai
   ( Middleware,
@@ -100,18 +100,18 @@ observeDuration m secs = do
 metricsMiddleware :: Metrics -> Middleware
 metricsMiddleware m app req respond = do
   bumpInt m.inFlight 1
-  start <- getPOSIXTime
+  start <- monotonicSeconds
   let handleResponse res = do
         received <- respond res
-        end <- getPOSIXTime
-        observeDuration m (realToFrac (end - start))
+        end <- monotonicSeconds
+        observeDuration m (end - start)
         recordRequest m req (statusCode (responseStatus res))
         pure received
   app req handleResponse `finally` bumpInt m.inFlight (-1)
 
 recordRequest :: Metrics -> Request -> Int -> IO ()
 recordRequest m req status = do
-  let method = decodeLatin1 (requestMethod req)
+  let method = methodLabel (requestMethod req)
       path = rawPathInfo req
   atomicModifyIORef' m.reqTotal (\mp -> (Map.insertWith (+) (method, status) 1 mp, ()))
   case (requestMethod req, path, status) of
@@ -197,7 +197,24 @@ labels ls = byteString "{" <> go ls <> byteString "}"
     go [] = mempty
     go [x] = lbl x
     go (x : xs) = lbl x <> byteString "," <> go xs
-    lbl (k, v) = byteString k <> byteString "=\"" <> byteString (encodeUtf8 v) <> byteString "\""
+    lbl (k, v) = byteString k <> byteString "=\"" <> byteString (encodeUtf8 (escapeLabelValue v)) <> byteString "\""
+
+-- | Keep attacker-controlled HTTP extension methods out of the series-key vocabulary.
+methodLabel :: ByteString -> Text
+methodLabel method
+  | method `elem` ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] = decodeLatin1 method
+  | otherwise = "other"
+
+-- | Prometheus text-format label escaping: backslash first, then quote and newline.
+escapeLabelValue :: Text -> Text
+escapeLabelValue = Text.concatMap \case
+  '\\' -> "\\\\"
+  '"' -> "\\\""
+  '\n' -> "\\n"
+  c -> Text.singleton c
+
+monotonicSeconds :: IO Double
+monotonicSeconds = (\ns -> fromIntegral ns / 1e9) <$> getMonotonicTimeNSec
 
 tshow :: (Show a) => a -> Text
 tshow = Text.pack . show

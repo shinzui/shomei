@@ -12,6 +12,9 @@ Shōmei packages.
 - Unknown-length request bodies are metered while consumed and receive a Problem Details 413 when
   they cross the cap. Warp parser failures and escaped synchronous exceptions now use the same
   public 400/413/500 envelope, and hostile authentication-header bytes cannot escape UTF-8 decoding.
+- Prometheus method labels now use a fixed eight-value vocabulary with correctly escaped values,
+  elapsed-time accounting uses monotonic clocks, and readiness is bounded to two seconds with a
+  one-second single-flight cache.
 - `shomei-admin users create` reads passwords from stdin or `--password-file`, loads the
   deployment's Dhall password and HIBP breach policy, and can explicitly mark a bootstrap email
   verified. PostgreSQL diagnostics retain only a safe category and optional SQLSTATE; breach-check

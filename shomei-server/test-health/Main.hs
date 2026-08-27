@@ -1,8 +1,10 @@
 module Main (main) where
 
+import Control.Concurrent (threadDelay)
 import Data.ByteString qualified as BS
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (listToMaybe)
+import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Pool qualified as Pool
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Servant.Health (ProbeVerdict (..))
@@ -11,7 +13,7 @@ import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimit
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable))
-import Shomei.Health.Server (buildHealthChecks, buildHealthChecksWith)
+import Shomei.Health.Server (HealthPolicy (..), buildHealthChecksWith, defaultHealthPolicy)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
@@ -27,7 +29,7 @@ import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromB
 import Shomei.SigningKey.Store (listActiveSigningKeys, updateSigningKeyStatus)
 import Shomei.Time.Store (now)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 main :: IO ()
 main =
@@ -43,7 +45,7 @@ tests env =
         "servant-health contract through the standalone application builder"
         (\liveness readiness -> pure (application env liveness readiness)),
       testCase "readiness distinguishes active keys, missing keys, and PostgreSQL unavailability" do
-        (_, readiness) <- buildHealthChecks env
+        (_, readiness) <- buildHealthChecksWith noCachePolicy (runAppIO env listActiveSigningKeys)
         readiness >>= (@?= Healthy)
 
         active <- expectRight =<< runAppIO env listActiveSigningKeys
@@ -53,12 +55,13 @@ tests env =
         readiness >>= assertFailedAs "signing-key"
 
         unavailablePool <- acquirePool 1 1 defaultDbStatementTimeoutMs "postgresql://127.0.0.1:1/postgres"
-        (_, unavailableReadiness) <- buildHealthChecks env {envPool = unavailablePool}
+        (_, unavailableReadiness) <-
+          buildHealthChecksWith noCachePolicy (runAppIO env {envPool = unavailablePool} listActiveSigningKeys)
         unavailableReadiness >>= assertFailedAs "postgres"
         Pool.release unavailablePool,
       testCase "tracked readiness preserves onset, resets after recovery, and starts a new run" do
         queryResult <- newIORef (Left (DependencyUnavailable PostgreSQL))
-        (_, readiness) <- buildHealthChecksWith (readIORef queryResult)
+        (_, readiness) <- buildHealthChecksWith noCachePolicy (readIORef queryResult)
         first <- readiness
         second <- readiness
         failureOnset first @?= failureOnset second
@@ -68,8 +71,33 @@ tests env =
         third <- readiness
         case (failureOnset first, failureOnset third) of
           (Just old, Just new) -> unless (new >= old) (assertFailure "a new failing run moved backwards")
-          _ -> assertFailure "expected tracked failures before and after recovery"
+          _ -> assertFailure "expected tracked failures before and after recovery",
+      testCase "readiness is evaluated at most once per window" do
+        calls <- newIORef (0 :: Int)
+        let query = do
+              modifyIORef' calls (+ 1)
+              pure (Right [error "the policy checks only whether the list is empty"])
+        (_, readiness) <- buildHealthChecksWith defaultHealthPolicy query
+        readiness >>= (@?= Healthy)
+        readiness >>= (@?= Healthy)
+        readIORef calls >>= (@?= 1)
+        threadDelay 1_100_000
+        readiness >>= (@?= Healthy)
+        readIORef calls >>= (@?= 2),
+      testCase "readiness times out as a postgres failure" do
+        let policy = defaultHealthPolicy {readinessTimeoutMicros = 200_000, readinessCacheMicros = 0}
+            query = threadDelay 5_000_000 >> pure (Right [])
+        (_, readiness) <- buildHealthChecksWith policy query
+        started <- getMonotonicTimeNSec
+        verdict <- readiness
+        finished <- getMonotonicTimeNSec
+        assertFailedAs "postgres" verdict
+        let elapsedSeconds = fromIntegral (finished - started) / 1e9 :: Double
+        assertBool ("readiness took " <> show elapsedSeconds <> " seconds") (elapsedSeconds < 2)
     ]
+
+noCachePolicy :: HealthPolicy
+noCachePolicy = defaultHealthPolicy {readinessCacheMicros = 0}
 
 buildTestEnv :: Text -> IO Env
 buildTestEnv connectionString = do

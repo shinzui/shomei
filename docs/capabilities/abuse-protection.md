@@ -16,8 +16,10 @@ packages:
   - shomei-server
 interface:
   - Shomei.Session.LoginAttempt.Store
+  - Shomei.Servant.ClientIp
   - Shomei.Server.Middleware.RateLimit
   - Shomei.Server.Middleware.BodyLimit
+  - Shomei.Server.Middleware.TrustedProxy
 requires:
   - CAP-2
   - CAP-20
@@ -33,7 +35,7 @@ evidence:
     proves: Every login attempt invokes the password hasher exactly once whatever the reason for failure, closing the timing oracle that would otherwise enumerate accounts.
   - kind: test
     resource: shomei-server/test/Shomei/Server/MiddlewareSpec.hs
-    proves: The API-derived token-bucket inventory is exactly the thirteen credential-proof operations, evicts idle buckets losslessly, stays bounded under 10k one-shot IPs, and rejects an oversized Content-Length with 413.
+    proves: The API-derived token-bucket inventory is exactly the thirteen credential-proof operations, evicts idle buckets losslessly, stays bounded under 10k one-shot IPs, resolves only explicitly trusted forwarded chains, and rejects declared or chunked oversized bodies with 413.
   - kind: guide
     resource: docs/user/security.md
     proves: What each layer defends against and the no-leak guarantees.
@@ -75,9 +77,10 @@ address space cannot grow the map forever.
   conformance test. It covers all thirteen credential-proof operations, including authenticated
   password change and TOTP removal plus `/oauth/token`; ordinary authenticated traffic is not
   throttled.
-- The body-size cap reads `Content-Length`. A **chunked** request body passes through — a
-  documented caveat, asserted by a test rather than papered over.
-- **Client IP is the socket peer address.** `X-Forwarded-For` is explicitly not consulted — a
-  trusted-proxy policy is out of scope for the single-instance target. Behind a reverse proxy
-  every request therefore shares the proxy's address, which collapses both per-IP layers into one
-  global bucket. Rate-limit at the proxy instead.
+- The body-size cap rejects an oversized `Content-Length` without reading it and meters unknown-
+  length bodies as the application consumes their chunks. A parser that rejects an early invalid
+  chunk need not drain the rest; no buffered body can cross the cap unnoticed.
+- **Client IP defaults to the socket peer address.** Only peers listed in `trustedProxies` may
+  supply `X-Forwarded-For`; Shōmei chooses the rightmost untrusted hop. Behind an unconfigured
+  reverse proxy every request deliberately shares the proxy's address. Configure the narrowest
+  proxy CIDRs or rate-limit at the proxy instead.

@@ -54,9 +54,10 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
 - [x] (2026-08-27T23:24:27Z) M4: metered body; `pcPayloadTooLarge`; chunked test flipped;
       `problemExceptionResponse` installed; `decodeUtf8Lenient` in `Auth.hs`; hostile-header scenario;
       `openapi.json` regenerated.
-- [ ] M5: method-label whitelist and escaping; monotonic clock; `HealthPolicy` (2 s timeout, 1 s cache);
-      health tests; docs reconciled; ADR distillation; MasterPlan 8 updated.
-- [ ] `nix fmt` clean; `cabal build all --enable-tests` and `cabal test all` green.
+- [x] (2026-08-27T23:35:16Z) M5: method-label whitelist and escaping; monotonic clock; `HealthPolicy`
+      (2 s timeout, 1 s cache); health tests; docs reconciled; ADR distillation; MasterPlan 8 updated.
+- [x] (2026-08-27T23:35:16Z) `nix fmt` clean; `cabal build all --enable-tests` and `cabal test all`
+      green.
 
 
 ## Surprises & Discoveries
@@ -99,6 +100,14 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
   first chunk without consuming the stream; a valid 1,052,674-byte JSON string forced full
   consumption and returned `413 application/problem+json` with `payload_too_large`. The former
   hostile `Authorization` request now returned `401 application/problem+json` with `token_invalid`.
+
+- M5's focused middleware suite passed 26 cases and the health suite passed all 8 cases. The cache
+  test observed one dependency evaluation for two immediate probes and a second after the one-second
+  window; the timeout test turned an injected five-second dependency stall into `Unhealthy
+  "postgres"` in 200 ms. This deterministic injection avoided stopping the workspace's shared
+  PostgreSQL service. A live `BR"EW` request returned 404 and the next scrape contained exactly
+  `http_requests_total{method="other",status="404"} 1`. The serialized final gate formatted the
+  workspace, built all packages with tests enabled, and passed all 13 test suites.
 
 
 ## Decision Log
@@ -165,7 +174,23 @@ seconds and costs at most one query per second; and the cookies are `__Host-shom
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation.)
+EP-8 is complete in five scoped commits. A request is now attributed through an explicit trust policy:
+forwarded headers are ignored by default, trusted chains resolve to the rightmost untrusted hop, PROXY
+protocol use is opt-in, and every in-tree consumer receives canonical IPv4 or IPv6 text. All rate-limit
+policy fields are available through environment and Dhall configuration, while CSRF origins are normalized
+and unsafe cookie deployments warn before listening.
+
+The WAI edge now meters declared and chunked bodies, preserves the RFC 9457 envelope for body, warp, and
+unexpected failures, and treats hostile header bytes as invalid credentials instead of exceptions. Secure
+cookie deployments emit browser-enforced `__Host-` and `__Secure-` names. Metrics admit only a bounded HTTP
+method vocabulary, escape exposition labels, and use a monotonic clock; the token bucket uses that clock as
+well. Readiness is single-flight cached for one second and times out PostgreSQL work after two seconds.
+
+ADR-15 records the trusted-forwarded-header policy and fail-closed default; ADR-16 records the cookie-prefix
+contract and its one-time session invalidation. The capability catalog, operator docs, user docs, package
+changelogs, and MasterPlan are reconciled. No migration was required. The remaining operator obligations are
+to keep warp unreachable except through declared proxies and to restrict the internal `/metrics` endpoint.
+The final serialized build and all 13 test suites are green.
 
 
 ## Context and Orientation

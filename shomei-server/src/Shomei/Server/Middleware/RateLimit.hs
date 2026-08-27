@@ -53,7 +53,7 @@ import Data.ByteString (ByteString)
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.Text.Encoding (encodeUtf8)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
 import Shomei.Servant.Api (shomeiThrottledRoutes)
@@ -62,7 +62,7 @@ import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
 import Shomei.Servant.Middleware (problemResponse)
 import Shomei.Servant.Throttle (ThrottledRoute, matchesThrottledRoute)
 
--- | One bucket per client IP: current token level + last-refill time (POSIX seconds).
+-- | One bucket per client IP: current token level + last-refill time (monotonic seconds).
 data Bucket = Bucket !Double !Double
 
 data RateLimiter = RateLimiter
@@ -155,7 +155,7 @@ rateLimitMiddleware :: RateLimiter -> Middleware
 rateLimitMiddleware rl app req respond
   | not rl.enabled || not (throttledPath rl req) = app req respond
   | otherwise = do
-      nowSecs <- realToFrac <$> getPOSIXTime
+      nowSecs <- monotonicSeconds
       allowed <- takeToken rl (clientKey req) nowSecs
       if allowed then app req respond else respond tooMany
   where
@@ -175,3 +175,6 @@ throttledPath rl req = matchesThrottledRoute rl.throttled (requestMethod req) (p
 -- trusted @X-Forwarded-For@ policy is out of scope for this single-instance plan.
 clientKey :: Request -> ByteString
 clientKey = encodeUtf8 . clientIpText . remoteHost
+
+monotonicSeconds :: IO Double
+monotonicSeconds = (\ns -> fromIntegral ns / 1e9) <$> getMonotonicTimeNSec

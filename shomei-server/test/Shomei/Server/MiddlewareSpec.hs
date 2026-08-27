@@ -72,7 +72,8 @@ tests =
       testGroup
         "metrics"
         [ testThrowingHandlerLeavesGaugeAtZero,
-          testNormalRequestCountedAndGaugeReturnsToZero
+          testNormalRequestCountedAndGaugeReturnsToZero,
+          testHostileMethodsShareTheBoundedSeries
         ],
       testGroup
         "logging"
@@ -273,6 +274,18 @@ testNormalRequestCountedAndGaugeReturnsToZero = testCase "a normal request is co
   body <- exportMetrics m
   assertMetricLine "http_requests_in_flight 0" body
   assertMetricLine "http_requests_total{method=\"GET\",status=\"200\"} 1" body
+
+testHostileMethodsShareTheBoundedSeries :: TestTree
+testHostileMethodsShareTheBoundedSeries = testCase "a hostile method is labelled other and escaped" do
+  m <- newMetrics
+  let okApp _req respond = respond (responseLBS status200 [] "ok")
+      record method =
+        metricsMiddleware m okApp defaultRequest {requestMethod = method} (\_ -> pure ResponseReceived)
+  ResponseReceived <- record "EVIL\"}"
+  ResponseReceived <- record "BREW"
+  body <- exportMetrics m
+  assertMetricLine "http_requests_total{method=\"other\",status=\"200\"} 2" body
+  assertBool "the hostile method is not emitted as a label value" (not ("EVIL" `BS.isInfixOf` BL.toStrict body))
 
 -- | Assert the exported Prometheus text contains @wanted@ as a whole line.
 assertMetricLine :: BL.ByteString -> BL.ByteString -> IO ()

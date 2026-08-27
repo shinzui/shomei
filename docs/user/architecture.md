@@ -58,9 +58,11 @@ guards protected routes; `RequireRole`/`RequireScope`/`RequirePermission`/`Requi
 authorization and contribute their pre-handler responses to OpenAPI.
 
 `shomei-server` assembles the warp `Application` and wraps it in the WAI middleware stack, in this
-order (outermost first): **request-id + structured logging → HTTP metrics → `/metrics` endpoint →
-per-IP rate limiter → the Servant app** (IP-4). It also hosts the `shomei-admin` CLI and the
-configuration loader.
+order (outermost first): **trusted-proxy client resolution → request-id + structured logging →
+HTTP metrics → `/metrics` endpoint → metered body cap → per-IP rate limiter → the Servant app**
+(IP-4). The proxy rewrite is outermost so every downstream consumer sees one canonical client;
+the metrics endpoint remains inside request logging but bypasses the body cap, limiter, and router.
+The package also hosts the `shomei-admin` CLI and the configuration loader.
 
 ## Persistence and migrations
 
