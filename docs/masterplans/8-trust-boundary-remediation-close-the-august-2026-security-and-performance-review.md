@@ -118,8 +118,8 @@ REV-7, and its fix spans three packages. A decomposition into fewer, larger plan
 concurrency work behind a security fix that should land first.
 
 Architecture Decision Records: at drafting time this repository had no `docs/adr/` bundle.
-EP-1 bootstrapped the profile-governed bundle, and EP-1 through EP-3 have now added ADR-1 through
-ADR-4. The cross-repository records that also constrain this initiative are
+EP-1 bootstrapped the profile-governed bundle, and EP-1 through EP-5 have now added ADR-1 through
+ADR-7. The cross-repository records that also constrain this initiative are
 `mori://shinzui/shomei/okf/improvement-requests/concepts/IR-1`
 (scoped service-token issuance, which EP-2's privilege-scope policy must not break — the Kikan
 contract it carries treats `impersonate:user`-class scopes as Shōmei-owned and coarse) and
@@ -136,7 +136,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 2 | Bind OAuth Sessions to Their Client and Govern Privilege Scopes | docs/plans/52-bind-oauth-sessions-to-their-client-and-govern-privilege-scopes.md | None | EP-1 | Complete |
 | 3 | Harden JWT Verification and Make the Signing-Key State Machine Atomic | docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md | None | None | Complete |
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Complete |
-| 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | In Progress |
+| 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Not Started |
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Not Started |
 | 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Not Started |
@@ -371,10 +371,10 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-4: second-factor, recovery-code, passkey, password-change, and suspended-account failures counted against the account; lockout clear deferred to second-factor success
 - [x] EP-4: `auth_time` claim; freshness gates read it; TOTP removal requires fresh authentication
 - [x] EP-4: throttled-path set derived from `RateLimited` routes; completion, passkey, password-change, confirm, and `/oauth/token` routes limited; passwordless login requires user verification
-- [ ] EP-5: record-before-hash lockout under a per-account advisory lock; concurrency test proving real hash evaluations ≤ threshold under 100 parallel wrong passwords
-- [ ] EP-5: TOTP and passkey counter updates are compare-and-swap; concurrent same-code completion test
-- [ ] EP-5: reset, change, reuse-detection, and logout tails in one transaction; admin status CAS; outstanding one-time tokens revoked; duplicate email is `409`; in-memory fake atomic
-- [ ] EP-5: schema hygiene — `CHECK` constraints on status columns, `lower()` unique indexes, PostgreSQL 17/18 floor documented
+- [x] EP-5: record-before-hash lockout under a per-account advisory lock; concurrency test proving real hash evaluations ≤ threshold under 100 parallel wrong passwords
+- [x] EP-5: TOTP and passkey counter updates are compare-and-swap; concurrent same-code completion test
+- [x] EP-5: reset, change, reuse-detection, and logout tails in one transaction; admin status CAS; outstanding one-time tokens revoked; duplicate email is `409`; in-memory fake atomic
+- [x] EP-5: schema hygiene — `CHECK` constraints on status columns, `lower()` unique indexes, PostgreSQL 17/18 floor documented
 - [ ] EP-6: `HashPassword` forced inside the permit; limiter test forces its results and measures overlap
 - [ ] EP-6: Argon2 parameters validated at boot (`m ≥ max 8 (8·p)`); unknown Dhall keys rejected; strict enum parsing; empty WebAuthn origins refused
 - [ ] EP-6: `config/shomei-types.dhall` widened to `Optional` fields and synced; `shomei_password_credentials (user_id)` unique index; statement timeout
@@ -415,6 +415,16 @@ never by counting files. Every later plan allocates the next handle the same way
   index is checked per statement. Retiring the current key before promoting its replacement inside
   one transaction therefore gives both atomicity and a usable non-deferrable database invariant.
   The final serial `cabal test all` run passed all 13 suites.
+
+- EP-5's pre-fix races made the missing persistence linearization points observable: 100 wrong
+  passwords exceeded the stored-hash budget, 100 refreshes emitted 55 reuse events, and 100
+  suspends produced five winners in the recorded runs. Per-account transaction locks, conditional
+  writes, and unit-of-work tails reduced each property to its exact bound in both interpreters.
+
+- Migration identifiers moved while sibling plans landed: EP-5's schema-hygiene slug was forecast
+  as 0029 but the live allocator returned 0035 after session provenance, OAuth, signing-key, factor,
+  and authentication-time migrations. The slug remains the planned identity; the manifest and
+  deployment contract now name the allocated number.
 
 
 ## Decision Log
@@ -508,6 +518,16 @@ never by counting files. Every later plan allocates the next handle the same way
   the stored hash. Integration Point 4 was corrected before any plan was committed.
   Date: 2026-08-27
 
+- Decision: Every single-use or monotonic security transition is a conditional persistence write
+  that reports whether it won; multi-row credential tails commit through an explicit unit of
+  work, and serialization that must enclose a read uses a transaction-scoped advisory lock. The
+  policy is recorded in
+  [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md).
+  Rationale: Application pre-reads and process-local locks cannot linearize several requests or
+  several replicas. The database is the shared trust boundary, while typed compare-and-swap losses
+  let workflows distinguish normal contention from dependency failure.
+  Date: 2026-08-27
+
 - Decision: `docs/adr/` is bootstrapped once, by whichever plan first lands an ADR, as a
   profile-governed OKF bundle using the frozen descriptor shipped by the okf-profiles
   `adopt-architecture-decisions` blueprint; later plans allocate handles with `okf id next`.
@@ -527,7 +547,7 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-4 are complete, closing Phase 1 and the first abuse-protection plan in Phase 2.
+EP-1 through EP-5 are complete, closing Phase 1 and two abuse-protection plans in Phase 2.
 Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
@@ -543,6 +563,16 @@ proof now shares one account failure budget, suspended and locked paths preserve
 audit contract, and a challenged password does not clear the budget. Credential freshness is
 persisted as `authenticated_at`, carried as `auth_time`, and preserved across refresh. The runtime
 limiter derives its exact thirteen-route coverage from `RateLimited`, and passwordless WebAuthn
-always requires user verification. ADR-5 and ADR-6 record the accounting and freshness boundaries;
-each child's final serial workspace suite is green. Six plans remain open. EP-5 is the recommended
-next Phase 2 plan because it makes EP-4's shared failure seam atomic under concurrent guesses.
+always requires user verification. Lockout recording and counting now serialize per account before
+hashing; TOTP, passkey, session, and user-status transitions have one compare-and-swap winner; and
+password reset/change and revocation tails commit atomically. Identity conflicts retain their 409
+domain meaning, while migration 0035 constrains persisted vocabulary and case-insensitive identity
+uniqueness. ADR-5 through ADR-7 record the accounting, freshness, and persistence-atomicity
+boundaries; each child's final serialized workspace suite is green. Five plans remain open. EP-6
+is the recommended next Phase 2 plan because it closes the remaining password-hashing and unsafe
+configuration work before the Phase 3 plans add configuration and runtime assembly surfaces.
+
+
+Revision note (2026-08-27): Reconciled EP-5 as complete, carried its concurrency and migration
+results into initiative state, and added ADR-7's atomic-persistence policy. The MasterPlan remains
+in progress with EP-6 through EP-10 open.
