@@ -72,9 +72,9 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 - [x] (2026-08-27 14:07Z) M2: `requireLiveSession` in `Shomei.Session.Workflow`; `AuthorizeLoginRequired` in `Shomei.OAuth.Authorize.Workflow`; `authorize` refuses `act`, non-interactive kinds, and dead sessions
 - [x] (2026-08-27 14:07Z) M2: `oauthAuthorizeH` answers `401 login_required` with no redirect for a non-interactive credential and treats a dead session as unauthenticated
 - [x] (2026-08-27 14:07Z) M2: core `Shomei.OAuth.Authorize.WorkflowSpec` covers interactive, machine, delegated, `act`, revoked, expired, and unknown sessions; `OAuthCodeStoreSpec.runAuthorize` seeds a session; 236 core tests and 37 servant scenarios green; committed
-- [ ] M3: `verifyTokenWith` in `Shomei.Session.Authentication.Workflow`; token exchange verifies subject and actor tokens with `VerifyTokenAndSession`; `startImpersonation` requires a live operator session and an active operator
-- [ ] M3: `exchangeAuthorizationCode` calls `ensureEmailVerified`; new `Shomei.OAuth.TokenGrant.WorkflowSpec`
-- [ ] M3: fixtures that hand-mint tokens now bind them to real sessions (core `TokenExchange.WorkflowSpec`, core `Delegation.WorkflowSpec`, servant `Main.hs`, server `E2ESpec.hs`); new refusal tests; `scenarioExchangeRequiresLiveSessions`; committed
+- [x] (2026-08-27 14:21Z) M3: `verifyTokenWith` in `Shomei.Session.Authentication.Workflow`; token exchange verifies subject and actor tokens with `VerifyTokenAndSession`; `startImpersonation` requires a live operator session and an active operator
+- [x] (2026-08-27 14:21Z) M3: `exchangeAuthorizationCode` calls `ensureEmailVerified`; new `Shomei.OAuth.TokenGrant.WorkflowSpec`
+- [x] (2026-08-27 14:21Z) M3: fixtures that hand-mint tokens now bind them to real sessions (core `TokenExchange.WorkflowSpec`, core `Delegation.WorkflowSpec`, servant `Main.hs`, server `E2ESpec.hs`); new refusal tests; `scenarioExchangeRequiresLiveSessions`; 244 core tests, 38 servant scenarios, and PostgreSQL EP-6 server test green; committed
 - [ ] M4: `docs/user/security.md`, `docs/user/oidc.md`, `docs/user/machine-tokens.md` updated; per-package changelogs carry an Unreleased entry
 - [ ] M4: `docs/adr/` bootstrapped as a profile-governed bundle; ADR-1 allocated with `okf id next` and validated with `okf validate --strict`; `mori.dhall` and `Justfile` updated
 - [ ] M4: `cabal test all -j1` green; MasterPlan 8 registry row and Progress boxes for EP-1 updated; Outcomes & Retrospective written; committed

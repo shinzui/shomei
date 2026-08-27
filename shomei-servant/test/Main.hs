@@ -76,8 +76,9 @@ import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..))
+import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
 import Shomei.Account.User.Dto (UserResponse)
+import Shomei.Account.User.Store (updateUserStatus)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
@@ -313,6 +314,9 @@ revokeAllSessionsOf ref userIdText = do
     ts <- now
     revokeAllUserSessions uid ts
 
+suspendUserIn :: IORef World -> UserId -> IO ()
+suspendUserIn ref uid = runInMemory ref (updateUserStatus uid UserSuspended)
+
 -- | EP-9 host helpers over the in-memory world: define a role, wire a permission on or off it,
 -- and grant a role to a user through the audited workflow — the operator moves a token check
 -- into the store, exactly as @shomei-admin roles@ would on a real box.
@@ -404,29 +408,6 @@ mkTokenForSession jwk cfg uid sid roles scopes actor t = do
     Right (AccessToken tok) -> pure tok
     Left e -> assertFailure ("could not sign token: " <> show e)
 
-mkImpersonatorToken :: JWK -> ShomeiConfig -> UTCTime -> IO Text
-mkImpersonatorToken jwk cfg t = do
-  uid <- genUserId
-  sid <- genSessionId
-  let claims =
-        AuthClaims
-          { subject = uid,
-            sessionId = sid,
-            issuer = cfg.issuer,
-            audience = cfg.audience,
-            issuedAt = t,
-            expiresAt = addUTCTime 900 t,
-            scopes = Set.fromList [cfg.impersonationConfig.impersonateScope],
-            roles = Set.empty,
-            permissions = Set.empty,
-            actor = Nothing,
-            extraClaims = mempty
-          }
-  r <- signAccessToken jwk claims
-  case r of
-    Right (AccessToken tok) -> pure tok
-    Left e -> assertFailure ("impersonator token signing failed: " <> show e)
-
 main :: IO ()
 main = do
   jwk <- generateSigningKey
@@ -503,7 +484,7 @@ main = do
         r <- newIORef (emptyWorld t0)
         gateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcgate" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
         noGateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcnogate" (Set.singleton ingestScope)
-        pure (gateId, noGateId, mkEnv r)
+        pure (r, gateId, noGateId, mkEnv r)
       -- Plan 51: OIDC on, a login URL configured (so a wrongful bounce is visible as a 302),
       -- both OAuth clients, and a service account holding the token-exchange gate scope.
       freshProvenanceEnv = do
@@ -520,10 +501,7 @@ main = do
         pure (r, mkEnvWith totpCfg r)
       env = mkEnv ref
   adminToken <- mkAdminToken jwk cfg
-  impToken <- mkImpersonatorToken jwk cfg t0
-  -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
-  staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1351,8 +1329,8 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
   (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
   afterStatus @?= 200
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken impToken staleImpToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
@@ -1413,8 +1391,11 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e)) (scenarioOAuthToken clientId),
       testCase "POST /oauth/token: RFC 8693 token-exchange, both modes, denyUnderImpersonation inheritance, and wire refusals" $ do
-        (gateId, noGateId, e) <- freshExchangeEnv
-        testWithApplication (pure (app e)) (scenarioTokenExchange jwk gateId noGateId impToken staleImpToken),
+        (_, gateId, noGateId, e) <- freshExchangeEnv
+        testWithApplication (pure (app e)) (scenarioTokenExchange jwk cfg t0 gateId noGateId),
+      testCase "POST /oauth/token: privilege-minting exchanges require live, active principals in the default auth mode" $ do
+        (r, gateId, _, e) <- freshExchangeEnv
+        testWithApplication (pure (app e)) (scenarioExchangeRequiresLiveSessions r jwk cfg t0 gateId),
       testCase "EP-7 TOTP: enroll → verify → mfa_required(methods) → complete; replay 401; recovery gen/use/count; impersonation 403; remove; freshness 403" $ do
         (r, e) <- freshTotpEnv
         testWithApplication (pure (app e)) (scenarioTotp r jwk cfg),
@@ -1813,14 +1794,37 @@ scenarioAuthorizeProvenance ref jwk cfg issuedAt confId pubId svcId port = do
 --     token that satisfies the @RequireScope@ route and carries the user's @sub@ + the service's @act@.
 --
 -- Every failure is an RFC 6749 §5.2 object, never a problem document.
-scenarioTokenExchange :: JWK -> Text -> Text -> Text -> Text -> Int -> IO ()
-scenarioTokenExchange jwk gateClientId noGateClientId impToken staleImpToken port = do
+scenarioTokenExchange :: JWK -> ShomeiConfig -> UTCTime -> Text -> Text -> Int -> IO ()
+scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId port = do
   mgr <- newManager defaultManagerSettings
   let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
       userIdType = "urn:shomei:params:oauth:token-type:user-id"
       accessType = "urn:ietf:params:oauth:token-type:access_token"
       accessTypeText = "urn:ietf:params:oauth:token-type:access_token" :: Text
       enc = Text.encodeUtf8
+
+  (_, operatorUid, operatorSid) <- signupPrincipal mgr port jwk "exchange-operator"
+  impToken <-
+    mkTokenForSession
+      jwk
+      cfg
+      operatorUid
+      operatorSid
+      Set.empty
+      (Set.singleton cfg.impersonationConfig.impersonateScope)
+      Nothing
+      issuedAt
+  let staleIssuedAt = addUTCTime (negate (cfg.impersonationConfig.actorFreshnessWindow + 1)) issuedAt
+  staleImpToken <-
+    mkTokenForSession
+      jwk
+      cfg
+      operatorUid
+      operatorSid
+      Set.empty
+      (Set.singleton cfg.impersonationConfig.impersonateScope)
+      Nothing
+      staleIssuedAt
 
   -- ===== Impersonation mode =====
   (_, targetId) <- signupTokenAndId mgr port "exchange-target"
@@ -1985,6 +1989,62 @@ scenarioTokenExchange jwk gateClientId noGateClientId impToken staleImpToken por
       (Just (gateClientId, oauthClientSecret))
       [teGrant, ("subject_token", "not-a-real-token"), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
   assertOAuthError "garbage subject token" 400 "invalid_grant" garbageR
+
+-- | Privilege-minting exchanges force a live-session check even while ordinary route
+-- authentication uses the default stateless mode. Impersonation additionally requires an active
+-- operator account.
+scenarioExchangeRequiresLiveSessions :: IORef World -> JWK -> ShomeiConfig -> UTCTime -> Text -> Int -> IO ()
+scenarioExchangeRequiresLiveSessions ref jwk cfg issuedAt gateClientId port = do
+  mgr <- newManager defaultManagerSettings
+  let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+      accessType = "urn:ietf:params:oauth:token-type:access_token"
+      enc = Text.encodeUtf8
+      exchangeSubject token =
+        postForm
+          mgr
+          port
+          "/oauth/token"
+          (Just (gateClientId, oauthClientSecret))
+          [teGrant, ("subject_token", enc token), ("subject_token_type", accessType), ("scope", "kawa:ingest")]
+      exchangeOperator target token =
+        postForm
+          mgr
+          port
+          "/oauth/token"
+          Nothing
+          [ teGrant,
+            ("subject_token", enc (idText target)),
+            ("subject_token_type", "urn:shomei:params:oauth:token-type:user-id"),
+            ("actor_token", enc token),
+            ("actor_token_type", accessType)
+          ]
+      scopedOperator uid sid =
+        mkTokenForSession
+          jwk
+          cfg
+          uid
+          sid
+          Set.empty
+          (Set.singleton cfg.impersonationConfig.impersonateScope)
+          Nothing
+          issuedAt
+
+  (subjectToken, subjectUid, _) <- signupPrincipal mgr port jwk "exchange-live-subject"
+  statusOf <$> exchangeSubject subjectToken >>= (@?= 200)
+  revokeAllSessionsOf ref (idText subjectUid)
+  exchangeSubject subjectToken >>= assertOAuthError "revoked on-behalf subject" 400 "invalid_grant"
+
+  (_, targetUid, _) <- signupPrincipal mgr port jwk "exchange-live-target"
+  (_, revokedOperatorUid, revokedOperatorSid) <- signupPrincipal mgr port jwk "exchange-revoked-operator"
+  revokedOperatorToken <- scopedOperator revokedOperatorUid revokedOperatorSid
+  statusOf <$> exchangeOperator targetUid revokedOperatorToken >>= (@?= 200)
+  revokeAllSessionsOf ref (idText revokedOperatorUid)
+  exchangeOperator targetUid revokedOperatorToken >>= assertOAuthError "revoked impersonation operator" 400 "invalid_grant"
+
+  (_, suspendedOperatorUid, suspendedOperatorSid) <- signupPrincipal mgr port jwk "exchange-suspended-operator"
+  suspendedOperatorToken <- scopedOperator suspendedOperatorUid suspendedOperatorSid
+  suspendUserIn ref suspendedOperatorUid
+  exchangeOperator targetUid suspendedOperatorToken >>= assertOAuthError "suspended impersonation operator" 400 "invalid_grant"
 
 -- | EP-5 M2, regime one: an unknown or revoked @client_id@, or a @redirect_uri@ that is not
 -- registered, is a @400@ __with no Location header at all__.

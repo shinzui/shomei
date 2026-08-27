@@ -61,7 +61,7 @@ import Shomei.Account.User.Store (createUser)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), ShomeiConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError)
-import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, idText)
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, idText)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
@@ -79,6 +79,9 @@ import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
 import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount)
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
+import Shomei.Session.Postgres (runSessionStorePostgres)
+import Shomei.Session.Store (createSession)
 import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
@@ -142,8 +145,7 @@ tests =
           -- with the active signing key (scope granting is host-side; here the host is the test).
           -- The operator must be a real user row: a delegated session's actor_user_id is a foreign
           -- key into shomei_users.
-          opUid <- seedOperatorUser pool
-          opSid <- genSessionId
+          (opUid, opSid) <- seedOperatorPrincipal pool
           t <- getCurrentTime
           let opClaims =
                 AuthClaims
@@ -463,20 +465,32 @@ oauthScenario pool clientId port = do
 exchangeSecret :: Text
 exchangeSecret = "e2e-exchange-secret"
 
--- | Create the operator's user row directly, returning its id. Needed because a delegated session's
--- @actor_user_id@ is a foreign key into @shomei_users@, so the operator naming @act@ must exist.
-seedOperatorUser :: Pool -> IO UserId
-seedOperatorUser pool = do
+-- | Create the operator and its live interactive session directly through the PostgreSQL ports.
+-- The scoped token is hand-signed by the host, but its principal and session are both real.
+seedOperatorPrincipal :: Pool -> IO (UserId, SessionId)
+seedOperatorPrincipal pool = do
   outcome <-
     runEff
       . runErrorNoCallStack @AuthError
       . runDatabasePool pool
       . runClockIO
+      . runSessionStorePostgres
       . runUserStorePostgres
       $ do
         loginId <- either (const (error "bad login id")) pure (mkLoginId "e2e-operator")
         User {userId} <- createUser NewUser {loginId, email = Nothing, displayName = Just "e2e operator"}
-        pure userId
+        ts <- now
+        session <-
+          createSession
+            NewSession
+              { userId,
+                createdAt = ts,
+                expiresAt = addUTCTime 3600 ts,
+                actor = Nothing,
+                oauthClientId = Nothing,
+                kind = InteractiveSession
+              }
+        pure (userId, session.sessionId)
   either (assertFailure . ("could not seed the operator user: " <>) . show) pure outcome
 
 -- | Seed a service account holding both @kawa:ingest@ and the @token-exchange:subject@ gate scope,

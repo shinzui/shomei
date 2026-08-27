@@ -169,6 +169,7 @@ test-suite shomei-core-test
     Shomei.Mfa.WorkflowSpec
     Shomei.OAuth.Authorize.WorkflowSpec
     Shomei.OAuth.TokenExchange.WorkflowSpec
+    Shomei.OAuth.TokenGrant.WorkflowSpec
     Shomei.OAuthClientStoreSpec
     Shomei.OAuthCodeStoreSpec
     Shomei.Passkey.WorkflowSpec

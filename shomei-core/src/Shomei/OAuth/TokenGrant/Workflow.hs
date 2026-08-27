@@ -39,7 +39,7 @@ import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 -- Imported WITHOUT (..): both share field names with 'Shomei.Account.User.Domain.User', which would defeat
 -- @OverloadedRecordDot@. Read through generic-lens labels.
 
-import Shomei.Account.User.Domain (User, UserStatus (UserActive))
+import Shomei.Account.User.Domain (UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Publisher.Store (AuthEventPublisher)
 import Shomei.Authorization.Claims.Domain (AuthClaims, Scope (..))
@@ -57,14 +57,13 @@ import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex, verifyServiceSecret)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (RefreshCommand (..))
-import Shomei.Session.Domain (Session)
 import Shomei.Session.RefreshToken.Domain (RefreshToken)
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore, findRefreshTokenByHash)
 import Shomei.Session.Store (SessionStore, findSessionById)
 import Shomei.Session.Token.Domain (TokenPair)
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
-import Shomei.Session.Workflow (SessionOptions (..), issueSessionWith)
+import Shomei.Session.Workflow (SessionOptions (..), ensureEmailVerified, issueSessionWith)
 import Shomei.SigningKey.Signer (TokenSigner, signIdToken)
 import Shomei.Time.Store (Clock, now)
 
@@ -165,6 +164,7 @@ exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
   user <- do
     u <- maybe (throwError (GrantInvalidGrant "the code's user no longer exists")) pure =<< findUserById (row ^. #userId)
     unless ((u ^. #status) == UserActive) (throwError (GrantInvalidGrant "the code's user is not active"))
+    either (const (throwError (GrantInvalidGrant "the code's user has not verified their email"))) pure (ensureEmailVerified cfg u)
     pure u
   let granted = row ^. #scopes
   (sid, pair, claims) <-

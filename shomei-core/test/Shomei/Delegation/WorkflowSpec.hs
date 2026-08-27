@@ -16,7 +16,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
@@ -25,12 +25,13 @@ import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issue
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Delegation.Workflow (StartImpersonation (..), startImpersonation, stopImpersonation)
 import Shomei.Error (AuthError (ImpersonationForbidden, ImpersonationTargetInvalid))
-import Shomei.Id (SessionId, UserId, genSessionId, genUserId)
+import Shomei.Id (SessionId, UserId, genUserId)
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (SessionRevoked))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..))
-import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.Session.Store (revokeSession)
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -82,12 +83,16 @@ seedCustomer ref = do
   (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText customerEmail)), email = Just customerEmail, password = strongPw, displayName = Just "Customer"}))
   pure user.userId
 
--- | A fresh operator (caller) holding the impersonation scope, issued now.
-freshOperator :: IO AuthClaims
-freshOperator = do
-  op <- genUserId
-  sid <- genSessionId
-  pure (callerClaims op sid (Set.singleton impScope) fixedTime)
+-- | A real, live operator session with caller-selected claims.
+operatorClaims :: IORef World -> Set Scope -> UTCTime -> IO AuthClaims
+operatorClaims ref scopes issuedAt = do
+  let email = mkEmail' "operator@example.com"
+  (operator, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText email)), email = Just email, password = strongPw, displayName = Just "Operator"}))
+  signed <- decodeAccess pair.accessToken
+  pure (callerClaims operator.userId signed.sessionId scopes issuedAt)
+
+freshOperator :: IORef World -> IO AuthClaims
+freshOperator ref = operatorClaims ref (Set.singleton impScope) fixedTime
 
 mkStart :: AuthClaims -> UserId -> StartImpersonation
 mkStart caller target =
@@ -116,6 +121,8 @@ tests =
     [ testHappyPath,
       testMissingScope,
       testStaleCaller,
+      testRevokedCaller,
+      testSuspendedCaller,
       testSelfTarget,
       testUnknownTarget,
       testInactiveTarget,
@@ -126,7 +133,7 @@ testHappyPath :: TestTree
 testHappyPath = testCase "fresh scoped caller impersonating an active target succeeds" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
-  caller <- freshOperator
+  caller <- freshOperator ref
   (session, access) <- expectRight =<< runInMemory ref (startImpersonation cfg (mkStart caller target))
   -- the delegated session records the operator as actor
   session.actor @?= Just caller.subject
@@ -153,9 +160,7 @@ testMissingScope :: TestTree
 testMissingScope = testCase "caller without the impersonate scope is forbidden" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
-  op <- genUserId
-  sid <- genSessionId
-  let caller = callerClaims op sid Set.empty fixedTime
+  caller <- operatorClaims ref Set.empty fixedTime
   res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
   fmap (const ()) res @?= Left ImpersonationForbidden
 
@@ -163,25 +168,41 @@ testStaleCaller :: TestTree
 testStaleCaller = testCase "caller whose token predates the freshness window is forbidden" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
-  op <- genUserId
-  sid <- genSessionId
   -- issued one second before the freshness window opens
   let stale = addUTCTime (negate (cfg.impersonationConfig.actorFreshnessWindow + 1)) fixedTime
-      caller = callerClaims op sid (Set.singleton impScope) stale
+  caller <- operatorClaims ref (Set.singleton impScope) stale
+  res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
+  fmap (const ()) res @?= Left ImpersonationForbidden
+
+testRevokedCaller :: TestTree
+testRevokedCaller = testCase "caller with a revoked session is forbidden" do
+  ref <- newIORef (emptyWorld fixedTime)
+  target <- seedCustomer ref
+  caller <- freshOperator ref
+  runInMemory ref (revokeSession caller.sessionId fixedTime)
+  res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
+  fmap (const ()) res @?= Left ImpersonationForbidden
+
+testSuspendedCaller :: TestTree
+testSuspendedCaller = testCase "suspended caller is forbidden" do
+  ref <- newIORef (emptyWorld fixedTime)
+  target <- seedCustomer ref
+  caller <- freshOperator ref
+  _ <- runInMemory ref (updateUserStatus caller.subject UserSuspended)
   res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
   fmap (const ()) res @?= Left ImpersonationForbidden
 
 testSelfTarget :: TestTree
 testSelfTarget = testCase "impersonating yourself is an invalid target" do
   ref <- newIORef (emptyWorld fixedTime)
-  caller <- freshOperator
+  caller <- freshOperator ref
   res <- runInMemory ref (startImpersonation cfg (mkStart caller caller.subject))
   fmap (const ()) res @?= Left ImpersonationTargetInvalid
 
 testUnknownTarget :: TestTree
 testUnknownTarget = testCase "unknown target is an invalid target" do
   ref <- newIORef (emptyWorld fixedTime)
-  caller <- freshOperator
+  caller <- freshOperator ref
   ghost <- genUserId
   res <- runInMemory ref (startImpersonation cfg (mkStart caller ghost))
   fmap (const ()) res @?= Left ImpersonationTargetInvalid
@@ -191,7 +212,7 @@ testInactiveTarget = testCase "suspended target is an invalid target" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
   _ <- runInMemory ref (updateUserStatus target UserSuspended)
-  caller <- freshOperator
+  caller <- freshOperator ref
   res <- runInMemory ref (startImpersonation cfg (mkStart caller target))
   fmap (const ()) res @?= Left ImpersonationTargetInvalid
 
@@ -199,7 +220,7 @@ testStop :: TestTree
 testStop = testCase "stopImpersonation revokes the delegated session and audits the stop" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedCustomer ref
-  caller <- freshOperator
+  caller <- freshOperator ref
   (session, access) <- expectRight =<< runInMemory ref (startImpersonation cfg (mkStart caller target))
   delegatedClaims <- decodeAccess access
   _ <- expectRight =<< runInMemory ref (stopImpersonation delegatedClaims)

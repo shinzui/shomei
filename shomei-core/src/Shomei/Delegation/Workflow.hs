@@ -36,6 +36,7 @@ import Shomei.Prelude
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (DelegatedSession))
 import Shomei.Session.Store (SessionStore, createSession, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken)
+import Shomei.Session.Workflow (requireLiveSession)
 import Shomei.SigningKey.Signer (TokenSigner, signAccessToken)
 import Shomei.Time.Store (Clock, now)
 
@@ -51,7 +52,8 @@ data StartImpersonation = StartImpersonation
   deriving stock (Generic, Show)
 
 -- | Exchange the caller's token for a short-lived delegated session + access token
--- for 'targetUserId'. Enforces scope, freshness, self, and target-active checks; mints
+-- for 'targetUserId'. Enforces scope, freshness, live-session, active-operator, self, and
+-- target-active checks; mints
 -- a refresh-less session; and audits the start. Returns the new 'Session' and signed
 -- 'AccessToken'.
 startImpersonation ::
@@ -72,6 +74,12 @@ startImpersonation cfg cmd = runErrorNoCallStack do
   unless (imp.impersonateScope `Set.member` caller.scopes) (throwError ImpersonationForbidden)
   -- Freshness check: the caller's own token must be recently issued.
   when (ts > addUTCTime imp.actorFreshnessWindow caller.issuedAt) (throwError ImpersonationForbidden)
+  -- The operator's credential must still be backed by a live session, regardless of the host's
+  -- ordinary route-authentication mode.
+  _ <- either (const (throwError ImpersonationForbidden)) pure =<< requireLiveSession ts caller.sessionId
+  -- A suspended or otherwise inactive operator cannot mint fresh authority from an old token.
+  operator <- maybe (throwError ImpersonationForbidden) pure =<< findUserById caller.subject
+  unless (operator.status == UserActive) (throwError ImpersonationForbidden)
   -- Self check: an operator may not impersonate themselves.
   when (cmd.targetUserId == caller.subject) (throwError ImpersonationTargetInvalid)
   -- Target check: the target must exist and be active.

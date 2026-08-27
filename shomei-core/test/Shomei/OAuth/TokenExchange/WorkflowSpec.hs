@@ -15,7 +15,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Encoding qualified as TLE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..), UserStatus (UserSuspended))
 import Shomei.Account.User.Store (updateUserStatus)
@@ -23,7 +23,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError (..))
-import Shomei.Id (SessionId, UserId, genServiceAccountDbId, genSessionId, genUserId, idText)
+import Shomei.Id (SessionId, UserId, genServiceAccountDbId, genUserId, idText)
 import Shomei.OAuth.TokenExchange.Workflow
   ( ExchangeRequest (..),
     ExchangedToken (..),
@@ -36,7 +36,8 @@ import Shomei.ServiceAccount.Domain (ServiceAccount (..), ServiceAccountStatus (
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..))
-import Shomei.Session.Token.Domain (AccessToken (..))
+import Shomei.Session.Store (revokeSession)
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.SigningKey.Signer (signAccessToken)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
@@ -67,12 +68,16 @@ mkEmail' t = either (\e -> error ("bad test email: " <> show e)) id (mkEmail t)
 expectRight :: (Show e) => Either e a -> IO a
 expectRight = either (\e -> assertFailure ("expected Right, got Left: " <> show e)) pure
 
--- | Sign up a user with the given email and return their (active) id.
-seedUser :: IORef World -> Text -> IO UserId
-seedUser ref email = do
+-- | Sign up a user with the given email and return their active user/session pair.
+seedPrincipal :: IORef World -> Text -> IO (UserId, SessionId)
+seedPrincipal ref email = do
   let e = mkEmail' email
-  (user, _) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = strongPw, displayName = Just "User"}))
-  pure user.userId
+  (user, pair) <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = strongPw, displayName = Just "User"}))
+  claims <- decodeAccess pair.accessToken
+  pure (user.userId, claims.sessionId)
+
+seedUser :: IORef World -> Text -> IO UserId
+seedUser ref email = fst <$> seedPrincipal ref email
 
 -- | Build claims for a principal. The in-memory verifier accepts them verbatim.
 claimsFor :: UserId -> SessionId -> Set Scope -> Maybe UserId -> UTCTime -> AuthClaims
@@ -100,8 +105,7 @@ signToken ref claims = do
 -- | A fresh operator token holding the impersonation scope, issued now.
 freshOperatorToken :: IORef World -> IO Text
 freshOperatorToken ref = do
-  op <- genUserId
-  sid <- genSessionId
+  (op, sid) <- seedPrincipal ref "operator@example.com"
   signToken ref (claimsFor op sid (Set.singleton impScope) Nothing fixedTime)
 
 -- | A service account with the given allowed scopes, backed by 'svcUser'.
@@ -182,6 +186,8 @@ tests =
       testImpersonationStaleActor,
       testImpersonationSelfTarget,
       testImpersonationDelegatedActorRefused,
+      testImpersonationRevokedOperator,
+      testImpersonationSuspendedOperator,
       testOnBehalfHappyPath,
       testOnBehalfDefaultScopes,
       testOnBehalfMissingGateScope,
@@ -191,6 +197,7 @@ tests =
       testOnBehalfSubjectScopeBoundViolation,
       testOnBehalfChainRefused,
       testOnBehalfInactiveSubject,
+      testOnBehalfRevokedSubject,
       testRefreshlessRequestedTypeRejected
     ]
 
@@ -231,8 +238,7 @@ testImpersonationMissingScope :: TestTree
 testImpersonationMissingScope = testCase "impersonation: operator without impersonate:user is forbidden" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedUser ref "customer@example.com"
-  op <- genUserId
-  sid <- genSessionId
+  (op, sid) <- seedPrincipal ref "operator@example.com"
   opTok <- signToken ref (claimsFor op sid Set.empty Nothing fixedTime)
   res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
   fmap (const ()) res @?= Left ImpersonationForbidden
@@ -241,8 +247,7 @@ testImpersonationStaleActor :: TestTree
 testImpersonationStaleActor = testCase "impersonation: operator token past the freshness window is forbidden" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedUser ref "customer@example.com"
-  op <- genUserId
-  sid <- genSessionId
+  (op, sid) <- seedPrincipal ref "operator@example.com"
   let stale = addUTCTime (negate (cfg.impersonationConfig.actorFreshnessWindow + 1)) fixedTime
   opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) Nothing stale)
   res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
@@ -251,8 +256,7 @@ testImpersonationStaleActor = testCase "impersonation: operator token past the f
 testImpersonationSelfTarget :: TestTree
 testImpersonationSelfTarget = testCase "impersonation: targeting the operator themselves is invalid" do
   ref <- newIORef (emptyWorld fixedTime)
-  op <- genUserId
-  sid <- genSessionId
+  (op, sid) <- seedPrincipal ref "operator@example.com"
   opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) Nothing fixedTime)
   res <- runInMemory ref (exchangeToken cfg (impersonationReq op opTok))
   fmap (const ()) res @?= Left ImpersonationTargetInvalid
@@ -261,20 +265,38 @@ testImpersonationDelegatedActorRefused :: TestTree
 testImpersonationDelegatedActorRefused = testCase "impersonation: a delegated actor token is refused (no chains)" do
   ref <- newIORef (emptyWorld fixedTime)
   target <- seedUser ref "customer@example.com"
-  op <- genUserId
+  (op, sid) <- seedPrincipal ref "operator@example.com"
   other <- genUserId
-  sid <- genSessionId
   -- An actor token that already carries `act` cannot be used to start another exchange.
   opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) (Just other) fixedTime)
   res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
   fmap (const ()) res @?= Left OAuthGrantInvalid
 
+testImpersonationRevokedOperator :: TestTree
+testImpersonationRevokedOperator = testCase "impersonation: a revoked operator session is an invalid grant" do
+  ref <- newIORef (emptyWorld fixedTime)
+  target <- seedUser ref "customer@example.com"
+  (op, sid) <- seedPrincipal ref "operator@example.com"
+  opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) Nothing fixedTime)
+  runInMemory ref (revokeSession sid fixedTime)
+  res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
+  fmap (const ()) res @?= Left OAuthGrantInvalid
+
+testImpersonationSuspendedOperator :: TestTree
+testImpersonationSuspendedOperator = testCase "impersonation: a suspended operator is forbidden" do
+  ref <- newIORef (emptyWorld fixedTime)
+  target <- seedUser ref "customer@example.com"
+  (op, sid) <- seedPrincipal ref "operator@example.com"
+  opTok <- signToken ref (claimsFor op sid (Set.singleton impScope) Nothing fixedTime)
+  _ <- runInMemory ref (updateUserStatus op UserSuspended)
+  res <- runInMemory ref (exchangeToken cfg (impersonationReq target opTok))
+  fmap (const ()) res @?= Left ImpersonationForbidden
+
 testOnBehalfHappyPath :: TestTree
 testOnBehalfHappyPath = testCase "on-behalf-of: user sub + service act, narrowed scopes, audited, refresh-less" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, readScope, tokenExchangeSubjectScope])
   result <- expectRight =<< runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton ingestScope))))
@@ -296,9 +318,8 @@ testOnBehalfHappyPath = testCase "on-behalf-of: user sub + service act, narrowed
 testOnBehalfDefaultScopes :: TestTree
 testOnBehalfDefaultScopes = testCase "on-behalf-of: absent scope grants the ceiling, never the gate scope" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, readScope, tokenExchangeSubjectScope])
   result <- expectRight =<< runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc Nothing))
@@ -309,9 +330,8 @@ testOnBehalfDefaultScopes = testCase "on-behalf-of: absent scope grants the ceil
 testOnBehalfMissingGateScope :: TestTree
 testOnBehalfMissingGateScope = testCase "on-behalf-of: account without the gate scope is refused" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, readScope])
   res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton ingestScope))))
@@ -320,9 +340,8 @@ testOnBehalfMissingGateScope = testCase "on-behalf-of: account without the gate 
 testOnBehalfScopeOutsideCeiling :: TestTree
 testOnBehalfScopeOutsideCeiling = testCase "on-behalf-of: requesting a scope outside the ceiling is refused" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
   res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton adminScope))))
@@ -331,9 +350,8 @@ testOnBehalfScopeOutsideCeiling = testCase "on-behalf-of: requesting a scope out
 testOnBehalfGateNeverGranted :: TestTree
 testOnBehalfGateNeverGranted = testCase "on-behalf-of: requesting the gate scope itself yields an empty grant, refused" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
   res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton tokenExchangeSubjectScope))))
@@ -342,9 +360,8 @@ testOnBehalfGateNeverGranted = testCase "on-behalf-of: requesting the gate scope
 testOnBehalfSubjectScopeBoundOk :: TestTree
 testOnBehalfSubjectScopeBoundOk = testCase "on-behalf-of: non-empty subject scopes that contain the grant are allowed" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   -- The subject token itself carries a scope set; the grant must be within it.
   subjTok <- signToken ref (claimsFor user usid (Set.fromList [ingestScope, readScope]) Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, readScope, tokenExchangeSubjectScope])
@@ -354,9 +371,8 @@ testOnBehalfSubjectScopeBoundOk = testCase "on-behalf-of: non-empty subject scop
 testOnBehalfSubjectScopeBoundViolation :: TestTree
 testOnBehalfSubjectScopeBoundViolation = testCase "on-behalf-of: a grant exceeding non-empty subject scopes is refused" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
-  usid <- genSessionId
   -- Subject holds only kawa:ingest; the service asks for kawa:read too — outside the user's authority.
   subjTok <- signToken ref (claimsFor user usid (Set.singleton ingestScope) Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, readScope, tokenExchangeSubjectScope])
@@ -366,10 +382,9 @@ testOnBehalfSubjectScopeBoundViolation = testCase "on-behalf-of: a grant exceedi
 testOnBehalfChainRefused :: TestTree
 testOnBehalfChainRefused = testCase "on-behalf-of: an already-delegated subject token is refused (no chains)" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
   other <- genUserId
-  usid <- genSessionId
   -- Subject token already carries `act`: it is itself a delegated token and cannot be re-exchanged.
   subjTok <- signToken ref (claimsFor user usid Set.empty (Just other) fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
@@ -379,12 +394,22 @@ testOnBehalfChainRefused = testCase "on-behalf-of: an already-delegated subject 
 testOnBehalfInactiveSubject :: TestTree
 testOnBehalfInactiveSubject = testCase "on-behalf-of: an inactive subject user is refused" do
   ref <- newIORef (emptyWorld fixedTime)
-  user <- seedUser ref "customer@example.com"
+  (user, usid) <- seedPrincipal ref "customer@example.com"
   svcUser <- seedUser ref "svc@example.com"
   _ <- runInMemory ref (updateUserStatus user UserSuspended)
-  usid <- genSessionId
   subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
   svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
+  res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton ingestScope))))
+  fmap (const ()) res @?= Left OAuthGrantInvalid
+
+testOnBehalfRevokedSubject :: TestTree
+testOnBehalfRevokedSubject = testCase "on-behalf-of: a revoked subject session is an invalid grant" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (user, usid) <- seedPrincipal ref "customer@example.com"
+  svcUser <- seedUser ref "svc@example.com"
+  subjTok <- signToken ref (claimsFor user usid Set.empty Nothing fixedTime)
+  svc <- mkServiceAccount svcUser (Set.fromList [ingestScope, tokenExchangeSubjectScope])
+  runInMemory ref (revokeSession usid fixedTime)
   res <- runInMemory ref (exchangeToken cfg (onBehalfReq subjTok svc (Just (Set.singleton ingestScope))))
   fmap (const ()) res @?= Left OAuthGrantInvalid
 

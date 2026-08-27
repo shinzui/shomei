@@ -51,7 +51,7 @@ import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..))
-import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), ShomeiConfig (..))
+import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), SessionCheckMode (VerifyTokenAndSession), ShomeiConfig (..))
 import Shomei.Delegation.Workflow
   ( DelegatedMint (..),
     StartImpersonation (..),
@@ -62,10 +62,11 @@ import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId, parseId)
 import Shomei.Prelude
 import Shomei.ServiceAccount.Domain (ServiceAccount, ServiceAccountStatus (ServiceAccountActive))
+import Shomei.Session.Authentication.Workflow qualified as Authentication
 import Shomei.Session.Store (SessionStore)
 import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.SigningKey.Signer (TokenSigner)
-import Shomei.SigningKey.Verifier (TokenVerifier, verifyAccessToken)
+import Shomei.SigningKey.Verifier (TokenVerifier)
 import Shomei.Time.Store (Clock, now)
 
 -- | The Shōmei-defined token type URN for "a bare user id" — the impersonation-mode
@@ -270,11 +271,12 @@ narrowScopes mRequested allowed subjectScopes = do
 -- @invalid_grant@ — a subject or actor token that will not validate is a bad grant, and every
 -- reason it might fail is indistinguishable on the wire.
 verifyToken ::
-  (TokenVerifier :> es, Error AuthError :> es) =>
+  (TokenVerifier :> es, SessionStore :> es, Clock :> es, Error AuthError :> es) =>
   Text ->
   Eff es AuthClaims
 verifyToken raw =
-  either (const (throwError OAuthGrantInvalid)) pure =<< verifyAccessToken (AccessToken raw)
+  either (const (throwError OAuthGrantInvalid)) pure
+    =<< Authentication.verifyTokenWith VerifyTokenAndSession (AccessToken raw)
 
 -- | Parse the impersonation-mode @subject_token@: a bare user id. A garbage id is an invalid grant.
 parseSubjectUserId :: (Error AuthError :> es) => Text -> Eff es UserId

@@ -18,6 +18,7 @@ module Shomei.Session.Authentication.Workflow
     refresh,
     logout,
     verifyToken,
+    verifyTokenWith,
     LoginResult (..),
     MfaChallenge (..),
     issueSession,
@@ -89,7 +90,7 @@ import Shomei.Session.UnitOfWork.Store
     persistNewSession,
     rotateRefreshToken,
   )
-import Shomei.Session.Workflow (buildEnrichedClaims, ensureEmailVerified, issueSession)
+import Shomei.Session.Workflow (buildEnrichedClaims, ensureEmailVerified, issueSession, requireLiveSession)
 import Shomei.SigningKey.Signer (TokenSigner, signAccessToken)
 import Shomei.SigningKey.Verifier (TokenVerifier, verifyAccessToken)
 import Shomei.Time.Store (Clock, now)
@@ -453,18 +454,21 @@ verifyToken ::
   ShomeiConfig ->
   AccessToken ->
   Eff es (Either AuthError AuthClaims)
-verifyToken cfg token = do
+verifyToken cfg = verifyTokenWith cfg.sessionCheckMode
+
+-- | Verify a token under an explicit session-check policy. Privilege-minting callers use
+-- 'VerifyTokenAndSession' even when ordinary route authentication remains stateless.
+verifyTokenWith ::
+  (TokenVerifier :> es, SessionStore :> es, Clock :> es) =>
+  SessionCheckMode ->
+  AccessToken ->
+  Eff es (Either AuthError AuthClaims)
+verifyTokenWith mode token = do
   result <- verifyAccessToken token
   case result of
     Left te -> pure (Left (TokenInvalid te))
-    Right claims -> case cfg.sessionCheckMode of
+    Right claims -> case mode of
       VerifyTokenOnly -> pure (Right claims)
       VerifyTokenAndSession -> do
         ts <- now
-        mSession <- findSessionById claims.sessionId
-        case mSession of
-          Nothing -> pure (Left SessionNotFound)
-          Just s
-            | s.expiresAt <= ts -> pure (Left SessionExpired)
-            | s.status /= SessionActive -> pure (Left SessionRevoked)
-            | otherwise -> pure (Right claims)
+        fmap (const claims) <$> requireLiveSession ts claims.sessionId
