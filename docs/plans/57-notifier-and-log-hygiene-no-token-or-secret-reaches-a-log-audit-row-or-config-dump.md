@@ -59,7 +59,7 @@ breach setting, and can mark the bootstrap admin's email verified.
 - [x] (2026-08-27T21:58:23Z) M3: signature over `<unix-seconds>.<body>` with `X-Shomei-Timestamp`; NotifySpec, E2E, `notifications.md` updated with the 5-minute replay window; [ADR-12](../adr/0012-webhook-signatures-bind-a-bounded-attempt-time.md)
 - [x] (2026-08-27T22:07:01Z) M4: redacting `Show`, no JSON, on `RefreshToken`, `AccessToken`, `TokenPair`, client `Token`; `LoginFailedData` carries `accountKey`/`userId`; codec, workflow, tests, runbook; legacy payload compatibility; [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md)
 - [x] (2026-08-27T22:23:41Z) M5: `users create` from stdin/`--password-file`, Dhall policy, HIBP interpreter, `--email-verified`; `Admin/Keys.hs` summarises `UsageError`; `BreachChecker` logs one classified line; [ADR-14](../adr/0014-administrative-bootstrap-shares-the-deployment-authentication-policy.md)
-- [ ] Final: `nix fmt`, `cabal build all`, `TASTY_NUM_THREADS=1 cabal test all` green; CHANGELOGs; MasterPlan 8 row and Progress; Outcomes; ADR distillation pass
+- [x] (2026-08-27T22:29:11Z) Final: `nix fmt`, `cabal build all`, `TASTY_NUM_THREADS=1 cabal test all` green; CHANGELOGs; MasterPlan 8 row and Progress; Outcomes; ADR distillation pass
 
 
 ## Surprises & Discoveries
@@ -186,9 +186,30 @@ breach setting, and can mark the bootstrap admin's email verified.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation; distill durable decisions into `docs/adr/` first, and record
-the deliberate leftovers: `IdToken` still derives `Show`; the missing `SHOMEI_SMTP_*`/`SHOMEI_WEBHOOK_*` rows in
-`deployment.md` are EP-10's job.)
+EP-7 closes every notifier and diagnostic disclosure named by the August review. SMTP and webhook
+failures cross the log and audit boundary only as a closed `DeliveryReason`; regression tests reproduce the
+DATA-stage token leak and request-rendering leak and prove both payloads are absent after classification.
+Notification delivery now leaves the request path through a bounded queue with explicit overflow, expiry,
+shutdown, and drain behavior. The remaining hit/miss database-work delta is deliberately accepted and pinned
+by the core cost test; a sleeping receiver no longer delays the HTTP `202`.
+
+Notifier credentials moved out of printable `ShomeiConfig` into non-printable runtime values, insecure
+transport posture fails at boot unless an environment-only lab escape is explicit, and webhook signatures bind
+a fresh attempt timestamp plus the exact body. Bearer credential types render redacted and no longer expose
+generic JSON instances; failed-login audit data carries the hashed account key and resolved user identity,
+never the submitted identifier. ADR-9 through ADR-13 record these durable boundaries.
+
+Administrative bootstrap now reads a password from stdin or `--password-file`, loads the deployment's core
+Dhall policy, runs the real HIBP interpreter, and marks email verified only under an explicit flag. Raw Hasql
+errors and breach-service exceptions are reduced to safe categories. ADR-14 records policy parity. The live CLI
+refuses `--password`, rejects empty stdin, and accepts both redirected stdin and the file path before environment
+assembly. All 13 serialized workspace test suites pass, as do `nix fmt`, `cabal build all`, the example Dhall
+conversion, strict ADR validation, and the source hygiene sweeps.
+
+Deliberate leftovers remain scoped elsewhere: `IdToken` retains its existing `Show` instance; EP-9 owns lifting
+the notifier worker and drain into the embedding runtime stack; EP-10 owns the remaining notifier environment
+rows and documentation-wide reconciliation. No migration was required because the changed audit payload remains
+backward-decodable.
 
 
 ## Context and Orientation

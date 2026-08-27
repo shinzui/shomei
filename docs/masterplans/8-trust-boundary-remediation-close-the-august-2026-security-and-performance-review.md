@@ -138,7 +138,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 4 | Count Second-Factor and Credential-Oracle Failures and Throttle Every Unauthenticated Proof | docs/plans/54-count-second-factor-and-credential-oracle-failures-and-throttle-every-unauthenticated-proof.md | None | EP-5 | Complete |
 | 5 | Atomic State Transitions, Round Two: Lockout, Counters, and Transactional Credential Tails | docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md | None | None | Complete |
 | 6 | Bound Password Hashing for Real and Refuse to Boot on Unsafe Configuration | docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md | None | None | Complete |
-| 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | In Progress |
+| 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Complete |
 | 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Not Started |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Not Started |
 | 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | Not Started |
@@ -442,6 +442,16 @@ never by counting files. Every later plan allocates the next handle the same way
   idle-timeout SQLSTATE after PostgreSQL closes the connection; reading both session settings back
   before exercising their failure paths made the regression independent of that rendering detail.
 
+- EP-7 reproduced both diagnostic disclosure paths before correction: smtp-mail's DATA exception
+  retained the quoted-printable one-time token inside the 500-character cap, while http-client's
+  request rendering retained the configured webhook query string. A closed reason vocabulary now
+  discards both renderings before output or persistence.
+
+- EP-7 made EP-9's background-task integration concrete: embeddings must carry `NotifierSecrets`
+  and `NotifierQueue`, install `installNotifierWorker`, and run `drainNotifierWorker` during bounded
+  shutdown. The standalone server already follows that lifecycle, and the slow-receiver E2E case
+  proves the request path remains sub-second while delivery continues asynchronously.
+
 
 ## Decision Log
 
@@ -573,7 +583,7 @@ never by counting files. Every later plan allocates the next handle the same way
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-6 are complete, closing Phase 1 and Phase 2.
+EP-1 through EP-7 are complete, closing Phase 1 and Phase 2 and the first Phase 3 work stream.
 Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
@@ -598,9 +608,14 @@ boundaries. EP-6 now forces password hashing inside the real limiter, rejects in
 trust-boundary configuration before serving work, and keeps an evolvable 71-field Dhall schema
 synchronized with the strict loader. Migration 0036 enforces one password credential per user;
 pooled work has statement and idle-transaction bounds; and maintenance no longer occupies request
-capacity. ADR-8 records the configuration contract. Each child's final serialized workspace suite
-is green. Four Phase 3 plans remain open. EP-7 is the recommended next plan: its notifier and secret
-hygiene work has no hard dependencies, and its soft dependency on EP-6's strict schema is complete.
+capacity. ADR-8 records the configuration contract. EP-7 now maps outbound failures to a closed
+reason vocabulary, moves delivery behind a bounded supervised queue, carries notifier credentials
+outside printable config, binds webhook signatures to attempt time, redacts bearer credentials,
+hashes failed-login subjects, and makes administrative bootstrap share the deployment password and
+breach policy without putting secrets in argv. ADR-9 through ADR-14 record those boundaries. Each
+child's final serialized workspace suite is green. Three Phase 3 plans remain open. EP-8 is the
+recommended next plan: it has no hard dependencies and owns the inbound proxy, body, metrics,
+readiness, and problem-response boundaries.
 
 
 Revision note (2026-08-27): Reconciled EP-5 as complete, carried its concurrency and migration
@@ -610,3 +625,7 @@ in progress with EP-6 through EP-10 open.
 Revision note (2026-08-27): Reconciled EP-6 as complete, recorded its load, strict-config, schema,
 migration, timeout, and isolated-sweeper evidence, and added ADR-8's synchronized-configuration
 policy. Phase 2 is complete; the MasterPlan remains in progress with EP-7 through EP-10 open.
+
+Revision note (2026-08-27): Reconciled EP-7 as complete, recorded its redaction, bounded-delivery,
+runtime-secret, timestamped-signature, audit-identity, and safe-bootstrap boundaries, and added ADR-9
+through ADR-14. The MasterPlan remains in progress with EP-8 through EP-10 open.
