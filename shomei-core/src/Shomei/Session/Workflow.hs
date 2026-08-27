@@ -21,6 +21,7 @@ module Shomei.Session.Workflow
     issueSession,
     issueSessionWith,
     ensureEmailVerified,
+    requireLiveSession,
   )
 where
 
@@ -35,10 +36,11 @@ import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope, mkExtraClaims
 import Shomei.Authorization.Claims.Store (ClaimsDelta (..), ClaimsEnricher, enrichClaims)
 import Shomei.Authorization.Role.Store (RoleStore, listRolesForUser, permissionsForRoles)
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
-import Shomei.Error (AuthError (EmailNotVerified))
+import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
+import Shomei.Session.Store (SessionStore, findSessionById)
 import Shomei.Session.Token.Domain (TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, generateOpaqueToken, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, NewSessionToken (..), persistNewSession)
@@ -59,6 +61,18 @@ ensureEmailVerified cfg user
       && isNothing user.emailVerifiedAt =
       Left EmailNotVerified
   | otherwise = Right ()
+
+-- | Read a session and require it to be usable now. Privilege-minting workflows share this one
+-- predicate so missing, expired, and revoked sessions cannot be interpreted differently.
+requireLiveSession :: (SessionStore :> es) => UTCTime -> SessionId -> Eff es (Either AuthError Session)
+requireLiveSession ts sid = do
+  mSession <- findSessionById sid
+  pure $ case mSession of
+    Nothing -> Left SessionNotFound
+    Just session
+      | session.expiresAt <= ts -> Left SessionExpired
+      | session.status /= SessionActive -> Left SessionRevoked
+      | otherwise -> Right session
 
 -- | The /base/ claims for a freshly-authenticated session: no scopes, no roles. The standard
 -- workflows call 'buildEnrichedClaims', which fills those in from the role store and the host

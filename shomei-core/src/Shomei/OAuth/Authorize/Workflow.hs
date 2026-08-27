@@ -8,12 +8,13 @@
 -- "Shomei.OAuth.Handler". Everything else — PKCE policy, scope policy, minting and storing the
 -- code, auditing it — is here.
 --
--- __Errors here are not 'Shomei.Error.AuthError'.__ Each one becomes an @error=@ parameter on a
--- redirect back to the client (RFC 6749 §4.1.2.1), never a problem document and never an OAuth
--- token-endpoint error object. Giving them their own type keeps them out of the problem catalog,
--- which describes only what the application envelope can carry.
+-- __Errors here are not 'Shomei.Error.AuthError'.__ Parameter-policy errors become an @error=@
+-- parameter on a redirect back to the client (RFC 6749 §4.1.2.1). 'AuthorizeLoginRequired' is
+-- instead interpreted by the HTTP layer as an unauthenticated or non-interactive caller and is
+-- never sent to the client's redirect URI.
 module Shomei.OAuth.Authorize.Workflow
   ( AuthorizeParams (..),
+    AuthorizeRefusal (..),
     AuthorizeError (..),
     authorizeErrorCode,
     authorizeErrorDescription,
@@ -44,8 +45,11 @@ import Shomei.OAuth.AuthorizationCode.Store (OAuthCodeStore, putAuthorizationCod
 import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient)
 import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Domain (SessionKind (InteractiveSession))
 import Shomei.Session.RefreshToken.Domain (RefreshToken (..))
+import Shomei.Session.Store (SessionStore)
 import Shomei.Session.Token.Generator (TokenGen, generateOpaqueToken)
+import Shomei.Session.Workflow (requireLiveSession)
 import Shomei.Time.Store (Clock, now)
 
 -- | The authorize request's parameters, after the HTTP layer has validated @client_id@ and
@@ -63,9 +67,16 @@ data AuthorizeParams = AuthorizeParams
   }
   deriving stock (Generic, Eq, Show)
 
--- | The RFC 6749 §4.1.2.1 error codes this workflow can produce. Each becomes
--- @?error=<code>&error_description=…&state=…@ on a redirect to the (already validated)
--- @redirect_uri@.
+-- | Why an otherwise-verifying credential may not authorize a client.
+data AuthorizeRefusal
+  = -- | The token carries @act@, or its session was established by a machine or delegation.
+    NonInteractiveCredential
+  | -- | The token's session is missing, revoked, or past its absolute expiry.
+    SessionNotLive
+  deriving stock (Generic, Eq, Show)
+
+-- | The authorization policy outcomes. Parameter-policy errors redirect to the validated client;
+-- 'AuthorizeLoginRequired' is handled without such a redirect by the HTTP layer.
 data AuthorizeError
   = -- | @response_type@ was absent or not @code@
     UnsupportedResponseType
@@ -73,6 +84,8 @@ data AuthorizeError
     AuthorizeInvalidRequest !Text
   | -- | the requested scope is empty or exceeds the client's allow-list
     AuthorizeInvalidScope
+  | -- | the caller is not a live interactive end-user login
+    AuthorizeLoginRequired !AuthorizeRefusal
   deriving stock (Generic, Eq, Show)
 
 authorizeErrorCode :: AuthorizeError -> Text
@@ -80,12 +93,15 @@ authorizeErrorCode = \case
   UnsupportedResponseType -> "unsupported_response_type"
   AuthorizeInvalidRequest _ -> "invalid_request"
   AuthorizeInvalidScope -> "invalid_scope"
+  AuthorizeLoginRequired _ -> "login_required"
 
 authorizeErrorDescription :: AuthorizeError -> Text
 authorizeErrorDescription = \case
   UnsupportedResponseType -> "response_type must be code"
   AuthorizeInvalidRequest what -> what
   AuthorizeInvalidScope -> "the requested scope is empty or exceeds what this client may request"
+  AuthorizeLoginRequired NonInteractiveCredential -> "an interactive login session is required to authorize a client"
+  AuthorizeLoginRequired SessionNotLive -> "the session is no longer valid"
 
 -- | What the browser is redirected back with.
 data IssuedCode = IssuedCode
@@ -128,7 +144,8 @@ authorize ::
   ( OAuthCodeStore :> es,
     TokenGen :> es,
     AuthEventPublisher :> es,
-    Clock :> es
+    Clock :> es,
+    SessionStore :> es
   ) =>
   ShomeiConfig ->
   OAuthClient ->
@@ -136,10 +153,18 @@ authorize ::
   AuthorizeParams ->
   Eff es (Either AuthorizeError IssuedCode)
 authorize cfg client claims params = runErrorNoCallStack do
+  -- A code becomes a fresh, refreshable, fully enriched session. Only a token that is itself a
+  -- live interactive login may mint one, regardless of the deployment's sessionCheckMode.
+  when (isJust claims.actor) (throwError (AuthorizeLoginRequired NonInteractiveCredential))
+  ts <- now
+  session <-
+    either (const (throwError (AuthorizeLoginRequired SessionNotLive))) pure
+      =<< requireLiveSession ts claims.sessionId
+  unless ((session ^. #kind) == InteractiveSession) $
+    throwError (AuthorizeLoginRequired NonInteractiveCredential)
   unless (params.responseType == Just "code") (throwError UnsupportedResponseType)
   challenge <- resolvePkce
   granted <- resolveScopes
-  ts <- now
   -- The refresh-token generator is the codebase's single CSPRNG opaque-token source (32 bytes,
   -- base64url). A code is the same kind of secret with a shorter life.
   RefreshToken code <- generateOpaqueToken

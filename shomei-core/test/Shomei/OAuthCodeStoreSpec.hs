@@ -21,11 +21,10 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
-import Data.UUID qualified as UUID
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
-import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText, sessionIdFromUUID)
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genUserId, idText)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store
   ( consumeAuthorizationCode,
@@ -42,6 +41,8 @@ import Shomei.OAuth.Authorize.Workflow
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..), OAuthClient (..))
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
+import Shomei.Session.Store (createSession)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -84,10 +85,6 @@ t0 = UTCTime (fromGregorian 2026 7 10) 0
 cfg :: ShomeiConfig
 cfg = defaultShomeiConfig (Issuer "https://shomei.test") (Audience "shomei-clients")
 
--- | 'authorize' never reads the session id, but 'AuthClaims' is strict, so it must be a real one.
-someSessionId :: SessionId
-someSessionId = sessionIdFromUUID (UUID.fromWords 0 0 0 3)
-
 newWorld :: IO (IORef World)
 newWorld = newIORef (emptyWorld t0)
 
@@ -119,11 +116,11 @@ baseParams =
 
 -- | Claims for a user who authenticated an hour before the request reached authorize, so a test
 -- can tell @auth_time@ (the token's @iat@) from "now".
-claimsFor :: UserId -> AuthClaims
-claimsFor uid =
+claimsFor :: UserId -> SessionId -> AuthClaims
+claimsFor uid sid =
   AuthClaims
     { subject = uid,
-      sessionId = someSessionId,
+      sessionId = sid,
       issuer = Issuer "https://shomei.test",
       audience = Audience "shomei-clients",
       issuedAt = addUTCTime (-3600) t0,
@@ -202,6 +199,16 @@ runAuthorize clientType params = do
   ref <- newWorld
   result <- runInMemory ref do
     uid <- genUserId
+    session <-
+      createSession
+        NewSession
+          { userId = uid,
+            createdAt = t0,
+            expiresAt = addUTCTime 3600 t0,
+            actor = Nothing,
+            oauthClientId = Nothing,
+            kind = InteractiveSession
+          }
     ocid <- genOAuthClientId
     client <-
       createOAuthClient
@@ -217,7 +224,7 @@ runAuthorize clientType params = do
             allowedScopes = allowed,
             createdAt = t0
           }
-    authorize cfg client (claimsFor uid) params
+    authorize cfg client (claimsFor uid session.sessionId) params
   world <- readIORef ref
   pure (result, world)
 

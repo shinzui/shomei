@@ -83,7 +83,7 @@ import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPer
 import Shomei.Authorization.Role.Workflow (grantRoleTo, revokeRoleFrom)
 import Shomei.Config (ImpersonationConfig (..), NotifierConfig (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), TokenTransport (..), TotpConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, InternalAuthError))
-import Shomei.Id (UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..))
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
@@ -379,6 +379,12 @@ mkTokenFor :: JWK -> ShomeiConfig -> UserId -> Set.Set Role -> Set.Set Scope -> 
 mkTokenFor jwk cfg uid roles scopes actor = do
   sid <- genSessionId
   t <- getCurrentTime
+  mkTokenForSession jwk cfg uid sid roles scopes actor t
+
+-- | Sign claims for an existing session at a caller-selected issuance time. Provenance and
+-- session-liveness scenarios use this helper so a hand-minted token still names a real login.
+mkTokenForSession :: JWK -> ShomeiConfig -> UserId -> SessionId -> Set.Set Role -> Set.Set Scope -> Maybe UserId -> UTCTime -> IO Text
+mkTokenForSession jwk cfg uid sid roles scopes actor t = do
   let claims =
         AuthClaims
           { subject = uid,
@@ -498,6 +504,14 @@ main = do
         gateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcgate" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
         noGateId <- seedExchangeAccount r jwk jwkset cfg t0 "svcnogate" (Set.singleton ingestScope)
         pure (gateId, noGateId, mkEnv r)
+      -- Plan 51: OIDC on, a login URL configured (so a wrongful bounce is visible as a 302),
+      -- both OAuth clients, and a service account holding the token-exchange gate scope.
+      freshProvenanceEnv = do
+        r <- newIORef (emptyWorld t0)
+        let c = oidcCfg {oauthConfig = oidcCfg.oauthConfig {loginUrl = Just "https://host.test/login"}}
+        (confId, pubId) <- seedOAuthClients r jwk jwkset c t0
+        svcId <- seedExchangeAccount r jwk jwkset c t0 "svcprov" (Set.fromList [ingestScope, tokenExchangeSubjectScope])
+        pure (r, confId, pubId, svcId, mkEnvWith c r)
       -- EP-7: TOTP enabled, over its own World. The World ref comes back so the scenario can
       -- read (and advance) the deterministic clock to move TOTP time-step counters forward.
       totpCfg = cfg {totpConfig = cfg.totpConfig {totpEnabled = True}}
@@ -509,7 +523,7 @@ main = do
   impToken <- mkImpersonatorToken jwk cfg t0
   -- An operator token issued well before the freshness window opens, for the stale-actor refusal.
   staleImpToken <- mkImpersonatorToken jwk cfg (addUTCTime (negate 1000) t0)
-  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken)
+  defaultMain (tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken impToken staleImpToken)
 
 seedServiceUser :: IORef World -> JWK -> JWKSet -> ShomeiConfig -> IO User
 seedServiceUser ref jwk jwkset cfg = do
@@ -1201,6 +1215,9 @@ putRaw mgr port path hdrs = do
 
 type RawResponse = (Int, [Header], Maybe Value)
 
+statusOf :: RawResponse -> Int
+statusOf (status, _, _) = status
+
 headersOf :: RawResponse -> [Header]
 headersOf (_, h, _) = h
 
@@ -1334,8 +1351,8 @@ scenarioDefaultModeIgnoresSessionStore ref port = do
   (afterStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access)
   afterStatus @?= 200
 
-tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Env) -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
-tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshTotpEnv jwk cfg adminToken impToken staleImpToken =
+tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO (IORef World, Env) -> IO Env -> IO Env -> IO (Text, Env) -> IO Env -> (Maybe Text -> IO (IORef World, Text, Text, Env)) -> IO (IORef World, Text, Text, Env) -> IO (IORef World, Env) -> IO (Text, Text, Env) -> IO (IORef World, Text, Text, Text, Env) -> IO (IORef World, Env) -> UTCTime -> JWK -> ShomeiConfig -> Text -> Text -> Text -> TestTree
+tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken impToken staleImpToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
     [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
@@ -1412,6 +1429,12 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "GET /oauth/authorize: an authenticated request yields a code; parameter errors redirect with the state" $ do
         (r, confId, pubId, e) <- freshAuthorizeEnv Nothing
         testWithApplication (pure (app e)) (scenarioAuthorizeIssuesCode r confId pubId),
+      testCase "an impersonation token cannot be laundered into a user session through authorize + code exchange" $ do
+        (r, _, pubId, _, e) <- freshProvenanceEnv
+        testWithApplication (pure (app e)) (scenarioNoLaunderingThroughAuthorize r jwk cfg t0 pubId),
+      testCase "GET /oauth/authorize accepts only a live interactive session" $ do
+        (r, confId, pubId, svcId, e) <- freshProvenanceEnv
+        testWithApplication (pure (app e)) (scenarioAuthorizeProvenance r jwk cfg t0 confId pubId svcId),
       testCase "GET /oauth/authorize: token-and-session mode treats a revoked session as unauthenticated" $ do
         (r, confId, _, e) <- freshSessionAuthorizeEnv
         testWithApplication (pure (app e)) (scenarioAuthorizeRejectsRevokedSession r confId),
@@ -1615,6 +1638,170 @@ signupTokenAndId mgr port loginId = do
   tok <- must "signup accessToken" (dig ["token", "accessToken"] resp >>= asText)
   uid <- must "signup userId" (dig ["user", "userId"] resp >>= asText)
   pure (tok, uid)
+
+-- | Sign up a principal and recover the typed user and session ids named by its real access
+-- token. Hand-minted scoped tokens in the provenance scenarios remain bound to this live session.
+signupPrincipal :: Manager -> Int -> JWK -> Text -> IO (Text, UserId, SessionId)
+signupPrincipal mgr port jwk loginId = do
+  (token, uidText) <- signupTokenAndId mgr port loginId
+  uid <- parseUserId uidText
+  claims <- verifyIdToken jwk token
+  sidText <- case KM.lookup "sid" claims of
+    Just (String sid) -> pure sid
+    other -> assertFailure ("signup access token has no text sid claim: " <> show other)
+  sid <- either (assertFailure . ("bad session id " <>) . show) pure (parseId sidText)
+  pure (token, uid, sid)
+
+-- | The exact critical chain from the August 2026 review: an operator impersonates a target and
+-- presents that delegated token at authorize. Before plan 51 this response is a 302 carrying a
+-- code; after the fix it is a non-redirecting 401 and the code store remains empty.
+scenarioNoLaunderingThroughAuthorize :: IORef World -> JWK -> ShomeiConfig -> UTCTime -> Text -> Int -> IO ()
+scenarioNoLaunderingThroughAuthorize ref jwk cfg issuedAt pubId port = do
+  mgr <- newManager defaultManagerSettings
+  (_, targetUid, _) <- signupPrincipal mgr port jwk "provenance-target"
+  defineRoleIn ref (Role "support-viewer")
+  grantRoleIn ref (idText targetUid) (Role "support-viewer")
+  (_, operatorUid, operatorSid) <- signupPrincipal mgr port jwk "provenance-operator"
+  operatorToken <-
+    mkTokenForSession
+      jwk
+      cfg
+      operatorUid
+      operatorSid
+      Set.empty
+      (Set.singleton cfg.impersonationConfig.impersonateScope)
+      Nothing
+      issuedAt
+  let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+      accessType = "urn:ietf:params:oauth:token-type:access_token"
+      verifier = "provenance-verifier-with-enough-entropy-1234567890" :: Text
+  exchange <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ teGrant,
+        ("subject_token", Text.encodeUtf8 (idText targetUid)),
+        ("subject_token_type", "urn:shomei:params:oauth:token-type:user-id"),
+        ("actor_token", Text.encodeUtf8 operatorToken),
+        ("actor_token_type", accessType),
+        ("reason", "security regression")
+      ]
+  statusOf exchange @?= 200
+  exchangeBody <- must "impersonation exchange body" (bodyOf exchange)
+  delegated <- must "impersonation access_token" (dig ["access_token"] exchangeBody >>= asText)
+  delegatedClaims <- verifyIdToken jwk delegated
+  assertBool "the exchanged token is delegated" (isJust (KM.lookup "act" delegatedClaims))
+  dig ["roles"] (Object delegatedClaims) @?= Just (toJSON ([] :: [Text]))
+
+  let params =
+        [ ("client_id", pubId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid"),
+          ("code_challenge", pkceChallengeFor verifier),
+          ("code_challenge_method", "S256")
+        ]
+  response <- getNoRedirect mgr port (authorizeUrl params) (bearer delegated)
+  assertOAuthError "delegated bearer at authorize" 401 "login_required" response
+  headerValue "Location" (headersOf response) @?= Nothing
+  Map.size . oauthCodes <$> readIORef ref >>= (@?= 0)
+
+-- | A compact provenance matrix: an interactive session succeeds once; machine, on-behalf-of,
+-- impersonation, and explicit @act@ credentials are refused; revoking the interactive session
+-- makes the same token unauthenticated even under the default VerifyTokenOnly mode.
+scenarioAuthorizeProvenance :: IORef World -> JWK -> ShomeiConfig -> UTCTime -> Text -> Text -> Text -> Int -> IO ()
+scenarioAuthorizeProvenance ref jwk cfg issuedAt confId pubId svcId port = do
+  mgr <- newManager defaultManagerSettings
+  (userToken, userUid, _) <- signupPrincipal mgr port jwk "provenance-user"
+  let verifier = "matrix-verifier-with-enough-entropy-123456789012345" :: Text
+      interactiveParams =
+        [ ("client_id", confId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid")
+        ]
+      nonInteractiveParams =
+        [ ("client_id", pubId),
+          ("response_type", "code"),
+          ("redirect_uri", authorizeRedirectUri),
+          ("scope", "openid"),
+          ("code_challenge", pkceChallengeFor verifier),
+          ("code_challenge_method", "S256")
+        ]
+      refuse what token = do
+        response <- getNoRedirect mgr port (authorizeUrl nonInteractiveParams) (bearer token)
+        assertOAuthError what 401 "login_required" response
+        headerValue "Location" (headersOf response) @?= Nothing
+
+  interactive <- getNoRedirect mgr port (authorizeUrl interactiveParams) (bearer userToken)
+  statusOf interactive @?= 302
+  (_, interactiveQuery) <- locationOf "interactive authorize" interactive
+  assertBool "an interactive session receives a code" (isJust (lookup "code" interactiveQuery))
+  Map.size . oauthCodes <$> readIORef ref >>= (@?= 1)
+
+  machineResponse <-
+    postForm mgr port "/oauth/token" (Just (svcId, oauthClientSecret)) [("grant_type", "client_credentials")]
+  statusOf machineResponse @?= 200
+  machineBody <- must "client_credentials body" (bodyOf machineResponse)
+  machineToken <- must "client_credentials access_token" (dig ["access_token"] machineBody >>= asText)
+  refuse "client_credentials bearer at authorize" machineToken
+
+  onBehalfResponse <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      (Just (svcId, oauthClientSecret))
+      [ ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        ("subject_token", Text.encodeUtf8 userToken),
+        ("subject_token_type", "urn:ietf:params:oauth:token-type:access_token"),
+        ("scope", "kawa:ingest")
+      ]
+  statusOf onBehalfResponse @?= 200
+  onBehalfBody <- must "on-behalf exchange body" (bodyOf onBehalfResponse)
+  onBehalfToken <- must "on-behalf access_token" (dig ["access_token"] onBehalfBody >>= asText)
+  refuse "on-behalf bearer at authorize" onBehalfToken
+
+  (_, operatorUid, operatorSid) <- signupPrincipal mgr port jwk "provenance-matrix-operator"
+  operatorToken <-
+    mkTokenForSession
+      jwk
+      cfg
+      operatorUid
+      operatorSid
+      Set.empty
+      (Set.singleton cfg.impersonationConfig.impersonateScope)
+      Nothing
+      issuedAt
+  impersonationResponse <-
+    postForm
+      mgr
+      port
+      "/oauth/token"
+      Nothing
+      [ ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        ("subject_token", Text.encodeUtf8 (idText userUid)),
+        ("subject_token_type", "urn:shomei:params:oauth:token-type:user-id"),
+        ("actor_token", Text.encodeUtf8 operatorToken),
+        ("actor_token_type", "urn:ietf:params:oauth:token-type:access_token")
+      ]
+  statusOf impersonationResponse @?= 200
+  impersonationBody <- must "impersonation matrix body" (bodyOf impersonationResponse)
+  impersonationToken <- must "impersonation matrix access_token" (dig ["access_token"] impersonationBody >>= asText)
+  refuse "impersonation bearer at authorize" impersonationToken
+
+  explicitActor <- mkTokenFor jwk cfg userUid Set.empty Set.empty (Just operatorUid)
+  refuse "explicit act bearer at authorize" explicitActor
+
+  revokeAllSessionsOf ref (idText userUid)
+  revoked <- getNoRedirect mgr port (authorizeUrl interactiveParams) (bearer userToken)
+  statusOf revoked @?= 302
+  (loginBase, loginQuery) <- locationOf "revoked interactive authorize" revoked
+  loginBase @?= "https://host.test/login"
+  assertBool "a dead session redirect carries no authorization code" (isNothing (lookup "code" loginQuery))
+  Map.size . oauthCodes <$> readIORef ref >>= (@?= 1)
 
 -- | EP-6: the RFC 8693 token-exchange grant end to end, over the real Servant tree — both modes and
 -- every wire refusal.

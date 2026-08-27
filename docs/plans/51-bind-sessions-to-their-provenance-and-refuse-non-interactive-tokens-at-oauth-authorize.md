@@ -68,10 +68,10 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 - [x] (2026-08-27 13:57Z) M1: migration `0029-sessions-kind.sql` allocated with `just new-migration sessions-kind`; 29-entry manifest check green
 - [x] (2026-08-27 13:57Z) M1: every `NewSession {` construction site names its kind (four production sites, seven original `shomei-postgres` test sites); PostgreSQL round-trip tests cover all three kinds and NULL-reads-as-interactive
 - [x] (2026-08-27 13:57Z) M1: `cabal build all --enable-tests` and `cabal test shomei-core shomei-postgres` green (228 core tests, 58 PostgreSQL tests); committed
-- [ ] M2: servant scenarios `scenarioNoLaunderingThroughAuthorize` and `scenarioAuthorizeProvenance` written first and run against pre-fix code; the 302-versus-401 failure transcript recorded in Surprises & Discoveries
-- [ ] M2: `requireLiveSession` in `Shomei.Session.Workflow`; `AuthorizeLoginRequired` in `Shomei.OAuth.Authorize.Workflow`; `authorize` refuses `act`, non-interactive kinds, and dead sessions
-- [ ] M2: `oauthAuthorizeH` answers `401 login_required` with no redirect for a non-interactive credential and treats a dead session as unauthenticated
-- [ ] M2: core `Shomei.OAuth.Authorize.WorkflowSpec` (impersonation, on-behalf-of, client_credentials, `act`, revoked, unknown session refused; interactive accepted); `OAuthCodeStoreSpec.runAuthorize` seeds a session; both servant scenarios green; committed
+- [x] (2026-08-27 14:07Z) M2: servant scenarios `scenarioNoLaunderingThroughAuthorize` and `scenarioAuthorizeProvenance` written first and run against pre-fix code; the 302-versus-401 failure transcript recorded in Surprises & Discoveries
+- [x] (2026-08-27 14:07Z) M2: `requireLiveSession` in `Shomei.Session.Workflow`; `AuthorizeLoginRequired` in `Shomei.OAuth.Authorize.Workflow`; `authorize` refuses `act`, non-interactive kinds, and dead sessions
+- [x] (2026-08-27 14:07Z) M2: `oauthAuthorizeH` answers `401 login_required` with no redirect for a non-interactive credential and treats a dead session as unauthenticated
+- [x] (2026-08-27 14:07Z) M2: core `Shomei.OAuth.Authorize.WorkflowSpec` covers interactive, machine, delegated, `act`, revoked, expired, and unknown sessions; `OAuthCodeStoreSpec.runAuthorize` seeds a session; 236 core tests and 37 servant scenarios green; committed
 - [ ] M3: `verifyTokenWith` in `Shomei.Session.Authentication.Workflow`; token exchange verifies subject and actor tokens with `VerifyTokenAndSession`; `startImpersonation` requires a live operator session and an active operator
 - [ ] M3: `exchangeAuthorizationCode` calls `ensureEmailVerified`; new `Shomei.OAuth.TokenGrant.WorkflowSpec`
 - [ ] M3: fixtures that hand-mint tokens now bind them to real sessions (core `TokenExchange.WorkflowSpec`, core `Delegation.WorkflowSpec`, servant `Main.hs`, server `E2ESpec.hs`); new refusal tests; `scenarioExchangeRequiresLiveSessions`; committed
@@ -82,7 +82,24 @@ an authorization grant conferred, the reserved privilege-scope list, and ownersh
 
 ## Surprises & Discoveries
 
-(None yet.)
+- Observation: The two servant regressions fail on the M1 commit at exactly the reviewed seam,
+  while all 35 pre-existing end-to-end cases remain green.
+  Evidence: `cabal test shomei-servant` on 2026-08-27 reported
+
+  ```text
+  an impersonation token cannot be laundered into a user session through authorize + code exchange: FAIL
+    delegated bearer at authorize: status
+    expected: 401
+     but got: 302
+  GET /oauth/authorize accepts only a live interactive session: FAIL
+    client_credentials bearer at authorize: status
+    expected: 401
+     but got: 302
+  ```
+
+  The 302 is a redirect to the registered client carrying a newly minted authorization code,
+  proving that both a delegated credential and a machine credential reach the vulnerable code
+  mint rather than merely failing elsewhere in the test setup.
 
 
 ## Decision Log

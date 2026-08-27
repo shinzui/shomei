@@ -105,7 +105,7 @@ oidcDiscoveryValueH env
 
 -- | @GET \/oauth\/authorize@ (EP-5): the authorization-code flow's browser leg (RFC 6749 §4.1).
 --
--- __The order of the four steps below is the security property__, not a style choice.
+-- __The order of the five steps below is the security property__, not a style choice.
 --
 --   1. Resolve @client_id@ to an /active/ client and require @redirect_uri@ to be one of its
 --      registered URIs, compared byte for byte. Either failing is @400@ with __no redirect__: a
@@ -123,7 +123,10 @@ oidcDiscoveryValueH env
 --      user back to somewhere else. With no @loginUrl@ configured, @401@ with an OAuth error body.
 --      Shōmei persists no pending-authorize state: it all round-trips in that URL.
 --
---   4. Authenticated: run the workflow and redirect with @code@, @state@, and @iss@.
+--   4. An authenticated but non-interactive credential (machine, delegated, or carrying @act@)
+--      is refused with @401 login_required@ and no redirect.
+--
+--   5. A live interactive session runs the workflow and redirects with @code@, @state@, and @iss@.
 oauthAuthorizeH ::
   Env ->
   Maybe Text ->
@@ -164,14 +167,21 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
   -- (3) Authenticate before running the workflow, so a request that is going to bounce to the
   -- login page never mints a code. The parameter errors in (2) are still reported first when they
   -- apply to an authenticated caller, because the workflow raises them.
+  let loginRequired = case env.config.oauthConfig.loginUrl of
+        Just loginUrl -> redirectTo (loginUrl `withQuery` [("return_to", TE.encodeUtf8 (reconstructedAuthorizeUrl params clientId))])
+        Nothing -> throwError (OAuth.oauthError status401 "login_required" "no authenticated user and no login URL is configured")
   mUser <- liftIO (resolveAuthUser env mAuthHeader mCookie)
   case mUser of
-    Nothing -> case env.config.oauthConfig.loginUrl of
-      Just loginUrl -> redirectTo (loginUrl `withQuery` [("return_to", TE.encodeUtf8 (reconstructedAuthorizeUrl params clientId))])
-      Nothing -> throwError (OAuth.oauthError status401 "login_required" "no authenticated user and no login URL is configured")
+    Nothing -> loginRequired
+    -- Defense in depth: the workflow repeats this rule for library callers, while the handler
+    -- refuses an explicit actor without spending a session-store read.
+    Just user | isJust user.authClaims.actor -> throwError notInteractive
     Just user -> do
       outcome <- runOAuthPort env (OAuthAuthorize.authorize env.config client user.authClaims params)
       case outcome of
+        Left (OAuthAuthorize.AuthorizeLoginRequired OAuthAuthorize.NonInteractiveCredential) ->
+          throwError notInteractive
+        Left (OAuthAuthorize.AuthorizeLoginRequired OAuthAuthorize.SessionNotLive) -> loginRequired
         -- (2) The redirect regime: the client learns what it did wrong, at a URI we validated.
         Left e ->
           redirectTo
@@ -192,6 +202,9 @@ oauthAuthorizeH env mAuthHeader mCookie mResponseType mClientId mRedirectUri mSc
                             )
             )
   where
+    notInteractive =
+      OAuth.oauthError status401 "login_required" "an interactive login session is required to authorize a client"
+
     providerDisabled =
       OAuth.oauthError status404 "not_found" "the OIDC provider is not enabled on this deployment"
 
