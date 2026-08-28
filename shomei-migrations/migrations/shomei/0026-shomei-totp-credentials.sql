@@ -1,4 +1,4 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- A user's TOTP (RFC 6238) second-factor credential (EP-7). One per user (UNIQUE (user_id)):
 -- re-enrolling while an unconfirmed row exists replaces it; enrolling over a confirmed row is
@@ -16,9 +16,9 @@ SET search_path TO shomei, pg_catalog;
 --
 -- confirmed_at NULL marks an enrollment that has not yet been activated with a first valid code;
 -- rows older than the enrollment TTL with NULL confirmed_at are treated as absent and replaced.
-CREATE TABLE IF NOT EXISTS shomei_totp_credentials (
+CREATE TABLE IF NOT EXISTS shomei.shomei_totp_credentials (
   totp_credential_id uuid        PRIMARY KEY,
-  user_id            uuid        NOT NULL UNIQUE REFERENCES shomei_users(user_id),
+  user_id            uuid        NOT NULL UNIQUE REFERENCES shomei.shomei_users(user_id),
   secret_enc         bytea       NOT NULL,
   last_used_counter  bigint      NULL,
   confirmed_at       timestamptz NULL,

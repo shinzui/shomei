@@ -1,4 +1,4 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- Database-backed service accounts: machine credentials an operator creates, rotates, and
 -- revokes at runtime, replacing the static config-defined accounts that required a redeploy.
@@ -21,10 +21,10 @@ SET search_path TO shomei, pg_catalog;
 --
 -- status is 'active' or 'revoked'. A revoked account keeps its row so audit events that name it
 -- still resolve.
-CREATE TABLE IF NOT EXISTS shomei_service_accounts (
+CREATE TABLE IF NOT EXISTS shomei.shomei_service_accounts (
   service_account_id uuid        PRIMARY KEY,
   client_id          text        NOT NULL UNIQUE,
-  user_id            uuid        NOT NULL REFERENCES shomei_users(user_id),
+  user_id            uuid        NOT NULL REFERENCES shomei.shomei_users(user_id),
   secret_hash        text        NOT NULL,
   display_name       text        NOT NULL,
   allowed_scopes     jsonb       NOT NULL,
@@ -35,4 +35,4 @@ CREATE TABLE IF NOT EXISTS shomei_service_accounts (
 );
 
 CREATE INDEX IF NOT EXISTS shomei_service_accounts_user_id_idx
-  ON shomei_service_accounts (user_id);
+  ON shomei.shomei_service_accounts (user_id);

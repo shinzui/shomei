@@ -1,8 +1,8 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
-CREATE TABLE IF NOT EXISTS shomei_webauthn_credentials (
+CREATE TABLE IF NOT EXISTS shomei.shomei_webauthn_credentials (
   passkey_id    uuid PRIMARY KEY,
-  user_id       uuid NOT NULL REFERENCES shomei_users(user_id),
+  user_id       uuid NOT NULL REFERENCES shomei.shomei_users(user_id),
   credential_id bytea NOT NULL UNIQUE,
   user_handle   bytea NOT NULL,
   public_key    bytea NOT NULL,
@@ -14,6 +14,6 @@ CREATE TABLE IF NOT EXISTS shomei_webauthn_credentials (
 );
 
 CREATE INDEX IF NOT EXISTS shomei_webauthn_credentials_user_id_idx
-  ON shomei_webauthn_credentials (user_id);
+  ON shomei.shomei_webauthn_credentials (user_id);
 CREATE INDEX IF NOT EXISTS shomei_webauthn_credentials_user_handle_idx
-  ON shomei_webauthn_credentials (user_handle);
+  ON shomei.shomei_webauthn_credentials (user_handle);

@@ -1,6 +1,6 @@
 -- sessions-kind
 
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- How the session was established: 'interactive' (a human proved a credential, or exchanged an
 -- authorization code that an interactive session authorized), 'machine' (client_credentials), or
@@ -15,5 +15,5 @@ SET search_path TO shomei, pg_catalog;
 -- The column exists so GET /oauth/authorize can refuse to mint an authorization code for anything
 -- but an interactive session. A code becomes a brand-new, refreshable, fully privileged session;
 -- a machine or delegated credential must not be able to obtain one (plan 51).
-ALTER TABLE shomei_sessions
+ALTER TABLE shomei.shomei_sessions
   ADD COLUMN IF NOT EXISTS kind text NULL DEFAULT 'interactive';

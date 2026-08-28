@@ -44,11 +44,12 @@ append-only compatibility strategy.
 
 ## Progress
 
-- [ ] Milestone 1 — add a composed pg-migrate regression test that reproduces Shōmei leaking its
-      session search path into a later host component, and record the expected pre-fix failure.
-- [ ] Milestone 2 — rewrite all 36 pre-adoption SQL files so Shōmei objects are schema-qualified
-      and every transactional lookup-path change is transaction-local; make the regression and
-      existing PostgreSQL suites pass.
+- [x] (2026-08-27 19:59 PDT) Milestone 1 — added a composed pg-migrate regression test that
+      reproduces Shōmei leaking its session search path into a later host component and recorded
+      the expected pre-fix failure.
+- [x] (2026-08-27 20:01 PDT) Milestone 2 — rewrote all 36 pre-adoption SQL files so Shōmei objects
+      are schema-qualified and every transactional lookup-path change is transaction-local; the
+      regression and existing PostgreSQL suites pass.
 - [ ] Milestone 3 — enforce the policy for future migrations through the authoring recipe, a
       source-policy check, CI, user documentation, and a profile-governed ADR.
 - [ ] Milestone 4 — run the full build, test, formatting, manifest, ADR, and Nix validation gates;
@@ -84,6 +85,19 @@ append-only compatibility strategy.
   also use the legacy session-scoped search path, so the rewrite and regression must cover them.
   Evidence: `wc -l shomei-migrations/migrations/shomei/manifest` printed `36`, and the baseline
   search reported the legacy header in all three new files.
+
+- Observation: The composed regression fails at the intended component boundary before the SQL
+  rewrite. Evidence: `cabal test shomei-migrations-test --test-show-details=direct` reported
+  `MigratedDatabaseMigrationFailed (DatabaseSessionFailed ... ServerError "42P01" "relation
+  \"host_probe\" does not exist")` for `host-after`'s unqualified insert. This proves Shōmei's
+  final ordinary `SET` replaced the host component's lookup path on the shared migration
+  connection.
+
+- Observation: The same hostile plan passes after every migration uses the transaction-local
+  header and qualified relations. Evidence: `shomei-migrations-test` passed its one real-PostgreSQL
+  composition case in 0.86 seconds, while `shomei-postgres-test` passed all 76 persistence cases in
+  14.01 seconds. The legacy-header search, missing-header search, and unqualified-relation grammar
+  scan all produced no matches.
 
 
 ## Decision Log

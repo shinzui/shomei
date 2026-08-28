@@ -1,4 +1,4 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- The OAuth client that minted this session, for sessions created by the authorization-code grant.
 --
@@ -14,5 +14,5 @@ SET search_path TO shomei, pg_catalog;
 -- Deliberately a plain text client_id rather than a foreign key into shomei_oauth_clients: a
 -- revoked and re-registered client must never inherit the sessions of its namesake, and the
 -- sessions of a deleted client row must not block its deletion.
-ALTER TABLE shomei_sessions
+ALTER TABLE shomei.shomei_sessions
   ADD COLUMN IF NOT EXISTS oauth_client_id text NULL;

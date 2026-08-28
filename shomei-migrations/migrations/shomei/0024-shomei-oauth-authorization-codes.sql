@@ -1,4 +1,4 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- Single-use OAuth2 authorization codes (RFC 6749 §4.1), issued by GET /oauth/authorize and
 -- exchanged at POST /oauth/token.
@@ -27,11 +27,11 @@ SET search_path TO shomei, pg_catalog;
 -- The row is kept rather than deleted, so a replay is distinguishable from an unknown code by
 -- anyone reading the table (both answer invalid_grant on the wire), and so the sweeper is the
 -- single deleter.
-CREATE TABLE IF NOT EXISTS shomei_oauth_authorization_codes (
+CREATE TABLE IF NOT EXISTS shomei.shomei_oauth_authorization_codes (
   code_hash       text        PRIMARY KEY,
   client_id       text        NOT NULL,
   redirect_uri    text        NOT NULL,
-  user_id         uuid        NOT NULL REFERENCES shomei_users(user_id),
+  user_id         uuid        NOT NULL REFERENCES shomei.shomei_users(user_id),
   scopes          jsonb       NOT NULL,
   nonce           text        NULL,
   code_challenge  text        NULL,
@@ -44,4 +44,4 @@ CREATE TABLE IF NOT EXISTS shomei_oauth_authorization_codes (
 -- The sweeper deletes by expiry; codes live 60 seconds by default, so this table is small and
 -- churns fast.
 CREATE INDEX IF NOT EXISTS shomei_oauth_authorization_codes_expires_at_idx
-  ON shomei_oauth_authorization_codes (expires_at);
+  ON shomei.shomei_oauth_authorization_codes (expires_at);

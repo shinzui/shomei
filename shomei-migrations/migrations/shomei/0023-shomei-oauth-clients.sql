@@ -1,4 +1,4 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
 -- OAuth2 / OIDC clients: the relying parties that drive the authorization-code flow.
 --
@@ -25,7 +25,7 @@ SET search_path TO shomei, pg_catalog;
 --
 -- Unlike a service account, an oauth client has NO backing shomei_users row: it is never a token
 -- subject. The user it acts for is the one who authenticated at /oauth/authorize.
-CREATE TABLE IF NOT EXISTS shomei_oauth_clients (
+CREATE TABLE IF NOT EXISTS shomei.shomei_oauth_clients (
   oauth_client_id uuid        PRIMARY KEY,
   client_id       text        NOT NULL UNIQUE,
   secret_hash     text        NULL,

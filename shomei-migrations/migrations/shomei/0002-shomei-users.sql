@@ -1,6 +1,6 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
-CREATE TABLE IF NOT EXISTS shomei_users (
+CREATE TABLE IF NOT EXISTS shomei.shomei_users (
   user_id      uuid PRIMARY KEY,
   email        text NOT NULL UNIQUE,
   display_name text NULL,

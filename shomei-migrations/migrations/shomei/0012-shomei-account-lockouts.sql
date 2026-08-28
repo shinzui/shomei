@@ -1,6 +1,6 @@
-SET search_path TO shomei, pg_catalog;
+SET LOCAL search_path = pg_catalog, pg_temp;
 
-CREATE TABLE IF NOT EXISTS shomei_account_lockouts (
+CREATE TABLE IF NOT EXISTS shomei.shomei_account_lockouts (
   account_key  text PRIMARY KEY,
   failed_count int NOT NULL,
   locked_until timestamptz NULL,
@@ -8,4 +8,4 @@ CREATE TABLE IF NOT EXISTS shomei_account_lockouts (
 );
 
 CREATE INDEX IF NOT EXISTS shomei_account_lockouts_locked_until_idx
-  ON shomei_account_lockouts (locked_until);
+  ON shomei.shomei_account_lockouts (locked_until);
