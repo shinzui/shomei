@@ -11,6 +11,36 @@ project-level roundup of what shipped together.
 
 ## Unreleased
 
+## 2026-08-27 — second Hackage release
+
+Every package moved to `0.2.0.0`. Five were published:
+
+| package | version | notes |
+| --- | --- | --- |
+| [`shomei-core`](shomei-core/CHANGELOG.md) | 0.2.0.0 | redacted token types, secret-free config, atomic ports, session provenance |
+| [`shomei-migrations`](shomei-migrations/CHANGELOG.md) | 0.2.0.0 | schema-qualified history (**checksums changed**), status `CHECK`s, one-active-signing-key index |
+| [`shomei-jwt`](shomei-jwt/CHANGELOG.md) | 0.2.0.0 | strict key and claim policy, `kid`-exact verification, atomic rotation |
+| [`shomei-postgres`](shomei-postgres/CHANGELOG.md) | 0.2.0.0 | statement timeouts, compare-and-swap interpreters, limiter-bound Argon2 |
+| [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.2.0.0 | `__Host-`/`__Secure-` cookie prefixes, interactive-only OAuth authorize, proxy attribution |
+
+Still not published, and still blocked by the same upstream:
+
+| package | version | blocked by |
+| --- | --- | --- |
+| `shomei-webauthn` | 0.2.0.0 | needs a Hackage `webauthn` release that builds against GHC 9.12.4, `crypton >= 1.1`, and `jose 0.13`; the build uses a fork |
+| `shomei-server` | 0.2.0.0 | depends on `shomei-webauthn` |
+| `shomei-client` | 0.2.0.0 | its library is clean, but its test-suite depends on `shomei-server` |
+
+The `jose 0.13` blocker recorded at the first release is gone — `jose` 0.13 is on Hackage and the
+git pin was dropped. The `webauthn` fork is the only remaining non-Hackage dependency.
+
+Upgrading from `0.1.0.0` is a breaking change in every package. The one that needs operator
+attention beyond a recompile is `shomei-migrations`: its published SQL was rewritten in place to
+schema-qualify every Shōmei relation, so a database that already applied the `0.1.0.0` files will
+fail `pg-migrate` checksum verification.
+
+The changes that make up this release follow.
+
 - `shomei-admin users create` no longer accepts a password in process arguments; it reads stdin
   or `--password-file`, shares the server's password/breach policy, and supports
   `--email-verified` for out-of-band bootstrap verification.

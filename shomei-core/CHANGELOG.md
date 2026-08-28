@@ -4,7 +4,7 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased (0.2.0.0)
+## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** `AccessToken`, `RefreshToken`, and `TokenPair` no longer expose generic JSON
   instances, and token `Show` output is redacted. `LoginFailedData` replaces the submitted

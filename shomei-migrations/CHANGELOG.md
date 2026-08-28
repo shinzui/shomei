@@ -4,8 +4,14 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.0 — 2026-08-27
 
+- **Breaking:** every migration in the 36-file history was rewritten to schema-qualify each Shōmei
+  relation and to use a transaction-local `SET LOCAL search_path = pg_catalog, pg_temp`, so Shōmei
+  no longer leaks session namespace state into a host application that composes other migration
+  components. The SQL bytes changed, so **`pg-migrate` checksums differ from `0.1.0.0`**: a database
+  that already applied the `0.1.0.0` files will fail checksum verification and needs an operator
+  remediation of its ledger rather than a plain upgrade.
 - Enforce one password credential per user with
   `shomei_password_credentials_user_id_key`, which also indexes password update lookups.
 - Add database `CHECK` constraints for persisted status, outcome, ceremony-kind, and OAuth-client

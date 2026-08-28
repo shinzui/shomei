@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-jwt
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:        JWT access-token signing/verification and JWKS publishing
 description:
   Interprets Shōmei's signing-key effects with jose. Signs and verifies ES256
@@ -100,7 +100,7 @@ test-suite shomei-jwt-test
     , lens         >=5.2      && <5.4
     , ram          >=0.22     && <0.23
     , shomei-core  ^>=0.2.0.0
-    , shomei-jwt   ^>=0.1.0.0
+    , shomei-jwt   ^>=0.2.0.0
     , tasty        >=1.4      && <1.6
     , tasty-hunit  >=0.10     && <0.11
     , text         >=2.0      && <2.2

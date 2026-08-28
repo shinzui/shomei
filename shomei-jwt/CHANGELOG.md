@@ -4,8 +4,9 @@ All notable changes to `shomei-jwt` are documented here. This package adheres to
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.0 — 2026-08-27
 
+- **Breaking:** requires `shomei-core ^>=0.2.0.0`.
 - **Breaking:** `toStoredSigningKey` and `toStoredSigningKeyFor` now return `Either Text
   StoredSigningKey` and refuse keys without a public projection; generated and published JWKs
   explicitly carry their signing `alg`.

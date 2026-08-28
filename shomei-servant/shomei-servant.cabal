@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-servant
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:        Servant API, handlers, and auth combinators for Shōmei
 description:
   The HTTP layer of the Shōmei authentication toolkit. Exposes ShomeiAPI as a
@@ -140,7 +140,7 @@ executable shomei-openapi
     , aeson-pretty    >=0.8      && <0.9
     , base            >=4.18     && <5
     , bytestring      >=0.11     && <0.13
-    , shomei-servant  ^>=0.1.0.0
+    , shomei-servant  ^>=0.2.0.0
 
 -- | OpenAPI 3.1 conformance (EP-27 M4): property-checks that every JSON body
 -- type's actual 'ToJSON' encoding validates against its generated 'ToSchema',
@@ -172,7 +172,7 @@ test-suite shomei-servant-openapi-test
     , servant-health        >=0.1      && <0.2
     , servant-openapi-hs    >=5.0      && <6
     , servant-server        >=0.20.3   && <0.21
-    , shomei-servant        ^>=0.1.0.0
+    , shomei-servant        ^>=0.2.0.0
     , text                  >=2.0      && <2.2
 
 test-suite shomei-servant-test
@@ -196,8 +196,8 @@ test-suite shomei-servant-test
     , servant-health    >=0.1      && <0.2
     , servant-server    >=0.20.3   && <0.21
     , shomei-core       ^>=0.2.0.0
-    , shomei-jwt        ^>=0.1.0.0
-    , shomei-servant    ^>=0.1.0.0
+    , shomei-jwt        ^>=0.2.0.0
+    , shomei-servant    ^>=0.2.0.0
     , tasty             >=1.4      && <1.6
     , tasty-hunit       >=0.10     && <0.11
     , text              >=2.0      && <2.2

@@ -4,7 +4,7 @@ All notable changes to `shomei-webauthn` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.0 — 2026-08-27
 
 Not yet published to Hackage: the library depends on a fork of `webauthn`
 that builds against GHC 9.12.4, `crypton >= 1.1`, and `jose 0.13`. Upstream

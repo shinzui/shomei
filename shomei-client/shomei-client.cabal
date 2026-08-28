@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-client
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:        Haskell client for the standalone Shōmei auth service
 description:
   A typed Haskell client derived from the same ShomeiAPI definition that
@@ -60,7 +60,7 @@ library
     , servant-client-core  >=0.20.3   && <0.21
     , servant-health       >=0.1      && <0.2
     , shomei-core          ^>=0.2.0.0
-    , shomei-servant       ^>=0.1.0.0
+    , shomei-servant       ^>=0.2.0.0
     , text                 >=2.0      && <2.2
 
 test-suite shomei-client-test
@@ -76,13 +76,13 @@ test-suite shomei-client-test
     , http-types                      >=0.12     && <0.13
     , servant-client                  >=0.20.3   && <0.21
     , servant-health                  >=0.1      && <0.2
-    , shomei-client                   ^>=0.1.0.0
+    , shomei-client                   ^>=0.2.0.0
     , shomei-core                     ^>=0.2.0.0
-    , shomei-jwt                      ^>=0.1.0.0
-    , shomei-migrations:test-support  ^>=0.1.0.0
-    , shomei-postgres                 ^>=0.1.0.0
-    , shomei-servant                  ^>=0.1.0.0
-    , shomei-server                   ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.2.0.0
+    , shomei-migrations:test-support  ^>=0.2.0.0
+    , shomei-postgres                 ^>=0.2.0.0
+    , shomei-servant                  ^>=0.2.0.0
+    , shomei-server                   ^>=0.2.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11
     , text                            >=2.0      && <2.2

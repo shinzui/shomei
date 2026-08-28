@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-postgres
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:
   PostgreSQL adapters for Shōmei's store/publisher/signing-key ports
 
@@ -117,8 +117,8 @@ test-suite shomei-postgres-test
     , hasql                           >=1.10     && <1.11
     , hasql-pool                      >=1.4      && <1.5
     , shomei-core                     ^>=0.2.0.0
-    , shomei-migrations:test-support  ^>=0.1.0.0
-    , shomei-postgres                 ^>=0.1.0.0
+    , shomei-migrations:test-support  ^>=0.2.0.0
+    , shomei-postgres                 ^>=0.2.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11
     , text                            >=2.0      && <2.2

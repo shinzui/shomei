@@ -4,8 +4,9 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.0 — 2026-08-27
 
+- **Breaking:** requires `shomei-core ^>=0.2.0.0`.
 - **Breaking:** secure cookie transport now emits and accepts `__Host-shomei_session` and
   `__Secure-shomei_refresh`, enforcing browser prefix invariants. Existing browser sessions are
   logged out once; deployments with `cookieSecure = false` retain the bare names.

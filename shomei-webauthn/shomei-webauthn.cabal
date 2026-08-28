@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-webauthn
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:
   WebAuthn (passkey) registration/authentication ceremony interpreter
 
@@ -75,7 +75,7 @@ test-suite shomei-webauthn-test
     , bytestring       >=0.11     && <0.13
     , effectful        >=2.5      && <2.8
     , shomei-core      ^>=0.2.0.0
-    , shomei-webauthn  ^>=0.1.0.0
+    , shomei-webauthn  ^>=0.2.0.0
     , tasty            >=1.4      && <1.6
     , tasty-hunit      >=0.10     && <0.11
     , text             >=2.0      && <2.2

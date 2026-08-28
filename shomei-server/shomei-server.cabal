@@ -1,6 +1,6 @@
 cabal-version:   3.0
 name:            shomei-server
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:        Standalone Shōmei authentication service
 description:
   The standalone deployment of Shōmei: a warp executable that serves ShomeiAPI
@@ -93,11 +93,11 @@ library
     , servant-health        >=0.1      && <0.2
     , servant-server        >=0.20.3   && <0.21
     , shomei-core           ^>=0.2.0.0
-    , shomei-jwt            ^>=0.1.0.0
-    , shomei-migrations     ^>=0.1.0.0
-    , shomei-postgres       ^>=0.1.0.0
-    , shomei-servant        ^>=0.1.0.0
-    , shomei-webauthn       ^>=0.1.0.0
+    , shomei-jwt            ^>=0.2.0.0
+    , shomei-migrations     ^>=0.2.0.0
+    , shomei-postgres       ^>=0.2.0.0
+    , shomei-servant        ^>=0.2.0.0
+    , shomei-webauthn       ^>=0.2.0.0
     , smtp-mail             >=0.5      && <0.6
     , stm                   >=2.5      && <2.6
     , text                  >=2.0      && <2.2
@@ -115,7 +115,7 @@ executable shomei-server
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     , base           >=4.18     && <5
-    , shomei-server  ^>=0.1.0.0
+    , shomei-server  ^>=0.2.0.0
 
 -- EP-4: the operational CLI. A second executable in this package (MasterPlan 2 default;
 -- avoids registering a new mori.dhall package). It reuses the same pool/config/key/interpreter
@@ -151,10 +151,10 @@ executable shomei-admin
     , optparse-applicative  >=0.19     && <0.20
     , pg-migrate            >=1.1      && <1.2
     , shomei-core           ^>=0.2.0.0
-    , shomei-jwt            ^>=0.1.0.0
-    , shomei-migrations     ^>=0.1.0.0
-    , shomei-postgres       ^>=0.1.0.0
-    , shomei-server         ^>=0.1.0.0
+    , shomei-jwt            ^>=0.2.0.0
+    , shomei-migrations     ^>=0.2.0.0
+    , shomei-postgres       ^>=0.2.0.0
+    , shomei-server         ^>=0.2.0.0
     , text                  >=2.0      && <2.2
     , time                  >=1.12     && <1.15
     , uuid                  >=1.3      && <1.4
@@ -173,8 +173,8 @@ test-suite shomei-server-config-test
     , directory        >=1.3      && <1.4
     , process          >=1.6      && <1.7
     , shomei-core      ^>=0.2.0.0
-    , shomei-postgres  ^>=0.1.0.0
-    , shomei-server    ^>=0.1.0.0
+    , shomei-postgres  ^>=0.2.0.0
+    , shomei-server    ^>=0.2.0.0
     , tasty            >=1.4      && <1.6
     , tasty-hunit      >=0.10     && <0.11
     , text             >=2.0      && <2.2
@@ -212,11 +212,11 @@ test-suite shomei-admin-test
     , optparse-applicative            >=0.19     && <0.20
     , ram                             >=0.22     && <0.23
     , shomei-core                     ^>=0.2.0.0
-    , shomei-jwt                      ^>=0.1.0.0
-    , shomei-migrations               ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.2.0.0
+    , shomei-migrations               ^>=0.2.0.0
     , shomei-migrations:test-support
-    , shomei-postgres                 ^>=0.1.0.0
-    , shomei-server                   ^>=0.1.0.0
+    , shomei-postgres                 ^>=0.2.0.0
+    , shomei-server                   ^>=0.2.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11
     , text                            >=2.0      && <2.2
@@ -252,11 +252,11 @@ test-suite shomei-server-test
     , servant-health                  >=0.1      && <0.2
     , servant-health:testkit
     , shomei-core                     ^>=0.2.0.0
-    , shomei-jwt                      ^>=0.1.0.0
-    , shomei-migrations:test-support  ^>=0.1.0.0
-    , shomei-postgres                 ^>=0.1.0.0
-    , shomei-servant                  ^>=0.1.0.0
-    , shomei-server                   ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.2.0.0
+    , shomei-migrations:test-support  ^>=0.2.0.0
+    , shomei-postgres                 ^>=0.2.0.0
+    , shomei-servant                  ^>=0.2.0.0
+    , shomei-server                   ^>=0.2.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11
     , text                            >=2.0      && <2.2
@@ -278,9 +278,9 @@ test-suite shomei-health-test
     , servant-health                  >=0.1      && <0.2
     , servant-health:testkit
     , shomei-core                     ^>=0.2.0.0
-    , shomei-jwt                      ^>=0.1.0.0
-    , shomei-migrations:test-support  ^>=0.1.0.0
-    , shomei-postgres                 ^>=0.1.0.0
-    , shomei-server                   ^>=0.1.0.0
+    , shomei-jwt                      ^>=0.2.0.0
+    , shomei-migrations:test-support  ^>=0.2.0.0
+    , shomei-postgres                 ^>=0.2.0.0
+    , shomei-server                   ^>=0.2.0.0
     , tasty                           >=1.4      && <1.6
     , tasty-hunit                     >=0.10     && <0.11

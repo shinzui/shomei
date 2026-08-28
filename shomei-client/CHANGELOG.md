@@ -4,7 +4,7 @@ All notable changes to `shomei-client` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.0 — 2026-08-27
 
 Not yet published to Hackage: the library itself resolves cleanly, but its
 test-suite depends on `shomei-server`, which is blocked on a Hackage release
