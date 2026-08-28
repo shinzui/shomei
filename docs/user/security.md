@@ -3,10 +3,19 @@
 This document describes the security-relevant behaviors of Shōmei and the guarantees they
 provide. It reflects the implemented code, not aspirations.
 
+Last reconciled with the code on 2026-08-27 against
+[REV-1](../reviews/project-security-and-performance-baseline.md) (reviewed commit `ee00382`), by
+[plan 60](../plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md).
+A plan that changes a behavior described here moves this line in the same commit.
+
 ## Password hashing
 
-Passwords are hashed with **Argon2id** (`crypton`, in `shomei-postgres/src/Shomei/Crypto.hs`),
-stored as `argon2id$<b64 salt>$<b64 hash>`. Verification re-derives from the stored salt and
+Passwords are hashed with **Argon2id** (`crypton`, in
+`shomei-postgres/src/Shomei/Account/Password/Hash/Postgres.hs`) and stored as a PHC-style string
+carrying its own parameters: `$argon2id$v=19$m=<KiB>,t=<iterations>,p=<lanes>$<b64 salt>$<b64
+digest>`. Only that form verifies; anything else — including the older unparameterized three-part
+form — is rejected without hashing (`verifyPasswordArgon2id`). Verification re-derives from the
+stored parameters and salt and
 compares in **constant time** (`Data.ByteArray.constEq`). Plaintext passwords cross the system
 only inside a redacting `PlainPassword` newtype (no `Show`/JSON exposure) and never appear in
 logs. The minimum-length / policy check runs before hashing.
@@ -223,10 +232,12 @@ dependency exception text.
 
 ## No account-existence leakage
 
-Login returns a single generic `401 invalid_login` for a wrong password, an unknown account, and
-a **locked** account — they are byte-for-byte identical at the boundary, and the core `login`
-workflow itself returns `InvalidCredentials` for all three so even a direct caller cannot
-distinguish them. The `verify-email/request` and `password-reset/request` endpoints always return
+Login returns a single generic `401 invalid_login` for a wrong password, an unknown account, a
+**locked** account, and a **suspended or deleted** account — byte-for-byte identical at the HTTP
+boundary. Inside the library the `login` workflow returns `InvalidCredentials` for the first three
+and `UserNotActive` for the fourth; `shomei-servant` maps both to the same problem, so only a host
+calling the workflow directly can tell a suspended account from a wrong password. The
+`verify-email/request` and `password-reset/request` endpoints always return
 `202` whether or not the email exists; the only difference (a notification side effect) is
 invisible to the requester. Built-in delivery is enqueued with one non-blocking STM transaction,
 so SMTP and webhook latency cannot turn that side effect into a seconds-wide timing oracle. The
@@ -301,9 +312,10 @@ step-up ceremony, where the password is already one factor. Setting it to `prefe
   `password_change`). Suspended-account attempts are still counted and audited. Counting is
   "failures since the most recent success", but a password that leads to an MFA challenge records
   no success: only the successful second factor clears the shared lockout.
-- **Per-IP failure throttle**: after `maxFailedLoginsPerIp` failures (default 20) from one IP the
-  next attempt returns `429`. This count does **not** reset on a successful login (so an attacker
-  cannot clear it by logging into their own account).
+- **Per-IP failure throttle**: after `maxFailedLoginsPerIp` failures (default 20) from one IP within
+  `lockoutWindow` (the same 15-minute window as the account lockout) the next attempt returns
+  `429`. A successful login does **not** reset this count (an attacker cannot clear it by logging
+  into their own account); it only ages out of the window.
 - **Per-IP request-rate limit**: an in-process token bucket (default 60 req/min, burst 60) on the
   thirteen credential-proof operations rejects over-rate requests with `429` before they reach the
   application or the database. The operation set is derived from the Servant API's `RateLimited`
@@ -378,9 +390,11 @@ otherwise-valid access token's lifetime.
   **PostgreSQL-backed** and consumed exactly once: a completion deletes the row, so a replayed or
   duplicated completion finds nothing and is rejected (`404 ceremony_not_found`). Ceremonies
   expire via a TTL (`webauthnConfig.pendingCeremonyTTL`).
-- **Signature-counter clone check.** Each stored credential keeps a signature counter; a
-  verification whose counter does not advance past the stored value signals a cloned authenticator
-  and fails closed (`401 mfa_failed`).
+- **Signature-counter clone check.** Each stored credential keeps a signature counter; an assertion
+  whose counter is not greater than the stored value signals a cloned authenticator and fails closed
+  (`401 mfa_failed`). The one exception is the specification's zero case: an authenticator reporting
+  `0` against a stored `0` does not implement counters and is accepted
+  (`shomei-webauthn/src/Shomei/Webauthn/Ceremony.hs:171`, `SignatureCounterZero`).
 - **Public keys only.** Shōmei stores only the credential's public key and metadata — never a
   private key or any reusable secret. A database leak cannot impersonate a user.
 - **No factor-failure leak.** A failed assertion returns a generic `401 mfa_failed`; the response
@@ -799,8 +813,9 @@ pull in opposite directions, and only you can resolve that. See
 - **HTTP — `GET /v1/admin/audit/events`.** The same filters as query parameters
   (`?user=&session=&type=&type=&since=&until=&limit=&before=`), returning
   `{ "events": [ … ], "nextCursor": … }`; pass `nextCursor` back as `?before=` to page. The
-  route type carries `RequireRole "admin"`, so a request with no token gets `401` and one whose
-  token lacks the role gets `403` — before the handler runs. Grant the role with
+  route type carries `RequireAdmin` — the `admin` **role** or the `shomei:admin` **scope** — so a
+  request with no token gets `401` and one whose token has neither gets `403` — before the handler
+  runs. Grant the role with
   [`shomei-admin roles grant`](#granting-roles).
 
 ### Operator runbook: investigate a suspected brute-force attempt
@@ -825,10 +840,13 @@ $ shomei-admin audit events --type login_failed --limit 5
 2026-06-17T10:00:00Z    login_failed    -    -    26629df2-1479-4867-8c5e-cca398277cb0
 ...
 
-# Did the account ultimately get locked or throttled? Pull its whole timeline.
+# Did the account get locked? Lock events carry no user id (the account may not exist), so list
+# them by type; the payload's accountKey is the SHA-256 of the login identifier.
+$ shomei-admin audit events --type account_locked --limit 5
+2026-06-17T10:05:00Z    account_locked     -           -           7c1f2f0e-…
+
+# Then pull the account's own timeline (logins, refreshes, resets) by its user id.
 $ shomei-admin audit user 019eb2eb-ac04-747e-9e70-ea4db1bd446e
-2026-06-17T10:05:00Z    account_locked     019eb2eb-…  -           …
-2026-06-17T10:04:00Z    login_failed       019eb2eb-…  -           …
 2026-06-17T10:01:00Z    login_succeeded    019eb2eb-…  019eb2ec-…  …
 
 # Feed structured rows into jq / a SIEM:

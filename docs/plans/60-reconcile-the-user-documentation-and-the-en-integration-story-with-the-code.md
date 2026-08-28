@@ -31,8 +31,8 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 
 ## Progress
 
-- [ ] M1: `security.md` reconciled (hash format and module, four collapsed login cases, account key and per-IP window, counter zero case, `RequireAdmin`, runbook transcript, stamp); `LoginAttempt/Domain.hs:21` Haddock corrected
-- [ ] M1: `security.md:199` "exactly one" left as written if EP-4 has not landed; outcome noted here
+- [x] (2026-08-27) M1: `security.md` reconciled (hash format and module, four collapsed login cases, account key and per-IP window, counter zero case, `RequireAdmin`, runbook transcript, stamp); `LoginAttempt/Domain.hs:21` Haddock corrected
+- [x] (2026-08-27) M1: EP-4 had landed; `TimingSpec` contains the locked-account hash case, so `security.md`'s "exactly one" guarantee remains accurate
 - [ ] M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; `security.md:382-385`, `:629-636` and `microservice-auth-stack/README.md` §4 fixed
 - [ ] M3: `architecture.md:21`, `README.md:53-57`, `index.md:33`, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and `docs/capabilities/log.md`, `www/README.md:12`
 - [ ] M4: `deployment.md` (pool sentence, sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, delegation-blocked list, audit route), `oidc.md:77-79` and `:95-97`, `passkeys.md:129`

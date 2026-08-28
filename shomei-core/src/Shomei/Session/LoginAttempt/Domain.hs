@@ -32,7 +32,7 @@ data AttemptFactor
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
--- | A SHA-256 (hex) of the normalized email presented at login. Opaque key for counting.
+-- | A SHA-256 (hex) of the normalized login identifier presented at login. Opaque key for counting.
 newtype AccountKey = AccountKey Text
   deriving stock (Generic)
   deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
