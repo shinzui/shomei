@@ -31,6 +31,7 @@ migration-status:
 # Validate the manifest against the SQL files on disk (syntax, membership, checksums).
 migration-check:
     cabal run -v0 shomei-migrate -- check --manifest shomei-migrations/migrations/shomei/manifest
+    scripts/check-migration-namespace-policy.sh
 
 # The slug is positional: `just new-migration name=x` passes "name=x" AS the slug and is rejected.
 # `shomei-migrate new` creates the .sql file and appends it to the manifest in one step, so
@@ -39,11 +40,26 @@ migration-check:
 # Scaffold a new migration: just new-migration add-something
 new-migration name:
     @echo "{{name}}" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "Invalid slug: {{name}}"; exit 1; }
-    @next=$(printf '%04d' $(( $(sed -n '$p' shomei-migrations/migrations/shomei/manifest | cut -c1-4 | sed 's/^0*//') + 1 ))); \
+    @manifest=shomei-migrations/migrations/shomei/manifest; \
+    next=$(printf '%04d' $(( $(sed -n '$p' "$manifest" | cut -c1-4 | sed 's/^0*//') + 1 ))); \
+    migration="shomei-migrations/migrations/shomei/$next-{{name}}.sql"; \
     cabal run -v0 shomei-migrate -- new \
-      --manifest shomei-migrations/migrations/shomei/manifest \
+      --manifest "$manifest" \
       --name "$next-{{name}}" \
-      --description "{{name}}"
+      --description "{{name}}"; \
+    tmp=$(mktemp "$migration.tmp.XXXXXX") || { echo "Failed to create a temporary file for $migration" >&2; exit 1; }; \
+    trap 'rm -f -- "$tmp"' EXIT; \
+    cp -p "$migration" "$tmp"; \
+    if ! awk 'NR == 1 { print; print ""; print "SET LOCAL search_path = pg_catalog, pg_temp;"; next } { print }' "$migration" >"$tmp"; then \
+      echo "Failed to insert the safe migration header into $migration" >&2; \
+      exit 1; \
+    fi; \
+    if ! mv "$tmp" "$migration"; then \
+      echo "Failed to atomically replace $migration with its safe scaffold" >&2; \
+      exit 1; \
+    fi; \
+    trap - EXIT; \
+    echo "Created $migration with a transaction-local search path header"
 
 # Strictly enforce the shared assurance.reviews profile and its update log.
 reviews-validate:

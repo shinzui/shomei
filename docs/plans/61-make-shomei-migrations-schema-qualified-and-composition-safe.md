@@ -50,8 +50,8 @@ append-only compatibility strategy.
 - [x] (2026-08-27 20:01 PDT) Milestone 2 — rewrote all 36 pre-adoption SQL files so Shōmei objects
       are schema-qualified and every transactional lookup-path change is transaction-local; the
       regression and existing PostgreSQL suites pass.
-- [ ] Milestone 3 — enforce the policy for future migrations through the authoring recipe, a
-      source-policy check, CI, user documentation, and a profile-governed ADR.
+- [x] (2026-08-27 20:06 PDT) Milestone 3 — enforced the policy for future migrations through the
+      authoring recipe, a source-policy check, CI, user documentation, and profile-governed ADR-19.
 - [ ] Milestone 4 — run the full build, test, formatting, manifest, ADR, and Nix validation gates;
       record evidence and complete the ADR distillation pass.
 
@@ -98,6 +98,13 @@ append-only compatibility strategy.
   composition case in 0.86 seconds, while `shomei-postgres-test` passed all 76 persistence cases in
   14.01 seconds. The legacy-header search, missing-header search, and unqualified-relation grammar
   scan all produced no matches.
+
+- Observation: The repository-owned scaffold can add the safe header without weakening
+  pg-migrate's exclusive creation and atomic manifest update. Evidence: a temporary `0037` created
+  through `just new-migration composition-safe-scaffold-test` contained its description followed by
+  the canonical header, passed the namespace checker, and was then removed together with its test
+  manifest entry. `just migration-check` passed for the restored 36-entry history, and strict OKF
+  validation accepted all 19 ADRs plus the updated bundle log.
 
 
 ## Decision Log

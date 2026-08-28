@@ -55,6 +55,9 @@ jobs:
       - name: Update Hackage index
         run: nix develop --command cabal update
 
+      - name: Check migration manifest and namespace policy
+        run: nix develop --command just migration-check
+
       - name: Build all packages
         run: nix develop --command cabal build all
 

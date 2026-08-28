@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-08-28
+* **Addition**: ADR-19 requires schema-qualified migration objects and transaction-local namespace state.
 * **Addition**: ADR-18 makes downstream JWKS transport, cache freshness, and unknown-key refresh a bounded local policy.
 * **Addition**: ADR-17 requires embedded hosts to install the complete background-service and whole-application middleware contract, including bounded cleanup.
 

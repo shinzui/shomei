@@ -129,6 +129,46 @@ Resolve any duplicates before migration. Building the index takes a `SHARE` lock
 `shomei_password_credentials` for its duration, so schedule the upgrade accordingly on a large
 credential table.
 
+### Migration composition and authoring
+
+An embedding application should compose `shomeiMigrationComponent` with its own pg-migrate
+components in one explicitly ordered `MigrationPlan`. pg-migrate uses one dedicated connection for
+the complete plan, so Shōmei migrations do not rely on or permanently change the connection's
+ambient namespace. Every Shōmei-owned relation is written with its `shomei.` schema qualifier, and
+every transactional file contains exactly this temporary lookup path:
+
+```sql
+SET LOCAL search_path = pg_catalog, pg_temp;
+```
+
+`SET LOCAL` ends automatically when that migration commits or rolls back. Keeping `pg_catalog`
+first also makes built-in types, functions, operators, and collations deterministic. Do not replace
+it with ordinary `SET`, add `shomei` to the path, or depend on a host-provided path.
+
+Qualify a `CREATE INDEX` statement's table target, not the new index name. PostgreSQL places the
+index in the table's schema and does not accept a schema-qualified new index name:
+
+```sql
+CREATE INDEX IF NOT EXISTS shomei_sessions_user_id_idx
+  ON shomei.shomei_sessions (user_id);
+```
+
+Use a nontransactional migration only for one statement PostgreSQL forbids inside a transaction,
+with pg-migrate's leading `-- pg-migrate: no-transaction` directive. Such a file cannot use
+`SET LOCAL` and must not mutate `search_path`; schema-qualify every non-built-in object directly.
+
+Create and validate migrations through the repository recipes:
+
+```bash
+just new-migration add-something
+just migration-check
+```
+
+The scaffold recipe inserts the canonical transactional header atomically after pg-migrate creates
+the manifest entry and SQL file. The check validates pg-migrate's manifest contract and Shōmei's
+namespace policy. [ADR-19](../adr/0019-migration-components-do-not-mutate-shared-namespace-state.md)
+is the current durable policy; older plans that show an ordinary session `SET` are historical.
+
 ### Password hashing cost and concurrency
 
 Passwords are hashed with **Argon2id** at 64 MiB / 3 iterations / 1 lane, which is at or above
