@@ -43,8 +43,8 @@ and its README's en recipe authenticates against en's real API-key middleware; e
 
 ## Progress
 
-- [ ] M1: reproduce on unmodified code — `TlsNotSupported` from the template; a revoked key still verifying in `embedded-servant-app`; transcripts in Surprises
-- [ ] M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec case for the order
+- [x] (2026-08-27 23:32 PDT) M1: reproduced the template's `TlsNotSupported` failure with its actual `defaultManagerSettings`; the embedded revoked-key before-state remains to be captured by M2's regression test
+- [x] (2026-08-27 23:34 PDT) M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec pins the edge order
 - [ ] M2: both embedded examples call them; `act` logged in both; grant route `RequireRole "admin"` with a `subject` field; revoked-key-after-SIGHUP test green
 - [ ] M3: scheme-selected TLS manager; clamp and staleness-first; `max-age=0` ignored; unknown-key refresh with cap and one retry; `WWW-Authenticate`; lenient decoding; 7 + 3 tests green
 - [ ] M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
@@ -67,6 +67,19 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
   The `admin` role is seeded by migration `0021`, so `roles grant --role admin` needs no `roles define`.
 
 (Implementation discoveries go here, with evidence.)
+
+- The pre-fix downstream manager failed exactly as reviewed. From `cabal repl
+  lib:microservice-auth-stack`, `currentJwks` against Google's HTTPS JWKS raised:
+
+  ```text
+  JwksUnavailable "initial JWKS fetch failed: TlsNotSupported"
+  ```
+
+- EP-7 and EP-6 made a cleanup-less `IO ()` installer unsafe: the notifier must drain and its
+  thread must stop, while the sweeper owns a separate pool that must be released. The implemented
+  `HostBackgroundTasks` handle preserves both obligations. The focused middleware test then proved
+  the promised edge order: 100 oversized requests were `413` with `X-Request-Id`, followed by 60
+  small `200` responses and one `429`.
 
 
 ## Decision Log
@@ -108,6 +121,13 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
   `documentation.architectureDecisions` profile, following the `docs/reviews` precedent; whichever
   sibling lands first creates it, later ones allocate with `okf id next`.
   Rationale: `.claude/skills/exec-plan/ADR.md` and the MasterPlan require it.
+  Date: 2026-08-27
+- Decision: `installHostBackgroundTasks` returns a `HostBackgroundTasks` cleanup handle rather than
+  `IO ()`; its `stopHostBackgroundTasks` drains the notifier within the caller's timeout and releases
+  the sweeper pool.
+  Rationale: EP-7 and EP-6 landed before EP-9 and introduced owned resources whose cleanup cannot be
+  recovered from an `IO ()` result. Returning the handle keeps the two-function embedding contract
+  while making bounded shutdown part of that contract rather than a standalone-only implementation detail.
   Date: 2026-08-27
 
 

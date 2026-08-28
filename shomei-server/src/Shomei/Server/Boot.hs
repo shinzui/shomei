@@ -11,10 +11,14 @@
 module Shomei.Server.Boot
   ( main,
     application,
+    HostBackgroundTasks (..),
+    installHostBackgroundTasks,
+    hostMiddleware,
     edgeMiddleware,
     buildEnv,
     seamEnv,
     authContext,
+    validateOidcIssuer,
     NotifierWorker (..),
     installNotifierWorker,
   )
@@ -139,14 +143,10 @@ main = do
   validateOidcIssuer cfg
   env <- buildEnv cfg settings
   (liveness, readiness) <- buildHealthChecks env
-  validateDefaultRoles cfg env
-  installKeyReload cfg env
-  releaseSweeper <- installSweeper settings env
-  notifierWorker <- installNotifierWorker env
+  backgroundTasks <- installHostBackgroundTasks cfg settings env
   rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
   metrics <- newMetrics
   let obs = cfg.observabilityConfig
-      stack = edgeMiddleware obs settings.serverTrustedProxies rl metrics
       -- Graceful shutdown: SIGTERM (orchestrator stop) and SIGINT (Ctrl-C) trigger warp's
       -- shutdown action, which stops accepting new connections and waits up to the
       -- configured timeout for in-flight requests to finish. After warp returns we close the
@@ -174,12 +174,42 @@ main = do
           . proxyProtocolSettings
           $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
-  Warp.runSettings warpSettings (stack (application env liveness readiness))
-  drainNotifierWorker notifierWorker obs.gracefulShutdownTimeoutSeconds
+  Warp.runSettings warpSettings (hostMiddleware cfg settings rl metrics (application env liveness readiness))
+  stopHostBackgroundTasks backgroundTasks obs.gracefulShutdownTimeoutSeconds
   hPutStrLn stderr "[shomei] drain complete; closing connection pools"
   Pool.release env.envPool
-  releaseSweeper
   hPutStrLn stderr "[shomei] shutdown complete"
+
+-- | Background services required to give an embedded host the standalone server's runtime
+-- guarantees. Call 'stopHostBackgroundTasks' after the host server stops accepting requests;
+-- it drains queued notifications within the same bounded shutdown budget and releases the
+-- sweeper's isolated pool.
+newtype HostBackgroundTasks = HostBackgroundTasks
+  { stopHostBackgroundTasks :: Int -> IO ()
+  }
+
+-- | Install every process-wide and background service used by the standalone server: validate
+-- configured default roles, refresh signing keys periodically and on @SIGHUP@, sweep expired
+-- state, and deliver queued notifications. An embedding host calls this once after 'buildEnv'.
+installHostBackgroundTasks :: ShomeiConfig -> ServerSettings -> Env -> IO HostBackgroundTasks
+installHostBackgroundTasks cfg settings env = do
+  validateDefaultRoles cfg env
+  installKeyReload cfg env
+  releaseSweeper <- installSweeper settings env
+  notifierWorker <- installNotifierWorker env
+  pure
+    HostBackgroundTasks
+      { stopHostBackgroundTasks = \timeoutSeconds -> do
+          drainNotifierWorker notifierWorker timeoutSeconds
+          releaseSweeper
+      }
+
+-- | The WAI edge used by the standalone server. Wrap the host's whole application so its own
+-- routes receive the same trusted-proxy attribution, request IDs, metrics, body cap, and
+-- per-client rate limiting as Shōmei's routes.
+hostMiddleware :: ShomeiConfig -> ServerSettings -> RateLimiter -> Metrics -> Middleware
+hostMiddleware cfg settings =
+  edgeMiddleware cfg.observabilityConfig settings.serverTrustedProxies
 
 -- | The WAI edge every host must install. The trusted-proxy rewrite is outermost so logging,
 -- metrics, the limiter, and Servant's 'RemoteHost' all observe the same client address.

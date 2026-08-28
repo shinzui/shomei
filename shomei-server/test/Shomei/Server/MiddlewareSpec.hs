@@ -29,15 +29,19 @@ import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultReque
 import Network.Wai.Handler.Warp (InvalidRequest (BadFirstLine, PayloadTooLarge))
 import Network.Wai.Internal (ResponseReceived (..))
 import Servant.Health.Paths (healthRawPaths)
-import Shomei.Config (LogFormat (..), RateLimitConfig (..), defaultObservabilityConfig, defaultRateLimitConfig)
+import Shomei.Account.Password.Hash.Postgres (defaultArgon2Params)
+import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
+import Shomei.Config (LogFormat (..), RateLimitConfig (..), ShomeiConfig (..), defaultObservabilityConfig, defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
 import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Error (ProblemDetails (..))
 import Shomei.Servant.Throttle (PathSegment (Literal), ThrottledRoute (..))
+import Shomei.Server.Boot (hostMiddleware)
+import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), defaultSweepSettings)
 import Shomei.Server.ExceptionResponse (problemExceptionResponse)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
-import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterWith, takeToken, throttledPath)
-import Shomei.Server.Middleware.TrustedProxy (parseTrustedProxies, trustedProxyMiddleware)
+import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterFor, newRateLimiterWith, takeToken, throttledPath)
+import Shomei.Server.Middleware.TrustedProxy (emptyTrustedProxies, parseTrustedProxies, trustedProxyMiddleware)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
@@ -85,7 +89,8 @@ tests =
         ],
       testGroup
         "body limit"
-        [ testOversizedBodyRejected,
+        [ testHostMiddlewareOrder,
+          testOversizedBodyRejected,
           testKnownSmallBodyPassesThrough,
           testChunkedBodyOverCapRejected,
           testSmallChunkedBodyPassesThrough,
@@ -384,6 +389,49 @@ testServerErrorLineIsStructured = testCase "the warp exception logger renders st
     Just obj -> assertBool "no method field without a request" (not (Map.member "method" obj))
 
 -- Body limit -----------------------------------------------------------------
+
+testHostMiddlewareOrder :: TestTree
+testHostMiddlewareOrder = testCase "hostMiddleware refuses oversized bodies outside the limiter and throttles inside it" do
+  let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+      settings =
+        ServerSettings
+          { serverPort = 0,
+            serverConnStr = "",
+            serverTrustedProxies = emptyTrustedProxies,
+            serverProxyProtocol = ProxyProtocolOff,
+            serverDbPoolSize = 1,
+            serverDbPoolAcquisitionTimeoutMs = 1000,
+            serverDbStatementTimeoutMs = 1000,
+            serverNotifierQueueSize = 16,
+            serverWarnings = [],
+            serverSweep = defaultSweepSettings {sweepEnabled = False},
+            serverArgon2 = defaultArgon2Params,
+            serverHashingMaxConcurrency = 1
+          }
+      large =
+        defaultRequest
+          { requestMethod = methodPost,
+            pathInfo = ["v1", "auth", "login"],
+            requestBodyLength = KnownLength (2 * 1024 * 1024),
+            remoteHost = ipv4 203 0 113 9
+          }
+      small = large {requestBodyLength = KnownLength 16}
+      inner _ respond = respond okResponse
+  limiter <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
+  metrics <- newMetrics
+  let app = hostMiddleware cfg settings limiter metrics inner
+      run request' = do
+        captured <- newIORef (0, [])
+        ResponseReceived <- app request' \response -> do
+          writeIORef captured (statusCode (responseStatus response), responseHeaders response)
+          pure ResponseReceived
+        readIORef captured
+  forM_ [1 .. 100 :: Int] \_ -> do
+    (status, headers) <- run large
+    status @?= 413
+    assertBool "logging is outermost and adds X-Request-Id" (lookup "X-Request-Id" headers /= Nothing)
+  statuses <- forM [1 .. 61 :: Int] \_ -> fst <$> run small
+  assertEqual "oversized requests did not spend limiter tokens" (replicate 60 200 <> [429]) statuses
 
 -- | An oversized declared body is refused with 413 and the inner application never runs.
 testOversizedBodyRejected :: TestTree
