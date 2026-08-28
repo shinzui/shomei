@@ -43,9 +43,9 @@ and its README's en recipe authenticates against en's real API-key middleware; e
 
 ## Progress
 
-- [x] (2026-08-27 23:32 PDT) M1: reproduced the template's `TlsNotSupported` failure with its actual `defaultManagerSettings`; the embedded revoked-key before-state remains to be captured by M2's regression test
+- [x] (2026-08-27 23:46 PDT) M1: reproduced `TlsNotSupported` and captured the embedded before-state — after database rotation/revocation, the stale in-memory key still accepted the old token with `200`
 - [x] (2026-08-27 23:34 PDT) M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec pins the edge order
-- [ ] M2: both embedded examples call them; `act` logged in both; grant route `RequireRole "admin"` with a `subject` field; revoked-key-after-SIGHUP test green
+- [x] (2026-08-27 23:46 PDT) M2: both embedded examples call the contract; `act` logged in both; grant route is `RequireRole "admin"` with a `subject`; revoked-key-after-SIGHUP test passes (2 cases)
 - [ ] M3: scheme-selected TLS manager; clamp and staleness-first; `max-age=0` ignored; unknown-key refresh with cap and one retry; `WWW-Authenticate`; lenient decoding; 7 + 3 tests green
 - [ ] M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
 - [ ] M5: embedding checklist in `client-and-examples.md` and `architecture.md`; `Cache-Control` paragraph; plaintext warning; `docs/adr/` bootstrapped, ADR written and validated
@@ -80,6 +80,16 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
   `HostBackgroundTasks` handle preserves both obligations. The focused middleware test then proved
   the promised edge order: 100 oversized requests were `413` with `X-Request-Id`, followed by 60
   small `200` responses and one `429`.
+
+- The embedded regression test made the stale-key seam observable without a timing-dependent
+  90-second process transcript. After atomic key replacement and revocation in PostgreSQL, the old
+  access token remained `200` against the unchanged `IORef`; installing the host tasks and raising
+  `SIGHUP` changed it to `401` within the three-second poll window. Both embedded tests passed.
+
+- The separate `embedded-with-en` project cannot solve at its old pins: its `sumo/hs-jose` source
+  requires `ram <0.22`, while current `shomei-core` requires `ram >=0.22 && <0.23`. This is the
+  exact stale pin Milestone 4 removes, so the example source changes are retained and its full
+  compile gate remains attached to that milestone.
 
 
 ## Decision Log

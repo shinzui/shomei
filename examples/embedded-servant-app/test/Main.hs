@@ -4,11 +4,17 @@
 -- @\/v1\/auth\/login@ route (obtained through the real typed @shomei-client@).
 module Main (main) where
 
+import Control.Concurrent (threadDelay)
 import Data.ByteString qualified as BS
-import Data.IORef (newIORef)
+import Data.IORef (newIORef, readIORef)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as Text
+import Data.Time (getCurrentTime)
+import Effectful (runEff)
+import Effectful.Error.Static (runErrorNoCallStack)
 import Embedded.App (embeddedApplication)
+import Hasql.Pool (Pool)
 import Network.HTTP.Client
   ( Manager,
     defaultManagerSettings,
@@ -25,17 +31,26 @@ import Shomei.Account.Dto (SignupRequest (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
-import Shomei.Config (defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..), defaultShomeiConfig)
+import Shomei.Error (AuthError)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
+import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
-import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Server.Boot (HostBackgroundTasks (..), installHostBackgroundTasks)
+import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), defaultSweepSettings)
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
+import Shomei.Server.Middleware.TrustedProxy (emptyTrustedProxies)
 import Shomei.Session.Dto (LoginRequest (..), LoginResponse (..), TokenPairResponse (..))
-import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
-import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
+import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), SigningKeyStatus (KeyRevoked))
+import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, keyKid, toStoredSigningKeyFor)
+import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
+import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64, protectStoredSigningKey)
+import Shomei.SigningKey.Store (replaceActiveSigningKey, updateSigningKeyStatus)
+import System.Posix.Signals (raiseSignal, sigHUP)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
@@ -85,11 +100,82 @@ tests =
             -- The Raw static route serves the passkey-demo page (resolved from www/,
             -- the package's CWD during `cabal test`).
             indexStatus <- getStatus mgr port "/index.html"
-            indexStatus @?= 200
+            indexStatus @?= 200,
+      testCase "a revoked signing key stops verifying after SIGHUP once background tasks are installed" $
+        withShomeiMigratedDatabase \connStr -> do
+          pool <- acquirePool 4 10 30000 connStr
+          keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool
+          envMgr <- newManager defaultManagerSettings
+          limiter <- newHashingLimiter 2
+          notifierQueue <- newNotifierQueue 64
+          let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+              cfg = baseCfg {signingKeyConfig = baseCfg.signingKeyConfig {refreshIntervalSeconds = 0}}
+              settings = testServerSettings connStr
+              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+          testWithApplication (pure (embeddedApplication env (pure Healthy) (pure Healthy))) \port -> do
+            mgr <- newManager defaultManagerSettings
+            let rotateEmail = "rotate@example.com"
+            cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
+            _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = rotateEmail, email = Just rotateEmail, password = password, displayName = "Rotate"}
+            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = rotateEmail, password = password}
+            token <- case loginResponse of
+              LoginCompleteResponse {token} -> pure token.accessToken
+              LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
+            oldKid <- keyKid . (.signingKey) <$> readIORef keysRef
+            rotateAndRevoke pool oldKid
+            getProjects mgr port token >>= (@?= 200)
+            tasks <- installHostBackgroundTasks cfg settings env
+            raiseSignal sigHUP
+            reloaded <- pollUntil 30 100_000 ((== 401) <$> getProjects mgr port token)
+            reloaded @?= True
+            stopHostBackgroundTasks tasks 1
     ]
   where
     email = "dev@example.com" :: Text
     password = "correct horse battery staple" :: Text
+
+testServerSettings :: Text -> ServerSettings
+testServerSettings connStr =
+  ServerSettings
+    { serverPort = 0,
+      serverConnStr = connStr,
+      serverTrustedProxies = emptyTrustedProxies,
+      serverProxyProtocol = ProxyProtocolOff,
+      serverDbPoolSize = 4,
+      serverDbPoolAcquisitionTimeoutMs = 1000,
+      serverDbStatementTimeoutMs = 30000,
+      serverNotifierQueueSize = 64,
+      serverWarnings = [],
+      serverSweep = defaultSweepSettings {sweepEnabled = False},
+      serverArgon2 = testArgon2Params,
+      serverHashingMaxConcurrency = 2
+    }
+
+rotateAndRevoke :: Pool -> Text -> IO ()
+rotateAndRevoke pool oldKid = do
+  jwk <- generateSigningKeyFor ES256
+  now <- getCurrentTime
+  stored <- either (fail . T.unpack) pure (toStoredSigningKeyFor ES256 now jwk)
+  protected <- protectStoredSigningKey testKek stored
+  result <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool pool
+      . runSigningKeyStorePostgres
+      $ do
+        replaceActiveSigningKey protected now
+        updateSigningKeyStatus oldKid KeyRevoked now
+  either (fail . show) pure result
+
+pollUntil :: Int -> Int -> IO Bool -> IO Bool
+pollUntil attempts delayMicros predicate = go attempts
+  where
+    go 0 = pure False
+    go remaining = do
+      done <- predicate
+      if done
+        then pure True
+        else threadDelay delayMicros >> go (remaining - 1)
 
 getProjects :: Manager -> Int -> Maybe Text -> IO Int
 getProjects mgr port mtok = do

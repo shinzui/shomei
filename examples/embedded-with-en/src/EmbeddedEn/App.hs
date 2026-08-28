@@ -21,6 +21,7 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.IORef (IORef)
 import Data.Text (Text)
+import Data.Text qualified as Text
 import EmbeddedEn.Authz
   ( EnEnv,
     grantRelation,
@@ -28,6 +29,7 @@ import EmbeddedEn.Authz
     projectRef,
     requireProjectPermission,
     subjectForUser,
+    subjectForUserId,
   )
 import En.Revision (ConsistencyToken (..))
 import En.Schema (RelationName (..))
@@ -55,11 +57,15 @@ import Servant
     type (:>),
   )
 import Servant.Health (ProbeCheck)
+import Shomei.Authorization.Claims.Domain (AuthClaims (..))
+import Shomei.Id (idText)
 import Shomei.Servant.Api (ShomeiRoutes)
-import Shomei.Servant.Auth (AuthUser, Authenticated)
+import Shomei.Servant.Auth (AuthUser (..), Authenticated)
+import Shomei.Servant.Authz (RequireRole)
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env)
 import Shomei.Server.Boot (authContext, seamEnv)
+import System.IO (hPutStrLn, stderr)
 
 -- | A trivial demo business resource the host owns.
 data Project = Project
@@ -79,7 +85,8 @@ newtype ProjectUpdate = ProjectUpdate
 -- | The demo grant body: grant the caller @relation@ (@viewer@ or @editor@) on
 -- @project:projectId@.
 data GrantRequest = GrantRequest
-  { projectId :: !Text,
+  { subject :: !Text,
+    projectId :: !Text,
     relation :: !Text
   }
   deriving stock (Generic)
@@ -102,7 +109,7 @@ type AppAPI =
   NamedRoutes ShomeiRoutes
     :<|> Authenticated :> "projects" :> Capture "id" Text :> Get '[JSON] Project
     :<|> Authenticated :> "projects" :> Capture "id" Text :> ReqBody '[JSON] ProjectUpdate :> Put '[JSON] Project
-    :<|> Authenticated :> "demo" :> "grants" :> ReqBody '[JSON] GrantRequest :> Post '[JSON] GrantResponse
+    :<|> RequireRole "admin" :> "demo" :> "grants" :> ReqBody '[JSON] GrantRequest :> Post '[JSON] GrantResponse
 
 -- | Serve 'AppAPI', reusing @shomei-server@'s assembly and auth 'Context', with en running
 -- over the shared tuple 'IORef'.
@@ -119,12 +126,14 @@ embeddedEnApplication env liveness readiness tuples =
 -- | @GET \/projects\/:id@: readable by a @viewer@ or an @editor@ (the schema's @view@ union).
 getProject :: EnEnv -> AuthUser -> Text -> Handler Project
 getProject enEnv user pid = do
+  logDelegation user
   requireProjectPermission enEnv (subjectForUser user) (RelationName "view") (projectRef pid)
   pure (Project {projectId = pid, projectName = "Project " <> pid})
 
 -- | @PUT \/projects\/:id@: writable only by an @editor@ (the schema's @edit@ permission).
 putProject :: EnEnv -> AuthUser -> Text -> ProjectUpdate -> Handler Project
 putProject enEnv user pid upd = do
+  logDelegation user
   requireProjectPermission enEnv (subjectForUser user) (RelationName "edit") (projectRef pid)
   pure (Project {projectId = pid, projectName = upd.projectName})
 
@@ -132,12 +141,12 @@ putProject enEnv user pid upd = do
 -- transcript can flip 403→200 in one process. A production host never lets a caller grant
 -- itself access; see 'grantRelation'.
 grantHandler :: EnEnv -> AuthUser -> GrantRequest -> Handler GrantResponse
-grantHandler enEnv user req = do
+grantHandler enEnv _admin req = do
   rel <- case req.relation of
     "viewer" -> pure (RelationName "viewer")
     "editor" -> pure (RelationName "editor")
     _ -> throwError badRelation
-  result <- liftIO (grantRelation enEnv (subjectForUser user) req.projectId rel)
+  result <- liftIO (grantRelation enEnv (subjectForUserId req.subject) req.projectId rel)
   case result of
     Right (ConsistencyToken token) ->
       pure
@@ -147,6 +156,20 @@ grantHandler enEnv user req = do
             consistencyToken = token
           }
     Left _ -> throwError grantFailed
+
+-- | Authorization acts for the JWT subject; the optional actor is audit provenance only.
+logDelegation :: AuthUser -> Handler ()
+logDelegation user =
+  forM_ user.authClaims.actor \operator ->
+    liftIO
+      ( hPutStrLn
+          stderr
+          ( "[embedded-with-en] delegated request sub="
+              <> Text.unpack (idText user.authUserId)
+              <> " act="
+              <> Text.unpack (idText operator)
+          )
+      )
 
 badRelation :: ServerError
 badRelation =

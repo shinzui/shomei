@@ -64,5 +64,7 @@ executable embedded-with-en
   build-depends:
     , base
     , embedded-with-en
+    , shomei-core
+    , shomei-servant
     , shomei-server
     , warp

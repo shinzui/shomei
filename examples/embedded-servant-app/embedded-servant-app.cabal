@@ -49,6 +49,8 @@ executable embedded-servant-app
   build-depends:
     , base
     , embedded-servant-app
+    , shomei-core
+    , shomei-servant
     , shomei-server
     , warp
 
@@ -61,7 +63,10 @@ test-suite embedded-servant-app-test
   build-depends:
     , base
     , bytestring
+    , effectful
+    , effectful-core
     , embedded-servant-app
+    , hasql-pool
     , http-client
     , http-types
     , servant-health
@@ -75,4 +80,6 @@ test-suite embedded-servant-app-test
     , tasty
     , tasty-hunit
     , text
+    , time
+    , unix
     , warp

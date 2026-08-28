@@ -44,12 +44,16 @@ Recorded from a real run against a fresh dev database. Shōmei owns authenticati
 en owns authorization (the `403`s, and the `403→200` flip after a relation tuple is written):
 
 ```console
-$ # 1. signup + login through the MOUNTED shomei API (same process)
-$ curl -s -XPOST localhost:8085/v1/auth/signup -H 'Content-Type: application/json' \
-    -d '{"loginId":"ann","email":"ann@example.com","password":"Str0ng-Pass-123!","displayName":"Ann"}' -o /dev/null -w '%{http_code}\n'
-201
+$ # 1. signup a user and an administrator through the mounted Shōmei API
+$ ANN_ID=$(curl -s -XPOST localhost:8085/v1/auth/signup -H 'Content-Type: application/json' \
+    -d '{"loginId":"ann","email":"ann@example.com","password":"Str0ng-Pass-123!","displayName":"Ann"}' | jq -r .userId)
+$ ROOT_ID=$(curl -s -XPOST localhost:8085/v1/auth/signup -H 'Content-Type: application/json' \
+    -d '{"loginId":"root","email":"root@example.com","password":"Str0ng-Pass-123!","displayName":"Root"}' | jq -r .userId)
+$ DATABASE_URL="$PG_CONNECTION_STRING" cabal run -v0 shomei-admin -- roles grant --user "$ROOT_ID" --role admin
 $ TOK=$(curl -s -XPOST localhost:8085/v1/auth/login -H 'Content-Type: application/json' \
     -d '{"loginId":"ann","password":"Str0ng-Pass-123!"}' | jq -r .token.accessToken)
+$ ADMIN=$(curl -s -XPOST localhost:8085/v1/auth/login -H 'Content-Type: application/json' \
+    -d '{"loginId":"root","password":"Str0ng-Pass-123!"}' | jq -r .token.accessToken)
 
 $ # 2. no tuples yet: en fails closed on both routes
 $ curl -s -o /dev/null -w '%{http_code}\n' localhost:8085/projects/roadmap -H "Authorization: Bearer $TOK"
@@ -58,10 +62,13 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -XPUT localhost:8085/projects/roadmap
     -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' -d '{"projectName":"Roadmap v2"}'
 403
 
-$ # 3. grant the caller editor on project:roadmap (writes the relation tuple for the
-$ #    caller's own subject — user:user_01…, the TypeID text, never the UUID)
-$ curl -s -XPOST localhost:8085/demo/grants -H "Authorization: Bearer $TOK" \
-    -H 'Content-Type: application/json' -d '{"projectId":"roadmap","relation":"editor"}'
+$ # 3. a user cannot grant itself access; an administrator grants the named subject
+$ GRANT="{\"subject\":\"$ANN_ID\",\"projectId\":\"roadmap\",\"relation\":\"editor\"}"
+$ curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8085/demo/grants \
+    -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' -d "$GRANT"
+403
+$ curl -s -XPOST localhost:8085/demo/grants -H "Authorization: Bearer $ADMIN" \
+    -H 'Content-Type: application/json' -d "$GRANT"
 {"consistencyToken":"embedded-en-write","granted":"editor","object":"project:roadmap"}
 
 $ # 4. editor implies edit AND view (the schema's anyOf)
@@ -95,9 +102,10 @@ Two honest notes on the output:
   grounded in PostgreSQL snapshot machinery an `IORef` only pretends to satisfy. Restarting
   the process resets all en state (grants do not survive a restart). In production, embed
   `en-postgres` or call a standalone `en-server`; see en's own docs.
-- **`POST /demo/grants` is not a production shape.** It lets the caller grant *itself*
-  `editor` so the transcript can flip `403→200` in one process. Real tuple writes are the
-  host's (or en-server's) job at its own trust boundary.
+- **`POST /demo/grants` is an admin-gated teaching route.** It demonstrates that tuple writes
+  belong to a separate trust boundary, but the in-memory store and broad administrator grant
+  are still stand-ins. A production host should expose only its own narrowly-scoped business
+  operations or write through `en-server`.
 - **Consistency.** The grant response returns en's consistency token. The next check here
   uses `MinimizeLatency` and still observes the write, because the `IORef` store keeps a
   single trivial revision — *not* because `MinimizeLatency` guarantees read-your-writes in

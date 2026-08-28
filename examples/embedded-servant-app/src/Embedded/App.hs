@@ -14,6 +14,7 @@ module Embedded.App
   )
 where
 
+import Data.Text qualified as Text
 import Network.Wai (Application)
 import Servant
   ( Get,
@@ -27,12 +28,15 @@ import Servant
 import Servant.Health (ProbeCheck)
 import Servant.Server (Handler)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
+import Shomei.Authorization.Claims.Domain (AuthClaims (..))
+import Shomei.Id (idText)
 import Shomei.Prelude
 import Shomei.Servant.Api (ShomeiRoutes)
-import Shomei.Servant.Auth (AuthUser, Authenticated)
+import Shomei.Servant.Auth (AuthUser (..), Authenticated)
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env)
 import Shomei.Server.Boot (authContext, seamEnv)
+import System.IO (hPutStrLn, stderr)
 
 -- | A trivial demo business type the host app owns.
 data Project = Project
@@ -69,5 +73,15 @@ embeddedApplicationWith wwwDir env liveness readiness =
 
 -- | The @\/projects@ handler. It receives the 'AuthUser' the 'Authenticated' guard produced.
 projectsHandler :: AuthUser -> Handler [Project]
-projectsHandler _user =
+projectsHandler user = do
+  forM_ user.authClaims.actor \operator ->
+    liftIO
+      ( hPutStrLn
+          stderr
+          ( "[embedded-servant-app] delegated request sub="
+              <> Text.unpack (idText user.authUserId)
+              <> " act="
+              <> Text.unpack (idText operator)
+          )
+      )
   pure [Project {projectId = "proj_demo_1", projectName = "Shōmei Demo Project"}]

@@ -22,6 +22,7 @@
 module EmbeddedEn.Authz
   ( -- * The identity-mapping convention
     subjectForUser,
+    subjectForUserId,
 
     -- * The demo schema
     projectSchema,
@@ -91,7 +92,13 @@ import Shomei.Servant.Auth (AuthUser (..))
 -- bare UUIDs — do not paste those into tuples.)
 subjectForUser :: AuthUser -> Subject
 subjectForUser u =
-  SubjectId (ObjectRef {objectType = ObjectType "user", objectId = idText u.authUserId})
+  subjectForUserId (idText u.authUserId)
+
+-- | The same canonical identity mapping for a user id supplied explicitly by an administrative
+-- grant request.
+subjectForUserId :: Text -> Subject
+subjectForUserId uid =
+  SubjectId (ObjectRef {objectType = ObjectType "user", objectId = uid})
 
 -- | The demo authorization model, authored with "En.Schema.Builder" exactly as
 -- @En.Example.Host.exampleSchema@ does: a @project@ has @viewer@ and @editor@ relations;
