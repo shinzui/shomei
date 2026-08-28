@@ -36,7 +36,7 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 - [x] (2026-08-27) M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; both `security.md` passages fixed; EP-9's already-correct `microservice-auth-stack/README.md` §4 preserved
 - [x] (2026-08-27) M3: `architecture.md`, the README quick start, user index, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and bundle log, and the embedded demo README reconciled; non-strict capability validation passes and strict validation reports only the 24 baseline `reviews` omissions
 - [x] (2026-08-27) M4: `deployment.md` (session-aware pool sizing, ten-key sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, complete delegation-blocked list, `RequireAdmin` audit route), `oidc.md` cookie transport, and `passkeys.md` server-side origin enforcement reconciled
-- [ ] M5: per-sibling probes run and recorded; deferred sentences listed in Outcomes; link check and OpenAPI diff clean
+- [x] (2026-08-27) M5: all EP-1 through EP-9 landed probes pass; six missed documentation probes repaired; no deferred sentences remain; source-corpus link check reports 0 broken links and the OpenAPI diff reports two empty lists
 - [ ] M6: the five MasterPlan 8 ADRs exist, are linked from the pages stating their rules, and the bundle validates
 
 
@@ -65,6 +65,14 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
   `"email":"alice@example.com","password"` fields without checking whether `loginId` is present earlier in the
   object. The route-specific half is empty and the displayed body now includes `loginId`; the acceptance command was
   treated as an over-broad probe rather than changing the specified payload order to appease it.
+- M5 found six sibling-documentation probes stale after their code had landed: EP-3 said “clock drift” rather than
+  “clock skew”; EP-4 omitted the literal `/v1/auth/mfa/complete` path; EP-6 omitted three representative Dhall keys
+  and the exact fail-closed boot language; EP-7 omitted the two runtime secret variable names; EP-8 retained the
+  obsolete phrase “single-instance deployment”; and EP-9 titled its section “Embedding runtime checklist,” which
+  missed the agreed probe. The underlying behavior was present in every case; M5 corrected the user pages.
+- The draft link checker traversed an ignored `examples/embedded-with-en/dist-newstyle/**/README.md` copied from an
+  external package and reported its package-relative `../shomei` link. Generated Cabal output is neither authored nor
+  shipped documentation, so the checker now excludes any `dist-newstyle` path; the repository source corpus is clean.
 
 
 ## Decision Log
@@ -117,8 +125,11 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation. At completion, list every sentence deferred because a sibling had not
-landed, each with the grep that detects it, so the next contributor can finish the sweep without re-reading the review.)
+M5 confirmed that all nine sibling plans had landed, so there are no deferred sentences or follow-up greps. The sweep
+did catch six documentation omissions whose behavior was already implemented; those pages now satisfy the probes. The
+source-document link check reports `0 broken link(s)`, the `api.md`/OpenAPI comparison reports empty differences in
+both directions, the capability bundle validates, and the review bundle still validates all ten records. M6 remains
+to verify and link the five durable decision records before the final retrospective.
 
 
 ## Context and Orientation
@@ -519,7 +530,10 @@ import re, sys, pathlib
 files = [pathlib.Path('README.md'), pathlib.Path('CHANGELOG.md')]
 for d in ('docs/user', 'docs/capabilities', 'docs/reviews'):
     files += sorted(pathlib.Path(d).glob('*.md'))
-files += sorted(pathlib.Path('.').glob('examples/**/README.md'))
+files += sorted(
+    f for f in pathlib.Path('.').glob('examples/**/README.md')
+    if 'dist-newstyle' not in f.parts
+)
 link = re.compile(r'\]\(([^)\s#]+)(#[^)]*)?\)')
 bad = 0
 for f in files:

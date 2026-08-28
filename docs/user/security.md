@@ -31,7 +31,7 @@ logs. The minimum-length / policy check runs before hashing.
   headers carry `typ: at+jwt`. Every JWT and JWKS entry carries `alg`, and the JWT header's `kid`
   selects exactly one published verification key. An unknown or missing `kid` is refused; the
   verifier never tries the signature against every key. Expiry, not-before, and issued-at checks
-  allow `allowedClockSkewSeconds` of clock drift (default 30 seconds).
+  allow `allowedClockSkewSeconds` of clock skew (default 30 seconds).
 - **Algorithm choice and timing.** The ES256 default signs through
   [crypton's generic ECDSA path](mori://kazu-yamamoto/crypton/packages/crypton), whose own
   documentation warns that its scalar operations are vulnerable to timing attacks and
@@ -319,13 +319,14 @@ step-up ceremony, where the password is already one factor. Setting it to `prefe
 - **Per-IP request-rate limit**: an in-process token bucket (default 60 req/min, burst 60) on the
   thirteen credential-proof operations rejects over-rate requests with `429` before they reach the
   application or the database. The operation set is derived from the Servant API's `RateLimited`
-  markers, including MFA/passkey completion, confirmation and password-change routes,
-  `DELETE /v1/auth/totp`, and `POST /oauth/token`.
+  markers, including `POST /v1/auth/mfa/complete`, passkey completion, confirmation and
+  password-change routes, `DELETE /v1/auth/totp`, and `POST /oauth/token`.
 - **Request body cap**: declared and unknown-length bodies are metered to 1 MiB while consumed;
   crossing the cap returns `413 payload_too_large` before a handler can buffer the remainder.
 
-These protections target a single-instance deployment; the lockout state is durable (PostgreSQL)
-while the request-rate buckets are in-memory and reset on restart.
+The account lockout and failure-throttle state is durable in PostgreSQL, while the request-rate
+buckets are process-local and reset on restart. Multi-replica deployments therefore need an
+equivalent aggregate request budget at their ingress if they require a fleet-wide ceiling.
 
 Both per-IP controls use the canonical WAI peer address. Behind a reverse proxy that means the
 proxy unless its exact address or CIDR is listed in `trustedProxies` / `SHOMEI_TRUSTED_PROXIES`.

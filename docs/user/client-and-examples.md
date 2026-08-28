@@ -61,7 +61,7 @@ PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
 Open <http://localhost:8080/index.html> to exercise login, passkey enrollment, and MFA step-up in
 a real browser.
 
-### Embedding runtime checklist
+### Embedding checklist
 
 Mounting `ShomeiRoutes` supplies handlers, but the host process must also install the standalone
 runtime contract. The route tree and `authContext` provide token verification using the keys loaded

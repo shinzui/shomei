@@ -44,6 +44,8 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
 | `SHOMEI_NOTIFIER_QUEUE_SIZE` | maximum notifications held for the background delivery worker. Must be positive; a full queue drops new work with a `queue_full` audit reason instead of blocking a request | `1024` |
+| `SHOMEI_SMTP_PASSWORD` | SMTP authentication password; carried outside printable `ShomeiConfig` | unset |
+| `SHOMEI_WEBHOOK_SECRET` | secret used to sign webhook deliveries; carried outside printable `ShomeiConfig` | unset |
 | `SHOMEI_WEBHOOK_ALLOW_INSECURE` | **lab only.** Allow an `http://` notification receiver; production webhooks must use HTTPS | `false` |
 | `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH` | **lab only.** Allow SMTP credentials over `smtpTlsMode=plain`; production authentication must use STARTTLS or implicit TLS | `false` |
 | `SHOMEI_EMAIL_VERIFICATION_REQUIRED` | require a verified email before subsequent token issuance (the initial signup session is still issued) | `false` |
@@ -138,8 +140,8 @@ legitimately want cheap hashing.
 
 The server validates the implementation's hard limits before opening its database pool, then runs
 one real trial derivation. A setting rejected by crypton's C core or by the machine's allocator
-therefore stops the boot with the configured `m`, `t`, and `p` values instead of turning every later
-signup or password change into a server error. `shomei-admin users create` applies the same pure
+therefore causes the server to refuse to boot, naming the configured `m`, `t`, and `p` values,
+instead of turning every later signup or password change into a server error. `shomei-admin users create` applies the same pure
 limits, Dhall password policy, and HIBP breach-check policy as the server before it writes the
 bootstrap account.
 
@@ -256,7 +258,8 @@ in  Shomei::{
 
 Adding a later optional key to the schema does not require existing completed files to mention it.
 The configuration test compares the schema's keys with the loader's `FileConfig`, so either side
-changing alone fails the suite. See [passkeys.md](passkeys.md) for WebAuthn and
+changing alone fails the suite. Common policy keys include `notifierTransport`, `oidcEnabled`, and
+`defaultRoles`; the schema is authoritative for the complete set. See [passkeys.md](passkeys.md) for WebAuthn and
 [machine-tokens.md](machine-tokens.md) for service accounts.
 
 There is deliberately **no** Dhall key for `SHOMEI_NOTIFIER_LOG_SECRETS`,
