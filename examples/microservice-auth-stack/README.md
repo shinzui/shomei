@@ -182,6 +182,7 @@ a dependency: the downstream verifies the user's JWT, then calls en under its ow
 For fan-out topologies, a gateway can check **once** and mint an **en-biscuit decision
 token** (which embeds the consistency token) that downstream services verify **offline** —
 the same offline-verification posture the JWT itself enjoys, now for the authorization
-decision. See en's `docs/user/biscuit-decision-tokens.md`. The full two-tier guide, identity
+decision. See the [en project](mori://shinzui/en),
+`docs/user/biscuit-decision-tokens.md` (the artifact-level URI is pending). The full two-tier guide, identity
 conventions, consistency rules, and database topology live in
 [`docs/user/authorization.md`](../../docs/user/authorization.md).

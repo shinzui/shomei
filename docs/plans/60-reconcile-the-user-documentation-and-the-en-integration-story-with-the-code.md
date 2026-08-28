@@ -33,7 +33,7 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 
 - [x] (2026-08-27) M1: `security.md` reconciled (hash format and module, four collapsed login cases, account key and per-IP window, counter zero case, `RequireAdmin`, runbook transcript, stamp); `LoginAttempt/Domain.hs:21` Haddock corrected
 - [x] (2026-08-27) M1: EP-4 had landed; `TimingSpec` contains the locked-account hash case, so `security.md`'s "exactly one" guarantee remains accurate
-- [ ] M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; `security.md:382-385`, `:629-636` and `microservice-auth-stack/README.md` §4 fixed
+- [x] (2026-08-27) M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; both `security.md` passages fixed; EP-9's already-correct `microservice-auth-stack/README.md` §4 preserved
 - [ ] M3: `architecture.md:21`, `README.md:53-57`, `index.md:33`, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and `docs/capabilities/log.md`, `www/README.md:12`
 - [ ] M4: `deployment.md` (pool sentence, sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, delegation-blocked list, audit route), `oidc.md:77-79` and `:95-97`, `passkeys.md:129`
 - [ ] M5: per-sibling probes run and recorded; deferred sentences listed in Outcomes; link check and OpenAPI diff clean
@@ -57,6 +57,10 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
   downstream following the microservice recipe must add `Authorization: Bearer <en key>` itself; that code change is
   EP-9's. A dry run of the CAP-9 edit on a scratch copy showed `okf log add` prepends a dated section with one
   `* **Update**:` bullet and the bundle validates afterwards.
+- EP-9 landed after this plan was drafted. It already rewrote the microservice example's en API-key posture and moved
+  the isolated `embedded-with-en` pin from `d3209cb` to the verified en HEAD `bf8ffa24`, including the new
+  `ReadRelationshipPage` constructor. M2 therefore preserved that README and described the resolved pin rather than
+  repeating the draft's obsolete 96-commit gap.
 
 
 ## Decision Log
@@ -99,6 +103,11 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
 - Decision: Remove the absolute path `/Users/shinzui/Keikaku/bokuno/en` from `security.md:630` in favor of the GitHub
   URL `authorization.md:9` already uses.
   Rationale: A user document must not depend on the author's filesystem.
+  Date: 2026-08-27
+- Decision: Treat EP-9's updated en pin and API-key README as authoritative landed state, while retaining M2's
+  ownership of the broader en facts and bootstrap rationale.
+  Rationale: Reintroducing the draft's `d3209cb` gap or rewriting an already-correct example would make the living
+  plan less accurate after its soft dependency completed.
   Date: 2026-08-27
 
 

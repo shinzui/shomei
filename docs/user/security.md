@@ -509,9 +509,9 @@ of en. Knowing exactly [where tier 1 stops](#the-graduation-boundary-when-to-rea
 most important thing on this page.
 
 The two tiers compose rather than compete. Even a deployment that adopts en keeps Shōmei's flat
-roles: en's server authenticates its callers by verifying Shōmei JWTs, so *something* outside en
-has to say who the administrator is. Shōmei's built-in tier is that something, and it is never
-removed in favor of en.
+roles: en-server authenticates its callers with API keys and does not verify Shōmei JWTs, so
+nothing in en can say who a Shōmei administrator is — the built-in tier is that something, and it
+is never removed in favor of en (see [Authorization](authorization.md#the-two-tiers)).
 
 ### The role registry
 
@@ -771,14 +771,11 @@ authorization layer — the moment you need any of these four things:
 - **Conditional access (caveats)** — time windows, IP ranges, attribute predicates attached to a
   grant.
 
-Shōmei's built-in tier deliberately **will not grow those four**; adding them would drag a
-policy engine into an authentication service. en (`/Users/shinzui/Keikaku/bokuno/en`, a
-Zanzibar-style ReBAC toolkit) is built for them, and the paved road is "**shomei for
-authentication, en for authorization**": en's server authenticates its callers by verifying
-Shōmei JWTs, so the built-in tier remains the bootstrap that says who the administrator is even
-in an en deployment. The integration guide and examples will live at `docs/user/authorization.md`;
-until then the design is in
-[plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
+Shōmei's built-in tier deliberately **will not grow those four**; adding them would drag a policy
+engine into an authentication service. [en](mori://shinzui/en)
+(<https://github.com/shinzui/en>, a Zanzibar-style ReBAC toolkit) is built for them, and the paved road is "**Shōmei for authentication, en for
+authorization**"; the integration guide, the identity-mapping conventions, and both runnable
+examples are in [Authorization](authorization.md).
 
 ## Reading the audit trail (EP-7)
 

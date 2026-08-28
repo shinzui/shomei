@@ -5,8 +5,8 @@ MFA, sessions, JWTs). This page answers the next question — *what may they do?
 cross-project conventions that make "**Shōmei for authentication, en for authorization**" the
 paved road.
 
-If you have never heard of **en**: it is the author's sibling project
-(<https://github.com/shinzui/en>), a **Zanzibar-style ReBAC** (relationship-based access
+If you have never heard of **en**: it is the author's sibling
+[project](mori://shinzui/en) (<https://github.com/shinzui/en>), a **Zanzibar-style ReBAC** (relationship-based access
 control) toolkit. Authorization data is a set of **relation tuples** — facts of the form
 *subject has relation on object*, e.g. `user:user_01ABC… is editor of project:roadmap` — and a
 **schema** declares how *permissions* rewrite into relations (e.g. `view = viewer ∪ editor`). A
@@ -32,10 +32,17 @@ wrong transport for a decision that must be live. Graduate the *fine-grained* de
 keep Shōmei's tier for bootstrap and coarse gates.
 
 **The built-in tier is never removed in favor of en, and Shōmei's own role grants always stay
-in Shōmei.** en-server's future caller authentication will itself verify Shōmei JWTs (en's plan
-33), so gating Shōmei's admin surface *through* en would be circular at bootstrap. Something
-outside en has to say who the administrator is; Shōmei's flat roles are that something. The two
-tiers compose rather than compete.
+in Shōmei.** en-server authenticates its callers with static API keys and deliberately does not
+verify Shōmei JWTs ([the en project](mori://shinzui/en),
+`docs/plans/33-add-caller-authentication-and-rate-limiting-to-en-server.md`; the artifact-level URI
+is pending), so it has no notion of a Shōmei user's roles: en could only answer "is this user an
+administrator?" if something already authorized to write tuples had said so first. Three things
+follow. Shōmei's `/v1/admin` surface must work on a fresh database with no en deployed, because en
+is optional and the standalone server has no en dependency. The first administrator is granted
+from the box (`shomei-admin roles grant`), outside both HTTP surfaces, and an en deployment would
+copy *from* that grant, never the other way round. And a live authorization decision must not be
+frozen into a JWT claim (see [Consistency](#consistency)), so Shōmei's coarse gate and en's live
+check are different tiers by construction. The two tiers compose rather than compete.
 
 **The graduation boundary.** Reach for en when — and only when — you need one of: a permission
 scoped to a specific resource instance; access that follows a relationship (`editor of the
@@ -125,14 +132,13 @@ arrangement. Shōmei's migrations create everything in the `shomei` schema; en's
 create `relation_tuple`/`en_transaction` in the `public` schema. They do not collide by name —
 but they still should not share a database, for two reasons:
 
-1. **Shōmei can now share a ledger, but en cannot yet.** Shōmei's migrations run on
-   `pg-migrate`, which is built for exactly this: `shomei-migrations` exports
-   `shomeiMigrationComponent`, and a host application can compose it with any other
-   `pg-migrate` component into a single ordered `MigrationPlan` tracked by a single ledger.
-   That is a supported arrangement rather than an unverified one. **But it takes two.** en
-   has not moved to `pg-migrate`, so today the two projects would still bring separate,
-   mutually unaware migration bookkeeping into one database. Reason 2 below is the stronger
-   and more durable argument regardless.
+1. **Both projects now run on `pg-migrate`, so one ledger is possible — but still not the
+   default.** `shomei-migrations` exports `shomeiMigrationComponent`; en's `en-migrations`
+   ([the en project](mori://shinzui/en), `en-migrations/`; the artifact-level URI is pending) has
+   used `pg-migrate` since 2026-08-24, with one bootstrap migration plus a manifest applied by
+   `cabal run en-migrate -- up`. A host can compose both components into one ordered
+   `MigrationPlan`. Composition is supported, not verified here, and reason 2 is the stronger
+   argument.
 2. **en's consistency machinery is inherently per-database.** en's revisions are built on
    PostgreSQL's `pg_current_snapshot()` / `pg_current_xact_id()` (xid8) arithmetic, so sharing a
    database with Shōmei buys **no** cross-system transactional consistency — there is none to be
@@ -142,21 +148,38 @@ but they still should not share a database, for two reasons:
 (en-side schema namespacing — moving en's tables into an `en` schema — is optional companion
 work for operators who *must* consolidate; it is still not the documented default.)
 
-## Current en-side gaps (as of 2026-07-10)
+## Current en-side facts (as of en bf8ffa2, 2026-08-26)
 
-en is a young sibling project. Reading this page without the integration examples, know that:
+en-server authenticates callers with static bearer API keys in two tiers:
+`EN_API_KEYS_READ_WRITE` may call every endpoint, while `EN_API_KEYS_READ_ONLY` may call query
+endpoints only and receives `403` on tuple writes. Keys are compared in constant time. A per-key
+token bucket uses `EN_RATE_LIMIT_RPS` and `EN_RATE_LIMIT_BURST`, returning `429` with
+`Retry-After` when exhausted. Startup fails closed when no key is configured unless an operator
+sets `EN_AUTH_DISABLED=true`; that local-development escape is ignored when any key exists. These
+rules landed in the [en project](mori://shinzui/en) plan at
+`docs/plans/33-add-caller-authentication-and-rate-limiting-to-en-server.md` (the artifact-level URI
+is pending) on 2026-07-08. en-client still adds no authorization header, so a downstream must send
+`Authorization: Bearer <en key>` itself, as the microservice example does. en deliberately does
+not verify Shōmei JWTs: Shōmei remains an extension point rather than an en dependency, and the
+downstream calls en under its own service identity after verifying the user's token.
 
-- **en-server has no caller authentication yet.** Anyone who can reach its port can rewrite the
-  authorization graph. en's plan 33 (unimplemented) names bearer API keys first, with
-  Shōmei-JWT verification as the intended credential checker. **Until it lands, en-server must
-  sit on a private network segment** (same host, private container/mesh network, or mTLS) and
-  never be exposed publicly. The microservice recipe repeats this in a warning block.
-- **No pooled embedding runner.** en-postgres exposes only a single-`Connection` runner today,
-  so embedding en-postgres inside a concurrent host handler path is en-repo work. The
-  `embedded-with-en` example therefore runs en **in-memory** (a teaching stand-in, never
-  production).
-- **`subjectFromUserId` is not yet exported from en.** The two-line subject mapping lives in
-  en's docs and tests; Shōmei-side examples define their own copy (this page's convention).
+en-postgres exports the pooled interpreter `runDatabasePool`, including at the older `d3209cb`
+revision against which this page was first written. The `embedded-with-en` example remains
+in-memory to keep its build light — en-postgres brings the hasql and biscuit dependency families —
+not because a concurrent pooled runner is missing. EP-9 has updated the example's en-core pin to
+the verified `bf8ffa24` revision and implemented its current `TupleStore` vocabulary.
 
-These are tracked in the External Companion Work section of
+en's `en-migrations` has used `pg-migrate ^>=1.1.0.0` since 2026-08-24. Its
+`en-migrations/migrations/` directory in the [en project](mori://shinzui/en) (artifact-level URI
+pending) contains `0001-en-bootstrap.sql` and a manifest; `cabal run en-migrate -- up` applies the
+component, whose tables remain in `public`.
+
+One integration helper is still absent: en does not export `subjectFromUserId`. Its two-line
+definition appears only in the [en project](mori://shinzui/en) at
+`en-biscuit/test/Main.hs` and `docs/user/biscuit-decision-tokens.md` (artifact-level URIs pending),
+so Shōmei-side examples define the mapping themselves.
+
+en-side follow-ups are not edited here: export `subjectFromUserId`, and update the old Shōmei
+module name in en's `docs/user/biscuit-decision-tokens.md` (same project URI; artifact-level URI
+pending). The Shōmei-side companion work was tracked in the External Companion Work section of
 [plan 47](../plans/47-en-integration-examples-and-guidance-for-the-recommended-authorization-layer.md).
