@@ -46,7 +46,7 @@ append-only compatibility strategy.
 
 - [ ] Milestone 1 — add a composed pg-migrate regression test that reproduces Shōmei leaking its
       session search path into a later host component, and record the expected pre-fix failure.
-- [ ] Milestone 2 — rewrite all 33 pre-adoption SQL files so Shōmei objects are schema-qualified
+- [ ] Milestone 2 — rewrite all 36 pre-adoption SQL files so Shōmei objects are schema-qualified
       and every transactional lookup-path change is transaction-local; make the regression and
       existing PostgreSQL suites pass.
 - [ ] Milestone 3 — enforce the policy for future migrations through the authoring recipe, a
@@ -78,6 +78,12 @@ append-only compatibility strategy.
   lifecycle this regression needs. It remains a test-only dependency and does not enter the
   published library's production closure. Its canonical package reference is
   `mori://shinzui/pg-migrate/packages/pg-migrate-test-support`.
+
+- Observation: The implementation baseline contains 36 manifest entries rather than the 33 present
+  when this plan was authored. Migrations `0034` through `0036` were committed after the plan and
+  also use the legacy session-scoped search path, so the rewrite and regression must cover them.
+  Evidence: `wc -l shomei-migrations/migrations/shomei/manifest` printed `36`, and the baseline
+  search reported the legacy header in all three new files.
 
 
 ## Decision Log
@@ -120,6 +126,12 @@ append-only compatibility strategy.
   the original migration-authoring decision.
   Date: 2026-08-27
 
+- Decision: Extend the in-place rewrite through migration `0036` and treat the 36-entry manifest as
+  the implementation baseline.
+  Rationale: Migrations `0034` through `0036` are part of the same pre-adoption history and contain
+  the same unsafe session-scoped command. Excluding them would leave the composition leak intact.
+  Date: 2026-08-27
+
 
 ## Outcomes & Retrospective
 
@@ -139,10 +151,9 @@ Ordinary `SET` survives transaction commit until the connection ends; `SET LOCAL
 the current transaction.
 
 `shomei-migrations/migrations/shomei/manifest` is the ordered list embedded into the
-`shomei-migrations` library. At plan creation it lists 33 files. Migration
-`shomei-migrations/migrations/shomei/0033-login-attempts-factor.sql` and its manifest entry are
-in-progress user work and must be preserved. Migration `0001-shomei-schema.sql` creates the
-`shomei` namespace. Files `0002` through `0033` currently start with session-scoped
+`shomei-migrations` library. At implementation it lists 36 files. Migration
+`shomei-migrations/migrations/shomei/0001-shomei-schema.sql` creates the `shomei` namespace. Files
+`0002` through `0036` currently start with session-scoped
 `SET search_path TO shomei, pg_catalog` and then use unqualified Shōmei relations in `CREATE TABLE`,
 `ALTER TABLE`, `UPDATE`, `INSERT`, `REFERENCES`, `CREATE INDEX ... ON`, and `DROP INDEX` statements.
 
@@ -197,7 +208,7 @@ host-only shape.
 
 Milestone 2 rewrites the embedded history. In all files from
 `shomei-migrations/migrations/shomei/0001-shomei-schema.sql` through
-`0033-login-attempts-factor.sql`, place exactly one
+`0036-unique-password-credential-per-user.sql`, place exactly one
 `SET LOCAL search_path = pg_catalog, pg_temp;` after the leading description/comment region.
 Replace every session-scoped search-path command. Prefix Shōmei-owned tables, views, sequences,
 types, functions, and DML targets with `shomei.`. In the present files this includes table names in
@@ -207,8 +218,8 @@ targets after `CREATE INDEX ... ON`; and index names passed to `DROP INDEX`. Do 
 automatically creates it in the explicitly qualified parent table's schema. Constraint names after
 `DROP CONSTRAINT` are table-local and also remain unqualified. Built-in types and functions may
 remain textually unqualified because `pg_catalog` is first in the restricted local path. Preserve
-every migration's data behavior, comments, filename, and manifest position, including the user's
-new `0033` migration.
+every migration's data behavior, comments, filename, and manifest position, including migrations
+`0034` through `0036`, which were added after this plan was authored.
 
 Run the composed regression after the rewrite. It must now pass because every Shōmei transaction
 temporarily selects the safe built-in path and then restores the host's session path. Run the
@@ -274,9 +285,9 @@ rg -n '^SET search_path TO shomei, pg_catalog;$' \
   shomei-migrations/migrations/shomei/*.sql
 ```
 
-The manifest check should succeed, `wc` should report 33, and the final command should list
-migrations `0002` through `0033`. The working tree already contains unrelated edits and the
-in-progress `0033` file; do not reset or overwrite them.
+The manifest check should succeed, `wc` should report 36, and the final command should list
+migrations `0002` through `0036`. Preserve unrelated working-tree changes; do not reset or
+overwrite them.
 
 After adding the Milestone 1 test but before rewriting SQL, run:
 
@@ -301,7 +312,7 @@ cabal test shomei-postgres-test --test-show-details=direct
 
 Both `rg` commands should print nothing. Both test suites should pass. If a migration uses the
 nontransactional directive in the future, exclude it deliberately from the second source check;
-none of the current 33 files is nontransactional.
+none of the current 36 files is nontransactional.
 
 Allocate and validate the ADR without guessing its ID:
 
@@ -338,7 +349,7 @@ focused tests before the full gates.
 
 Acceptance is behavioral, not merely a clean grep. The new `shomei-migrations-test` must apply one
 explicit plan ordered as host-before, Shōmei, host-after on real ephemeral PostgreSQL. Host-before
-leaves `search_path` set to `host, pg_catalog`; Shōmei applies all 33 migrations; host-after then
+leaves `search_path` set to `host, pg_catalog`; Shōmei applies all 36 migrations; host-after then
 successfully inserts into its unqualified host probe. On a fresh assertion connection, the test
 must show that the row exists in `host`, both collision-named user tables exist in their intended
 schemas, and the host table was not altered into Shōmei's shape. This single scenario proves that
@@ -384,7 +395,7 @@ edit, stop and report the overlap instead of resetting user work.
 
 No production Haskell interface changes. `Shomei.Migrations.shomeiMigrationComponent` keeps type
 `Either DefinitionError MigrationComponent`, stable component name `shomei`, an empty dependency
-set, and the same 33 migration identities in manifest order. `shomeiMigrationPlan`,
+set, and the same 36 migration identities in manifest order. `shomeiMigrationPlan`,
 `resolveShomeiMigrationPlan`, and `applyShomeiMigrations` keep their existing signatures and
 semantics.
 
@@ -425,3 +436,9 @@ DROP INDEX IF EXISTS shomei.shomei_sessions_status_idx;
 A nontransactional pg-migrate file is one statement and cannot use `SET LOCAL`; its one statement
 must therefore qualify every non-built-in object directly. This exception must be present in the
 checker, documentation, and ADR even though none of the current migrations uses it.
+
+
+Revision note (2026-08-27): Extended the implementation baseline from 33 to 36 migrations after
+the baseline manifest and source scan showed that committed migrations `0034` through `0036` also
+carry the legacy session-scoped search path. The purpose and policy are unchanged; every current
+pre-adoption migration is now explicitly in scope.
