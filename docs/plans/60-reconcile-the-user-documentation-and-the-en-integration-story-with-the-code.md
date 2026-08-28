@@ -35,7 +35,7 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 - [x] (2026-08-27) M1: EP-4 had landed; `TimingSpec` contains the locked-account hash case, so `security.md`'s "exactly one" guarantee remains accurate
 - [x] (2026-08-27) M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; both `security.md` passages fixed; EP-9's already-correct `microservice-auth-stack/README.md` §4 preserved
 - [x] (2026-08-27) M3: `architecture.md`, the README quick start, user index, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and bundle log, and the embedded demo README reconciled; non-strict capability validation passes and strict validation reports only the 24 baseline `reviews` omissions
-- [ ] M4: `deployment.md` (pool sentence, sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, delegation-blocked list, audit route), `oidc.md:77-79` and `:95-97`, `passkeys.md:129`
+- [x] (2026-08-27) M4: `deployment.md` (session-aware pool sizing, ten-key sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, complete delegation-blocked list, `RequireAdmin` audit route), `oidc.md` cookie transport, and `passkeys.md` server-side origin enforcement reconciled
 - [ ] M5: per-sibling probes run and recorded; deferred sentences listed in Outcomes; link check and OpenAPI diff clean
 - [ ] M6: the five MasterPlan 8 ADRs exist, are linked from the pages stating their rules, and the bundle validates
 

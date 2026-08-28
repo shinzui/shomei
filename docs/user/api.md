@@ -120,6 +120,9 @@ Set-Cookie: __Secure-shomei_refresh=<token>; Path=/v1/auth/refresh; Max-Age=2592
 `HttpOnly` keeps them out of page JavaScript, so an XSS payload cannot read the session. The
 `__Host-` prefix additionally requires `Secure`, `Path=/`, and no `Domain`; `__Secure-` requires
 `Secure`. The refresh cookie is scoped to the one endpoint that consumes it.
+The refresh cookie's `Path` is the served path of `ShomeiRoutes`' refresh route under `/v1`. A host
+that mounts `ShomeiAPI` at another prefix breaks the match — the browser never sends the cookie —
+and with it cookie-mode refresh.
 `POST /v1/auth/logout` re-sets both with an empty value and `Max-Age=0`. `Secure` and `SameSite`
 are configurable (`SHOMEI_COOKIE_SECURE`, `SHOMEI_COOKIE_SAMESITE`). When `Secure` is explicitly
 disabled for development, the names fall back to `shomei_session` and `shomei_refresh` because
@@ -411,10 +414,13 @@ curl -s \
 
 Revoke the delegated token or its session with `POST /oauth/revoke`.
 
-Credential-changing endpoints (`POST /v1/auth/password/change`, `POST /v1/auth/passkeys/register/begin`,
-`POST /v1/auth/passkeys/register/complete`, `DELETE /v1/auth/passkeys/{passkeyId}`) **refuse** any request
-bearing a delegated token with `403 impersonation_action_blocked` and write an audit record. An
-operator can look but cannot change the customer's credentials.
+Credential-changing endpoints (`POST /v1/auth/password/change`,
+`POST /v1/auth/passkeys/register/begin`, `POST /v1/auth/passkeys/register/complete`,
+`DELETE /v1/auth/passkeys/{passkeyId}`, `POST /v1/auth/totp/enroll`, `DELETE /v1/auth/totp`, and
+`POST /v1/auth/recovery-codes`) **refuse** any request bearing a delegated token with
+`403 impersonation_action_blocked` and write an audit record. `POST /v1/auth/totp/verify` is not
+on this list because it only completes a pending enrollment. An operator can look but cannot
+change the customer's credentials.
 
 ## Admin API
 
@@ -504,21 +510,18 @@ login or refresh. Revoke their sessions if you need it to bite immediately.
 
 ## Audit log (EP-7)
 
-### `GET /v1/admin/audit/events` *(admin role required)*
+### `GET /v1/admin/audit/events` *(admin role or scope required)*
 Read the append-only security audit trail (`shomei_auth_events`), newest first. Query params,
 all optional: `user` (UUID), `session` (UUID), `type` (repeatable — `?type=login_failed&type=account_locked`),
 `since` (ISO-8601, inclusive), `until` (ISO-8601, exclusive), `limit` (default 50, clamped to
 1000), and `before` (an opaque cursor from a previous page's `nextCursor`). → `200`
 `{"events":[{"eventId","eventType","userId","sessionId","createdAt","payload"},…],"nextCursor":"…|null"}`;
 page by passing `nextCursor` back as `?before=`. → `400` on a malformed UUID/timestamp/cursor.
-Gated by the `RequireRole "admin"` route combinator: → `401` with no token, `403` for a token
-whose principal lacks the role. Grant it with `shomei-admin roles grant --user <id> --role admin`
-(see [security.md](security.md#granting-roles)); the role reaches the token at the next login or
-refresh, not on one already issued.
-
-> **Admin-role limitation.** Signup/login do not issue roles, so no production flow yields an
-> admin token yet; this endpoint is exercised by tests and out-of-band-minted tokens. The
-> supported operator path today is the `shomei-admin audit …` CLI (see [security.md](security.md)).
+Gated by `RequireAdmin`, which accepts the `admin` **role** or the `shomei:admin` **scope**: → `401`
+with no token, `403` for a token whose principal has neither. Grant the role with
+`shomei-admin roles grant --user <id> --role admin` (see
+[security.md](security.md#granting-roles)); the role reaches the token at the next login or refresh,
+not on one already issued.
 
 ## Operational endpoints
 

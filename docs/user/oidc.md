@@ -89,8 +89,8 @@ revoke a client that is no longer trusted.
 ## The authorize contract (host-owned login)
 
 `GET /oauth/authorize` authenticates the browser with the **same** credential machinery as every
-other authenticated route — a Shōmei bearer token today, and the cookie transport once
-`tokenTransport` includes cookies. Shōmei ships no login page and stores no "pending authorize"
+other authenticated route — a Shōmei bearer token, or the `shomei_session` cookie when
+`tokenTransport` is `cookie` or `both`. Shōmei ships no login page and stores no "pending authorize"
 state; the request parameters round-trip through the URL.
 
 1. An **authenticated** request immediately `302`s to `redirect_uri` with `?code=…&state=…&iss=…`.
@@ -112,8 +112,8 @@ state; the request parameters round-trip through the URL.
 How each consumer class integrates:
 
 - **Server-side relying party** (oauth2-proxy, Spring): the browser navigates to `/oauth/authorize`
-  and carries the session cookie once the cookie transport is enabled; until then the login-redirect
-  path covers it.
+  and carries the session cookie when the cookie transport is on; under bearer transport the
+  login-redirect path covers it.
 - **SPA (public client)** already holding a bearer token: call authorize with
   `fetch(url, { headers: { Authorization: "Bearer …" }, redirect: "manual" })` and apply the
   `Location` yourself.

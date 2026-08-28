@@ -84,10 +84,11 @@ but any value containing `:` must parse as a URI. The server validates both valu
 `SHOMEI_DB_POOL_SIZE` bounds how many requests can touch PostgreSQL at once; a request that
 finds every connection busy waits up to `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` and then fails.
 Token verification on the authenticated hot path is pure in-memory work and takes no connection
-at all, so the pool only has to cover the write workflows (signup, login, refresh, logout) plus
-`shomei-admin`. Size it against the database's own `max_connections` budget shared across every
-replica, not against request concurrency, and prefer shedding load with a short acquisition
-timeout over queueing behind a saturated pool.
+under the default `SHOMEI_SESSION_CHECK=token-only`; `token-and-session` adds one session read per
+authenticated request, so size for it if you enable it. Otherwise the pool only has to cover the
+write workflows (signup, login, refresh, logout) plus `shomei-admin`. Size it against the database's
+own `max_connections` budget shared across every replica, not against request concurrency, and
+prefer shedding load with a short acquisition timeout over queueing behind a saturated pool.
 
 Every new pooled connection sets PostgreSQL's `statement_timeout` and
 `idle_in_transaction_session_timeout` from `SHOMEI_DB_STATEMENT_TIMEOUT_MS`. The 30-second default
@@ -429,7 +430,7 @@ idleness timeout closes it between hourly cycles. The task logs one structured J
 on stderr:
 
 ```json
-{"level":"info","msg":"sweep","refresh_tokens":3,"sessions":1,"verification_tokens":0,"reset_tokens":0,"ceremonies":1,"lockouts":0,"login_attempts":0,"auth_events":0,"duration_ms":48.3}
+{"level":"info","msg":"sweep","refresh_tokens":3,"sessions":1,"verification_tokens":0,"reset_tokens":0,"ceremonies":1,"authorization_codes":0,"lockouts":0,"login_attempts":0,"role_grants":0,"auth_events":0,"duration_ms":48.3}
 ```
 
 If you would rather schedule maintenance yourself (cron, a Kubernetes CronJob), set
@@ -446,8 +447,10 @@ sessions:            0
 verification_tokens: 0
 reset_tokens:        0
 ceremonies:          0
+authorization_codes: 0
 lockouts:            0
 login_attempts:      0
+role_grants:         0
 auth_events:         0 (retention disabled)
 ```
 
@@ -464,9 +467,11 @@ mirrors an environment variable (`--batch-size`, `--dead-session-grace-days`,
 | `shomei_sessions` | expired, or revoked, longer ago than the grace period | 30 days |
 | `shomei_email_verification_tokens` | expired longer ago than the grace period | 7 days |
 | `shomei_password_reset_tokens` | expired longer ago than the grace period | 7 days |
-| `shomei_account_lockouts` | the lock elapsed longer ago than the grace period | 7 days |
 | `shomei_webauthn_pending_ceremonies` | expired longer ago than the grace period | 60 minutes |
+| `shomei_oauth_authorization_codes` | expired longer ago than the ceremony grace | 60 minutes |
+| `shomei_account_lockouts` | the lock elapsed longer ago than the grace period | 7 days |
 | `shomei_login_attempts` | older than the retention window | 90 days |
+| `shomei_role_grants` | `expires_at` passed longer ago than the one-time-token grace (forever grants are never touched) | 7 days |
 | `shomei_auth_events` | older than the retention window | **never** (opt-in) |
 
 Two of these deserve explanation.
@@ -478,12 +483,11 @@ early would silently downgrade "token reuse — revoke the whole family" to "unk
 token in the family is unusable anyway. Lowering `SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS` below
 your refresh-token TTL narrows that window; do not.
 
-**`shomei_account_lockouts` rows exist only after the account reaches its threshold.** The
-append-only `shomei_login_attempts` table is the source of truth for the running windowed count;
-the lockout row records the resulting cooldown. A successful login removes the row, and the
-sweeper removes rows whose cooldown elapsed longer ago than the configured grace period. Deleting
-an elapsed lockout does not reset the failure history; the attempt-retention window bounds that
-history independently.
+**Lockout rows are written only when an account locks.** The running failure count is not stored in
+`shomei_account_lockouts` at all — it is counted from `shomei_login_attempts` inside the lockout
+window on every failure — so a lockout row always carries a `locked_until`, and the sweeper deletes
+it once that instant is a grace period in the past. A successful login clears an elapsed lock
+immediately; the sweeper is only hygiene.
 
 ### Audit-event retention is off by default
 

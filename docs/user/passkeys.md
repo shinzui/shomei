@@ -130,8 +130,8 @@ SHOMEI_MFA_REQUIRE_SECOND_FACTOR=true
 The defaults (`rpId = "localhost"`, `origins = ["http://localhost:8080"]`) work only for local
 development. In production you **must** set `rpId` to your registrable domain (e.g.
 `auth.example.com`) and `origins` to the exact origin(s) your login page is served from (e.g.
-`https://auth.example.com`). The browser refuses any ceremony whose page origin is not in
-`origins`, and a passkey enrolled under one `rpId` cannot be used under another. Set these
+`https://auth.example.com`). Shōmei refuses, server-side, any ceremony whose page origin is not in
+`origins`; the browser, for its part, will not use a passkey enrolled under one `rpId` for another. Set these
 **before** enrolling any passkeys; changing `rpId` later invalidates every existing passkey.
 
 ## Security properties
