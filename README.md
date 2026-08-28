@@ -50,10 +50,10 @@ Run the standalone server against the dev database:
 PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
   cabal run exe:shomei-server   # exe: disambiguates from the shomei-admin executable
 # then, from another terminal:
-curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
+curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
+  -d '{"loginId":"alice","email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
 # …or sign up by login identifier with no email (the principal need not be an address):
-curl -s -X POST localhost:8080/auth/signup -H 'content-type: application/json' \
+curl -s -X POST localhost:8080/v1/auth/signup -H 'content-type: application/json' \
   -d '{"loginId":"agent-4815162342","password":"correct horse battery staple","displayName":"Agent"}'
 ```
 

@@ -491,3 +491,12 @@ things only execution revealed. Reading found the `MVar`, the unbounded tables, 
 flags. Running found the foreign key, the gauge sign, the twenty-line log, the `parseRequest`
 status hole, and — in EP-3 — that `GHCRTS` breaks the server at boot because `dhall-to-json`
 inherits it.
+
+**Addendum, 2026-08-27 (REV-5, plan 60).** The checked Progress measurements “login 11 → 7” and
+“refresh 5 → 3” were true when recorded, but later work added passkey and TOTP lookups, role and
+permission reads, and the email gate. The pinned budgets are now login 10 and refresh 5
+(`shomei-postgres/test/Main.hs`, `testLoginRoundTripBudget` and `testRefreshRoundTripBudget`). The
+checked statement that legacy hashes still verify also ceased to be true in `e566bcb` on
+2026-08-23: the older unparameterized form is now rejected without hashing by
+`verifyPasswordArgon2id` in
+`shomei-postgres/src/Shomei/Account/Password/Hash/Postgres.hs`.

@@ -9,7 +9,7 @@ demo from the `examples/embedded-servant-app` directory (so this `www/` resolves
 `SHOMEI_DEMO_WWW` to an absolute path, then open <http://localhost:8080/index.html>.
 
 Full walkthrough (create an account, enroll a passkey, step-up login): see
-[`docs/user/passkeys.md`](../../../docs/user/passkeys.md) → "Demo walkthrough".
+[`docs/user/passkeys.md`](../../../docs/user/passkeys.md) → "Browser glue and the demo".
 
 Files:
 - `index.html` — the page (login / enroll / step-up sections).

@@ -34,7 +34,7 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 - [x] (2026-08-27) M1: `security.md` reconciled (hash format and module, four collapsed login cases, account key and per-IP window, counter zero case, `RequireAdmin`, runbook transcript, stamp); `LoginAttempt/Domain.hs:21` Haddock corrected
 - [x] (2026-08-27) M1: EP-4 had landed; `TimingSpec` contains the locked-account hash case, so `security.md`'s "exactly one" guarantee remains accurate
 - [x] (2026-08-27) M2: `authorization.md` en-side section rewritten against en `bf8ffa2`; circularity paragraph re-grounded; topology item 1 corrected; both `security.md` passages fixed; EP-9's already-correct `microservice-auth-stack/README.md` §4 preserved
-- [ ] M3: `architecture.md:21`, `README.md:53-57`, `index.md:33`, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and `docs/capabilities/log.md`, `www/README.md:12`
+- [x] (2026-08-27) M3: `architecture.md`, the README quick start, user index, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and bundle log, and the embedded demo README reconciled; non-strict capability validation passes and strict validation reports only the 24 baseline `reviews` omissions
 - [ ] M4: `deployment.md` (pool sentence, sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, delegation-blocked list, audit route), `oidc.md:77-79` and `:95-97`, `passkeys.md:129`
 - [ ] M5: per-sibling probes run and recorded; deferred sentences listed in Outcomes; link check and OpenAPI diff clean
 - [ ] M6: the five MasterPlan 8 ADRs exist, are linked from the pages stating their rules, and the bundle validates
@@ -61,6 +61,10 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
   the isolated `embedded-with-en` pin from `d3209cb` to the verified en HEAD `bf8ffa24`, including the new
   `ReadRelationshipPage` constructor. M2 therefore preserved that README and described the resolved pin rather than
   repeating the draft's obsolete 96-commit gap.
+- M3's negative README grep also matches the corrected payload because its pattern looks for the required adjacent
+  `"email":"alice@example.com","password"` fields without checking whether `loginId` is present earlier in the
+  object. The route-specific half is empty and the displayed body now includes `loginId`; the acceptance command was
+  treated as an over-broad probe rather than changing the specified payload order to appease it.
 
 
 ## Decision Log

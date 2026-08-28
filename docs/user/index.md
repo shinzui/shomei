@@ -30,7 +30,7 @@ Haskell service, and integrating client applications.
 - [Authorization](authorization.md) covers the two-tier authorization story — Shōmei's built-in
   RBAC and, for fine-grained access, the **en** (ReBAC) integration — with the identity-mapping,
   consistency, and database-topology conventions for composing the two.
-- [Client & Examples](client-and-examples.md) shows the typed Haskell client and the two runnable
+- [Client & Examples](client-and-examples.md) shows the typed Haskell client and the three runnable
   example applications.
 - [Generating API Clients](openapi-client-generation.md) explains the committed OpenAPI 3.1 schema
   (`docs/api/openapi.json`) and how to generate typed clients in TypeScript, Python, Go, and other

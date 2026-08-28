@@ -58,15 +58,19 @@ The changes that make up this first release follow.
 
 ### Fixed — security: `sessionCheckMode = VerifyTokenAndSession` was a no-op on authenticated routes
 
+*Editorial note, 2026-08-27: module names corrected to the ones shipped in 0.1.0.0; the entry
+originally used pre-plan-48 names that never existed at release.*
+
 `sessionCheckMode = VerifyTokenAndSession` is documented to re-read the session on every request,
 so that revoking a session or suspending a user takes effect immediately rather than when the
-outstanding access token expires. It did not: `Shomei.Workflow.verifyToken`, the only function
-that reads the setting, had no production caller. Every assembly wired the HTTP auth handler to
-the pure, session-blind verifier from `Shomei.Jwt.Verify`, so the setting changed no behavior on
+outstanding access token expires. It did not: `Shomei.Session.Authentication.Workflow.verifyToken`,
+the only function that reads the setting, had no production caller. Every assembly wired the HTTP
+auth handler to the pure, session-blind verifier from `Shomei.SigningKey.Verify.Jwt`, so the setting
+changed no behavior on
 routes guarded by `Authenticated`, `RequireRole`, `RequireScope`, or `RequirePermission`, nor on
 `GET /oauth/authorize`.
 
-The HTTP layer now verifies through `Shomei.Workflow.verifyToken`. With the setting enabled, a
+The HTTP layer now verifies through `Shomei.Session.Authentication.Workflow.verifyToken`. With the setting enabled, a
 request bearing an access token whose session has been revoked or expired is refused with
 `401 session_revoked` or `401 session_expired`; an unresolvable session id remains the
 undifferentiated `401 token_invalid`.
@@ -195,7 +199,8 @@ accounts an operator manages at runtime. Any stock OAuth2 client — Spring, ASP
   consumers see one event type for "a machine token was minted" whichever endpoint minted it.
 
 `POST /v1/auth/service-token` and its config-defined accounts are **deprecated** but unchanged;
-nothing breaks. See [docs/user/service-tokens.md](docs/user/service-tokens.md) for the migration
+nothing breaks (the endpoint was removed before the 0.1.0.0 release in `e566bcb`). See
+[docs/user/machine-tokens.md](docs/user/machine-tokens.md) for the migration
 recipe.
 
 **Note the error-shape boundary.** Endpoints under `/oauth/*` answer with RFC 6749 §5.2's

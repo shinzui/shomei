@@ -18,11 +18,13 @@ shomei-core  ──>  shomei-jwt / shomei-postgres  ──>  shomei-servant  ─
 
 ## Effects and interpreters
 
-Each effect interface lives in `shomei-core/src/Shomei/Effect/*` as a GADT of operations plus a
-`send`-based smart constructor — for example `UserStore`, `CredentialStore`, `SessionStore`,
-`RefreshTokenStore`, `VerificationTokenStore`, `PasswordResetTokenStore`, `LoginAttemptStore`,
-`SigningKeyStore`, `PasswordHasher`, `TokenSigner`, `TokenVerifier`, `TokenGen`, `Clock`,
-`AuthEventPublisher`, and `Notifier`.
+Each effect interface lives beside the concept it serves, usually in a
+`shomei-core/src/Shomei/<Concept>/…/Store.hs` module, as a GADT of operations plus a `send`-based
+smart constructor. Examples include `Shomei.Session.Store`, `Shomei.Account.User.Store`, and
+`Shomei.SigningKey.Store`; the non-store ports include `Shomei.SigningKey.Signer`,
+`Shomei.SigningKey.Verifier`, `Shomei.Session.Token.Generator`, `Shomei.Time.Store`, and
+`Shomei.Audit.Publisher.Store`. The surviving `Shomei.Effect` directory contains shared effect
+machinery, not the interfaces themselves.
 
 There are two interpreter assemblies for the same canonical effect stack (`AppEffects`):
 

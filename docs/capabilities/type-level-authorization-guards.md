@@ -4,7 +4,7 @@ type: Capability
 description: "Guard a Servant route by writing a combinator in its type - Authenticated, RequireRole, RequireScope, or RequirePermission - with no in-handler check to forget."
 generated:
   by: claude-opus-5/1
-  at: "2026-08-24T00:00:00Z"
+  at: "2026-08-27T00:00:00Z"
 capabilityId: CAP-9
 provider: mori://shinzui/shomei
 status: shipped
@@ -26,7 +26,7 @@ evidence:
     proves: The HasServer instances that make the combinators enforce rather than merely annotate.
   - kind: example
     resource: examples/embedded-with-en/src/EmbeddedEn/Authz.hs
-    proves: A host reusing the same fail-closed guard shape for its own fine-grained checks.
+    proves: A host reusing the same fail-closed outcome mapping (Allowed proceeds, Denied and Conditional are 403, an engine error is 503) as a term-level Handler guard for its own fine-grained checks; it is not a type-level combinator.
 ---
 
 # Type-level authorization guards

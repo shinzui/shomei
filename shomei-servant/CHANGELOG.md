@@ -26,6 +26,9 @@ Shōmei packages.
 
 ## 0.1.0.0 — 2026-08-24
 
+*Editorial note, 2026-08-27: module names corrected to the ones shipped in 0.1.0.0; the entry
+originally used pre-plan-48 names that never existed at release.*
+
 Initial release. The HTTP layer of the Shōmei authentication toolkit.
 
 - `ShomeiAPI` as a `NamedRoutes` record with typed `MultiVerb` results,
@@ -38,7 +41,7 @@ Initial release. The HTTP layer of the Shōmei authentication toolkit.
   documented error catalog.
 - Enforcing auth combinators for guarding your own routes: `Authenticated`,
   `RequireRole`, `RequireScope`, and `RequirePermission`. Verification runs
-  through `Shomei.Workflow.verifyToken`, so `sessionCheckMode =
+  through `Shomei.Session.Authentication.Workflow.verifyToken`, so `sessionCheckMode =
   VerifyTokenAndSession` genuinely re-reads the session on every request.
 - Cookie token transport with CSRF defenses, alongside bearer tokens.
 - OAuth/OIDC endpoints: discovery, `authorize`, `token` (authorization code,
