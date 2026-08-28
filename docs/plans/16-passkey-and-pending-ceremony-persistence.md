@@ -63,6 +63,16 @@ move that entry. See "Context and Orientation" for the exact domain-type contrac
 reproduced here so this plan is self-contained even if EP-1's document is still a skeleton
 when you read it.
 
+An implementation-provenance audit on 2026-08-27 confirmed that this functionality was not
+implemented wholesale by another ExecPlan. Commit `e07b819` added the core stores, in-memory
+interpreters, and pure tests, and commit `db79c24` added the PostgreSQL tables, interpreters,
+wiring, and integration tests; both commits carry an `ExecPlan:` trailer naming this file.
+[Plan 17](17-passkey-enrollment-workflow-and-management-api.md) and
+[Plan 18](18-passkey-login-mfa-step-up-and-passwordless.md) explicitly consume the stores as
+already-present EP-2 dependencies. Later plans changed their organization or strengthened parts
+of the contract, as summarized under "Post-completion provenance and current locations" below,
+but they did not replace Plan 16 as the implementation record for the persistence foundation.
+
 
 ## Progress
 
@@ -127,9 +137,31 @@ This section must always reflect the actual current state of the work.
       count grew from 12 to 14 (codd applied both new migrations) and all 4 new cases pass.
       `cabal test all` green across all 11 suites.
 
+### Provenance audit — 2026-08-27
+
+- [x] Trace the original implementation through Git history. Commits `e07b819` and `db79c24`
+      both name this ExecPlan in their trailers and together cover the complete core and
+      PostgreSQL scope.
+- [x] Check the dependent WebAuthn plans. Plans 17 and 18 say that the EP-2 effects and
+      interpreters are already present and only consume them; Plan 19 demonstrates and
+      documents the completed workflows.
+- [x] Identify later evolution without misattributing the original implementation. Plan 48
+      moved the modules into concept-first paths and removed the obsolete effect-level bulk
+      cleanup operation, Plan 50 moved the SQL history from codd to pg-migrate, Plan 55 made
+      signature-counter advancement compare-and-swap, and Plan 61 schema-qualified the migration
+      history.
+- [x] Re-run the current pure suite with
+      `nix develop --command cabal test shomei-core-test --test-show-details=direct`: all 278
+      tests passed, including the passkey-store and consume-once ceremony cases.
+- [x] Re-run the current PostgreSQL suite with
+      `nix develop --command cabal test shomei-postgres-test --test-show-details=direct`: all 76
+      tests passed, including passkey lookup/ownership, sequential and concurrent counter
+      advancement, and pending-ceremony consume-once/expiry cases.
+
 ### Remaining / follow-on (not this plan)
 
-- [ ] EP-3 / EP-4 consume these effects. Not in scope here.
+- [x] EP-3 / EP-4 consume these effects. They were completed under Plans 17 and 18 after this
+      plan; their workflow and HTTP work remains outside Plan 16's implementation scope.
 
 
 ## Surprises & Discoveries
@@ -169,6 +201,24 @@ Confirmed during implementation (2026-06-17):
   plain record-pattern accessors (`pkUserId PasskeyCredential{userId} = userId`) rather than
   `value.field`; record *construction* with the explicit constructor and `#label`/`#signCounter`
   generic-lens label updates work fine.
+
+Confirmed by the provenance audit (2026-08-27):
+
+- **Git trailers assign the persistence implementation to this plan, not another plan.** The
+  core commit is `e07b819` and the PostgreSQL commit is `db79c24`; each trailer names
+  `docs/plans/16-passkey-and-pending-ceremony-persistence.md`. Plans 17 and 18 independently
+  corroborate this by describing the EP-2 stores and runners as already present.
+- **The current tree preserves the capability under evolved names and stronger contracts.**
+  Plan 48 moved the interfaces to `Shomei.Passkey.Store` and
+  `Shomei.Passkey.Ceremony.Store`, with PostgreSQL interpreters under the matching
+  `Shomei.Passkey.*.Postgres` modules. Plan 55 changed signature-counter advancement from an
+  unconditional `()` result to a compare-and-swap `Bool`, so concurrent or stale nonzero
+  counters cannot both win. Plan 50 preserved the two table-creation migrations while moving
+  them to the pg-migrate manifest, and Plan 61 later schema-qualified their SQL.
+- **Both current persistence boundaries remain green.** The 2026-08-27 audit ran the complete
+  `shomei-core-test` suite (278 tests) and `shomei-postgres-test` suite (76 tests). PostgreSQL
+  output explicitly included the three-way passkey lookup, user-scoped deletion, sequential and
+  eight-racer counter checks, consume-once pending ceremony, and expired-ceremony cases.
 
 
 ## Decision Log
@@ -267,6 +317,16 @@ Record every decision made while working on the plan.
   duplicate would (correctly) surface as a database error rather than silently overwriting.
   Date: 2026-06-17
 
+- Decision: Retain this ExecPlan as the authoritative implementation record for passkey and
+  pending-ceremony persistence; record later plans as consumers or evolutions rather than mark
+  this plan duplicated or superseded.
+  Rationale: The two commits that introduce the core and PostgreSQL capability both carry this
+  plan's `ExecPlan:` trailer. Plans 17 and 18 consume the already-landed interfaces. Plans 48,
+  50, 55, and 61 respectively reorganize modules, migrate the migration engine, harden the
+  counter transition, and harden migration namespace behavior without recreating the original
+  persistence foundation.
+  Date: 2026-08-27
+
 
 ## Outcomes & Retrospective
 
@@ -299,10 +359,42 @@ plan's M1 order-check note had the two new interpreters in the wrong relative or
 the compiler. (2) `OverloadedRecordDot` genuinely does not work for the new EP-1 records, so
 record-pattern accessors were used everywhere; this is worth carrying into EP-3/EP-4.
 
+**Provenance follow-up (2026-08-27):** No duplicate implementation plan was found. Plan 16
+itself delivered the persistence foundation in `e07b819` and `db79c24`. Plans 17 and 18 then
+used it for enrollment and login/MFA, while Plans 48, 50, 55, and 61 evolved its module layout,
+migration representation, counter atomicity, and SQL namespace safety. The current in-memory
+behavior remains covered by `shomei-core/test/Shomei/PasskeyStoreSpec.hs`, and the PostgreSQL
+suite still covers passkey round trips, ownership, counter advancement, and pending-ceremony
+consume-once behavior. The 2026-08-27 audit re-ran those containing suites successfully: 278
+core tests and 76 PostgreSQL tests passed.
+
 
 ## Context and Orientation
 
 This section assumes you know nothing about Shōmei. Read it before touching code.
+
+### Post-completion provenance and current locations (audited 2026-08-27)
+
+The implementation instructions below preserve the repository layout and migration tooling that
+existed when Plan 16 was executed on 2026-06-17. In the current tree, Plan 48 moved
+`Shomei.Effect.PasskeyStore` to `Shomei.Passkey.Store`, moved
+`Shomei.Effect.PendingCeremonyStore` to `Shomei.Passkey.Ceremony.Store`, moved the in-memory
+runners from `Shomei.Effect.InMemory` to `Shomei.Test.InMemory`, and renamed the PostgreSQL
+modules to `Shomei.Passkey.Postgres` and `Shomei.Passkey.Ceremony.Postgres`. It also removed the
+effect-level `DeleteExpiredCeremonies` operation after cleanup became a batched maintenance
+responsibility; `putPendingCeremony` and atomic `takePendingCeremony` remain the ceremony-store
+contract.
+
+Plan 50 retained the two original table-creation migrations but moved them to
+`shomei-migrations/migrations/shomei/0014-shomei-webauthn-credentials.sql` and
+`shomei-migrations/migrations/shomei/0015-shomei-webauthn-pending-ceremonies.sql`, ordered by the
+pg-migrate manifest. Plan 55 changed `updatePasskeySignCounter` to return `Bool` and made both
+the in-memory and PostgreSQL implementations compare-and-swap. Plan 61 then schema-qualified the
+migration history. The durable rules introduced by those later changes are recorded in
+[ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) and
+[ADR-19](../adr/0019-migration-components-do-not-mutate-shared-namespace-state.md). These later
+artifacts govern the current implementation; they do not change which plan originally delivered
+the persistence capability.
 
 ### What Shōmei is and how it is layered
 
@@ -1068,3 +1160,13 @@ PasswordHasher, TokenSigner, TokenVerifier, AuthEventPublisher, SigningKeyStore,
 > after `LoginAttemptStore` and before `Notifier`, matching the rule "add exactly your two
 > entries in the same relative position, reorder nothing else." The two new effects sit above
 > `Notifier` in every list, which is the invariant that matters for the workflows.
+
+
+## Revision Notes
+
+2026-08-27: Audited Git history, dependent passkey plans, the current source tree, migrations,
+and relevant ADRs to answer whether another ExecPlan implemented this functionality. Recorded
+that commits `e07b819` and `db79c24` implemented the complete foundation under Plan 16, identified
+Plans 17 and 18 as consumers, and documented the later reorganizing and hardening work from Plans
+48, 50, 55, and 61 so the completed historical plan remains understandable from the current tree.
+Re-ran the current core and PostgreSQL suites; all 278 and 76 tests respectively passed.
