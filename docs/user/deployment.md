@@ -205,7 +205,8 @@ peer, which is the proxy in this topology. The default `maxFailedLoginsPerIp` po
 one twenty-failure, fifteen-minute budget across every user. Set `SHOMEI_TRUSTED_PROXIES` to the
 exact proxy address or subnet so Shōmei can walk `X-Forwarded-For` from the right and select the
 rightmost untrusted client. If that is impossible, raise `SHOMEI_MAX_FAILED_LOGINS_PER_IP` and
-enforce an equivalent limit at the proxy.
+enforce an equivalent limit at the proxy. [ADR-15](../adr/0015-forwarded-client-identity-requires-an-explicit-trusted-proxy.md)
+records the fail-closed trust policy and rightmost-untrusted rule.
 
 For a proxy on loopback, an nginx deployment can use:
 

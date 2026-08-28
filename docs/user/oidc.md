@@ -75,7 +75,8 @@ rotate command (revoke and re-register). A public client is issued no secret at 
 The scopes `impersonate:user` (or the configured impersonation scope), `shomei:admin`, and
 `token-exchange:subject` are principal-level privilege gates. They are refused when an OAuth client
 is registered and again at authorize time. Grant those scopes only to service accounts, which hold
-them as their own authority; see [Scopes are principal privilege](security.md#scopes-are-principal-privilege-three-are-reserved).
+them as their own authority; see [Scopes are principal privilege](security.md#scopes-are-principal-privilege-three-are-reserved)
+and [ADR-2](../adr/0002-reserved-privilege-scopes-are-service-account-authority.md).
 
 ## Trust model
 
@@ -103,7 +104,8 @@ state; the request parameters round-trip through the URL.
    passkey login, MFA completion, or a previous authorization-code exchange. A
    `client_credentials` token, a delegated token, or any token carrying `act` is `401
    login_required` in the OAuth error shape with **no redirect**. A missing, revoked, or expired
-   session is treated as unauthenticated in every `sessionCheckMode`.
+   session is treated as unauthenticated in every `sessionCheckMode`; [ADR-1](../adr/0001-only-an-interactive-session-may-authorize-a-client.md)
+   records this provenance boundary.
 4. An **unknown/revoked `client_id`, or a `redirect_uri` that is not registered**, is `400` **with
    no redirect** — redirecting an unvalidated URI would make the endpoint an open redirector. Every
    *other* error (bad `response_type`, missing PKCE for a public client, a disallowed scope) is an

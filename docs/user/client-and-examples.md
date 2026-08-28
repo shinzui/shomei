@@ -64,7 +64,8 @@ a real browser.
 ### Embedding checklist
 
 Mounting `ShomeiRoutes` supplies handlers, but the host process must also install the standalone
-runtime contract. The route tree and `authContext` provide token verification using the keys loaded
+runtime contract recorded in [ADR-17](../adr/0017-embedded-hosts-install-the-complete-runtime-boundary.md).
+The route tree and `authContext` provide token verification using the keys loaded
 at boot, CSRF origin checks, problem-detail errors, and database-backed account-failure policy. They
 do not reload keys, run maintenance workers, or create the outer request edge. After `buildEnv`, an
 embedding host must:

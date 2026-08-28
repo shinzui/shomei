@@ -226,7 +226,8 @@ a delivery ultimately fails, the worker writes one log line containing only reci
 a stable reason such as `connect_failed`, `rejected_at_data:451`, or `http_status:500`. It publishes
 the same reason in a `notification_delivery_failed` audit event; exception messages, response
 bodies, rendered mail, URLs, and tokens never enter either sink. A notification that expires while
-waiting is skipped with `expired_in_queue`.
+waiting is skipped with `expired_in_queue`. [ADR-9](../adr/0009-transport-exception-text-is-never-persisted.md)
+records why transport exception text never crosses this persistence boundary.
 
 On SIGTERM or SIGINT the server stops accepting new work, closes the notification queue, and waits
 up to `gracefulShutdownTimeoutSeconds` for queued and in-flight delivery before releasing the

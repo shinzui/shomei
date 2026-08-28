@@ -141,7 +141,7 @@ plan adds each record to the established bundle following the exec-plan ADR work
 | 7 | Notifier and Log Hygiene: No Token or Secret Reaches a Log, Audit Row, or Config Dump | docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md | None | EP-6 | Complete |
 | 8 | Proxy-Aware WAI Edge: Trusted Forwarded Headers, Metered Bodies, and Bounded Metrics | docs/plans/58-proxy-aware-wai-edge-trusted-forwarded-headers-metered-bodies-and-bounded-metrics.md | None | EP-4, EP-6 | Complete |
 | 9 | Embedding Parity and a Trustworthy Downstream Verification Template | docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md | None | EP-3, EP-7, EP-8 | Complete |
-| 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | In Progress |
+| 10 | Reconcile the User Documentation and the en Integration Story with the Code | docs/plans/60-reconcile-the-user-documentation-and-the-en-integration-story-with-the-code.md | None | EP-1 through EP-9 | Complete |
 
 Status values: Not Started, In Progress, Complete, Cancelled.
 Hard Deps and Soft Deps reference other rows by their # prefix (e.g., EP-1, EP-3).
@@ -386,7 +386,7 @@ never by counting files. Every later plan allocates the next handle the same way
 - [x] EP-8: chunked bodies metered; metrics method label bounded and escaped; monotonic clock; readiness timed and cached; problem-shaped 413 and 500; lenient header decoding
 - [x] EP-9: `installHostBackgroundTasks` and `hostMiddleware` exported and used by both embedded examples; embedding checklist documented
 - [x] EP-9: downstream template uses TLS, clamps `max-age`, refreshes on an unknown key, sends an en API key; runbooks boot as written
-- [ ] EP-10: `security.md`, `authorization.md`, `architecture.md`, `deployment.md`, `api.md`, `README.md`, `CHANGELOG.md`, MasterPlan 6, and the capability catalog reconciled; docs-wide grep for every flagged sentence
+- [x] EP-10: `security.md`, `authorization.md`, `architecture.md`, `deployment.md`, `api.md`, `README.md`, `CHANGELOG.md`, MasterPlan 6, and the capability catalog reconciled; every sibling probe, source-document link, OpenAPI path, review record, capability record, and ADR verified
 
 
 ## Surprises & Discoveries
@@ -468,6 +468,16 @@ never by counting files. Every later plan allocates the next handle the same way
   bound. Removing the obsolete pin, mirroring the root X.509 security floor, implementing en HEAD's
   `ReadRelationshipPage`, and pinning the verified upstream commit `bf8ffa24` produced a clean
   independent build that CI now runs explicitly.
+
+- EP-10 found six documentation probes stale after their owning behavior plans had landed: clock-skew
+  terminology, the literal MFA-completion path, strict-configuration examples, notifier secret
+  variables, distributed rate-limit wording, and the embedding-checklist heading. The behavior was
+  present in every case; the final reconciliation repaired the user pages and now makes those probes
+  part of the closeout evidence.
+
+- The documentation link checker initially traversed an ignored Cabal `dist-newstyle` copy of an
+  external package README. Restricting the check to authored source documents produced zero broken
+  links without deleting or treating build output as project documentation.
 
 
 ## Decision Log
@@ -614,10 +624,18 @@ never by counting files. Every later plan allocates the next handle the same way
   cache headers into unbounded network work or an extension of revocation trust.
   Date: 2026-08-27
 
+- Decision: MasterPlan 8's completion distillation adds no nineteenth ADR. EP-10 links ADR-1,
+  ADR-2, ADR-9, ADR-15, and ADR-17 from the user-facing rules they govern, while ADR-1 through
+  ADR-18 already cover every durable decision found across the ten child plans.
+  Rationale: The only new EP-10 discoveries concern documentation probes and exclusion of generated
+  build artifacts from a source link check. Those are execution lessons, not new architecture
+  boundaries, persistent constraints, or deliberate product exclusions.
+  Date: 2026-08-27
+
 
 ## Outcomes & Retrospective
 
-EP-1 through EP-9 are complete, closing Phase 1 and Phase 2 and the first three Phase 3 work streams.
+EP-1 through EP-10 are complete, closing all three phases and every work stream.
 Session provenance is persisted and
 compile-time-required at every mint; authorize admits only live interactive sessions; token
 exchange and impersonation see
@@ -655,8 +673,10 @@ now gives embedded hosts the same key reload, maintenance, notification, proxy, 
 body, and limiter boundary as the standalone executable, including bounded cleanup. Its downstream
 template fetches keys over TLS, caps publisher freshness at local staleness, and rate-limits one
 unknown-key refresh and retry; the example runbooks and independently pinned en build are executable
-CI inputs. ADR-17 and ADR-18 record those contracts. One Phase 3 plan remains open: EP-10 is now
-implementable and owns the final documentation and capability-catalog reconciliation.
+CI inputs. ADR-17 and ADR-18 record those contracts. EP-10 completed the final documentation and
+capability-catalog reconciliation: every flagged sentence is corrected or superseded, every
+sibling documentation probe passes, source links and OpenAPI paths are clean, and the governing
+ADRs are linked from the user pages. All ten child plans and all three phases are complete.
 
 
 Revision note (2026-08-27): Reconciled EP-5 as complete, carried its concurrency and migration
@@ -678,3 +698,7 @@ ADR-15 and ADR-16. The MasterPlan remains in progress with EP-9 and EP-10 open.
 Revision note (2026-08-27): Reconciled EP-9 as complete, recorded the shared embedding runtime,
 bounded downstream JWKS policy, executable runbooks, and independent en build, and added ADR-17 and
 ADR-18. The MasterPlan remains in progress with EP-10 open.
+
+Revision note (2026-08-27): Reconciled EP-10 as complete, recorded the documentation-sweep and
+source-link-check discoveries, linked the five governing ADRs from user documentation, completed
+the cross-plan ADR distillation pass, and closed all ten child plans and all three phases.

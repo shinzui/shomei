@@ -37,7 +37,7 @@ the MasterPlan asked the siblings to write are confirmed to exist and to be link
 - [x] (2026-08-27) M3: `architecture.md`, the README quick start, user index, both changelogs, MasterPlan 6 addendum, CAP-9 evidence and bundle log, and the embedded demo README reconciled; non-strict capability validation passes and strict validation reports only the 24 baseline `reviews` omissions
 - [x] (2026-08-27) M4: `deployment.md` (session-aware pool sizing, ten-key sweep examples and table, lockout paragraph), `api.md` (cookie mount caveat, complete delegation-blocked list, `RequireAdmin` audit route), `oidc.md` cookie transport, and `passkeys.md` server-side origin enforcement reconciled
 - [x] (2026-08-27) M5: all EP-1 through EP-9 landed probes pass; six missed documentation probes repaired; no deferred sentences remain; source-corpus link check reports 0 broken links and the OpenAPI diff reports two empty lists
-- [ ] M6: the five MasterPlan 8 ADRs exist, are linked from the pages stating their rules, and the bundle validates
+- [x] (2026-08-27) M6: ADR-1, ADR-2, ADR-9, ADR-15, and ADR-17 exist, are linked from the pages stating their rules, and strict profile validation reports `OK: 18 concepts (okf_version 0.2)`
 
 
 ## Surprises & Discoveries
@@ -121,15 +121,28 @@ Found while researching at HEAD `5dfd2a6` (code identical to reviewed `ee00382`)
   Rationale: Reintroducing the draft's `d3209cb` gap or rewriting an already-correct example would make the living
   plan less accurate after its soft dependency completed.
   Date: 2026-08-27
+- Decision: The completion distillation creates no new ADR; it links the five existing records whose rules this plan
+  reconciles and leaves the documentation-checker lessons in the ExecPlan.
+  Rationale: ADR-1, ADR-2, ADR-9, ADR-15, and ADR-17 already capture the durable provenance, scope, diagnostic,
+  proxy, and embedding boundaries. Over-broad greps and generated-build-directory filtering are execution-local
+  validation lessons, not architectural policy.
+  Date: 2026-08-27
 
 
 ## Outcomes & Retrospective
 
-M5 confirmed that all nine sibling plans had landed, so there are no deferred sentences or follow-up greps. The sweep
-did catch six documentation omissions whose behavior was already implemented; those pages now satisfy the probes. The
-source-document link check reports `0 broken link(s)`, the `api.md`/OpenAPI comparison reports empty differences in
-both directions, the capability bundle validates, and the review bundle still validates all ten records. M6 remains
-to verify and link the five durable decision records before the final retrospective.
+EP-10 is complete. There are no deferred sentences or follow-up greps because all nine sibling plans had landed. The
+six milestones reconciled the security model, en integration, quick start, changelogs, capability evidence,
+deployment runbooks, endpoint reference, OIDC flow, WebAuthn wording, and all sibling-owned user documentation. The
+sweep also caught six sibling documentation omissions whose behavior was already implemented; the repaired pages now
+satisfy every landed probe.
+
+The source-document link check reports `0 broken link(s)`, the `api.md`/OpenAPI comparison reports empty differences
+in both directions, the capability bundle validates all 24 concepts, the review bundle validates all ten records,
+`nix fmt -- --fail-on-change` changes nothing, and strict ADR validation passes all 18 records. ADR-1, ADR-2, ADR-9,
+ADR-15, and ADR-17 are linked from the user-facing paragraphs that state their rules. The final distillation across
+EP-1 through EP-10 found every durable trust-boundary decision already captured by ADR-1 through ADR-18; no new ADR is
+warranted for the editorial and validation-only lessons in this plan.
 
 
 ## Context and Orientation
@@ -141,18 +154,18 @@ under `examples/`. User documentation is `docs/user/` (fifteen pages; `index.md`
 OKF is the structured-documentation format the `okf` CLI validates; a bundle is a directory of one-concept-per-file
 records with a `profile.dhall` naming the schema.
 
-The sibling project **en** (a relationship-based authorization toolkit) is checked out at
-`/Users/shinzui/Keikaku/bokuno/en`, HEAD `bf8ffa24b33de328ed7c6b19f02e9e3ad035d57f` (2026-08-26); every en fact here
-was read at that commit. `docs/user/authorization.md` was written on 2026-07-10 against en `d3209cb`, which
-`examples/embedded-with-en/cabal.project:41` still pins.
+The sibling [en project](mori://shinzui/en) is a relationship-based authorization toolkit. Mori resolves its source
+checkout, whose verified HEAD is `bf8ffa24b33de328ed7c6b19f02e9e3ad035d57f` (2026-08-26); every en fact here was
+read at that commit. `docs/user/authorization.md` was written on 2026-07-10 against en `d3209cb`, and EP-9 has since
+updated `examples/embedded-with-en/cabal.project` to the verified `bf8ffa24` revision.
 
-Architecture Decision Records: this repository has no `docs/adr/` (`ls docs/adr` fails; `mori.dhall` declares only
-`improvement-requests`, `capabilities`, and `reviews`), so no local ADR applies. MasterPlan 8 asks five siblings to
-create `docs/adr/` on first use, following `.claude/skills/exec-plan/ADR.md`: session provenance (EP-1, plan 51),
-reserved privilege scopes (EP-2, plan 52), "a transport library's exception text is never persisted" (EP-7, plan 57),
-the trusted-proxy policy (EP-8, plan 58), and the embedding contract (EP-9, plan 59). This plan creates no ADR; M6
-verifies those five. Plans 51–59 are skeletons at the time of writing, so M5's probes derive from MasterPlan 8's
-Progress lines; re-derive a probe from a sibling's own Progress section if it named things differently.
+Architecture Decision Records now live in the profile-governed `docs/adr/` bundle. The records relevant to this plan
+are [ADR-1](../adr/0001-only-an-interactive-session-may-authorize-a-client.md) for session provenance,
+[ADR-2](../adr/0002-reserved-privilege-scopes-are-service-account-authority.md) for privilege scopes,
+[ADR-9](../adr/0009-transport-exception-text-is-never-persisted.md) for transport diagnostics,
+[ADR-15](../adr/0015-forwarded-client-identity-requires-an-explicit-trusted-proxy.md) for proxy trust, and
+[ADR-17](../adr/0017-embedded-hosts-install-the-complete-runtime-boundary.md) for embedding. M6 confirms all five
+are linked from their user-facing rules and that all 18 records validate strictly.
 
 House style: `docs/plans/13-documentation-and-adoption-guides.md` (verify every fact against the running system before
 writing it) and `docs/plans/30-…`'s Surprises ("grep for downstream docs before changing a log format" — M4's sweeper
@@ -728,3 +741,9 @@ edit, and en at `bf8ffa2` (`en-server/app/Middleware.hs`, `en-server/app/Config.
 `en-migrations/migrations/`, `docs/plans/33-…`). Cross-repository references in prose use the project URI
 `mori://shinzui/en` beside a repository-relative path, because en's artifact-level URIs for plans and user pages are
 pending; never the path alone.
+
+
+Revision note (2026-08-27): Implemented all six milestones against the landed EP-1 through EP-9 tree, corrected six
+sibling documentation omissions discovered by the verification sweep, excluded generated `dist-newstyle` copies from
+the source-document link checker, linked the five governing ADRs from user documentation, and completed the final ADR
+distillation pass.
