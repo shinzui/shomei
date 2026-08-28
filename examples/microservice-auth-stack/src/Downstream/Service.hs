@@ -38,8 +38,13 @@
 -- @docs\/user\/machine-tokens.md@ (Acting on behalf of a user).
 module Downstream.Service
   ( JwksCache,
+    JwksCacheSettings (..),
+    defaultJwksCacheSettings,
+    newJwksManager,
     newJwksCache,
+    newJwksCacheWith,
     currentJwks,
+    refreshForUnknownKey,
     JwksUnavailable (..),
     downstreamApplication,
     Project (..),
@@ -54,11 +59,12 @@ import Crypto.JOSE.JWK (JWKSet)
 import Data.Aeson (eitherDecode)
 import Data.ByteString.Char8 qualified as BS8
 import Data.Char (toLower)
-import Data.IORef (IORef, atomicWriteIORef, newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Data.Time (NominalDiffTime, diffUTCTime)
+import Data.Time (NominalDiffTime, addUTCTime, diffUTCTime)
 import Network.HTTP.Client qualified as HTTP
+import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Header (ResponseHeaders, hCacheControl)
 import Network.HTTP.Types.Status (statusCode, statusIsSuccessful)
 import Network.Wai (Application, Request, requestHeaders)
@@ -70,6 +76,7 @@ import Servant
     err401,
     err503,
     errBody,
+    errHeaders,
     serveWithContext,
     throwError,
     type (:>),
@@ -82,6 +89,7 @@ import Servant.Server.Experimental.Auth
   )
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Config (ShomeiConfig)
+import Shomei.Error (TokenError (TokenKeyNotFound))
 import Shomei.Id (UserId, idText)
 import Shomei.Prelude hiding (Context)
 import Shomei.SigningKey.Verify.Jwt (verifyToken)
@@ -101,14 +109,36 @@ data JwksCache = JwksCache
     cacheUrl :: !String,
     configuredTtl :: !NominalDiffTime,
     maxStaleness :: !NominalDiffTime,
+    unknownKeyMinAge :: !NominalDiffTime,
+    unknownKeyRefreshInterval :: !NominalDiffTime,
     -- | Lock-free read path: every request does one 'readIORef', nothing else. A whole-entry
     -- swap is safe because 'CacheEntry' is immutable.
     cacheEntry :: !(IORef (Maybe CacheEntry)),
     -- | Single-flight guard: full @()@ means no refresh is running. Deliberately not the
     -- data holder — a held lock must never make readers wait. The one thread that wins
     -- 'tryTakeMVar' becomes the refresher; everyone else proceeds on the old value.
-    refreshLock :: !(MVar ())
+    refreshLock :: !(MVar ()),
+    -- | Rate cap for synchronous refreshes triggered by a token naming an unknown key.
+    lastUnknownKeyRefresh :: !(IORef UTCTime)
   }
+
+-- | Operator policy for the downstream JWKS cache. Publisher @max-age@ values may shorten the
+-- configured TTL but can never extend the hard staleness bound.
+data JwksCacheSettings = JwksCacheSettings
+  { configuredTtl :: !NominalDiffTime,
+    maxStaleness :: !NominalDiffTime,
+    unknownKeyMinAge :: !NominalDiffTime,
+    unknownKeyRefreshInterval :: !NominalDiffTime
+  }
+
+defaultJwksCacheSettings :: JwksCacheSettings
+defaultJwksCacheSettings =
+  JwksCacheSettings
+    { configuredTtl = 900,
+      maxStaleness = 86400,
+      unknownKeyMinAge = 5,
+      unknownKeyRefreshInterval = 30
+    }
 
 -- | Thrown (and mapped to HTTP 503) when no key set within 'maxStaleness' exists: either the
 -- cold-start fetch failed, or every refresh has failed for longer than the staleness bound.
@@ -127,18 +157,49 @@ refreshAheadFactor = 0.8
 -- @newJwksCache mgr url ttl maxStale@ refreshes an entry once it is older than @0.8 * ttl@
 -- and refuses to serve one older than @maxStale@.
 newJwksCache :: HTTP.Manager -> String -> NominalDiffTime -> NominalDiffTime -> IO JwksCache
-newJwksCache mgr url ttl maxStale = do
+newJwksCache mgr url ttl maxStale =
+  newJwksCacheWith
+    mgr
+    url
+    JwksCacheSettings
+      { configuredTtl = ttl,
+        maxStaleness = maxStale,
+        unknownKeyMinAge = defaultJwksCacheSettings.unknownKeyMinAge,
+        unknownKeyRefreshInterval = defaultJwksCacheSettings.unknownKeyRefreshInterval
+      }
+
+-- | Build a cache with explicit refresh policy.
+newJwksCacheWith :: HTTP.Manager -> String -> JwksCacheSettings -> IO JwksCache
+newJwksCacheWith mgr url settings = do
   entry <- newIORef Nothing
   lock <- newMVar ()
+  now <- getCurrentTime
+  lastUnknown <- newIORef (addUTCTime (negate settings.unknownKeyRefreshInterval) now)
   pure
     JwksCache
       { cacheMgr = mgr,
         cacheUrl = url,
-        configuredTtl = ttl,
-        maxStaleness = maxStale,
+        configuredTtl = settings.configuredTtl,
+        maxStaleness = settings.maxStaleness,
+        unknownKeyMinAge = settings.unknownKeyMinAge,
+        unknownKeyRefreshInterval = settings.unknownKeyRefreshInterval,
         cacheEntry = entry,
-        refreshLock = lock
+        refreshLock = lock,
+        lastUnknownKeyRefresh = lastUnknown
       }
+
+-- | Select a manager by the configured JWKS URL's scheme. HTTPS uses the TLS manager (and
+-- therefore honours @https_proxy@); plaintext is retained for loopback development, with a loud
+-- warning when used for any other host because an on-path key substitution permits token forgery.
+newJwksManager :: String -> IO HTTP.Manager
+newJwksManager url = do
+  req <- HTTP.parseRequest url
+  if HTTP.secure req
+    then newTlsManager
+    else do
+      unless (HTTP.host req `elem` ["127.0.0.1", "localhost", "::1"]) do
+        BS8.hPut stderr "[downstream] WARNING: JWKS over plaintext http; an on-path attacker can substitute keys. Use https.\n"
+      HTTP.newManager HTTP.defaultManagerSettings
 
 -- | The cached 'JWKSet'. This is the ONLY place the downstream service contacts the auth
 -- service, and it never does so on the request thread except at cold start.
@@ -153,9 +214,12 @@ currentJwks cache = do
     Nothing -> coldStart cache
     Just entry ->
       let age = diffUTCTime now entry.fetchedAt
-       in if age < refreshAheadFactor * entry.effectiveTtl
-            then pure entry.entryJwks
-            else refreshWindow cache entry age
+       in if age >= cache.maxStaleness
+            then refreshWindow cache entry age
+            else
+              if age < refreshAheadFactor * entry.effectiveTtl
+                then pure entry.entryJwks
+                else refreshWindow cache entry age
 
 -- | No key set has ever been fetched. Block on the lock, re-check (another thread may have
 -- filled the cache while we waited), then fetch synchronously. There is nothing stale to
@@ -219,12 +283,31 @@ refreshOnce cache age = do
             )
         )
 
+-- | Refresh synchronously after the verifier reports an unknown @kid@, but only when the current
+-- entry has aged past the small rotation floor and at most once per configured interval. The
+-- interval is claimed atomically before entering the existing single-flight lock, so a burst of
+-- forged unknown ids cannot become a burst of network work.
+refreshForUnknownKey :: JwksCache -> IO Bool
+refreshForUnknownKey cache = do
+  now <- getCurrentTime
+  mEntry <- readIORef cache.cacheEntry
+  case mEntry of
+    Just entry | diffUTCTime now entry.fetchedAt >= cache.unknownKeyMinAge -> do
+      claimed <-
+        atomicModifyIORef' cache.lastUnknownKeyRefresh \lastRefresh ->
+          if diffUTCTime now lastRefresh >= cache.unknownKeyRefreshInterval
+            then (now, True)
+            else (lastRefresh, False)
+      when claimed $ withMVar cache.refreshLock \() -> refreshOnce cache (diffUTCTime now entry.fetchedAt)
+      pure claimed
+    _ -> pure False
+
 mkEntry :: JwksCache -> UTCTime -> JWKSet -> ResponseHeaders -> CacheEntry
 mkEntry cache now jwks hdrs =
   CacheEntry
     { entryJwks = jwks,
       fetchedAt = now,
-      effectiveTtl = fromMaybe cache.configuredTtl (parseMaxAge hdrs)
+      effectiveTtl = min cache.maxStaleness (fromMaybe cache.configuredTtl (parseMaxAge hdrs))
     }
 
 -- | Fetch and parse the JWKS, /returning/ failures rather than throwing: the refresh path
@@ -273,7 +356,7 @@ parseMaxAge hdrs = do
       | BS8.null bs = Nothing
       | Just rest <- BS8.stripPrefix "max-age=" bs =
           case BS8.readInt rest of
-            Just (n, _) | n >= 0 -> Just (fromIntegral n)
+            Just (n, _) | n > 0 -> Just (fromIntegral n)
             _ -> Nothing
       | otherwise = scan (BS8.drop 1 bs)
 
@@ -315,16 +398,32 @@ downstreamApplication cache cfg =
 localAuthHandler :: JwksCache -> ShomeiConfig -> AuthHandler Request AuthClaims
 localAuthHandler cache cfg = mkAuthHandler \req -> do
   jwt <- case lookup "Authorization" (requestHeaders req) of
-    Just v | Just b <- Text.stripPrefix "Bearer " (Text.decodeUtf8 v) -> pure b
-    _ -> throwError err401 {errBody = "missing bearer token"}
+    Just v | Just b <- Text.stripPrefix "Bearer " (Text.decodeUtf8Lenient v) -> pure b
+    _ -> throwError bearer401 {errBody = "missing bearer token"}
   jwks <- liftIO (try @JwksUnavailable (currentJwks cache))
   case jwks of
     Left _ -> throwError err503 {errBody = "verification keys unavailable"}
     Right keys -> do
+      verifyWithUnknownKeyRetry keys jwt
+  where
+    verifyWithUnknownKeyRetry keys jwt = do
       res <- liftIO (verifyToken keys cfg jwt)
       case res of
         Right claims -> pure claims
-        Left _ -> throwError err401 {errBody = "invalid token (local verification failed)"}
+        Left (TokenKeyNotFound _) -> do
+          refreshed <- liftIO (refreshForUnknownKey cache)
+          if refreshed
+            then do
+              fresh <- liftIO (try @JwksUnavailable (currentJwks cache))
+              case fresh of
+                Left _ -> throwError err503 {errBody = "verification keys unavailable"}
+                Right freshKeys -> do
+                  retried <- liftIO (verifyToken freshKeys cfg jwt)
+                  either (const invalidToken) pure retried
+            else invalidToken
+        Left _ -> invalidToken
+    invalidToken = throwError bearer401 {errBody = "invalid token (local verification failed)"}
+    bearer401 = err401 {errHeaders = [("WWW-Authenticate", "Bearer")]}
 
 -- | Reads the verified claims rather than ignoring them: @sub@ is the user this request acts for,
 -- and @act@ (present only on a delegated token — RFC 8693 on-behalf-of or impersonation) is the

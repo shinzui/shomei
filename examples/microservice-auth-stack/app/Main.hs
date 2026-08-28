@@ -15,8 +15,7 @@
 module Main (main) where
 
 import Data.Text qualified as Text
-import Downstream.Service (downstreamApplication, newJwksCache)
-import Network.HTTP.Client qualified as HTTP
+import Downstream.Service (downstreamApplication, newJwksCache, newJwksManager)
 import Network.Wai.Handler.Warp qualified as Warp
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (defaultShomeiConfig)
@@ -31,7 +30,7 @@ main = do
   aud <- maybe "shomei-clients" id <$> lookupEnv "SHOMEI_AUDIENCE"
   ttl <- maybe 900 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_TTL_SECONDS"
   maxStale <- maybe 86400 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS"
-  mgr <- HTTP.newManager HTTP.defaultManagerSettings
+  mgr <- newJwksManager jwksUrl
   cache <- newJwksCache mgr jwksUrl ttl maxStale
   let cfg = defaultShomeiConfig (Issuer (Text.pack iss)) (Audience (Text.pack aud))
   putStrLn ("[example-project-service] listening on :" <> show port)

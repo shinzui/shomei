@@ -16,19 +16,29 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (forM, forM_, replicateM, replicateM_)
+import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (diffUTCTime, getCurrentTime)
 import Downstream.Service
-  ( JwksUnavailable,
+  ( JwksCache,
+    JwksCacheSettings (..),
+    JwksUnavailable (..),
     currentJwks,
+    defaultJwksCacheSettings,
     downstreamApplication,
     newJwksCache,
+    newJwksCacheWith,
+    newJwksManager,
   )
+import Effectful (runEff)
+import Effectful.Error.Static (runErrorNoCallStack)
+import Hasql.Pool (Pool)
 import Network.HTTP.Client
   ( Manager,
     defaultManagerSettings,
@@ -37,6 +47,7 @@ import Network.HTTP.Client
     parseRequest,
     requestHeaders,
     responseBody,
+    responseHeaders,
     responseStatus,
   )
 import Network.HTTP.Types
@@ -46,6 +57,7 @@ import Network.HTTP.Types
     status500,
     statusCode,
   )
+import Network.HTTP.Types.Header (ResponseHeaders)
 import Network.Wai (Application, responseLBS)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant.Health (ProbeVerdict (Healthy))
@@ -54,17 +66,22 @@ import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimit
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Error (AuthError)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
+import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
-import Shomei.Server.Keys (bootstrapKeys)
+import Shomei.Server.Keys (LoadedKeys, bootstrapKeys, reloadKeys)
 import Shomei.Session.Dto (LoginRequest (..), LoginResponse (..), TokenPairResponse (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
-import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
+import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
+import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64, protectStoredSigningKey)
+import Shomei.SigningKey.Store (replaceActiveSigningKey)
 import Test.Tasty (DependencyType (AllFinish), TestTree, defaultMain, dependentTestGroup, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -94,19 +111,20 @@ main =
       let jwksUrl = "http://127.0.0.1:" <> show authPort <> "/.well-known/jwks.json"
       jwksBytes <- fetchBody mgr jwksUrl
       cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show authPort)
-      _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "MS"}
-      loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = email, password = password}
+      _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = testEmail, email = Just testEmail, password = testPassword, displayName = "MS"}
+      loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword}
       lr <- case loginResponse of
         complete@LoginCompleteResponse {} -> pure complete
         LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
       token <- maybe (assertFailure "expected a body token in bearer mode") pure lr.token.accessToken
-      defaultMain (tests mgr cfg jwksUrl jwksBytes token)
-  where
-    email = "ms@example.com" :: Text
-    password = "correct horse battery staple" :: Text
+      defaultMain (tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token)
 
-tests :: Manager -> ShomeiConfig -> String -> LBS.ByteString -> Text -> TestTree
-tests mgr cfg jwksUrl jwksBytes token =
+testEmail, testPassword :: Text
+testEmail = "ms@example.com"
+testPassword = "correct horse battery staple"
+
+tests :: Pool -> IORef LoadedKeys -> C.ClientEnv -> Manager -> ShomeiConfig -> String -> LBS.ByteString -> Text -> TestTree
+tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token =
   testGroup
     "microservice demo: downstream local JWT verification"
     [ testCase "valid token → 200 (offline), tampered → 401, none → 401" do
@@ -118,9 +136,13 @@ tests mgr cfg jwksUrl jwksBytes token =
           tampered <- getProjects mgr downPort (Just (Text.dropEnd 1 token <> "X"))
           tampered @?= 401
 
-          none <- getProjects mgr downPort Nothing
-          none @?= 401,
-      cacheTests mgr cfg jwksBytes token
+          (none, headers) <- getProjectsResult mgr downPort Nothing
+          none @?= 401
+          lookup "WWW-Authenticate" headers @?= Just "Bearer"
+
+          invalidUtf8 <- getProjectsRaw mgr downPort "Bearer \255"
+          invalidUtf8 @?= 401,
+      cacheTests pool keysRef cenv mgr cfg jwksUrl jwksBytes token
     ]
 
 -- ---------------------------------------------------------------------------
@@ -129,8 +151,8 @@ tests mgr cfg jwksUrl jwksBytes token =
 
 -- | These tests are timing-sensitive and each drives a stub server's mode from the outside,
 -- so they run one at a time.
-cacheTests :: Manager -> ShomeiConfig -> LBS.ByteString -> Text -> TestTree
-cacheTests mgr cfg jwksBytes token =
+cacheTests :: Pool -> IORef LoadedKeys -> C.ClientEnv -> Manager -> ShomeiConfig -> String -> LBS.ByteString -> Text -> TestTree
+cacheTests pool keysRef cenv mgr cfg authJwksUrl jwksBytes token =
   dependentTestGroup
     "jwks cache resilience"
     AllFinish
@@ -212,7 +234,63 @@ cacheTests mgr cfg jwksBytes token =
           threadDelay 1_200_000
           _ <- currentJwks cache
           refetched <- pollUntil 3_000 ((== 2) <$> readIORef stub.stubCount)
-          assertBool "max-age was ignored; no refetch happened" refetched
+          assertBool "max-age was ignored; no refetch happened" refetched,
+      testCase "an https JWKS URL selects a TLS-capable manager" $
+        do
+          let httpsUrl = "https://127.0.0.1:1/.well-known/jwks.json"
+          tlsMgr <- newJwksManager httpsUrl
+          cache <- newJwksCache tlsMgr httpsUrl 900 86400
+          result <- try @JwksUnavailable (currentJwks cache)
+          case result of
+            Left (JwksUnavailable message) ->
+              assertBool "the HTTPS manager fell back to TlsNotSupported" (not ("TlsNotSupported" `isInfixOf` message))
+            Right _ -> assertFailure "a plaintext stub unexpectedly completed a TLS handshake",
+      testCase "max-age is clamped and max-age=0 does not loop" do
+        withStub jwksBytes \stub stubUrl -> do
+          writeIORef stub.stubMode (ServeOkMaxAge 100000)
+          cache <- newJwksCache mgr stubUrl 900 3
+          _ <- currentJwks cache
+          threadDelay 3_300_000
+          try @JwksUnavailable (currentJwks cache) >>= \case
+            Left _ -> pure ()
+            Right _ -> assertFailure "publisher max-age extended the hard staleness bound"
+        withStub jwksBytes \stub stubUrl -> do
+          writeIORef stub.stubMode (ServeOkMaxAge 0)
+          cache <- newJwksCache mgr stubUrl 900 86400
+          _ <- currentJwks cache
+          replicateM_ 50 (currentJwks cache)
+          readIORef stub.stubCount >>= (@?= 1),
+      testCase "an unknown key triggers one capped refresh and retry" $
+        withStub jwksBytes \stub stubUrl -> do
+          cache <-
+            newJwksCacheWith
+              mgr
+              stubUrl
+              JwksCacheSettings
+                { configuredTtl = defaultJwksCacheSettings.configuredTtl,
+                  maxStaleness = defaultJwksCacheSettings.maxStaleness,
+                  unknownKeyMinAge = 0,
+                  unknownKeyRefreshInterval = 2
+                }
+          _ <- currentJwks cache
+          getProjectsAgainst cache token >>= (@?= 200)
+          rotateActive pool
+          reloadKeys testKek pool keysRef
+          freshJwks <- fetchBody mgr authJwksUrl
+          writeIORef stub.stubBody freshJwks
+          token2 <- loginToken cenv
+          before <- readIORef stub.stubCount
+          getProjectsAgainst cache token2 >>= (@?= 200)
+          after <- readIORef stub.stubCount
+          after - before @?= 1
+          rotateActive pool
+          reloadKeys testKek pool keysRef
+          token3 <- loginToken cenv
+          burstBefore <- readIORef stub.stubCount
+          statuses <- concurrently 50 (getProjectsAgainst cache token3)
+          assertBool "unknown-key burst did not fail closed" (all (== 401) statuses)
+          burstAfter <- readIORef stub.stubCount
+          assertBool "unknown-key burst exceeded the refresh cap" (burstAfter - burstBefore <= 1)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -229,21 +307,23 @@ data StubMode
 
 data Stub = Stub
   { stubCount :: !(IORef Int),
-    stubMode :: !(IORef StubMode)
+    stubMode :: !(IORef StubMode),
+    stubBody :: !(IORef LBS.ByteString)
   }
 
 -- | Run a stub JWKS server replaying @body@, and hand its control handle plus its URL to the
 -- action.
 withStub :: LBS.ByteString -> (Stub -> String -> IO a) -> IO a
 withStub body action = do
-  stub <- Stub <$> newIORef 0 <*> newIORef ServeOk
-  testWithApplication (pure (stubApplication body stub)) \port ->
+  stub <- Stub <$> newIORef 0 <*> newIORef ServeOk <*> newIORef body
+  testWithApplication (pure (stubApplication stub)) \port ->
     action stub ("http://127.0.0.1:" <> show port <> "/.well-known/jwks.json")
 
-stubApplication :: LBS.ByteString -> Stub -> Application
-stubApplication body stub _req respond = do
+stubApplication :: Stub -> Application
+stubApplication stub _req respond = do
   atomicModifyIORef' stub.stubCount \n -> (n + 1, ())
   mode <- readIORef stub.stubMode
+  body <- readIORef stub.stubBody
   case mode of
     ServeOk -> respond (responseLBS status200 [json] body)
     ServeOkMaxAge n ->
@@ -290,12 +370,48 @@ fetchBody mgr url = do
   responseBody <$> httpLbs req mgr
 
 getProjects :: Manager -> Int -> Maybe Text -> IO Int
-getProjects mgr port mtok = do
+getProjects mgr port mtok = fst <$> getProjectsResult mgr port mtok
+
+getProjectsResult :: Manager -> Int -> Maybe Text -> IO (Int, ResponseHeaders)
+getProjectsResult mgr port mtok = do
   req0 <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
   let hdrs = maybe [] (\t -> [("Authorization", "Bearer " <> Text.encodeUtf8 t)]) mtok
       req = req0 {requestHeaders = hdrs}
   resp <- httpLbs req mgr
+  pure (statusCode (responseStatus resp), responseHeaders resp)
+
+getProjectsRaw :: Manager -> Int -> ByteString -> IO Int
+getProjectsRaw mgr port authorization = do
+  req0 <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
+  resp <- httpLbs req0 {requestHeaders = [("Authorization", authorization)]} mgr
   pure (statusCode (responseStatus resp))
+
+getProjectsAgainst :: JwksCache -> Text -> IO Int
+getProjectsAgainst cache token =
+  testWithApplication (pure (downstreamApplication cache (defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")))) \port -> do
+    mgr <- newManager defaultManagerSettings
+    getProjects mgr port (Just token)
+
+loginToken :: C.ClientEnv -> IO Text
+loginToken cenv = do
+  response <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword}
+  case response of
+    LoginCompleteResponse {token} -> maybe (assertFailure "expected a bearer access token") pure token.accessToken
+    LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
+
+rotateActive :: Pool -> IO ()
+rotateActive pool = do
+  jwk <- generateSigningKeyFor ES256
+  now <- getCurrentTime
+  stored <- either (fail . Text.unpack) pure (toStoredSigningKeyFor ES256 now jwk)
+  protected <- protectStoredSigningKey testKek stored
+  result <-
+    runEff
+      . runErrorNoCallStack @AuthError
+      . runDatabasePool pool
+      . runSigningKeyStorePostgres
+      $ replaceActiveSigningKey protected now
+  either (fail . show) pure result
 
 expectApplicationSuccess :: String -> Either C.ClientError (C.ApplicationResult a) -> IO a
 expectApplicationSuccess label = \case

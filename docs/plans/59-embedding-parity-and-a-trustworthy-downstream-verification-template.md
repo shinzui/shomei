@@ -46,7 +46,7 @@ and its README's en recipe authenticates against en's real API-key middleware; e
 - [x] (2026-08-27 23:46 PDT) M1: reproduced `TlsNotSupported` and captured the embedded before-state — after database rotation/revocation, the stale in-memory key still accepted the old token with `200`
 - [x] (2026-08-27 23:34 PDT) M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec pins the edge order
 - [x] (2026-08-27 23:46 PDT) M2: both embedded examples call the contract; `act` logged in both; grant route is `RequireRole "admin"` with a `subject`; revoked-key-after-SIGHUP test passes (2 cases)
-- [ ] M3: scheme-selected TLS manager; clamp and staleness-first; `max-age=0` ignored; unknown-key refresh with cap and one retry; `WWW-Authenticate`; lenient decoding; 7 + 3 tests green
+- [x] (2026-08-28 00:09 PDT) M3: scheme-selected TLS manager; hard staleness cap; `max-age=0` ignored; unknown-key refresh capped and retried once; Bearer challenge; lenient decoding; all 11 tests pass
 - [ ] M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
 - [ ] M5: embedding checklist in `client-and-examples.md` and `architecture.md`; `Cache-Control` paragraph; plaintext warning; `docs/adr/` bootstrapped, ADR written and validated
 - [ ] Outcomes & Retrospective written; MasterPlan 8 registry row set to Complete
@@ -90,6 +90,17 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
   requires `ram <0.22`, while current `shomei-core` requires `ram >=0.22 && <0.23`. This is the
   exact stale pin Milestone 4 removes, so the example source changes are retained and its full
   compile gate remains attached to that milestone.
+
+- Mori located `http-client-tls` in `snoyberg/http-client`; its source confirms
+  `newTlsManager :: MonadIO m => m Manager`. Hackage's current release is 0.3.6.4 while upstream
+  also carries a 0.4.0 tag, so the example uses `>=0.3.6.4 && <0.5` rather than freezing the local
+  corpus version. The first post-fix suite passed all 11 cases; moving the TLS negative probe from
+  a plaintext listener to a refused loopback port reduced that case from 30 seconds to immediate
+  failure without weakening its `TlsNotSupported` assertion.
+
+- The hardened verifier from EP-3 already distinguishes an absent `kid` selection as
+  `TokenKeyNotFound`. Matching that constructor kept the refresh trigger narrow: ordinary malformed
+  or bad-signature tokens remain pure `401`s and cannot spend the network refresh budget.
 
 
 ## Decision Log
