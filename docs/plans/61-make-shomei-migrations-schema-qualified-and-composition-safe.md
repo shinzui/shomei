@@ -52,8 +52,8 @@ append-only compatibility strategy.
       regression and existing PostgreSQL suites pass.
 - [x] (2026-08-27 20:06 PDT) Milestone 3 — enforced the policy for future migrations through the
       authoring recipe, a source-policy check, CI, user documentation, and profile-governed ADR-19.
-- [ ] Milestone 4 — run the full build, test, formatting, manifest, ADR, and Nix validation gates;
-      record evidence and complete the ADR distillation pass.
+- [x] (2026-08-27 20:10 PDT) Milestone 4 — ran the full build, test, formatting, manifest, ADR,
+      and Nix validation gates; recorded evidence and completed the ADR distillation pass.
 
 
 ## Surprises & Discoveries
@@ -106,6 +106,11 @@ append-only compatibility strategy.
   manifest entry. `just migration-check` passed for the restored 36-entry history, and strict OKF
   validation accepted all 19 ADRs plus the updated bundle log.
 
+- Observation: The final repository-wide gates remained green after the implementation commits.
+  Evidence: `cabal build all` completed; `cabal test all --test-options='-j2'` passed all 14 test
+  suites; `nix flake check` passed the native pre-commit and treefmt checks; and the manifest,
+  namespace-policy, strict ADR, formatting, and whitespace checks all exited successfully.
+
 
 ## Decision Log
 
@@ -156,9 +161,30 @@ append-only compatibility strategy.
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation. Compare the composed-plan behavior, authoring
-guardrails, and validation evidence with the purpose above. Before completion, distill any further
-durable decisions or surprises into the migration-namespace ADR.)
+Shōmei's 36-file pre-adoption history now identifies every owned relation through the `shomei`
+schema and limits every transactional lookup path to `pg_catalog, pg_temp`. The new real-PostgreSQL
+test demonstrates the promised component boundary: a host can leave its own session path before
+Shōmei, apply the complete Shōmei component, and then use an unqualified host relation afterward.
+The collision-shaped host table and Shōmei table coexist without either component consuming the
+other's object.
+
+Future authoring now starts safe and fails closed. `just new-migration` preserves pg-migrate's
+exclusive creation and atomic manifest update, then atomically inserts the canonical header.
+`just migration-check` combines pg-migrate validation with the manifest-aware namespace checker,
+and CI runs it before the full build. The deployment guide and accepted ADR-19 explain the same
+transactional and nontransactional rules.
+
+The implementation baseline had grown from 33 to 36 migrations after this plan was written. Reading
+the live manifest before rewriting prevented the three newest migrations from retaining the leak;
+future history-wide work should similarly derive its scope from the manifest rather than a recorded
+count. No work remains under this plan. The only operational caveat is the intended one: these
+checksum changes are safe because the history is pre-adoption, and applied released migrations must
+be treated as append-only afterward.
+
+The ADR distillation pass found that ADR-19 already contains every durable result from the Decision
+Log, Surprises & Discoveries, and this retrospective: component namespace isolation, qualification
+grammar, the nontransactional exception, behavioral testing, and the post-adoption checksum rule.
+The baseline drift and command-level execution evidence remain task-local in this plan.
 
 
 ## Context and Orientation
@@ -463,3 +489,7 @@ Revision note (2026-08-27): Extended the implementation baseline from 33 to 36 m
 the baseline manifest and source scan showed that committed migrations `0034` through `0036` also
 carry the legacy session-scoped search path. The purpose and policy are unchanged; every current
 pre-adoption migration is now explicitly in scope.
+
+Revision note (2026-08-27): Completed all four milestones, recorded the final validation evidence
+and retrospective, and confirmed through ADR distillation that the durable project context is
+captured by ADR-19.
