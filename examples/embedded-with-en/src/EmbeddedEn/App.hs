@@ -19,6 +19,7 @@ where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (FromJSON, ToJSON)
+import Data.Foldable (forM_)
 import Data.IORef (IORef)
 import Data.Text (Text)
 import Data.Text qualified as Text

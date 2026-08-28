@@ -72,6 +72,7 @@ import En.Effect.TupleStore
   )
 import En.Error (EnError (..))
 import En.Reachability (ReachabilityGraph, compileSchema)
+import En.RelationshipPagination (relationshipPageFromRows)
 import En.Revision
   ( Consistency (..),
     ConsistencyToken (..),
@@ -202,6 +203,17 @@ runTupleStoreIORef ref = interpret_ \case
   ReadRelationships _ relationshipFilter limit cursor -> do
     tuples <- liftIO (readIORef ref)
     pure (Kikan.pageTuples limit cursor (filter (Kikan.matchesRelationshipFilter relationshipFilter) tuples))
+  ReadRelationshipPage _ token relationshipFilter pageRequest -> do
+    tuples <- liftIO (readIORef ref)
+    pure
+      ( relationshipPageFromRows
+          token
+          pageRequest
+          [ Kikan.tupleRow index tuple
+          | (index, tuple) <- zip [1 ..] tuples,
+            Kikan.matchesRelationshipFilter relationshipFilter tuple
+          ]
+      )
   CountRelationships _ relationshipFilter -> do
     tuples <- liftIO (readIORef ref)
     pure (fromIntegral (length (filter (Kikan.matchesRelationshipFilter relationshipFilter) tuples)))

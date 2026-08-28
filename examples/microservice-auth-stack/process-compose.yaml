@@ -1,4 +1,6 @@
 # Two-service runbook for the microservice deployment model.
+# Run from `nix develop` after `just create-database`. The processes inherit the dev shell's
+# socket-form PG_CONNECTION_STRING and your long-lived SHOMEI_KEY_ENCRYPTION_KEY.
 #
 #   process-compose -f examples/microservice-auth-stack/process-compose.yaml up
 #
@@ -20,7 +22,6 @@ processes:
   shomei-server:
     command: "cabal run shomei-server"
     environment:
-      - "PG_CONNECTION_STRING=host=localhost port=5432 dbname=shomei user=shomei"
       - "SHOMEI_PORT=8080"
     readiness_probe:
       http_get:

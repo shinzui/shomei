@@ -4,6 +4,10 @@
 build:
     cabal build all
 
+# Build the separately-solved en embedding example from its own project file.
+build-embedded-with-en:
+    cd examples/embedded-with-en && cabal build
+
 # Create the dev database if it does not exist, then migrate it. Idempotent.
 # Called by process-compose.yaml via: create_schema: command: just create-database
 create-database:

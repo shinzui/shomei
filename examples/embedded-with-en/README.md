@@ -18,8 +18,8 @@ compares object ids by string equality, so a mismatched form silently denies eve
 
 Only **`en-core`**, pinned as a git source dependency in this directory's `cabal.project`
 (not the root — the root `cabal build all` stays en-free). `en-core` has no en-package
-dependencies and no openapi/biscuit/hasql dependencies, so it drops into Shōmei's existing
-build plan with zero new external pins. The fail-closed guard is a faithful ~20-line copy of
+dependencies and no openapi/biscuit/hasql dependencies; its relay-pagination, generic-lens, and
+lens dependencies resolve from Hackage, so it adds no source pins. The fail-closed guard is a faithful ~20-line copy of
 `En.Servant.Authorize.requirePermission` built directly over `En.Check.check`; a production
 host whose build does not hit the openapi pin conflict should prefer en-servant's guard. See
 `docs/user/authorization.md` and `src/EmbeddedEn/Authz.hs` for the full rationale.
@@ -28,9 +28,11 @@ host whose build does not hit the openapi pin conflict should prefer en-servant'
 
 From the repository dev shell (`nix develop`), with the dev database created
 (`just create-database`). The dev shell already exports `PG_CONNECTION_STRING` (a unix-socket
-connection to the local dev cluster), so you only choose a port:
+connection to the local dev cluster). Export one key-encryption key and keep it for the life of
+that database; another value cannot decrypt the signing-key rows the first boot wrote.
 
 ```bash
+export SHOMEI_KEY_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
 cd examples/embedded-with-en
 SHOMEI_PORT=8085 cabal run embedded-with-en
 # → [embedded-with-en] shomei auth mounted; en project schema compiled; listening on :8085

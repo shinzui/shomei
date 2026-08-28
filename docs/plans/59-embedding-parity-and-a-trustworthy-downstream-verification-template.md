@@ -43,11 +43,11 @@ and its README's en recipe authenticates against en's real API-key middleware; e
 
 ## Progress
 
-- [x] (2026-08-27 23:46 PDT) M1: reproduced `TlsNotSupported` and captured the embedded before-state — after database rotation/revocation, the stale in-memory key still accepted the old token with `200`
-- [x] (2026-08-27 23:34 PDT) M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec pins the edge order
-- [x] (2026-08-27 23:46 PDT) M2: both embedded examples call the contract; `act` logged in both; grant route is `RequireRole "admin"` with a `subject`; revoked-key-after-SIGHUP test passes (2 cases)
-- [x] (2026-08-28 00:09 PDT) M3: scheme-selected TLS manager; hard staleness cap; `max-age=0` ignored; unknown-key refresh capped and retried once; Bearer challenge; lenient decoding; all 11 tests pass
-- [ ] M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
+- [x] (2026-08-27 18:43 PDT) M1: reproduced `TlsNotSupported` and captured the embedded before-state — after database rotation/revocation, the stale in-memory key still accepted the old token with `200`
+- [x] (2026-08-27 18:38 PDT) M1: `installHostBackgroundTasks` and `hostMiddleware` exported from `Shomei.Server.Boot`; `main` uses exactly them plus `application`; MiddlewareSpec pins the edge order
+- [x] (2026-08-27 18:43 PDT) M2: both embedded examples call the contract; `act` logged in both; grant route is `RequireRole "admin"` with a `subject`; revoked-key-after-SIGHUP test passes (2 cases)
+- [x] (2026-08-27 18:51 PDT) M3: scheme-selected TLS manager; hard staleness cap; `max-age=0` ignored; unknown-key refresh capped and retried once; Bearer challenge; lenient decoding; all 11 tests pass
+- [x] (2026-08-27 18:56 PDT) M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
 - [ ] M5: embedding checklist in `client-and-examples.md` and `architecture.md`; `Cache-Control` paragraph; plaintext warning; `docs/adr/` bootstrapped, ADR written and validated
 - [ ] Outcomes & Retrospective written; MasterPlan 8 registry row set to Complete
 
@@ -101,6 +101,12 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
 - The hardened verifier from EP-3 already distinguishes an absent `kid` selection as
   `TokenKeyNotFound`. Matching that constructor kept the refresh trigger narrow: ordinary malformed
   or bad-signature tokens remain pure `401`s and cannot spend the network refresh budget.
+
+- Updating the en pin exposed both sides of the intended compatibility gate: the stale `hs-jose`
+  source pin made the solver fail on `ram`, while removing it and mirroring the root X.509 floor let
+  `cabal build` compile en HEAD `bf8ffa24`, the new `ReadRelationshipPage` interpreter arm, and the
+  embedded executable. The root `just build-embedded-with-en` recipe is therefore a real independent
+  project build, not merely a root-workspace no-op.
 
 
 ## Decision Log

@@ -9,9 +9,11 @@ second half of this README is a recipe for adding **fine-grained authorization**
 ## Running the base stack
 
 From the repository dev shell (`nix develop`), with the dev database created
-(`just create-database`):
+(`just create-database`), export one key-encryption key and keep it for the life of that
+database. A different value cannot decrypt signing-key rows created by the first boot.
 
 ```bash
+export SHOMEI_KEY_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
 process-compose -f examples/microservice-auth-stack/process-compose.yaml up
 ```
 
@@ -65,8 +67,8 @@ Decision Log). Apply the diff to your own copy of the service.
 ```
 
 `en-server` runs against **its own database** (`EN_DATABASE_URL`), with its schema file
-carrying the `project` viewer/editor model and en's codd migrations
-(`en-migrations/db/migrations/`) applied first. One database per system — see the topology
+carrying the `project` viewer/editor model and en's `pg-migrate` migrations applied first with
+`cabal run en-migrate -- up`. One database per system — see the topology
 section of `docs/user/authorization.md`.
 
 Add to *your* downstream service's `build-depends`: `en-client`, `servant-client`.
@@ -106,8 +108,20 @@ import En.Servant.Wire
   ( CaveatContextWire (..), CheckDecisionWire (..), ConsistencyWire (..),
     ObjectRefWire (..), SubjectWire (..) )
 import En.Servant.Response (EnResult (..))
-import Servant.Client (ClientEnv, runClientM)
+import Data.ByteString (ByteString)
+import Network.HTTP.Client (managerModifyRequest, newManager, requestHeaders)
+import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Servant.Client (ClientEnv, mkClientEnv, parseBaseUrl, runClientM)
 import qualified Data.Map.Strict as Map
+
+-- Build once at startup. en-server verifies the secret as its service identity; it does not
+-- accept the end user's Shōmei token.
+mkEnClientEnv :: String -> ByteString -> IO ClientEnv
+mkEnClientEnv enServerUrl apiKey = do
+  base <- parseBaseUrl enServerUrl
+  mgr <- newManager tlsManagerSettings {managerModifyRequest = \req ->
+           pure req {requestHeaders = ("Authorization", "Bearer " <> apiKey) : requestHeaders req}}
+  pure (mkClientEnv mgr base)
 
 -- Map a Shōmei Subject to the wire shape en-client speaks. ObjectType and RelationName are
 -- newtypes over Text, so unwrap by constructor.
@@ -142,19 +156,26 @@ authorize enEnv claims projectId = do
 the returned `checkedAt` token into an `AtLeastAsFreshWire` check for read-your-writes. See
 the consistency section of `docs/user/authorization.md`.
 
-### 4. Security posture — en-server has no caller authentication yet
+### 4. Security posture — authenticate to en-server with an API key
 
-> **⚠️ `en-server` authenticates nobody.** As of 2026-07-10, en's
-> `docs/plans/33-add-caller-authentication-and-rate-limiting-to-en-server.md` (in the en
-> repository) is **unimplemented**. Anyone who can reach the port can rewrite the entire
-> authorization graph — write tuples, delete tuples, grant themselves any permission.
->
-> Until that plan lands (it names bearer API keys first, with **Shōmei-JWT verification** as
-> the intended credential checker behind the same seam), `en-server` must sit on a **private
-> network segment reachable only by trusted services** — same host, a private Docker/K8s
-> network, or a service mesh with mTLS — and must **never** be exposed alongside `:8080`/
-> `:8090`. When en plan 33 ships, this recipe gets a follow-up: the downstream forwards its
-> Shōmei-verified identity (or a service token) as the `en-server` credential.
+`en-server` requires a bearer API key unless an operator explicitly chooses
+`EN_AUTH_DISABLED=true`, which is for local development only. Generate a secret of at least 16
+bytes and configure a read-only identity for this downstream; `check` does not need write access.
+
+```bash
+# en-server
+export EN_API_KEYS_READ_ONLY="downstream:$(head -c 32 /dev/urandom | base64)"
+
+# downstream service: the secret half after `downstream:`
+export EN_API_KEY='<same secret>'
+```
+
+Use `EN_API_KEYS_READ_WRITE` only for a service that must mutate tuples. A missing or rejected key
+is `401` with `WWW-Authenticate: Bearer`; the `Left FailureResponse` from `runClientM` follows the
+existing `Left _ -> throwError err503` branch, so authorization remains fail-closed. Protect this
+service credential in transit with en's `EN_TLS_CERT_FILE`/`EN_TLS_KEY_FILE`, a private network, or
+both. en deliberately keeps Shōmei-JWT verification as an extension point instead of making Shōmei
+a dependency: the downstream verifies the user's JWT, then calls en under its own service identity.
 
 ### When to prefer decision tokens over per-request checks
 
