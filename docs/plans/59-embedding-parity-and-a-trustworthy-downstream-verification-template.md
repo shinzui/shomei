@@ -48,8 +48,8 @@ and its README's en recipe authenticates against en's real API-key middleware; e
 - [x] (2026-08-27 18:43 PDT) M2: both embedded examples call the contract; `act` logged in both; grant route is `RequireRole "admin"` with a `subject`; revoked-key-after-SIGHUP test passes (2 cases)
 - [x] (2026-08-27 18:51 PDT) M3: scheme-selected TLS manager; hard staleness cap; `max-age=0` ignored; unknown-key refresh capped and retried once; Bearer challenge; lenient decoding; all 11 tests pass
 - [x] (2026-08-27 18:56 PDT) M4: socket connection string inherited; KEK in every runbook; en example drops the hs-jose pin, mirrors the constraint, pins en `bf8ffa24`, adds `ReadRelationshipPage`; CI/`just` build it; README §4 rewritten; `www/README.md` link
-- [ ] M5: embedding checklist in `client-and-examples.md` and `architecture.md`; `Cache-Control` paragraph; plaintext warning; `docs/adr/` bootstrapped, ADR written and validated
-- [ ] Outcomes & Retrospective written; MasterPlan 8 registry row set to Complete
+- [x] (2026-08-27 19:00 PDT) M5: embedding checklist in `client-and-examples.md` and `architecture.md`; `Cache-Control` paragraph; plaintext warning; ADR-17 and ADR-18 written, indexed, and strictly validated
+- [x] (2026-08-27 19:00 PDT) Outcomes & Retrospective written; MasterPlan 8 registry row set to Complete
 
 
 ## Surprises & Discoveries
@@ -120,12 +120,13 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
   takes `ServerSettings` though nothing reads it today.
   Rationale: Integration Point 8 names `Boot.hs` as the file EP-7 and EP-8 also edit; EP-8's proxy settings then change a body, not the contract.
   Date: 2026-08-27
-- Decision: unknown-key refresh policy. On the unknown-`kid` error EP-3 introduces (fallback:
-  `TokenSignatureInvalid`), when the cached entry is at least `unknownKeyMinAge` (5 s) old and no
+- Decision: unknown-key refresh policy. On EP-3's `TokenKeyNotFound`, when the cached entry is at
+  least `unknownKeyMinAge` (5 s) old and no
   unknown-key refresh ran within `unknownKeyRefreshInterval` (30 s), the handler runs one synchronous
   single-flight refresh and retries verification once; otherwise `401` at once. The interval slot is
   claimed with `atomicModifyIORef'` before the lock, so N unknown or forged keys cause ≤ 1 fetch per interval.
-  Rationale: closes REV-10 finding 3's post-rotation window while keeping "no kid-triggered storms" a tested property (under the fallback, forged signatures reach this path too — hence the cap).
+  Rationale: closes REV-10 finding 3's post-rotation window while keeping "no kid-triggered storms"
+  a tested property; arbitrary unknown key identifiers are still attacker-controlled, hence the cap.
   Date: 2026-08-27
 - Decision: `max-age` is clamped to `maxStaleness`; `max-age=0` or negative reads as "no header".
   Rationale: "do not cache" would mean a fetch per request (REV-10 finding 2's loop); the configured TTL is the operator's policy.
@@ -160,7 +161,26 @@ Found while planning (2026-08-27, HEAD `5dfd2a6`, code identical to `ee00382`):
 
 ## Outcomes & Retrospective
 
-(To be filled during and after implementation; before completion, promote the embedding contract and the unknown-key policy into `docs/adr/` and record the deferred `En.Store.InMemory` switch.)
+The standalone executable and embedding examples now consume one exported runtime contract. Hosts
+install key reload, sweeping, default-role validation, and bounded notification delivery through a
+cleanup-bearing `HostBackgroundTasks` handle, then wrap the whole application in the same proxy,
+logging, metrics, metered-body, and rate-limit edge. The focused edge test proves oversized bodies do
+not consume limiter capacity, and the embedded PostgreSQL test proves a revoked key changes from
+accepted to refused after `SIGHUP` without restarting the host.
+
+The downstream template now fetches HTTPS JWKS documents with a TLS manager, treats maximum
+staleness as a hard local bound, ignores `max-age=0`, and performs one rate-capped single-flight
+refresh and one retry only for `TokenKeyNotFound`. Its eleven tests cover transport, caching,
+concurrency, hostile headers, and Bearer challenges. The example runbooks carry their KEK and socket
+database assumptions explicitly; the en example compiles independently at verified upstream HEAD
+`bf8ffa24`, and CI now exercises that separate build.
+
+[ADR-17](../adr/0017-embedded-hosts-install-the-complete-runtime-boundary.md) records the embedding
+contract, while [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) records the
+downstream transport, freshness, and unknown-key policy. The planned switch from the example's
+transparent `IORef` interpreter to `En.Store.InMemory` remains deferred: it would change the teaching
+surface and transcript without improving this trust boundary. A future en-focused example plan can
+adopt it when persistent or conformance-oriented behavior is itself the goal.
 
 
 ## Context and Orientation
@@ -170,8 +190,9 @@ Shōmei is a Haskell authentication toolkit built with `cabal` on GHC 9.12.4 ins
 function `Application -> Application` wrapping an HTTP handler; a **Servant context** is the record of
 authentication handlers a route tree needs (`authContext`); a **JWKS** is the public-key document at
 `/.well-known/jwks.json`; a **kid** is the key id in a JWT header; **single-flight** means at most one
-fetch is in progress however many callers ask. **No ADR applies:** `docs/adr/` does not exist (checked
-2026-08-27; `mori.dhall` declares `improvement-requests`, `capabilities`, `reviews`); Milestone 5 creates it.
+fetch is in progress however many callers ask. The established `docs/adr/` bundle governs the
+related strict-JWT, notifier-shutdown, and proxy-edge decisions in ADR-3, ADR-10, and ADR-15. This
+plan adds ADR-17 and ADR-18 for the embedding and downstream-cache contracts.
 
 **The standalone assembly**, `shomei-server/src/Shomei/Server/Boot.hs`. `main` (86-148) loads config,
 builds `Env`, then at 101-105 calls `validateDefaultRoles cfg env`, `installKeyReload cfg env`,
@@ -255,34 +276,28 @@ Then edit `Boot.hs`: add `installHostBackgroundTasks`, `hostMiddleware`, and `va
 the export list (11-18) and insert after `validateDefaultRoles`:
 
 ```haskell
--- | Everything the standalone server runs beside the request path, for a host embedding 'ShomeiRoutes'.
--- Call once after 'buildEnv'. Exits on an undefined @defaultRoles@ entry; installs a @SIGHUP@ handler.
-installHostBackgroundTasks :: ShomeiConfig -> ServerSettings -> Env -> IO ()
+installHostBackgroundTasks :: ShomeiConfig -> ServerSettings -> Env -> IO HostBackgroundTasks
 installHostBackgroundTasks cfg settings env = do
   validateDefaultRoles cfg env
   installKeyReload cfg env
-  installSweeper settings env
-  -- docs/plans/57: the notifier worker is installed here, beside the sweeper.
+  releaseSweeper <- installSweeper settings env
+  notifierWorker <- installNotifierWorker env
+  pure HostBackgroundTasks
+    { stopHostBackgroundTasks = \timeoutSeconds -> do
+        drainNotifierWorker notifierWorker timeoutSeconds
+        releaseSweeper
+    }
 
--- | The standalone WAI stack, outermost first: request-id + JSON logging, metrics and the raw @/metrics@
--- endpoint (when enabled), the body cap, the per-IP limiter. Wrap the host's WHOLE application.
--- @ServerSettings@ is accepted for docs/plans/58's proxy settings; unread today.
 hostMiddleware :: ShomeiConfig -> ServerSettings -> RateLimiter -> Metrics -> Middleware
-hostMiddleware cfg _settings rl metrics =
-  requestLoggingMiddleware obs . withMetrics . bodyLimitMiddleware defaultBodyLimitBytes . rateLimitMiddleware rl
-  where
-    obs = cfg.observabilityConfig
-    withMetrics
-      | obs.metricsEnabled = metricsMiddleware metrics . metricsEndpointMiddleware metrics
-      | otherwise = id
+hostMiddleware cfg settings =
+  edgeMiddleware cfg.observabilityConfig settings.serverTrustedProxies
 ```
 
 Import `RateLimiter`, `Metrics`, and `Network.Wai.Middleware`; move the order comment (107-113) onto
-`hostMiddleware`. In `main`, lines 101-122 become `installHostBackgroundTasks cfg settings env`,
-`rl <- newRateLimiter cfg.rateLimitConfig`, `metrics <- newMetrics`; line 145 becomes
+`hostMiddleware`. In `main`, lines 101-122 become `backgroundTasks <- installHostBackgroundTasks cfg settings env`,
+`rl <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig`, `metrics <- newMetrics`; line 145 becomes
 `Warp.runSettings warpSettings (hostMiddleware cfg settings rl metrics (application env liveness readiness))`;
-everything else stays. If EP-7 or EP-8 already changed `main`, lift their additions into the two
-functions verbatim.
+after Warp returns, call `stopHostBackgroundTasks backgroundTasks` with the graceful-shutdown timeout.
 
 Add one case to `shomei-server/test/Shomei/Server/MiddlewareSpec.hs` in the style of
 `testOversizedBodyRejected` (281): "hostMiddleware refuses oversized bodies outside the limiter and
@@ -412,11 +427,9 @@ refreshForUnknownKey cache = do
 ```
 
 In `localAuthHandler`: decode with `Text.decodeUtf8Lenient`; every `401` gets
-`errHeaders = [("WWW-Authenticate", "Bearer")]`; on `Left TokenSignatureInvalid` call
+`errHeaders = [("WWW-Authenticate", "Bearer")]`; on `Left TokenKeyNotFound` call
 `refreshForUnknownKey` and, if `True`, re-read `currentJwks` and `verifyToken` once; any remaining
-`Left` is `401`. **If EP-3 has landed**, match its unknown-`kid` variant instead (no verifier code here).
-**If not**, the fallback applies and the age floor plus interval cap keep forged signatures from becoming
-fetches — say so in the Haddock.
+`Left` is `401`. No other verification failure reaches the network refresh path.
 
 **Tests.** Make the stub body mutable (`stubBody :: IORef LBS.ByteString`), pass `pool`, `keysRef`,
 `cenv` from `main` into `tests`, and add to `cacheTests` (under `dependentTestGroup … AllFinish`):
@@ -670,15 +683,19 @@ setup and use the handle `okf id next` returns; never fill a gap or reuse a numb
 End of M1, `Shomei.Server.Boot` (shomei-server) exports, beyond today's five:
 
 ```haskell
-installHostBackgroundTasks :: ShomeiConfig -> ServerSettings -> Env -> IO ()
+newtype HostBackgroundTasks = HostBackgroundTasks
+  { stopHostBackgroundTasks :: Int -> IO ()
+  }
+installHostBackgroundTasks :: ShomeiConfig -> ServerSettings -> Env -> IO HostBackgroundTasks
 hostMiddleware :: ShomeiConfig -> ServerSettings -> RateLimiter -> Metrics -> Network.Wai.Middleware
 validateOidcIssuer :: ShomeiConfig -> IO ()
 ```
 
-with `RateLimiter`/`newRateLimiter :: RateLimitConfig -> IO RateLimiter` (`Shomei.Server.Middleware.RateLimit`)
+with `RateLimiter`/`newRateLimiterFor :: Set ThrottledRoute -> RateLimitConfig -> IO RateLimiter`
+(`Shomei.Server.Middleware.RateLimit`)
 and `Metrics`/`newMetrics :: IO Metrics` (`Shomei.Server.Observability.Metrics`); `application` is
-unchanged. EP-7 adds its worker inside `installHostBackgroundTasks`; EP-8 changes the body of
-`hostMiddleware` and may read `ServerSettings`; neither changes a signature. End of M2, `EmbeddedEn.Authz`
+unchanged. EP-7's worker is installed inside `installHostBackgroundTasks`; EP-8's trusted-proxy
+settings are read by `hostMiddleware`; neither changed the contract. End of M2, `EmbeddedEn.Authz`
 also exports `subjectForUserId :: Text -> Subject` and `EmbeddedEn.App.GrantRequest` has `subject`,
 `projectId`, `relation`. End of M3, `Downstream.Service` (microservice-auth-stack) exports, beyond today's list:
 
@@ -691,8 +708,8 @@ refreshForUnknownKey :: JwksCache -> IO Bool
 ```
 
 Verification stays `Shomei.SigningKey.Verify.Jwt.verifyToken :: JWKSet -> ShomeiConfig -> Text -> IO (Either TokenError AuthClaims)`;
-the handler matches `TokenSignatureInvalid` until EP-3's unknown-`kid` variant exists, then that. New
-dependencies: `http-client-tls >=0.3 && <0.5` for the example library and executable; the example test
+the handler matches EP-3's `TokenKeyNotFound` and never refreshes for ordinary signature failure. New
+dependencies: `http-client-tls >=0.3.6.4 && <0.5` for the example library and executable; the example test
 suites add `effectful`, `effectful-core`, `hasql-pool`, `unix`, `time`; `examples/embedded-with-en` takes
 `en-core` at `bf8ffa24b33de328ed7c6b19f02e9e3ad035d57f` (bringing `relay-pagination 0.1.1.0`, `generic-lens`,
 `lens` from Hackage) and its interpreter must cover the 15-constructor `En.Effect.TupleStore.TupleStore`.

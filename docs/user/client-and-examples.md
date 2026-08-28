@@ -53,12 +53,54 @@ and protects host routes with Shōmei authentication. It also serves the browser
 
 ```bash
 cd examples/embedded-servant-app
+export SHOMEI_KEY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 PG_CONNECTION_STRING="host=$PGHOST dbname=shomei user=$(id -un)" \
   cabal run embedded-servant-app
 ```
 
 Open <http://localhost:8080/index.html> to exercise login, passkey enrollment, and MFA step-up in
 a real browser.
+
+### Embedding runtime checklist
+
+Mounting `ShomeiRoutes` supplies handlers, but the host process must also install the standalone
+runtime contract. The route tree and `authContext` provide token verification using the keys loaded
+at boot, CSRF origin checks, problem-detail errors, and database-backed account-failure policy. They
+do not reload keys, run maintenance workers, or create the outer request edge. After `buildEnv`, an
+embedding host must:
+
+1. Call `installHostBackgroundTasks cfg settings env` once. This validates default roles, reloads
+   signing keys periodically and on `SIGHUP`, sweeps expired state, and runs notification delivery.
+2. Create the limiter with `newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig` and create
+   metrics with `newMetrics`.
+3. Wrap the host's **whole** `Application` in
+   `hostMiddleware cfg settings limiter metrics`. This gives Shōmei and host-owned routes the same
+   trusted-proxy identity, request IDs and logging, metrics, metered body cap, and per-client rate
+   limiting.
+4. After the HTTP server stops accepting requests, call
+   `stopHostBackgroundTasks backgroundTasks gracefulShutdownTimeoutSeconds`. This drains queued
+   notifications within the shutdown budget and releases the sweeper's private pool.
+
+The essential assembly is:
+
+```haskell
+backgroundTasks <- installHostBackgroundTasks cfg settings env
+limiter <- newRateLimiterFor shomeiThrottledRoutes cfg.rateLimitConfig
+metrics <- newMetrics
+Warp.run
+  settings.serverPort
+  (hostMiddleware cfg settings limiter metrics hostApplication)
+stopHostBackgroundTasks
+  backgroundTasks
+  cfg.observabilityConfig.gracefulShutdownTimeoutSeconds
+```
+
+Do not wrap only the mounted Shōmei routes: doing so leaves host-owned routes outside the body,
+rate-limit, logging, and metrics boundary. `RateLimited` and `CsrfProtected` describe responses in
+the API contract; a documented `429` is truthful only when `hostMiddleware` is installed. The
+limiter's derived paths assume `ShomeiRoutes` is mounted at the root, as both examples do. Also note
+that the background installer owns the process-wide `SIGHUP` handler. The two embedded examples are
+the executable reference.
 
 ## Embedded with en (authentication + authorization)
 
@@ -81,7 +123,7 @@ downstream services, and let each service enforce its own role/scope/business po
 verification.
 
 ```bash
-SHOMEI_JWKS_URL=http://localhost:8080/.well-known/jwks.json \
+SHOMEI_JWKS_URL=https://auth.example.com/.well-known/jwks.json \
 SHOMEI_ISSUER=shomei \
 SHOMEI_AUDIENCE=shomei-clients \
 DOWNSTREAM_JWKS_TTL_SECONDS=900 \
@@ -96,11 +138,16 @@ service. Its `JwksCache` is shaped for production rather than for brevity, and c
 guarantees:
 
 - **Verification is offline.** The auth service is contacted only to refresh the key set — at
-  most once per TTL window, never once per request.
+  the age-driven refresh window or under the separately rate-capped unknown-key policy, never once
+  per request.
 - **Reads are lock-free.** Verifying a token costs one `readIORef` and one clock read. Request
   threads never contend on a lock, so a cache-hit workload does not serialize.
 - **Refresh is single-flight.** However many requests arrive, at most one JWKS fetch is in
   flight. A burst of requests during an outage cannot become a retry storm.
+- **A newly rotated key gets one bounded retry.** When verification reports an unknown `kid` and
+  the cached set is at least five seconds old, one request synchronously refreshes and retries
+  verification once. The trigger is globally capped at one fetch per 30 seconds, so arbitrary key
+  IDs cannot create a fetch storm; malformed tokens and bad signatures never trigger it.
 - **Refresh happens ahead of expiry.** The refetch is kicked at 80% of the TTL and runs on a
   background thread. Requests are answered from the cached key set while it proceeds, so there
   is no latency cliff when the TTL lapses. The only synchronous fetch is the cold start, before
@@ -128,11 +175,16 @@ Configuration:
 | `DOWNSTREAM_JWKS_TTL_SECONDS` | `900` | How long a fetched key set is considered fresh. A background refresh starts at 80% of this. |
 | `DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS` | `86400` | How long the last good key set keeps serving while refreshes fail. Past this, requests get 503. |
 
-A `Cache-Control: max-age=N` header on the JWKS response overrides `DOWNSTREAM_JWKS_TTL_SECONDS`
-for that entry, following the usual HTTP freshness semantics — so the template behaves correctly
-against non-Shōmei issuers that publish one. Note that **Shōmei's own server does not currently
-send `Cache-Control` on `/.well-known/jwks.json`**; adding it server-side is a possible follow-up,
-and until then the configured TTL always applies.
+A positive `Cache-Control: max-age=N` header on the JWKS response supplies that entry's freshness
+lifetime, but it is always clamped to `DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS`. `max-age=0` is ignored
+rather than turning the cache into a fetch-per-request loop. Shōmei currently publishes
+`Cache-Control: public, max-age=300`, so its effective freshness lifetime is 300 seconds; the local
+staleness bound remains the final fail-closed policy.
+
+`newJwksManager` selects a TLS-capable manager for `https://` URLs. Plaintext `http://` remains
+available for loopback development only; using it for a non-loopback host logs a warning because an
+on-path attacker could substitute the JWKS and forge accepted tokens. Production JWKS URLs must use
+HTTPS.
 
 The example's test suite (`examples/microservice-auth-stack/test/Main.hs`) asserts each of these
 properties mechanically against a stub JWKS server that counts fetches and can be scripted to

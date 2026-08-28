@@ -9,7 +9,7 @@ the time, publish an audit event, send a notification, record a login attempt) a
 **dynamic effect** — an interface — and the auth workflows are written purely against those
 interfaces. Concrete *interpreters* supply meaning at the edges.
 
-```
+```text
 shomei-core  ──>  shomei-jwt / shomei-postgres  ──>  shomei-servant  ──>  shomei-server
  (domain,           (ES256 JWT,    (hasql adapters,    (ShomeiAPI,         (warp exe,
   effects,           JWKS)          Argon2id)           handlers,           shomei-admin,
@@ -62,7 +62,15 @@ order (outermost first): **trusted-proxy client resolution → request-id + stru
 HTTP metrics → `/metrics` endpoint → metered body cap → per-IP rate limiter → the Servant app**
 (IP-4). The proxy rewrite is outermost so every downstream consumer sees one canonical client;
 the metrics endpoint remains inside request logging but bypasses the body cap, limiter, and router.
-The package also hosts the `shomei-admin` CLI and the configuration loader.
+The body cap meters chunks as the application reads them, so oversized or chunked requests cannot
+escape the limit by omitting `Content-Length`.
+
+Embedded hosts receive the same edge through `hostMiddleware`, which must wrap the host's whole WAI
+application. They install signing-key reload, expiry sweeping, notification delivery, and startup
+role validation once with `installHostBackgroundTasks`, then call the returned
+`stopHostBackgroundTasks` after the HTTP server drains. This explicit two-part contract keeps the
+bare Servant application composable without silently dropping the standalone server's runtime
+protections. The package also hosts the `shomei-admin` CLI and the configuration loader.
 
 ## Persistence and migrations
 
