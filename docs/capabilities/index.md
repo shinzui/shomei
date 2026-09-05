@@ -111,5 +111,5 @@ okf graph docs/capabilities
 ```
 
 [`profile.dhall`](profile.dhall) pins the shared `coordination.capabilities` profile from
-[okf-profiles v0.9.0](https://github.com/shinzui/okf-profiles) by Dhall semantic hash, so this
+[okf-profiles v0.13.1](https://github.com/shinzui/okf-profiles) by Dhall semantic hash, so this
 catalog and every other capability catalog in the portfolio are governed by one definition.

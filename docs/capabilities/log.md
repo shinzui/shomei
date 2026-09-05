@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-09-05
+* **Migrate**: Repin the shared `coordination.capabilities` profile to okf-profiles v0.13.1; the profile definition is unchanged, only its transitive OKF core import is newer.
+
 ## 2026-08-28
 * **Update**: CAP-9: the embedded-with-en evidence entry now says the host guard is term-level; the combinators themselves are unchanged.
 
