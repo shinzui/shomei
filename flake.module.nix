@@ -59,36 +59,45 @@
             tls = haskellLib.dontCheck hsuper.tls_2_4_1;
             validation = haskellLib.dontCheck hsuper.validation_1_2_2;
 
-            # pg-migrate 1.1.0.0 is on Hackage but not yet in the pinned nixpkgs ghc9124 set,
-            # and nixpkgs still carries ephemeral-pg 0.2.1.0 while shomei-migrations needs
-            # >= 0.2.2. Pull all four straight from Hackage so the Nix closure matches the
+            # pg-migrate 1.2.0.0 is on Hackage but not yet in the pinned nixpkgs ghc9124 set,
+            # and ephemeral-pg 0.3.1.0 provides withCachedConfig for stable cleanup roots.
+            # Pull the required releases straight from Hackage so the Nix closure matches the
             # Hackage-only solve that cabal.project now performs.
             ephemeral-pg = haskellLib.dontCheck (hself.callHackageDirect
               {
                 pkg = "ephemeral-pg";
-                ver = "0.2.2.0";
-                sha256 = "0zngw352m61z2sf588d717flh2szlxaz0bblzwnvf06p8z31dfzl";
+                ver = "0.3.1.0";
+                sha256 = "0sr8xpglwkzk6bgxdm9n1zdndjdqp49sks57ck97525vj6m83z6h";
+              }
+              { });
+            # mori://shinzui/pg-migrate/packages/pg-migrate-test-support 1.2
+            # admits ephemeral-pg 0.3; keep the coupled migration family aligned.
+            pg-migrate-test-support = haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "pg-migrate-test-support";
+                ver = "1.2.0.0";
+                sha256 = "03j3ch0ydkf5f9hk6p1z81bpps0zs90xmkw457xzj88irla9d7gr";
               }
               { });
             pg-migrate = haskellLib.dontCheck (hself.callHackageDirect
               {
                 pkg = "pg-migrate";
-                ver = "1.1.0.0";
-                sha256 = "1mdb7khr1aj302v6inal1ljikp61959w6saqr2n59r8zwi2lvpr3";
+                ver = "1.2.0.0";
+                sha256 = "0w337zx84rmqdllvk6xszvzsz9k3v7xah40nxl4yzpfhy6rc6fh3";
               }
               { });
             pg-migrate-embed = haskellLib.dontCheck (hself.callHackageDirect
               {
                 pkg = "pg-migrate-embed";
-                ver = "1.1.0.0";
-                sha256 = "1246jslwdm59r11q24c18iinmi067f2pbamm9giiq0kgh6iqskji";
+                ver = "1.2.0.0";
+                sha256 = "02b1q2xskymq67ns1zj2rnanm2a60fh3nzksq1shl412bz7n26ls";
               }
               { });
             pg-migrate-cli = haskellLib.dontCheck (hself.callHackageDirect
               {
                 pkg = "pg-migrate-cli";
-                ver = "1.1.0.0";
-                sha256 = "0d6fycj9s4427bynbz344pfijh6g1arzv08af1vdx5l135f62fm2";
+                ver = "1.2.0.0";
+                sha256 = "1avaxnn2ncfmkvbcij7r3bgh324rj9h9mzchwllzdwpadp6qxfkk";
               }
               { });
             jose = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "jose" inputs.jose-src { }));
