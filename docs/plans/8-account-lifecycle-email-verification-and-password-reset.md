@@ -6,1672 +6,728 @@ kind: exec-plan
 created_at: 2026-06-04T02:42:05Z
 intention: "intention_01kt8847mre3wa36x0s0k9j6pm"
 master_plan: "docs/masterplans/2-production-hardening-account-lifecycle-and-adoption.md"
+provenance:
+  revisions:
+    - model: "gpt-6-astra"
+      harness: "codex-cli"
+      at: 2026-10-14T14:43:18Z
+      mode: "update"
+      note: "Validated current lifecycle APIs and tests; corrected HTTP, persistence, notifier, migration, and revocation contracts."
+  reviews:
+    - model: "gpt-6-astra"
+      harness: "codex-cli"
+      at: 2026-10-14T14:44:08Z
+      verdict: "comments"
+      note: "Reconciled current APIs and verified eight passing suites; documented remaining verification atomicity and expiry limits."
 ---
 
 # Account lifecycle: email verification and password reset
 
-This ExecPlan is a living document. The sections Progress, Surprises & Discoveries,
-Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.
 
-This is **EP-1** of MasterPlan 2,
-`docs/masterplans/2-production-hardening-account-lifecycle-and-adoption.md`. It owns
-Integration Points **IP-1** (the `Shomei.Effect.Notifier` mailer effect) and **IP-2** (the new
-single-use-token domain types and their stores), and contributes to **IP-3** (extend
-`ShomeiConfig`, append-only), **IP-5** (new `ShomeiAPI` routes), and **IP-7** (new codd
-migrations). Those Integration Points are quoted verbatim in the relevant sections below so
-this plan is self-contained.
-
+This ExecPlan is a living document. Keep Progress, Surprises & Discoveries, Decision Log,
+and Outcomes & Retrospective current. It is EP-1 of
+[MasterPlan 2](docs/masterplans/2-production-hardening-account-lifecycle-and-adoption.md).
+The original four milestones were completed in June 2026. This 2026-10-14 revision reconciles
+the plan with the current implementation at commit `0eedad1`; it is a maintenance and
+validation contract, not an instruction to recreate already shipped modules or migrations.
+Historical completion does not assert that every later security concern is resolved.
 
 ## Purpose / Big Picture
 
-Shōmei ("証明", *proof* / *authentication*) is a Haskell authentication toolkit. After
-MasterPlan 1, a developer can run a server that lets a user sign up, log in, refresh tokens,
-log out, fetch their profile, and verify JWTs against a published JWKS. But the bootstrap
-deliberately omitted the rest of the **account lifecycle**: there is no way to *verify an
-email address*, no way to *reset a forgotten password*, and no way for a logged-in user to
-*change their password*. This plan fills that gap, end-to-end and demonstrable with `curl`.
 
-After this change, the following becomes possible, and is provable from a terminal:
+Shōmei provides email verification, forgotten-password reset, and authenticated password
+change. A developer can register an account with an email, request a one-time verification
+token, confirm it, request a password reset, and confirm the reset with a new password.
+Verification sets `emailVerifiedAt`; reset changes the password and revokes every existing
+session and refresh token belonging to the user. Password change requires the current password
+and also revokes **all** sessions, including the caller's session.
 
-- A new user signs up, then asks Shōmei to verify their email
-  (`POST /auth/verify-email/request`). Because the toolkit ships with a **development
-  log-only notifier**, the verification link (containing a one-time token) is printed to the
-  server's logs instead of being emailed. The user copies the token out of the logs and
-  confirms it (`POST /auth/verify-email/confirm`); their account is now marked verified
-  (a `email_verified_at` timestamp is set).
-- A user who has forgotten their password requests a reset
-  (`POST /auth/password-reset/request`). The response is **always the same generic 202**,
-  whether or not the email belongs to a real account, so an attacker cannot use this endpoint
-  to discover which emails are registered. If the account exists, a reset link with a
-  one-time token is printed to the logs. The user confirms it with a new password
-  (`POST /auth/password-reset/confirm`); the password is changed **and every one of that
-  user's existing sessions and refresh tokens is revoked**, so any stolen session is
-  immediately useless. The old refresh token is now rejected.
-- A logged-in user changes their password (`POST /auth/password/change`, authenticated with
-  their access token), supplying their current password and a new one. On success their other
-  sessions are revoked.
+The five routes are under `/v1/auth`. Verification and reset **requests** return 202 with an
+empty body for well-formed emails whether or not an eligible account exists. Their
+**confirmations** return 200 with an empty body on success; password change returns 204.
+Malformed input, rate limiting, and dependency failures can still return errors. A 202 means
+accepted for processing, not proof that notification delivery succeeded.
 
-These flows are delivered behind a **notification effect** (`Shomei.Effect.Notifier`) so the
-toolkit bakes in no particular email provider. **Shōmei does not send email itself:** it
-*emits* a `Notification` (recipient, one-time link/token, expiry) and ships a development
-log-only sender that writes the link to the server log. An operator delivers it by supplying
-their own `Notifier` interpreter that forwards the notification to their existing provider
-(SendGrid, Resend, SES, an SMTP relay, …); a future `shomei-email` package may add in-tree
-senders. (Email *sending* was originally planned as a production SMTP sender; it was descoped
-on 2026-06-17 — see the Decision Log.)
+The core emits a `Notification` through the `Notifier` effect, an abstract capability whose
+interpreter supplies the actual behavior. The standalone server queues notifications for a
+background worker. It now supports log, SMTP relay, and signed webhook delivery. SMTP was
+excluded from this plan's June completion scope, then introduced by later work; that historical
+scope decision must not be mistaken for a present-day absence of SMTP support.
 
-The user-visible outcome is therefore: a complete, secure account lifecycle that an operator
-can demonstrate with a sequence of `curl` calls (signup → verify-email request shows a link
-in the logs → confirm → password-reset request → confirm → old session rejected), backed by a
-green pure test suite and a green PostgreSQL integration suite that prove the security-critical
-properties (single-use tokens, generic non-leaking responses, session revocation on reset).
+The default log transport redacts tokens. For the local walkthrough only, set
+`SHOMEI_NOTIFIER_LOG_SECRETS=true` to expose the one-time token in the log. The emitted URL is
+a token carrier: the API confirmation route accepts a JSON **POST**, not a browser GET.
+A host UI must read the token and submit the POST, or the developer can copy it into `curl`.
 
-### Precondition: MasterPlan 1 must be Complete
+Session revocation immediately prevents refresh. Immediate rejection of an existing access
+JWT additionally requires a session-aware verifier, such as the standalone server with
+`SHOMEI_SESSION_CHECK=token-and-session`. The default `VerifyTokenOnly` policy and external
+stateless JWT verifiers continue accepting a valid access token until its expiry. This plan
+must not promise immediate revocation at those consumers.
 
-This plan is written to be executed **after** MasterPlan 1
-(`docs/masterplans/1-bootstrap-shomei-authentication-toolkit.md`) is Complete. As of the
-2026-06-04 package-layout refactor, that precondition is satisfied: `shomei-jwt`,
-`shomei-servant`, `shomei-server`, and `shomei-client` are real top-level packages, not
-placeholders, and `cabal build all` plus `cabal test all` pass. The HTTP and server-wiring
-parts of this plan (Milestones M3 and M4) now extend existing artifacts: the `ShomeiAPI`
-NamedRoutes record in `shomei-servant/src/Shomei/Servant/API.hs`, the handlers in
-`shomei-servant/src/Shomei/Servant/Handlers.hs`, and the server assembly in
-`shomei-server/src/Shomei/Server/App.hs` and `shomei-server/src/Shomei/Server/Boot.hs`.
-Where this plan says "add a route" or "wire an interpreter", it means extend those real
-modules while keeping `cabal build all` and the relevant test suites green.
-
-### Definitions used throughout
-
-So a reader new to the codebase is not lost:
-
-- **Effect interface** — an abstract capability the core needs from the outside world
-  (e.g. "store a token", "send a notification"). The core depends only on the *shape* of
-  the capability, never on a concrete implementation. Each interface is an `effectful`
-  *dynamic effect* exposed from `Shomei.Effect.*`.
-- **`effectful` dynamic effect** — a GADT of kind `Effect` with
-  `type instance DispatchOf E = Dynamic`, one constructor per operation, and a thin
-  `send`-based *smart constructor* per operation exposing it as
-  `(E :> es) => ... -> Eff es a`. An **interpreter** (`interpret_`) supplies the behaviour.
-  Production interpreters live in adapter packages; an in-memory interpreter for tests lives
-  in `shomei-core/src/Shomei/Effect/InMemory.hs`.
-- **Smart constructor** — a function that builds a value while enforcing invariants the raw
-  data constructor cannot (e.g. `mkEmail :: Text -> Either AuthError Email`). The raw
-  constructor is not exported, so invalid values are unrepresentable outside the module.
-- **Opaque token** — a long random secret string handed to the client. The server stores
-  **only its hash**, never the raw token, so a database leak does not reveal usable tokens.
-  This is exactly how `shomei-core/src/Shomei/Domain/RefreshToken.hs` already treats
-  refresh tokens; the new verification and reset tokens copy that pattern precisely.
-- **Single-use token** — an opaque token that may be consumed at most once. After it is used
-  (confirmed) it transitions to a `consumed` status and any later presentation is rejected.
-  It also carries a TTL (time-to-live) and is rejected once expired.
-- **TypeID / `KindID`** — a globally-unique sortable identifier (a UUIDv7) with a
-  human-readable type prefix, from the `mmzk-typeid` library. `Shomei.Id` defines
-  `UserId = KindID "user"`, `SessionId = KindID "session"`, etc. This plan adds
-  `VerificationTokenId = KindID "verification_token"` and
-  `PasswordResetTokenId = KindID "password_reset_token"`. The underlying UUID is stored in a
-  native PostgreSQL `uuid` column.
-
+An opaque token is an unpredictable secret whose hash alone is stored in its token table.
+A single-use token may transition from active to consumed only once. TTL means its lifetime:
+the workflow rejects `expiresAt <= now`. A compare-and-swap (CAS) is a conditional write that
+reports whether this caller changed the row. A unit of work is one persistence operation that
+commits several related writes together or rolls all of them back.
 
 ## Progress
 
-Use a checklist to summarize granular steps. Every stopping point must be documented here,
-even if it requires splitting a partially completed task into two ("done" vs. "remaining").
-This section must always reflect the actual current state of the work.
 
-### Milestone M1 — Notifier effect, one-time-token domain + effects + in-memory interpreter, account workflows, pure tests
+The completed entries retain the original delivery dates. The old individual M1.1–M1.16,
+M2.1–M2.10, M3.1–M3.4, and M4 entries are consolidated here because their create-file
+instructions referenced modules and migration machinery that have since been replaced.
 
-- [x] M1.1 Add `VerificationTokenId` and `PasswordResetTokenId` to
-      `shomei-core/src/Shomei/Id.hs` (new `KindID` prefixes + UUID converters +
-      `gen…` helpers). Completed 2026-06-04.
-- [x] M1.2 Create `shomei-core/src/Shomei/Domain/OneTimeToken.hs` (shared opaque
-      single-use-token shape: `OneTimeToken`, `OneTimeTokenHash`, `OneTimeTokenStatus`).
-      Completed 2026-06-04.
-- [x] M1.3 Create `shomei-core/src/Shomei/Domain/VerificationToken.hs`
-      (`PersistedVerificationToken`, `NewVerificationToken`). Completed 2026-06-04.
-- [x] M1.4 Create `shomei-core/src/Shomei/Domain/PasswordResetToken.hs`
-      (`PersistedPasswordResetToken`, `NewPasswordResetToken`). Completed 2026-06-04.
-- [x] M1.5 Create `shomei-core/src/Shomei/Domain/Notification.hs`
-      (`Notification` sum: `EmailVerificationRequested` / `PasswordResetRequested`).
-      Completed 2026-06-04.
-- [x] M1.6 Create `shomei-core/src/Shomei/Effect/Notifier.hs` (the IP-1 effect).
-      Completed 2026-06-04.
-- [x] M1.7 Create `shomei-core/src/Shomei/Effect/VerificationTokenStore.hs`.
-      Completed 2026-06-04.
-- [x] M1.8 Create `shomei-core/src/Shomei/Effect/PasswordResetTokenStore.hs`.
-      Completed 2026-06-04.
-- [x] M1.9 Extend `Shomei.Domain.User` with `emailVerifiedAt :: Maybe UTCTime`; extend
-      `Shomei.Effect.UserStore` with `MarkUserEmailVerified`. Completed 2026-06-04.
-- [x] M1.10 Add new `AuthError` variants (`VerificationTokenInvalid`,
-      `PasswordResetTokenInvalid`, `EmailAlreadyVerified`) to `Shomei.Error`. Completed
-      2026-06-04.
-- [x] M1.11 Add new `AuthEvent` variants + `*Data` records
-      (`EmailVerificationRequested`, `EmailVerified`, `PasswordResetRequested`,
-      `PasswordResetCompleted`) to `Shomei.Domain.Event`. Completed 2026-06-04.
-- [x] M1.12 Extend `Shomei.Config` with a `NotifierConfig` sub-record (append-only, IP-3):
-      `emailVerificationRequired :: Bool`, token TTLs, `notifierTransport`, base URL.
-      Completed 2026-06-04.
-- [x] M1.13 Create `shomei-core/src/Shomei/Workflow/Account.hs` with
-      `requestEmailVerification`, `confirmEmailVerification`, `requestPasswordReset`,
-      `confirmPasswordReset`, `changePassword`. Completed 2026-06-04.
-- [x] M1.14 Extend `Shomei.Effect.InMemory` (`World` + interpreters) for the two new stores +
-      the `Notifier` (list interpreter) + `MarkUserEmailVerified`. Completed 2026-06-04.
-- [x] M1.15 Update `shomei-core/shomei-core.cabal` exposed-modules + test other-modules.
-      Completed 2026-06-04.
-- [x] M1.16 Write `shomei-core/test/Shomei/AccountSpec.hs` and register it; acceptance
-      `cabal test shomei-core` green with the new account cases. Completed 2026-06-04.
-
-### Milestone M2 — codd migrations + PostgreSQL interpreters + integration tests
-
-- [x] M2.1 Add migration `…-shomei-users-email-verified.sql` (add
-      `email_verified_at timestamptz NULL` to `shomei_users`). Completed 2026-06-04.
-- [x] M2.2 Add migration `…-shomei-email-verification-tokens.sql`. Completed 2026-06-04.
-- [x] M2.3 Add migration `…-shomei-password-reset-tokens.sql`. Completed 2026-06-04.
-- [x] M2.4 Extend `Shomei.Postgres.UserStore` mapping for `email_verified_at` +
-      `MarkUserEmailVerified`. Completed 2026-06-04.
-- [x] M2.5 Create `shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs`.
-      Completed 2026-06-04.
-- [x] M2.6 Create `shomei-postgres/src/Shomei/Postgres/PasswordResetTokenStore.hs`.
-      Completed 2026-06-04.
-- [x] M2.7 Extend `Shomei.Postgres.Codec` with one-time-token status codecs. Completed
-      2026-06-04.
-- [x] M2.8 Update `shomei-postgres/shomei-postgres.cabal` exposed-modules. Completed
-      2026-06-04.
-- [x] M2.9 Extend `shomei-postgres/test/Main.hs` with token round-trip and
-      account-workflow-over-PostgreSQL tests; acceptance `cabal test shomei-postgres` green.
-      Completed 2026-06-04.
-- [x] M2.10 Run `just migrate`; `\d shomei.shomei_email_verification_tokens` and the reset
-      table exist; `shomei_users` has the new column. Completed 2026-06-04.
-
-### Milestone M3 — ShomeiAPI routes + handlers + DTOs + config wiring
-
-- [x] M3.1 Add the five DTO records to `shomei-servant` (request/response JSON).
-      Completed 2026-06-04.
-- [x] M3.2 Add the five routes to the `ShomeiAPI` NamedRoutes record (IP-5). Completed
-      2026-06-04.
-- [x] M3.3 Add the five handlers driving `Shomei.Workflow.Account`. Completed 2026-06-04.
-- [x] M3.4 Acceptance: `cabal build shomei-servant` green; handler unit/golden tests (if EP-5
-      established a handler test harness) green. Completed 2026-06-04 with the in-process
-      servant end-to-end account lifecycle test.
-
-### Milestone M4 — server wiring + dev-log sender + curl walkthrough
-
-- [x] M4.1a Create `shomei-server/src/Shomei/Notify.hs` with config-selected log-backed
-      `Notifier` interpreters. Completed 2026-06-04.
-- [-] M4.1b ~~Add a real SMTP sender~~ **DESCOPED 2026-06-17.** Shōmei is no longer responsible
-      for sending email: the `Notifier` effect is the integration seam, the shipped server emits
-      the notification and logs the link, and operators deliver it via their own interpreter (a
-      future `shomei-email` package may add in-tree senders). The vestigial `SmtpNotifier`
-      transport and `runNotifierSmtp` stub were removed from the code. See the Decision Log.
-- [x] M4.2 Wire the two new store interpreters + the selected `Notifier` interpreter into the
-      server assembly in `shomei-server`. Completed 2026-06-04.
-- [-] M4.3 ~~Add the SMTP/email library block to `cabal.project` (IP-8).~~ **DESCOPED
-      2026-06-17** with M4.1b — no email transport ships, so no new dependency is added.
-- [x] M4.4 Acceptance: full `curl` walkthrough against the running server. Completed 2026-06-10
-      — verified live against the dev PostgreSQL with the default log-only notifier. See the
-      transcript and the 202-status note in Surprises & Discoveries.
-
+- [x] (2026-06-04) M1: identifiers, token and notification domain types, store effects,
+  configuration, account workflows, in-memory interpreters, and core tests delivered.
+- [x] (2026-06-04) M2: verified-at column, verification/reset token tables, PostgreSQL
+  interpreters, and database-backed lifecycle tests delivered.
+- [x] (2026-06-04) M3: five account lifecycle routes, DTOs, handlers, and in-process HTTP
+  lifecycle coverage delivered.
+- [x] (2026-06-04) M4 server wiring and development log notifier delivered.
+- [x] (2026-06-10) Original live curl walkthrough completed against development PostgreSQL.
+- [x] (2026-06-17) Original M4 SMTP sender and dependency tasks explicitly descoped; original
+  EP-1 delivery marked complete. Later transport work is outside that historical decision.
+- [x] (2026-10-14) Reconciled current module ownership, APIs, HTTP results, notification
+  behavior, migration tooling, ADR context, and revocation guarantees against source.
+- [x] (2026-10-14) Ran the core, PostgreSQL, Servant, and server package tests: all eight
+  test suites passed. Updated the walkthrough from the passing HTTP contract; the revised
+  standalone curl walkthrough was not executed in this review.
+- [x] (2026-10-14) `nix develop --command just migration-check` passed manifest validation
+  and the migration namespace policy check.
 
 ## Surprises & Discoveries
 
-Document unexpected behaviors, bugs, optimizations, or insights discovered during
-implementation. Provide concise evidence.
 
-- 2026-06-04: M1 could use the existing `TokenGen` effect exactly as planned by rewrapping
-  `RefreshToken`/`RefreshTokenHash` text into `OneTimeToken`/`OneTimeTokenHash`; no new random
-  byte or hashing implementation was needed. Evidence: `nix develop --command cabal test
-  shomei-core` passed all 15 tests, including the new account-token cases.
-- 2026-06-04: Touching `shomei-migrations/shomei-migrations.cabal` was not sufficient to
-  force Cabal to re-run the `embedDir` splice during the test run; changing
-  `shomei-migrations/src/Shomei/Migrations.hs` itself made the migration library rebuild and
-  the codd transcript then reported 10 migrations. Evidence: the successful
-  `nix develop --command cabal test shomei-postgres` run applied the three
-  `2026-06-04-*` migrations in each throwaway database.
-- 2026-06-04: No SMTP/email package was registered in the local `mori` registry for this
-  project; `mori registry search smtp`, `mori registry search HaskellNet`, and
-  `mori registry search mime-mail` returned no package source to audit. The server now has
-  the `Shomei.Notify` assembly module and explicit `SmtpNotifier` selection path, but that
-  selection is still log-backed until a vetted SMTP dependency is added.
-- 2026-06-10: Re-checked the SMTP blocker before the live walkthrough — `mori registry search`
-  for `smtp`, `mail`, and `HaskellNet` still return nothing. M4.1b/M4.3 remain blocked for the
-  documented reason; the rest of EP-1 is acceptance-complete via the log-only notifier.
-- 2026-06-17: **The SMTP blocker was resolved by removing the requirement, not by adding a
-  dependency.** The user decided Shōmei should not send email at all — the `Notifier` effect is
-  the integration seam and operators forward the emitted `Notification` to their own provider.
-  The vestigial `SmtpNotifier` constructor (`Shomei.Config.NotifierTransport`) and the
-  `runNotifierSmtp` stub (`shomei-server/src/Shomei/Notify.hs`) were deleted; `NotifierTransport
-  = LogNotifier` is now the only built-in and `Shomei.Notify` exposes only `runNotifierLog`. The
-  Dhall/env loader never wired SMTP fields, so no config change was needed. `cabal build all` /
-  `cabal test all` are green (incl. the PostgreSQL account-workflow integration tests and the
-  live client round-trip) and fourmolu is clean. EP-1 is now Complete.
-- 2026-06-10: **All four account-lifecycle endpoints return HTTP `202 Accepted` with a
-  `NoContent` body, including the two *confirm* endpoints** — not `200` as the original
-  Validation transcript prose stated. This is intentional in the implementation
-  (`shomei-servant/src/Shomei/Servant/API.hs` declares each as `Verb 'POST 202 '[JSON]
-  NoContent`): the lifecycle surface uses one uniform "accepted" status across request and
-  confirm so a confirm response carries no body an attacker could read and is
-  indistinguishable in shape from a request response. The behaviour is correct — the live
-  walkthrough proves the verification flip, the session revocation, and the generic
-  no-leak responses regardless of the 202-vs-200 code. The Validation section below has been
-  corrected to show `202`.
-- 2026-06-10: Live walkthrough evidence (dev PostgreSQL, default log-only notifier), run from
-  the repo root with the server started via `PG_CONNECTION_STRING="host=$PGHOST dbname=shomei
-  user=$(id -un)" cabal run shomei-server`:
+The original June implementation reused `TokenGen` by rewrapping `RefreshToken` and
+`RefreshTokenHash` text into one-time-token types; no second generator was needed. Original
+M1/M2 evidence recorded 15 core tests and 14 PostgreSQL tests. Those counts describe the old
+suites, not today's suite sizes. The June codd embedding problem, formerly worked around by
+changing the migrations module, no longer describes the manifest-based migration implementation.
 
-  ```text
-  signup alice@example.com                         -> 200 (token + user)
-  POST /auth/verify-email/request {alice}          -> 202 ; log: [shomei:log] email_verification email=alice@example.com link=…/auth/verify-email/confirm?token=<VTOKEN> …
-  POST /auth/verify-email/confirm {VTOKEN}         -> 202 ; SELECT email_verified_at -> 2026-06-10 12:04:10 (non-null)
-  POST /auth/password-reset/request {alice}        -> 202
-  POST /auth/password-reset/request {nobody}       -> 202 (byte-identical; NO log line emitted for nobody@example.com)
-  log: [shomei:log] password_reset email=alice@example.com link=…/auth/password-reset/confirm?token=<RTOKEN> …
-  POST /auth/password-reset/confirm {RTOKEN,newpw} -> 202
-  POST /auth/refresh {OLD_REFRESH from pre-reset login} -> 401 (all sessions revoked by the reset)
-  POST /auth/login {alice, NEW password}           -> 200
-  POST /auth/login {alice, OLD password}           -> 401
-  ```
+The June SMTP dependency searches were empty and the requirement was removed on 2026-06-17.
+Today `shomei-server/src/Shomei/Notify.hs` exports `runNotifierSmtp`, `runNotifierWebhook`,
+and `runNotifierEnqueue` as well as `runNotifierLog`. Both `Notification` and `OneTimeToken`
+currently have JSON instances; `Notification`'s field is named `email`, not `recipient`.
+The former plan's claims that notifications never serialize and only a log interpreter ships
+were false for the current code.
 
-  This is EP-1's headline acceptance: a complete, secure account lifecycle observable from a
-  terminal, with single-use tokens, generic non-leaking request responses, and full session
-  revocation on reset.
+The June walkthrough reported 200 at signup and 202 at both confirmations. The current
+`shomei-servant/src/Shomei/Account/Result.hs` declares 201 for signup, 202 for requests,
+200 for confirmations, and 204 for password change. `Shomei.Servant.Api` mounts the account
+routes under `/v1/auth`. Signup requires `loginId`, has an optional `email`, and returns
+`token`, not `tokenPair`. Login accepts `loginId`, not `email`.
 
+`consumeVerificationToken` and `consumePasswordResetToken` from the old proposed listing do
+not exist. The public operations are `markVerificationTokenConsumed` and
+`markPasswordResetTokenConsumed`, both returning `Bool`. The reset workflow uses
+`completePasswordReset` instead of a series of independent credential and session writes.
+`changePassword` additionally takes a `ProofContext`, uses the shared abuse budget, and
+calls `completePasswordChange`. Copying the old listings would regress both APIs and safety.
+
+Two correctness limits remain visible in current source. Email confirmation first CAS-consumes
+the token, then separately marks the user verified, revokes sibling tokens, and publishes its
+event. A database failure between these operations can leave partial state; the token CAS
+proves one winner for the **same token**, not an atomic whole-account verification transition
+across different sibling tokens. Neither the verification nor reset token CAS statement checks
+expiry in SQL: expiry is checked against a workflow clock sample before the write (and, for
+reset, before password hashing). Do not describe these as transaction-time expiry enforcement
+or as a fully atomic verification operation. Stronger guarantees require a separate corrective
+implementation with failure-injection and concurrent-sibling tests, not just edited prose.
+
+Password reset assumes an existing password credential. Its persistence operation updates a
+credential; it does not create one for a passwordless account. Password change does not revoke
+outstanding reset links, whereas completing a reset revokes its sibling reset links. These
+boundaries must remain explicit when adding new account types or changing recovery policy.
+
+The no-enumeration guarantee concerns normal response status/body and avoidance of inline
+transport latency. A hit still does more database work than a miss, as
+`shomei-core/test/Shomei/Account/Lifecycle/CostSpec.hs` deliberately records. It is not a
+constant-time claim, a byte-identical-all-headers claim, or an unconditional success guarantee
+when infrastructure fails.
 
 ## Decision Log
 
-Record every decision made while working on the plan.
 
-- Decision: The `Notifier` interpreters live in a module
-  `shomei-server/src/Shomei/Notify.hs` inside the existing `shomei-server` package,
-  **not** in a new `shomei-notify` package.
-  Rationale: MasterPlan 2's IP-1 names this as the default ("a `Shomei.Notify` module inside
-  `shomei-server` to avoid a new package"). A notification sender is an infrastructure concern
-  that must stay out of the transport-agnostic `shomei-core` (the core only defines the
-  `Notifier` *effect*). The server is the natural assembly point: it already constructs every
-  other interpreter and reads `ShomeiConfig`. Avoiding an eighth package keeps `mori.dhall`
-  unchanged. (This decision originally also defined a production *SMTP* interpreter here;
-  **superseded 2026-06-17** — see the next entry. `Shomei.Notify` now ships only the log
-  sender.)
-  Date: 2026-06-04
+2026-06-04: Store verification as nullable `email_verified_at` on the user. A timestamp records
+both whether and when verification occurred. Use separate verification and reset token tables,
+with typed UUID identifiers, unique hashes, status, and expiry. Reuse the token generator and
+hashing capability. Keep ordinary request responses generic. Revoke all sessions and refresh
+tokens on successful reset/change. Define notification delivery as an interpreter outside core.
 
-- Decision: **Shōmei does not send email. The production SMTP sender is descoped entirely.**
-  The `Shomei.Effect.Notifier` effect is the sole integration seam: the toolkit emits a
-  `Notification` (recipient, one-time link/token, expiry) and `shomei-server` ships exactly one
-  built-in interpreter — `runNotifierLog`, which writes the link to the server log
-  (`Shomei.Config.NotifierTransport` collapses to the single constructor `LogNotifier`).
-  Delivering the message is the operator's responsibility: they supply their own `Notifier`
-  interpreter that forwards the `Notification` to their existing provider (SendGrid, Resend,
-  SES, an SMTP relay, …). In-tree senders, if ever wanted, belong in a separate `shomei-email`
-  package — not in `shomei-core`/`shomei-server`.
-  Rationale: Sending email is an operator concern — virtually every deployment already has a
-  provider. Baking a transport into the toolkit adds an unaudited dependency, a TLS/secrets
-  surface, and ongoing maintenance for no real benefit, and it conflicted with the repo's
-  dependency-lookup rule (no vetted SMTP package is registered in `mori`, which is exactly why
-  M4.1b/M4.3 had been stuck). Shōmei's responsibility ends at emitting the notification. Code
-  impact (verified `cabal build all` + `cabal test all` green, fourmolu clean): removed the
-  `SmtpNotifier` constructor and `runNotifierSmtp`; the Dhall/env loader never wired SMTP
-  fields, so no config change was needed. This removes EP-1's only remaining task, so EP-1 is
-  now Complete.
-  Date: 2026-06-17
+2026-06-04: The initial package-layout revision moved packages to top-level directories and
+used the then-current effect namespace. That namespace is historical; the current concept-owned
+module paths in Context and Orientation supersede it.
 
-- Decision: A user's verified status is represented by a **nullable `email_verified_at
-  timestamptz` column on `shomei_users`** (and `emailVerifiedAt :: Maybe UTCTime` on the
-  `User` record), not a boolean and not a separate table.
-  Rationale: A timestamp is strictly more informative than a boolean (`NULL` = unverified,
-  a value = verified-at-that-instant, useful for audit) while answering the boolean question
-  trivially (`emailVerifiedAt /= Nothing`). A column on the existing table avoids a join on
-  every user read and a second entity to keep consistent; verification is a 1:1 attribute of
-  the user, so a separate table would be over-normalized. This mirrors how `shomei_sessions`
-  already carries a nullable `revoked_at` for an analogous "happened-at" fact. The migration
-  is additive and defaulted (`NULL`), so existing rows and existing code still work.
-  Date: 2026-06-04
+2026-06-17: Remove SMTP sending from the original EP-1 completion requirement and complete
+that scope with the log notifier and operator-provided interpreters. Preserve this as a
+historical scope decision. Later built-in SMTP/webhook and background-queue functionality is
+part of today's runtime and must be retained during maintenance.
 
-- Decision: The two single-use token tables (`shomei_email_verification_tokens`,
-  `shomei_password_reset_tokens`) follow the existing `shomei_refresh_tokens` design exactly:
-  a native `uuid` primary key, a `user_id uuid` foreign key into `shomei_users`, a `token_hash
-  text NOT NULL UNIQUE` (only the **hash** is stored), a `text` status (`active`/`consumed`/
-  `revoked`/`expired`), and `created_at`/`expires_at`/`consumed_at` timestamps. They are
-  modeled in Haskell by a shared `Shomei.Domain.OneTimeToken` shape reused by both
-  `Shomei.Domain.VerificationToken` and `Shomei.Domain.PasswordResetToken`.
-  Rationale: The opaque-token security property (store only the hash, single-use, TTL, status)
-  is identical to refresh tokens, so reusing that exact, already-reviewed shape minimizes new
-  surface and keeps the schema and interpreters uniform. Two separate tables (rather than one
-  polymorphic `shomei_one_time_tokens` with a `purpose` column) keep foreign-key semantics and
-  query plans simple and let each table evolve independently; the cost is a near-duplicate
-  migration, which is cheap and append-only per IP-7.
-  Date: 2026-06-04
+2026-10-14: Replace obsolete greenfield code listings with contracts grounded in the current
+implementation. Keep the four original milestones as independently testable maintenance
+boundaries. No new dependency, pin, compatibility workaround, or migration is selected by this
+revision. Existing source and current package test compilation validate the APIs actually used.
 
-- Decision: `requestPasswordReset` and `requestEmailVerification` (the *request* steps) never
-  reveal whether the email belongs to a real account: the workflow returns a uniform success
-  regardless, and only emits a notification when the account actually exists.
-  Rationale: Consistent with MasterPlan 1's login generic-error rule (no account-existence
-  leak). An attacker probing `POST /auth/password-reset/request` must not be able to
-  distinguish "registered" from "not registered" by the response. The notification side effect
-  is the only difference, and it is invisible to the requester.
-  Date: 2026-06-04
-
-- Decision: `confirmPasswordReset` and `changePassword`, on success, revoke **all** of the
-  user's sessions and refresh tokens via `revokeAllUserSessions` (verified to exist in
-  `shomei-core/src/Shomei/Effect/SessionStore.hs`) plus a per-user refresh-token sweep,
-  and publish a `PasswordResetCompleted` / `PasswordChanged` event.
-  Rationale: Resetting a forgotten password is the canonical "I may be compromised" action;
-  invalidating every existing session is the expected, secure behaviour. The existing
-  `SessionStore` effect already exposes `RevokeAllUserSessions :: UserId -> UTCTime ->
-  SessionStore m ()`, so no new effect interface operation is needed for sessions. Refresh tokens are
-  revoked per-session by iterating the user's sessions (the `RefreshTokenStore` already exposes
-  `RevokeSessionRefreshTokens`); a dedicated `RevokeAllUserRefreshTokens` is added to the
-  `RefreshTokenStore` effect to do this in one operation (see Interfaces and Dependencies).
-  Date: 2026-06-04
-
-
-- Decision: Update this ExecPlan for the 2026-06-04 package-layout and effect-namespace refactor.
-  Rationale: The packages now live as top-level directories rather than under the old nested packages directory, and the core effect interfaces now live under `Shomei.Effect.*` rather than the old Port namespace. This revision also removes stale bootstrap-placeholder assumptions and points implementation steps at the current real modules.
-  Date: 2026-06-04
+2026-10-14: Describe password mutations using `AuthUnitOfWork`, conditional token consumption,
+shared abuse protection, and current breach-policy enforcement. Qualify session revocation by
+the verifier policy and document the verification transaction/expiry limitations. Do not claim
+that an update to this completed plan fixes those implementation limits. The relevant durable
+policies already live in the ADRs cited below; this review creates no new architecture decision.
 
 ## Outcomes & Retrospective
 
-Summarize outcomes, gaps, and lessons learned at major milestones or at completion.
-Compare the result against the original purpose.
 
-(To be filled during and after implementation.)
+The original lifecycle delivery was completed on 2026-06-17 after the live demonstration on
+2026-06-10 and explicit removal of SMTP from that delivery scope. Subsequent repository work
+added optional-email/login-ID accounts, stronger password policies, atomic password write tails,
+versioned concept-owned HTTP APIs, additional transports, and bounded background delivery.
 
-- 2026-06-04: Milestone M1 is complete. The core package now exposes the notifier effect,
-  one-time-token domain records and store effects, `NotifierConfig`, account lifecycle
-  workflows, and in-memory interpreters. `nix develop --command cabal test shomei-core`
-  passes with 15 tests, including eight account lifecycle cases. M2 remains: migrations,
-  PostgreSQL interpreters, and integration tests.
-- 2026-06-04: Milestone M2 is complete. The migration package embeds the three new
-  account-lifecycle migrations; PostgreSQL adapters now persist `email_verified_at`, email
-  verification tokens, and password-reset tokens; and the PostgreSQL integration suite covers
-  direct token round trips plus account verification and password reset workflows over a real
-  ephemeral database. `nix develop --command cabal test shomei-postgres` passes with 14 tests,
-  `nix develop --command cabal build all` passes, and `nix develop --command just migrate`
-  applied the three new migrations to the local `shomei` database.
-- 2026-06-04: Milestone M3 is complete and M4 is partially complete. `shomei-servant` exposes
-  the five account-lifecycle HTTP routes, their DTOs, and handlers; `shomei-server` wires the
-  PostgreSQL token stores and config-selected notifier interpreter. The servant in-process
-  HTTP test now covers signup, email verification, password reset, login, refresh, JWKS, and
-  role checks. `nix develop --command cabal test shomei-servant`,
-  `nix develop --command cabal test shomei-server`, `nix develop --command cabal build all`,
-  and `nix develop --command cabal test all` pass. Remaining M4 work is a real SMTP sender
-  and the live-server `curl` walkthrough.
-- 2026-06-10: **Milestone M4 is acceptance-complete except the production SMTP sender.** The
-  full account lifecycle was demonstrated live (`curl`) against the dev PostgreSQL with the
-  default log-only notifier: signup → verify-email request (link logged) → confirm (flips
-  `email_verified_at`) → password-reset request (generic 202 for both a real and an unknown
-  email, link logged only for the real one) → confirm (changes the password, revokes all
-  sessions) → the pre-reset refresh token is rejected (401) → login with the new password
-  succeeds, old password fails. `cabal build all` is green and the embedded migrations are
-  applied. (At the time, the only remaining work was M4.1b/M4.3, the *real* SMTP sender,
-  blocked on a vetted SMTP dependency — see the 2026-06-17 entry below.)
+The plan had no provenance block when this review began; its original model authorship and
+prior review history are unknown. This session records its own revision and review only.
 
-- 2026-06-17: **EP-1 is Complete.** Email sending was descoped (Decision Log, same date):
-  Shōmei is not responsible for delivering email — it emits notifications through the
-  `Notifier` effect and ships only the log sender, and operators deliver them. The vestigial
-  `SmtpNotifier`/`runNotifierSmtp` code was removed (`NotifierTransport = LogNotifier` is the
-  sole built-in; `Shomei.Notify` exposes only `runNotifierLog`). With M4.1b/M4.3 descoped and
-  all user-visible behaviour delivered and proven (pure in-memory tests, PostgreSQL integration
-  tests, and the live `curl` walkthrough), every milestone of EP-1 is satisfied. `cabal build
-  all` / `cabal test all` are green and fourmolu is clean. Against the original Purpose, the
-  outcome matches it exactly except that the account-lifecycle notifications are *emitted* for
-  the operator to deliver rather than sent by Shōmei over SMTP — a deliberate scope narrowing,
-  not a gap.
-
+The 2026-10-14 validation found the old plan unsafe to follow literally: nonexistent module and
+function names, obsolete migration commands, wrong HTTP examples, and overstated revocation
+and atomicity promises. This revision reconciles those instructions and preserves the original
+completion history. The current four-package test command exited 0: `shomei-core-test`,
+`shomei-postgres-test`, `shomei-servant-test`, `shomei-servant-openapi-test`,
+`shomei-server-config-test`, `shomei-server-test`, `shomei-health-test`, and
+`shomei-admin-test` passed. Those tests are evidence for their covered cases, not proof of the
+unimplemented stronger guarantees described in Surprises & Discoveries. The current
+`just migration-check` command also passed manifest and SQL namespace validation.
 
 ## Context and Orientation
 
-This section assumes no prior knowledge of the repository or its tools.
 
-### Where things are
+The repository root is `/Users/shinzui/Keikaku/bokuno/shomei`. It is a Cabal workspace using
+GHC 9.12.4 and GHC2024. Use the Nix development environment for builds and tests. Follow the
+existing Cabal common stanzas, module exports, formatting, and local import conventions rather
+than copying the old four-space-format examples from this plan.
 
-The repository root is `/Users/shinzui/Keikaku/bokuno/shomei`. It is a multi-package Cabal
-workspace (one `cabal.project` listing every top-level package directory). The packages
-relevant to this plan:
+The core workflow is `shomei-core/src/Shomei/Account/Lifecycle/Workflow.hs`. Commands are
+defined there. Domain modules are
+`shomei-core/src/Shomei/Account/OneTimeToken/Domain.hs`,
+`shomei-core/src/Shomei/Account/Verification/Domain.hs`,
+`shomei-core/src/Shomei/Account/PasswordReset/Domain.hs`,
+`shomei-core/src/Shomei/Account/Notification/Domain.hs`, and
+`shomei-core/src/Shomei/Account/User/Domain.hs`. Their persistence/notification capabilities
+are in the corresponding `Store.hs` files. `shomei-core/src/Shomei/Id.hs` defines the typed
+identifiers, `shomei-core/src/Shomei/Error.hs` the errors, and
+`shomei-core/src/Shomei/Config.hs` the policy defaults.
 
-- `shomei-core` — the transport-agnostic heart: domain types
-  (`src/Shomei/Domain/*`), typed identifiers (`src/Shomei/Id.hs`), the error vocabulary
-  (`src/Shomei/Error.hs`), the runtime config (`src/Shomei/Config.hs`), the effect interfaces
-  (`src/Shomei/Effect/*`), the in-memory interpreter (`src/Shomei/Effect/InMemory.hs`), and the
-  workflows (`src/Shomei/Workflow.hs`). It depends on no database, HTTP, or JWT library.
-- `shomei-postgres` — `hasql` adapters: a `Database` effect over a connection pool
-  (`src/Shomei/Postgres/Database.hs`), one interpreter module per effect group under
-  `src/Shomei/Postgres/*`, shared codecs (`src/Shomei/Postgres/Codec.hs`), and `Shomei.Crypto`
-  (Argon2id hashing + token generation).
-- `shomei-migrations` — codd-managed SQL schema: timestamped files under
-  `sql-migrations/`, embedded at compile time and applied via `codd`. A public `test-support`
-  sublibrary provisions a fresh ephemeral PostgreSQL with the schema applied.
-- `shomei-servant` — the Servant API: the `ShomeiAPI` NamedRoutes record, request/response
-  DTOs, and handlers that drive `Shomei.Workflow`.
-- `shomei-server` — the executable: it acquires the `hasql` pool, runs migrations,
-  assembles every interpreter, loads `ShomeiConfig`, and serves the Servant `Application`.
+Shared dependencies within core include
+`shomei-core/src/Shomei/Session/Token/Generator.hs`,
+`shomei-core/src/Shomei/Account/Password/Hash/Store.hs`,
+`shomei-core/src/Shomei/Account/Password/Breach/Workflow.hs`,
+`shomei-core/src/Shomei/Session/LoginAttempt/Workflow.hs`, and
+`shomei-core/src/Shomei/Session/UnitOfWork/Store.hs`.
+`shomei-core/src/Shomei/Test/InMemory.hs` implements the test world and effect stack.
+Audit types and persistence projections live in
+`shomei-core/src/Shomei/Audit/Event/Domain.hs` and
+`shomei-core/src/Shomei/Audit/Event/Codec.hs`.
 
-The two completed reference plans that establish the house patterns this plan mirrors are
-`docs/plans/2-core-domain-model-ports-and-auth-workflows.md` (EP-2: domain + effects +
-workflows) and `docs/plans/3-postgresql-persistence-and-migrations.md` (EP-3: migrations +
-PostgreSQL interpreters). Read them if any pattern below is unclear; this plan reuses their
-conventions verbatim.
+The PostgreSQL implementations are
+`shomei-postgres/src/Shomei/Account/Verification/Postgres.hs`,
+`shomei-postgres/src/Shomei/Account/PasswordReset/Postgres.hs`,
+`shomei-postgres/src/Shomei/Account/User/Postgres.hs`, and
+`shomei-postgres/src/Shomei/Session/UnitOfWork/Postgres.hs`.
+They use `shomei-postgres/src/Shomei/Persistence/Database/Postgres.hs` for pool execution
+and transactions, `shomei-postgres/src/Shomei/Persistence/Codec/Postgres.hs` for codecs,
+and `shomei-postgres/src/Shomei/Account/Password/Hash/Postgres.hs` for hashing/token generation.
 
-### House build conventions (mandatory, established by EP-1/EP-2/EP-3)
+The HTTP layer is owned by `shomei-servant/src/Shomei/Account/Api.hs`,
+`shomei-servant/src/Shomei/Account/Dto.hs`,
+`shomei-servant/src/Shomei/Account/Handler.hs`, and
+`shomei-servant/src/Shomei/Account/Result.hs`.
+`shomei-servant/src/Shomei/Servant/Api.hs` composes these routes;
+`shomei-servant/src/Shomei/Servant/Seam.hs` supplies the effect runner;
+`shomei-servant/src/Shomei/Servant/Error.hs` maps errors to problem responses.
+There is no current monolithic `ShomeiAPI` record or account `Servant.Handlers` module to extend.
+A DTO is the JSON request/response record at this transport boundary.
 
-- GHC **9.12.4**, language edition **GHC2024**, `cabal-version: 3.0`. Build with
-  `cabal build all`, test with `cabal test <pkg>`, format with `nix fmt` (fourmolu 0.19.0.1,
-  4-space indent, leading-comma style) — **all inside `nix develop`** (entered automatically by
-  `direnv` from `.envrc`, or manually with `nix develop`).
-- Every `.cabal` stanza writes `import: warnings, shared`. The `shared` stanza's
-  `default-extensions` include `DeriveAnyClass DuplicateRecordFields BlockArguments
-  MultilineStrings OverloadedLabels OverloadedRecordDot OverloadedStrings PackageImports
-  QualifiedDo TemplateHaskell` (and, in the postgres package, `DataKinds GADTs LambdaCase
-  TypeFamilies`).
-- Postpositive qualified imports: `import Data.Text qualified as Text`.
-- The custom prelude `Shomei.Prelude` is imported in **every** module that uses one of its
-  re-exports (`Text`, `UTCTime`, `Maybe`, `Generic`, aeson classes, `liftIO`, …). A module
-  that uses only base names may omit it (EP-2 dropped it from seven trivial effect modules to
-  satisfy `-Wall`/`-Wunused-imports`).
-- Records: strict `!` fields, the entity-id field first, **no field prefixes** (rely on
-  `DuplicateRecordFields` + `OverloadedRecordDot`), `deriving stock (Generic, Eq, Show)`,
-  `deriving anyclass (FromJSON, ToJSON)`, `deriving newtype (...)` for newtypes.
+`shomei-server/src/Shomei/Server/App.hs` installs store interpreters and
+`runNotifierEnqueue`. `shomei-server/src/Shomei/Server/Boot.hs` owns worker and queue lifetime.
+`shomei-server/src/Shomei/Notify.hs` implements transports, while
+`shomei-server/src/Shomei/Notify/Queue.hs` implements the bounded queue.
+`shomei-server/src/Shomei/Server/Config.hs`, `config/shomei-types.dhall`, and
+`config/shomei.example.dhall` are the runtime configuration surfaces.
 
-### Three house gotchas you WILL hit (call them out, they bit EP-2/EP-3)
+Migrations are manifest-ordered SQL under `shomei-migrations/migrations/shomei/`.
+The lifecycle migrations already exist as `0008-shomei-users-email-verified.sql`,
+`0009-shomei-email-verification-tokens.sql`, and `0010-shomei-password-reset-tokens.sql`
+in that directory. `shomei-migrations/src/Shomei/Migrations.hs` embeds the manifest through
+pg-migrate. Later migrations make email optional, add login IDs, and enforce status/identity
+constraints. Do not reconstruct the current schema from just the original three files.
 
-1. **`OverloadedRecordDot` only solves `HasField` when the field is in scope.** With
-   `DuplicateRecordFields`, reading `x.field` for `x :: SomeRecord` fails
-   (`GHC-39999: Could not deduce HasField "field" SomeRecord …`) unless `SomeRecord` is
-   imported **with its fields**, i.e. `import … (SomeRecord (..))`, not just `(SomeRecord)`.
-   So every record you read via `.field` must be imported with `(..)`.
-2. **`Shomei.Domain.Event` is imported qualified.** Several of its constructors share names
-   with `AuthError` / status constructors (e.g. `SessionRevoked`). Import it
-   `import Shomei.Domain.Event qualified as Event` and build values as `Event.EmailVerified
-   (Event.EmailVerifiedData …)`.
-3. **Record UPDATES use generic-lens `#field` lenses, not record-update syntax.** With
-   `DuplicateRecordFields`, `tok { status = … }` is ambiguous across records sharing a
-   `status` field. Use `tok & #status .~ OneTimeTokenConsumed`, and add a per-module
-   `import Data.Generics.Labels ()` (an orphan import, hence the empty import list). Reads
-   still use `OverloadedRecordDot` (`tok.status`). The `World` record must
-   `deriving stock (Generic)` for `#field` to work on it.
+The relevant ADRs were discovered by scanning `docs/adr/` filenames and headings, then reading
+these records. [ADR-5](docs/adr/0005-every-credential-proof-participates-in-one-abuse-budget.md)
+requires password-change proof failures to join the shared abuse budget and routes to carry
+`RateLimited`. [ADR-7](docs/adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md)
+requires conditional single-use transitions and transactional credential write tails.
+[ADR-8](docs/adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) requires strict,
+synchronized configuration decoding and defaults.
+[ADR-10](docs/adr/0010-notification-delivery-is-a-bounded-background-responsibility.md)
+defines bounded, nonblocking, best-effort queue delivery and accepts residual database hit/miss
+cost. [ADR-11](docs/adr/0011-runtime-secrets-stay-outside-printable-configuration.md) keeps SMTP
+and webhook secrets outside printable policy configuration.
+[ADR-13](docs/adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md)
+records diagnostic redaction policy; do not infer that every one-time-token type has a redacted
+`Show` instance, because the current types still derive it.
+[ADR-19](docs/adr/0019-migration-components-do-not-mutate-shared-namespace-state.md)
+requires schema-qualified SQL and transaction-local search paths.
 
-Never depend on the deprecated `memory` package; use `ram` (the postgres cabal already does).
-
-### What already exists that this plan extends (verified against the working tree)
-
-The opaque-token pattern this plan copies, from
-`shomei-core/src/Shomei/Domain/RefreshToken.hs`:
-
-```haskell
-newtype RefreshToken = RefreshToken Text          -- the secret handed to the client
-    deriving stock (Generic) deriving newtype (Eq, Show, FromJSON, ToJSON)
-newtype RefreshTokenHash = RefreshTokenHash Text   -- the ONLY thing persisted
-    deriving stock (Generic) deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
-data RefreshTokenStatus = RefreshTokenActive | RefreshTokenUsed | RefreshTokenRevoked | RefreshTokenExpired
-```
-
-The generation/hashing effect, from `shomei-core/src/Shomei/Effect/TokenGen.hs` — **reuse
-this for the new tokens**, do not invent a new generator:
-
-```haskell
-data TokenGen :: Effect where
-    GenerateOpaqueToken :: TokenGen m RefreshToken
-    HashRefreshToken :: RefreshToken -> TokenGen m RefreshTokenHash
-generateOpaqueToken :: (TokenGen :> es) => Eff es RefreshToken
-hashRefreshToken    :: (TokenGen :> es) => RefreshToken -> Eff es RefreshTokenHash
-```
-
-The `TokenGen` effect produces a `RefreshToken`/`RefreshTokenHash` (both newtypes over `Text`).
-This plan's one-time tokens reuse the *same* generator and rewrap the resulting `Text` into the
-one-time-token newtypes (see `Shomei.Domain.OneTimeToken` below). This avoids adding a second
-random-bytes/SHA-256 implementation: the production interpreter in
-`shomei-postgres/src/Shomei/Crypto.hs` already implements `GenerateOpaqueToken`
-(crypton `getRandomBytes 32`, base64url) and `HashRefreshToken` (SHA-256), and the test
-interpreter in `Shomei.Effect.InMemory` emits `rt-0`, `rt-1`, … and hashes as `"hash:" <> t`.
-
-The `User` record, from `shomei-core/src/Shomei/Domain/User.hs` (this plan adds
-`emailVerifiedAt`):
-
-```haskell
-data User = User
-    { userId :: !UserId, email :: !Email, displayName :: !(Maybe Text)
-    , status :: !UserStatus, createdAt :: !UTCTime, updatedAt :: !UTCTime }
-```
-
-The `SessionStore` effect already has the revoke-all operation this plan needs, from
-`shomei-core/src/Shomei/Effect/SessionStore.hs`:
-
-```haskell
-data SessionStore :: Effect where
-    CreateSession :: NewSession -> SessionStore m Session
-    FindSessionById :: SessionId -> SessionStore m (Maybe Session)
-    RevokeSession :: SessionId -> UTCTime -> SessionStore m ()
-    RevokeAllUserSessions :: UserId -> UTCTime -> SessionStore m ()
-```
-
-The migration naming convention, from
-`shomei-migrations/sql-migrations/` — seven files exist today, the latest being
-`2026-06-03-18-44-57-shomei-auth-events.sql`. New files use the same
-`YYYY-MM-DD-HH-MM-SS-<slug>.sql` shape with **timestamps strictly later** than that, each
-starting with `-- codd: in-txn` then `SET search_path TO shomei, pg_catalog;`. The `Justfile`
-`new-migration` recipe scaffolds one with the current UTC timestamp; `just migrate` applies
-them (it `touch`es the migrations `.cabal` first to force the compile-time `embedDir` re-embed).
-
-### Quoted Integration Points this plan owns or contributes to
-
-This plan implements the following Integration Points from MasterPlan 2. They are quoted so a
-reader needs only this file.
-
-**IP-1 (owned by this plan) —**
-> A new dynamic `effectful` effect in
-> `shomei-core/src/Shomei/Effect/Notifier.hs` with a smart constructor such as
-> `sendNotification :: Notification -> Eff es ()`, where `Notification` is a core domain type
-> (e.g. an `EmailVerificationRequested`/`PasswordResetRequested` sum carrying the recipient
-> `Email`, a one-time link/token, and an expiry). Owner: **EP-1** (defines the effect, a
-> `Notification` domain type, an in-memory/list interpreter for tests mirroring
-> `Shomei.Effect.InMemory`, and a development "log only" interpreter in a `Shomei.Notify`
-> module inside `shomei-server`).
-
-(Updated 2026-06-17: MasterPlan 2's IP-1 originally also asked for an SMTP interpreter; email
-sending was descoped — Shōmei ships no email-sending interpreter. The `Notifier` effect is the
-seam an operator implements against, or a future `shomei-email` package provides. See the
-Decision Log.)
-
-**IP-2 (owned by this plan) —**
-> Email-verification and password-reset tokens are opaque random tokens of which only the
-> **hash** is persisted (exactly like the existing refresh tokens in
-> `shomei-core/src/Shomei/Domain/RefreshToken.hs`), single-use, with a TTL and a
-> status. Owner: **EP-1**, which adds `Shomei.Domain.VerificationToken` and
-> `Shomei.Domain.PasswordResetToken` (or a unified `Shomei.Domain.OneTimeToken`) plus their
-> `Shomei.Effect.*Store` effects and an in-memory interpreter, reusing the existing
-> `Shomei.Effect.TokenGen` (`generateOpaqueToken`/`hashRefreshToken`) for generation and hashing.
-
-**IP-3 (contributed; append-only) —**
-> each plan adds its own named sub-record field to `ShomeiConfig` (e.g. `notifierConfig`,
-> `rateLimitConfig`, `observabilityConfig`) and extends `defaultShomeiConfig` with that
-> field's defaults; no plan rewrites another's field. Each new field must be `Maybe` or carry
-> a default so older config files still parse.
-
-**IP-5 (contributed) —**
-> The Servant `ShomeiAPI` NamedRoutes record in `shomei-servant` is extended with new
-> endpoints: **EP-1** adds `POST /auth/verify-email/request`, `POST /auth/verify-email/confirm`,
-> `POST /auth/password-reset/request`, `POST /auth/password-reset/confirm`, and an
-> authenticated `POST /auth/password/change` … the request/response DTOs follow the existing
-> `SignupRequest`/`LoginRequest` JSON conventions.
-
-**IP-7 (contributed; append-only) —**
-> New PostgreSQL tables added under `shomei-migrations/sql-migrations/` following the
-> existing timestamped naming convention (`YYYY-MM-DD-HH-MM-SS-<name>.sql`): **EP-1** adds
-> `shomei_email_verification_tokens` and `shomei_password_reset_tokens`. Rule: each plan
-> appends new migration files with later timestamps; migrations are immutable and append-only;
-> all new tables live in the `shomei` schema and use native `uuid` identifier columns, `text`
-> status enums, and `timestamptz` timestamps.
-
+The parent integration responsibilities remain: IP-1 is notification emission, IP-2 is the
+one-time-token model and storage, IP-3 is configuration, IP-5 is the account HTTP surface,
+and IP-7 is schema evolution. These are summaries of the responsibilities, not purported
+verbatim quotations of obsolete parent module names.
 
 ## Plan of Work
 
-The work proceeds in four independently verifiable milestones. M1 and M2 depend only on the
-already-complete EP-1/EP-2/EP-3 and can start now. M3 and M4 extend the not-yet-built
-`shomei-servant` (MasterPlan 1 EP-5) and `shomei-server` (MasterPlan 1 EP-6) and must wait for
-those to land.
 
-### Milestone M1 — Notifier effect, one-time tokens, account workflows, pure tests
+### Milestone M1 — core domain, effects, workflows, and tests
 
-Scope: everything in `shomei-core`. At the end of M1, the core package contains the
-`Notifier` effect (IP-1), the two single-use-token domain types and their store effects (IP-2),
-the `Notification` domain type, the new error and event variants, the extended `User` with
-`emailVerifiedAt`, the extended `ShomeiConfig` with a `NotifierConfig` sub-record (IP-3), the
-five new account workflows, and an in-memory interpreter for every new effect interface. A new tasty test
-suite drives the workflows through the in-memory interpreter and proves the security-critical
-behaviours with **zero infrastructure**. Acceptance: `cabal test shomei-core` is green,
-including the new `Shomei.AccountSpec` cases.
 
-This milestone is built bottom-up: identifiers → domain types → effects → config/error/event →
-workflows → in-memory interpreter → tests. The detailed module contents are in Interfaces and
-Dependencies; the exact edits are in Concrete Steps.
+Maintain the existing lifecycle workflow and its concept-owned domain/store modules. Keep
+commands, effect constraints, nullable user email, password policy/breach checking, and event
+payloads consistent with Interfaces and Dependencies. Use the atomic in-memory transitions
+already provided by `Shomei.Test.InMemory`; a read followed by an unguarded mutable write is
+not an equivalent implementation of CAS. Run `cabal test shomei-core` inside `nix develop`.
+Acceptance is observable: requests emit only for eligible users, confirmation changes the
+appropriate state, replays fail, sibling tokens are revoked after successful confirmation,
+reset/change revoke sessions, and failed password-change proofs count toward lockout.
 
-### Milestone M2 — codd migrations, PostgreSQL interpreters, integration tests
+### Milestone M2 — persistence and migrations
 
-Scope: `shomei-migrations` and `shomei-postgres`. At the end of M2, the
-schema carries the new `email_verified_at` column and the two token tables; the PostgreSQL
-`UserStore` maps the new column and the `MarkUserEmailVerified` operation; and there are
-PostgreSQL interpreters for the two new store effects, mirroring
-`Shomei.Postgres.RefreshTokenStore` exactly. A throwaway-PostgreSQL integration suite proves
-each new effect interface round-trips against a real database and drives the new workflows end-to-end over
-PostgreSQL (request verification → confirm flips `email_verified_at`; request reset → confirm
-changes the password, marks the token consumed, and revokes all sessions; a second confirm of
-the same token is rejected). Acceptance: `just migrate` applies the new migrations and the new
-tables/column exist; `cabal test shomei-postgres` is green including the new cases.
 
-### Milestone M3 — ShomeiAPI routes, handlers, DTOs, config wiring
+Maintain the current Hasql adapters and `AuthUnitOfWork` interpreter. Reset must consume its
+token, update the existing password credential, revoke sessions/refresh tokens and sibling
+reset tokens, and persist completion events in one transaction. Change must update the
+password, revoke sessions/refresh tokens, and persist its event in one transaction. Preserve
+conditional token consumption with a returned winner result. Use existing migrations; append
+new ones only for an actual schema change. Run `cabal test shomei-postgres` and, for schema
+changes, `just migration-check` and `cabal test shomei-migrations`. Acceptance includes real
+PostgreSQL token CAS round trips, verification, password reset, sibling-token rejection, and
+revocation. Email verification's separate writes remain the documented limitation.
 
-Scope: `shomei-servant` (created by MasterPlan 1 EP-5). At the end of M3, the
-`ShomeiAPI` NamedRoutes record has five new routes (IP-5), each with a request/response DTO
-following the `SignupRequest`/`LoginRequest` JSON conventions and a handler that maps the DTO
-to a `Shomei.Workflow.Account` command, runs it, and maps the result to an HTTP response.
-Acceptance: `cabal build shomei-servant` is green; if EP-5 established a handler test harness,
-its account-route cases pass.
+### Milestone M3 — typed HTTP contract
 
-This milestone **cannot start until MasterPlan 1 EP-5 has created `shomei-servant`'s
-`ShomeiAPI` record and handler module.** The concrete steps name the files to extend by path
-and describe what each addition looks like relative to the existing signup/login routes.
 
-### Milestone M4 — server wiring, dev-log sender, curl walkthrough
+Keep `AccountApi`, DTOs, handlers, and response alternatives synchronized. The current API
+uses Servant `MultiVerb`: each route names its success and error response alternatives;
+`ApplicationEmptyResponses` encodes an empty success with `RespondEmpty`. Preserve
+`RateLimited`, input-error declarations, and password change's authenticated/CSRF-protected
+boundary. The handler takes client address information into `ProofContext` and forbids
+password change under delegation. Run `cabal test shomei-servant`; acceptance is the
+in-process lifecycle flow plus OpenAPI contract tests with the statuses and JSON below.
 
-Scope: `shomei-server` (created by MasterPlan 1 EP-6). At the end
-of M4, the server assembles the two new store interpreters and the log-only `Notifier`
-interpreter (the only built-in sender — Shōmei does not deliver email; see the Decision Log),
-and the full account lifecycle is demonstrable with `curl`. Acceptance: the `curl` transcript in Validation and Acceptance runs
-against the live server with the shown outputs — signup, verify-email request prints a link in
-the logs, confirm marks the account verified, password-reset request prints a link, confirm
-changes the password and revokes sessions, and the old refresh token is rejected.
+### Milestone M4 — runtime notification delivery and demonstration
 
-This milestone **cannot start until MasterPlan 1 EP-6 has created `shomei-server`'s assembly.**
 
+Maintain the queue interpreter in the request path and the supervised delivery worker in
+boot. The queue defaults to 1024 entries, does not wait for transport delivery, drops new work
+when full, and audits overflow/shutdown/expired queued work. Shutdown closes and drains it
+up to the configured deadline. The queue is not durable. Keep default logs token-free and
+runtime credentials outside `ShomeiConfig`. Run `cabal test shomei-server`; acceptance includes
+notification redaction, queue overflow/shutdown, transport failure handling, and config tests.
+The optional local curl demonstration below proves the public workflow using emitted tokens.
 
 ## Concrete Steps
 
-All commands run from the repository root `/Users/shinzui/Keikaku/bokuno/shomei` inside
-`nix develop`. Create/modify the files exactly as specified in Interfaces and Dependencies.
 
-### M1 steps
-
-**Step M1-a — identifiers.** Edit `shomei-core/src/Shomei/Id.hs`: add the two new
-`KindID` type synonyms, their `gen…` helpers, and their UUID converters (full listing in
-Interfaces and Dependencies, "IP-2 — new identifiers"). Add the new names to the module export
-list.
-
-**Step M1-b — domain types.** Create
-`shomei-core/src/Shomei/Domain/OneTimeToken.hs`,
-`shomei-core/src/Shomei/Domain/VerificationToken.hs`,
-`shomei-core/src/Shomei/Domain/PasswordResetToken.hs`, and
-`shomei-core/src/Shomei/Domain/Notification.hs` (full listings below). Edit
-`shomei-core/src/Shomei/Domain/User.hs` to add `emailVerifiedAt :: !(Maybe UTCTime)`
-to both `User` and (do **not** add it to `NewUser` — a fresh user is always unverified).
-
-**Step M1-c — effects.** Create `shomei-core/src/Shomei/Effect/Notifier.hs`,
-`shomei-core/src/Shomei/Effect/VerificationTokenStore.hs`, and
-`shomei-core/src/Shomei/Effect/PasswordResetTokenStore.hs`. Edit
-`shomei-core/src/Shomei/Effect/UserStore.hs` to add the `MarkUserEmailVerified`
-operation and its smart constructor. Edit
-`shomei-core/src/Shomei/Effect/RefreshTokenStore.hs` to add
-`RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()` and its smart
-constructor (used by the reset/change workflows).
-
-**Step M1-d — error/event/config.** Edit `shomei-core/src/Shomei/Error.hs` to add the
-three new `AuthError` variants. Edit `shomei-core/src/Shomei/Domain/Event.hs` to add
-the four new `*Data` records and `AuthEvent` arms. Edit
-`shomei-core/src/Shomei/Config.hs` to add the `NotifierConfig` sub-record and the
-`notifierConfig` field, extending `defaultShomeiConfig` (full listing below).
-
-**Step M1-e — workflows.** Create
-`shomei-core/src/Shomei/Workflow/Account.hs` with the five workflows (full listing
-below). Note: `Shomei.Workflow` (the existing module) is unchanged; the account workflows live
-in a new sub-module to keep the file readable, as MasterPlan 2 suggests.
-
-**Step M1-f — in-memory interpreter.** Edit
-`shomei-core/src/Shomei/Effect/InMemory.hs`: add three maps to `World`
-(`verificationTokens`, `verificationByHash`, `passwordResetTokens`, `passwordResetByHash`) and
-a `sentNotifications :: [Notification]` log; add interpreters `runVerificationTokenStore`,
-`runPasswordResetTokenStore`, `runNotifier` (list interpreter); extend `runUserStore` with the
-`MarkUserEmailVerified` case and `User`'s new field; extend `runRefreshTokenStore` with
-`RevokeAllUserRefreshTokens`; and add the three new effects to the `runInMemory` effect-row and
-interpreter stack.
-
-**Step M1-g — cabal + tests.** Edit `shomei-core/shomei-core.cabal`: add the new
-modules to `exposed-modules` and `Shomei.AccountSpec` to the test-suite's `other-modules`.
-Create `shomei-core/test/Shomei/AccountSpec.hs` (cases listed in Validation and
-Acceptance). Run:
+All commands start at the repository root. For ordinary validation, run the same command used
+successfully in this review; it compiles the relevant APIs as well as exercising behavior:
 
 ```bash
-cabal test shomei-core
+cd /Users/shinzui/Keikaku/bokuno/shomei
+nix develop --command cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures
 ```
 
-Expected (abridged tasty transcript, new cases shown):
+Expected: all eight suites report `PASS` and the command exits 0. The PostgreSQL suite uses
+`withShomeiMigratedDatabase` from
+`shomei-migrations/test-support/Shomei/Migrations/TestSupport.hs`, which provisions isolated
+ephemeral PostgreSQL and applies the embedded plan. A running development database is not
+required for those tests. Test package compilation is the primary check that the named APIs
+and effect constraints compose with the resolved dependencies.
 
-```text
-shomei-core-test
-  Shomei.Account
-    request email verification emits a notification with a token:        OK
-    confirm email verification flips emailVerifiedAt:                     OK
-    confirming an already-consumed verification token is rejected:       OK
-    request password reset for unknown email still returns success:      OK
-    request password reset for unknown email emits NO notification:      OK
-    confirm password reset changes password and revokes all sessions:    OK
-    confirming an already-consumed reset token is rejected:              OK
-    change password with wrong current password is rejected:             OK
+For a subsequent implementation change, inspect the files for the owning milestone, edit them
+and their meaningful behavioral tests together, and rerun the affected suite. Add exposed/test
+modules to the corresponding `.cabal` only if a new module is introduced. Run `nix fmt` for
+source edits. Recheck the other suites when an effect, DTO, or shared config change crosses
+package boundaries. This documentation-only revision does not recreate the completed feature.
 
-All NN tests passed (0.00s)
-```
-
-M1 acceptance: `cabal test shomei-core` exits 0 with the new cases passing, and `nix fmt`
-leaves the tree unchanged.
-
-### M2 steps
-
-**Step M2-a — migrations.** From the repo root inside `nix develop`, scaffold three migrations
-with timestamps later than `2026-06-03-18-44-57`:
+For a real schema addition, use a positional slug (the old `name=...` commands are invalid):
 
 ```bash
-just new-migration name=shomei-users-email-verified
-just new-migration name=shomei-email-verification-tokens
-just new-migration name=shomei-password-reset-tokens
+nix develop --command just new-migration account-lifecycle-followup
+nix develop --command just migration-check
+nix develop --command cabal test shomei-migrations shomei-postgres
 ```
 
-Each prints `Wrote shomei-migrations/sql-migrations/<ts>-<name>.sql`. Because
-`new-migration` uses the current UTC time and today is `2026-06-04`, the generated timestamps
-(e.g. `2026-06-04-…`) are automatically later than the seven existing `2026-06-03-…` files, so
-codd orders them after the base schema. Fill each file with the SQL in Interfaces and
-Dependencies ("IP-7 — migrations"). The users-email-verified migration uses
-`ALTER TABLE … ADD COLUMN IF NOT EXISTS email_verified_at timestamptz NULL;`.
+Run that scaffold command only when adding a migration. It creates the next numbered SQL file
+and appends manifest membership. Fill its SQL with schema-qualified objects and preserve
+`SET LOCAL search_path = pg_catalog, pg_temp;`. It is not codd SQL and must not use the old
+session-scoped `SET search_path TO shomei, pg_catalog`. Do not add duplicate lifecycle tables.
 
-**Step M2-b — apply and verify.** Ensure PostgreSQL is running (the dev shell's
-`process-compose` starts it; `just create-database` is idempotent). Then:
+For the local live demonstration, use the complete development stack defined in
+`process-compose.yaml`. It starts PostgreSQL, creates/migrates the development database,
+ensures an active signing key, and starts the server. The Nix shell supplies
+`PG_CONNECTION_STRING`. `just migration-status` is read-only; `just migrate` applies pending
+manifest migrations to that selected database. In the stack terminal run:
 
 ```bash
-just migrate
-psql -c '\d shomei.shomei_users'
-psql -c '\dt shomei.*'
+cd /Users/shinzui/Keikaku/bokuno/shomei
+nix develop
+export SHOMEI_TOKEN_TRANSPORT=bearer
+export SHOMEI_NOTIFIER_TRANSPORT=log
+export SHOMEI_NOTIFIER_LOG_SECRETS=true
+export SHOMEI_SESSION_CHECK=token-and-session
+export SHOMEI_EMAIL_VERIFICATION_REQUIRED=false
+export SHOMEI_PUBLIC_BASE_URL=http://localhost:8080
+process-compose up --no-server
 ```
 
-Expected: `\d shomei.shomei_users` shows the new `email_verified_at | timestamp with time
-zone |` row; `\dt shomei.*` now lists `shomei_email_verification_tokens` and
-`shomei_password_reset_tokens` alongside the original six tables.
-
-**Step M2-c — codecs + interpreters.** Edit
-`shomei-postgres/src/Shomei/Postgres/Codec.hs` to add
-`oneTimeTokenStatusToText`/`oneTimeTokenStatusFromText`. Edit
-`shomei-postgres/src/Shomei/Postgres/UserStore.hs`: widen `UserRow` to include
-`Maybe UTCTime` (the `email_verified_at` column), thread it through `rebuildUser`/`mkUser`/the
-`SELECT`/`INSERT` statements, and add the `MarkUserEmailVerified` case
-(`UPDATE shomei.shomei_users SET email_verified_at = $2, updated_at = $2 WHERE user_id = $1`).
-Create `shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs` and
-`shomei-postgres/src/Shomei/Postgres/PasswordResetTokenStore.hs`, each modeled
-line-for-line on `Shomei.Postgres.RefreshTokenStore` (insert / find-by-hash / mark-consumed /
-revoke-by-user). Add both modules to `shomei-postgres.cabal`'s `exposed-modules`. Build:
-
-```bash
-cabal build shomei-postgres
-```
-
-Expected: exits 0 with zero warnings.
-
-**Step M2-d — integration tests.** Extend `shomei-postgres/test/Main.hs` with the new
-round-trip and workflow-over-PostgreSQL cases (listed in Validation and Acceptance). Run:
-
-```bash
-cabal test shomei-postgres
-```
-
-Expected: green, with the new account cases in the transcript. M2 acceptance.
-
-### M3 steps (after MasterPlan 1 EP-5 lands)
-
-**Step M3-a — locate the EP-5 artifacts.** Find the module that defines the `ShomeiAPI`
-NamedRoutes record (search `rg -n "ShomeiAPI" shomei-servant`) and the module that
-defines its handlers and DTOs (e.g. `shomei-servant/src/Shomei/Servant/API.hs`,
-`.../DTO.hs`, `.../Handlers.hs` — exact names are EP-5's; this plan extends whatever EP-5
-created). Read how the existing `POST /auth/signup` route, its `SignupRequest`/`SignupResponse`
-DTOs, and its handler are defined; the five new routes copy that structure.
-
-**Step M3-b — DTOs.** Add five request DTOs and the needed response DTOs (full field lists in
-Interfaces and Dependencies, "IP-5 — DTOs"), each `deriving anyclass (FromJSON, ToJSON)` with
-the same JSON conventions EP-5 used for `SignupRequest`.
-
-**Step M3-c — routes.** Add five fields to the `ShomeiAPI` NamedRoutes record (the four
-unauthenticated `verify-email/request`, `verify-email/confirm`, `password-reset/request`,
-`password-reset/confirm` routes return `202 Accepted`; `password/change` is guarded by the same
-authentication combinator EP-5 uses for `GET /auth/me`).
-
-**Step M3-d — handlers.** Add a handler per route. Each: parse/normalize the request, build the
-matching `Shomei.Workflow.Account` argument, run the workflow in the handler's effect stack,
-and translate `Either AuthError ()`/result to a response. The two *request* handlers always
-return `202` (no account-existence leak); `confirm`/`change` map `AuthError` to the standard
-error response EP-5 established. Build:
-
-```bash
-cabal build shomei-servant
-```
-
-Expected: exits 0. M3 acceptance.
-
-### M4 steps (after MasterPlan 1 EP-6 lands)
-
-**Step M4-a — sender.** Create `shomei-server/src/Shomei/Notify.hs` with the log-only
-`Notifier` interpreter `runNotifierLog` (renders the notification to a one-line log message
-including the one-time link). Provide
-`runNotifierFromConfig :: ShomeiConfig -> Eff (Notifier : es) a -> Eff es a` that selects the
-interpreter from `cfg.notifierConfig.notifierTransport` (only `LogNotifier` ships).
-**No SMTP sender** — Shōmei does not deliver email; operators forward the emitted
-`Notification` to their own provider via their own interpreter (descoped 2026-06-17, see the
-Decision Log).
-
-**Step M4-b — wiring.** In the `shomei-server` assembly (the module that stacks the PostgreSQL
-interpreters behind the Servant app — find it via `rg -n "runDatabasePool|runUserStorePostgres"
-shomei-server`), add `runVerificationTokenStorePostgres`,
-`runPasswordResetTokenStorePostgres`, and the selected `Notifier` interpreter to the stack, in
-the same position as the other store interpreters.
-
-**Step M4-c — cabal.project (IP-8).** ~~Append an SMTP/email library block.~~ **DESCOPED
-2026-06-17.** No email transport ships, so EP-1 adds **no** new dependency to `cabal.project`
-or `shomei-server.cabal`. (An operator who implements their own `Notifier` interpreter adds
-whatever client library they choose in *their* project; a future in-tree `shomei-email` package
-would add its own.)
-
-**Step M4-d — curl walkthrough.** Start the server (the command EP-6 documents, e.g.
-`cabal run shomei-server`) and run the transcript in Validation and Acceptance. M4 acceptance.
-
+The `--no-server` flag disables process-compose's own REST listener, which would otherwise
+compete with Shōmei for port 8080. Do not start a second standalone server alongside this stack.
+Wait for `create_schema` and `bootstrap_keys` to complete and for the server to become ready.
+These overrides describe an isolated local test with body tokens, visible notification tokens,
+and session-aware route authentication. Use port 8080 or set `BASE` below to the configured
+address. If `SHOMEI_CONFIG` selects another environment, use a dedicated development shell
+with the appropriate database and runtime configuration. Stop the server with Ctrl-C after
+the demonstration and clear `SHOMEI_NOTIFIER_LOG_SECRETS` before reusing the shell elsewhere.
 
 ## Validation and Acceptance
 
-Validation is behavioural, not "it compiles". Acceptance is phrased as observable behaviour.
 
-### M1 — pure in-memory tests (`shomei-core/test/Shomei/AccountSpec.hs`)
+### Automated behavior
 
-Each case constructs a fresh `World` via `emptyWorld <fixedTime>`, runs workflows through
-`runInMemory`, and asserts on the returned `Either` and the resulting `World`. The cases,
-with concrete inputs and observable outputs:
 
-1. **Request email verification emits a notification.** After `signup` produces a user,
-   `requestEmailVerification cfg (RequestEmailVerification user.email)` returns `Right ()`, and
-   the `World`'s `sentNotifications` head is an `EmailVerificationRequested` carrying
-   `user.email` and a non-empty one-time token; the `World`'s `verificationTokens` has exactly
-   one `active` row whose `tokenHash` equals the hash of that token.
-2. **Confirm flips `emailVerifiedAt`.** Taking the raw token from the emitted notification,
-   `confirmEmailVerification cfg (ConfirmEmailVerification rawToken)` returns `Right ()`; the
-   user row now has `emailVerifiedAt == Just <clock>` and the token row's status is
-   `OneTimeTokenConsumed`.
-3. **Replaying a consumed verification token is rejected.** Calling
-   `confirmEmailVerification` a second time with the same `rawToken` returns
-   `Left VerificationTokenInvalid` and does not change the user.
-4. **Reset request for an unknown email still returns success.**
-   `requestPasswordReset cfg (RequestPasswordReset <unknownEmail>)` returns `Right ()`
-   (identical to the registered-email case's `Right ()`), so the response cannot distinguish
-   the two.
-5. **Reset request for an unknown email emits NO notification.** After case 4, the `World`'s
-   `sentNotifications` is unchanged (length 0 for a fresh world) and `passwordResetTokens` is
-   empty — proving the side effect is suppressed for non-existent accounts.
-6. **Confirm reset changes the password and revokes all sessions.** Given a registered user
-   with an active session, `requestPasswordReset` then
-   `confirmPasswordReset cfg (ConfirmPasswordReset rawResetToken newPassword)` returns
-   `Right ()`; the credential's `passwordHash` now verifies `newPassword`; **every** session
-   for that user has status `SessionRevoked`; every refresh token for that user is
-   `RefreshTokenRevoked`; the reset token is `OneTimeTokenConsumed`; and a
-   `PasswordResetCompleted` event is in `publishedEvents`.
-7. **Replaying a consumed reset token is rejected.** A second `confirmPasswordReset` with the
-   same `rawResetToken` returns `Left PasswordResetTokenInvalid`.
-8. **Change password with wrong current password is rejected.**
-   `changePassword cfg (ChangePassword user.userId wrongCurrent newPassword)` returns
-   `Left InvalidCredentials` and leaves the credential unchanged.
+`shomei-core/test/Shomei/AccountSpec.hs` covers verification, replay/sibling rejection,
+unknown-email reset requests, reset revocation, wrong-current-password rejection and lockout,
+and new-password policy/breach handling. `shomei-core/test/Shomei/Session/Authentication/ConcurrencySpec.hs`
+covers racing confirmations of the same reset token.
+`shomei-core/test/Shomei/Account/Verification/WorkflowSpec.hs` covers the verification gate
+for login/refresh/passkeys and the no-email exemption.
+`shomei-core/test/Shomei/Account/Lifecycle/CostSpec.hs` distinguishes hit/miss operation costs.
 
-The exact command and expected transcript are in Concrete Steps, Step M1-g. The suite uses
-**only** the in-memory interpreter — no DB, no SMTP, no network.
+`shomei-postgres/test/Main.hs` covers the real store CAS operations and lifecycle workflows,
+including password-reset sibling rejection and its three database-round-trip budget.
+`shomei-servant/test/Main.hs` exercises account lifecycle JSON/status behavior end to end
+in-process. The Servant OpenAPI suite verifies the served API's documented contract.
+`shomei-server/test/Shomei/Server/NotifySpec.hs` exercises redacted/default and explicit
+raw-token logging, queue behavior, and transport handling. Configuration tests check defaults
+and strict input validation. Do not relabel these existing tests as fault-injection proof of
+the whole email verification sequence; no such proof was established in this review.
 
-### M2 — PostgreSQL integration tests (extend `shomei-postgres/test/Main.hs`)
+### Local HTTP demonstration
 
-Each test provisions a fresh ephemeral PostgreSQL via `withShomeiMigratedDatabase` (from
-`shomei-migrations:test-support`), acquires a `hasql` pool against its connection string, runs
-the real interpreters, and asserts both the returned value and the database state (via direct
-`SELECT`s). The new cases:
 
-1. **Verification token round-trips.** Insert a `NewVerificationToken`, find it by hash, mark
-   it consumed; a `SELECT status FROM shomei.shomei_email_verification_tokens` returns
-   `consumed`.
-2. **Reset token round-trips.** Same shape against `shomei_password_reset_tokens`.
-3. **`MarkUserEmailVerified` sets the column.** After `markUserEmailVerified uid t`, a
-   `SELECT email_verified_at FROM shomei.shomei_users WHERE user_id = …` returns `t`.
-4. **Account verification over PostgreSQL.** Drive `signup` then `requestEmailVerification`
-   then `confirmEmailVerification` through the PostgreSQL interpreters (with the in-test
-   list-`Notifier` capturing the token); the user's `email_verified_at` is non-null and the
-   token row is `consumed`.
-5. **Password reset over PostgreSQL revokes sessions.** Drive `signup` then
-   `requestPasswordReset` then `confirmPasswordReset`; assert the user's sessions are all
-   `revoked` and the new password verifies, and that a second confirm with the same token
-   yields `Left PasswordResetTokenInvalid`.
-
-Acceptance: `cabal test shomei-postgres` is green and the transcript lists the new cases.
-
-### M3/M4 — end-to-end `curl` walkthrough (the headline demonstration)
-
-With the server running (M4) and the dev log-only notifier selected (the default), run this
-sequence from a second terminal. Replace `localhost:8080` with whatever bind address EP-6
-documents. The exact JSON envelope shapes come from EP-5's DTO conventions; the shapes below
-follow the `SignupRequest`/`LoginRequest` precedent.
+Use a new login/email on each run to avoid duplicate-account conflicts. The commands require
+`curl` and `jq`. They use a password-bearing account with no enrolled MFA. The chosen sample
+passphrases must satisfy the deployment's password policy; a stricter local policy may require
+replacement. These are expected results, not a new live-run transcript from this review.
 
 ```bash
-# 1. Sign up. Returns the user and a token pair (access + refresh).
-curl -s -X POST localhost:8080/auth/signup \
+BASE=http://localhost:8080/v1/auth
+DEMO_ID="lifecycle-$(date +%s)"
+DEMO_EMAIL="$DEMO_ID@example.com"
+OLD_PASSWORD='violet nebula cedar lantern 907!'
+NEW_PASSWORD='cobalt meadow quartz river 608!'
+CHANGED_PASSWORD='amber glacier willow comet 319!'
+
+SIGNUP=$(curl -sS --fail-with-body "$BASE/signup" \
   -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com","password":"correct horse battery staple","displayName":"Alice"}'
+  --data "$(jq -nc --arg i "$DEMO_ID" --arg e "$DEMO_EMAIL" --arg p "$OLD_PASSWORD" \
+    '{loginId:$i,email:$e,password:$p,displayName:"Lifecycle Demo"}')")
+OLD_REFRESH=$(printf '%s' "$SIGNUP" | jq -er '.token.refreshToken')
+OLD_ACCESS=$(printf '%s' "$SIGNUP" | jq -er '.token.accessToken')
+
+curl -sS -i "$BASE/verify-email/request" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg e "$DEMO_EMAIL" '{email:$e}')"
 ```
 
-Expected: HTTP 200 with a JSON body containing `"email":"alice@example.com"` and a
-`"tokenPair"` (or EP-5's equivalent) with non-empty `accessToken` and `refreshToken`. Save the
-`refreshToken` as `$OLD_REFRESH`.
+Signup returns **201** with `{user,token}`; the request returns **202** and an empty body.
+Wait for the background worker's line containing `email_verification`, the selected email,
+and `link=.../v1/auth/verify-email/confirm?token=...`. Copy only its token value:
 
 ```bash
-# 2. Request email verification. Always 202; the link is logged, not returned.
-curl -s -i -X POST localhost:8080/auth/verify-email/request \
-  -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com"}'
+VTOKEN='replace-with-verification-token-from-local-log'
+curl -sS -i "$BASE/verify-email/confirm" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg t "$VTOKEN" '{token:$t}')"
+psql "$PG_CONNECTION_STRING" -v demo_email="$DEMO_EMAIL" <<'SQL'
+SELECT email_verified_at FROM shomei.shomei_users WHERE email = :'demo_email';
+SQL
 ```
 
-Expected: `HTTP/1.1 202 Accepted` with an empty or `{"status":"accepted"}` body. In the
-**server logs** (the terminal running the server), a line like:
-
-```text
-[notify] email-verification for alice@example.com: https://app.example.com/verify-email?token=<RAW_TOKEN> (expires 2026-06-04T03:42:05Z)
-```
-
-Copy `<RAW_TOKEN>` into `$VTOKEN`.
+Expect **200**, an empty confirmation body, and a non-null timestamp from the database.
+Run this terminal inside the Nix shell too so it has `psql` and the database connection.
+`GET /v1/auth/me` returns `UserResponse`, which does not expose `emailVerifiedAt`.
+Repeating the confirmation yields **400** with problem code `verification_token_invalid`.
+Request a reset for both a known and a new unknown address:
 
 ```bash
-# 3. Confirm verification with the token from the logs.
-curl -s -i -X POST localhost:8080/auth/verify-email/confirm \
-  -H 'content-type: application/json' \
-  -d "{\"token\":\"$VTOKEN\"}"
+curl -sS -i "$BASE/password-reset/request" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg e "$DEMO_EMAIL" '{email:$e}')"
+curl -sS -i "$BASE/password-reset/request" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg e "unknown-$DEMO_EMAIL" '{email:$e}')"
 ```
 
-Expected: `HTTP/1.1 202 Accepted` (the confirm endpoints share the lifecycle's uniform
-`202 NoContent` status — see Surprises & Discoveries). A direct DB check confirms the flip:
+Both return **202** with empty bodies. Only the eligible known account produces a notification.
+Copy the reset token from its `password_reset` log line and confirm:
 
 ```bash
-psql -c "SELECT email_verified_at FROM shomei.shomei_users WHERE email='alice@example.com';"
+RTOKEN='replace-with-reset-token-from-local-log'
+curl -sS -i "$BASE/password-reset/confirm" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg t "$RTOKEN" --arg p "$NEW_PASSWORD" '{token:$t,newPassword:$p}')"
+curl -sS -i "$BASE/refresh" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg t "$OLD_REFRESH" '{refreshToken:$t}')"
+curl -sS -i "$BASE/me" -H "Authorization: Bearer $OLD_ACCESS"
 ```
 
-Expected: one non-null timestamp.
+Expect **200** for reset, **401** for the old refresh token, and **401** for the old access
+token at `me` with the explicitly selected session-check policy. Replaying the reset token
+returns **400** with `password_reset_token_invalid`. Login with the old password returns
+**401**; login with the new password returns **200**, `status:"complete"`, and a fresh `token`:
 
 ```bash
-# 4. Request a password reset. Always 202, even for unknown emails.
-curl -s -i -X POST localhost:8080/auth/password-reset/request \
-  -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com"}'
-# (Try an unknown email too — the response is byte-for-byte identical.)
-curl -s -i -X POST localhost:8080/auth/password-reset/request \
-  -H 'content-type: application/json' \
-  -d '{"email":"nobody@example.com"}'
+LOGIN=$(curl -sS --fail-with-body "$BASE/login" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg i "$DEMO_ID" --arg p "$NEW_PASSWORD" '{loginId:$i,password:$p}')")
+ACCESS=$(printf '%s' "$LOGIN" | jq -er '.token.accessToken')
+REFRESH=$(printf '%s' "$LOGIN" | jq -er '.token.refreshToken')
+
+curl -sS -i "$BASE/password/change" -H 'content-type: application/json' \
+  -H "Authorization: Bearer $ACCESS" \
+  --data "$(jq -nc --arg c "$NEW_PASSWORD" --arg n "$CHANGED_PASSWORD" \
+    '{currentPassword:$c,newPassword:$n}')"
+curl -sS -i "$BASE/refresh" -H 'content-type: application/json' \
+  --data "$(jq -nc --arg t "$REFRESH" '{refreshToken:$t}')"
 ```
 
-Expected: both return `HTTP/1.1 202 Accepted` with identical bodies. The logs show a reset
-link **only** for `alice@example.com`; nothing is logged for `nobody@example.com`. Copy the
-reset token into `$RTOKEN`.
-
-```bash
-# 5. Confirm the reset with a new password.
-curl -s -i -X POST localhost:8080/auth/password-reset/confirm \
-  -H 'content-type: application/json' \
-  -d "{\"token\":\"$RTOKEN\",\"newPassword\":\"a different long passphrase here\"}"
-```
-
-Expected: `HTTP/1.1 202 Accepted` (uniform lifecycle status — see Surprises & Discoveries).
-
-```bash
-# 6. The OLD refresh token issued at signup is now rejected (reset revoked all sessions).
-curl -s -i -X POST localhost:8080/auth/refresh \
-  -H 'content-type: application/json' \
-  -d "{\"refreshToken\":\"$OLD_REFRESH\"}"
-```
-
-Expected: a 4xx error (e.g. `HTTP/1.1 401 Unauthorized`) carrying the JSON encoding of
-`SessionRevoked` or `RefreshTokenInvalid` — proving the reset invalidated the pre-existing
-session. Logging back in with the **new** password succeeds:
-
-```bash
-curl -s -X POST localhost:8080/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"alice@example.com","password":"a different long passphrase here"}'
-```
-
-Expected: HTTP 200 with a fresh token pair. This end-to-end transcript is the headline
-acceptance for the whole plan: a complete, secure account lifecycle observable from a terminal.
-
+Expect **204** for change and **401** for its now-revoked refresh token. A subsequent login
+with `CHANGED_PASSWORD` succeeds. The authenticated password-change route uses CSRF checks
+for cookie authentication; the demonstration uses bearer authentication and sends no cookies.
+The route is throttled, so rapid repeated demonstrations may return 429; allow the bucket to
+refill before retrying rather than interpreting that as a lifecycle failure.
 
 ## Idempotence and Recovery
 
-All M1/M3/M4 source edits are idempotent: re-applying them overwrites the same files with the
-same content, and `cabal build`/`cabal test` only recompile what changed (recover a stale cache
-with `cabal clean && cabal build shomei-core`).
 
-The M2 migrations are the only stateful step and are written to be safe to re-run. Each uses
-`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, and `ALTER TABLE … ADD COLUMN IF
-NOT EXISTS`, and codd records which migrations it has applied so each runs at most once per
-database; re-running `just migrate` is a no-op once applied. **Migrations are append-only and
-immutable (IP-7): never edit a migration that may already be applied to any database.** If you
-must change a token table's shape after it has shipped, add a new later-timestamped migration.
-The `just migrate` recipe `touch`es the migrations `.cabal` before running so a newly added
-`.sql` file is picked up by the compile-time `embedDir` splice; if a new migration "doesn't
-apply", the usual cause is a stale embed — `cabal clean` then `just migrate` recovers it.
+This completed plan is not replayed by overwriting source files. Inspect the current tree and
+make the smallest owning-module changes for any subsequent maintenance. Test databases are
+isolated. The manual walkthrough creates a fresh account each time and leaves its records in
+the selected development database; never point it at production.
 
-The ephemeral-PostgreSQL integration tests are self-contained: each test gets a brand-new
-throwaway database (ephemeral-pg caches only the `initdb` cluster), so there is no cross-test
-contamination and nothing to clean up. The dev database is never touched by the test suite.
+Repeated request calls can issue multiple active tokens. Successful verification revokes active
+sibling verification tokens; successful reset revokes active sibling reset tokens. Repeated
+confirmation of the same consumed token is an error, not an idempotent success. Invalid or
+weak replacement passwords are rejected before reset consumption, so the user can retry with
+a compliant password while the token remains valid.
 
-If M3/M4 cannot start because MasterPlan 1 EP-5/EP-6 have not landed, M1 and M2 still stand
-alone: the core types, effects, workflows, migrations, and PostgreSQL interpreters are complete
-and tested, and the HTTP layer is purely additive on top.
+Migration application uses the manifest and pg-migrate ledger. Already-applied migrations are
+skipped; checksum disagreements require investigation, not ledger deletion or editing applied
+SQL to force acceptance. New migrations are append-only. The embed/recompile integration in
+`Shomei.Migrations` replaces the old touch-the-Cabal-file workaround. After adding a migration,
+rebuild and run the manifest check before applying it to a selected development database.
 
+A reset transaction failure rolls back its password/token/session/event writes; report the
+dependency error and retry according to the resulting token state. A failure midway through
+verification may leave a consumed token without all later writes. Request a new token if the
+account is still unverified, and investigate incomplete verification/audit state; do not assume
+the whole confirmation rolled back or repair production rows ad hoc. Queue loss on crash,
+overflow, or shutdown deadline is best-effort delivery behavior; users can request another link.
 
 ## Interfaces and Dependencies
 
-This section is the contract. New libraries: **none** — email sending was descoped (2026-06-17),
-so EP-1 adds no SMTP/email library; everything reuses dependencies the packages already declare (`mmzk-typeid`, `uuid`, `effectful`,
-`containers`, `aeson`, `time`, `text`, `hasql`, `contravariant-extras`, `crypton`, `ram`,
-`tasty`, `tasty-hunit`). No Shōmei package may depend on the deprecated `memory` package.
 
-### IP-2 — new identifiers (edit `shomei-core/src/Shomei/Id.hs`)
+### Core contracts
 
-Add, mirroring the existing `UserId`/`RefreshTokenId` definitions:
 
-```haskell
-type VerificationTokenId = KindID "verification_token"
-type PasswordResetTokenId = KindID "password_reset_token"
+`VerificationTokenId = KindID "verification_token"` and
+`PasswordResetTokenId = KindID "password_reset_token"` are already exported by `Shomei.Id`,
+with `genVerificationTokenId`, `genPasswordResetTokenId`, and each `...ToUUID`/`...FromUUID`
+converter. `Data.KindID.V7.genKindID`, `getUUID`, and `decorateKindID` support this UUIDv7
+mapping. They do not make the token secret; the separate opaque token carries that secret.
 
-genVerificationTokenId :: (MonadIO m) => m VerificationTokenId
-genVerificationTokenId = KindID.genKindID @"verification_token"
+`PersistedVerificationToken` and `PersistedPasswordResetToken` contain their typed ID,
+`userId`, `tokenHash`, `status`, `createdAt`, `expiresAt`, `consumedAt`, and `revokedAt`.
+Each `New...Token` contains `userId`, `tokenHash`, `createdAt`, and `expiresAt`.
+`User.email :: Maybe Email` and `User.emailVerifiedAt :: Maybe UTCTime`; a new user is unverified.
+`mkEmail` validates/normalizes wire text before constructing the request commands.
 
-genPasswordResetTokenId :: (MonadIO m) => m PasswordResetTokenId
-genPasswordResetTokenId = KindID.genKindID @"password_reset_token"
-
-verificationTokenIdToUUID :: VerificationTokenId -> UUID
-verificationTokenIdToUUID = getUUID
-verificationTokenIdFromUUID :: UUID -> VerificationTokenId
-verificationTokenIdFromUUID = decorateKindID
-
-passwordResetTokenIdToUUID :: PasswordResetTokenId -> UUID
-passwordResetTokenIdToUUID = getUUID
-passwordResetTokenIdFromUUID :: UUID -> PasswordResetTokenId
-passwordResetTokenIdFromUUID = decorateKindID
-```
-
-Add all six new names to the module's export list.
-
-### IP-2 — the shared one-time-token shape (`shomei-core/src/Shomei/Domain/OneTimeToken.hs`, new)
-
-This is the reusable opaque single-use-token shape, copied from `RefreshToken`'s design. Both
-the verification and reset token modules reuse `OneTimeToken`, `OneTimeTokenHash`, and
-`OneTimeTokenStatus`.
+`Notification` has `EmailVerificationRequested` and `PasswordResetRequested`, each carrying
+`email :: Email`, `token :: OneTimeToken`, and `expiresAt :: UTCTime`. JSON serialization is
+used by the webhook sender and therefore deliberately includes the raw token. Do not log
+`show notification` or serialized notification bodies as operational diagnostics.
+The effect still has the following interface:
 
 ```haskell
-{- | The shared shape of Shōmei's single-use, opaque tokens (email verification and
-password reset). Like a refresh token, only the HASH is ever persisted; the raw
-'OneTimeToken' is handed to the user once (in a link) and never stored. A token is
-single-use: confirming it transitions its status to 'OneTimeTokenConsumed', after which
-any replay is rejected. It also carries a TTL (the persisted row's @expiresAt@).
--}
-module Shomei.Domain.OneTimeToken (
-    OneTimeToken (..),
-    OneTimeTokenHash (..),
-    OneTimeTokenStatus (..),
-) where
-
-import Shomei.Prelude
-
--- | The opaque secret embedded in a verification/reset link. Never persisted.
-newtype OneTimeToken = OneTimeToken Text
-    deriving stock (Generic)
-    deriving newtype (Eq, Show, FromJSON, ToJSON)
-
--- | The SHA-256 hash of a 'OneTimeToken'. The ONLY thing persisted.
-newtype OneTimeTokenHash = OneTimeTokenHash Text
-    deriving stock (Generic)
-    deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
-
-data OneTimeTokenStatus
-    = OneTimeTokenActive
-    | OneTimeTokenConsumed
-    | OneTimeTokenRevoked
-    | OneTimeTokenExpired
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-```
-
-Because `Shomei.Effect.TokenGen` produces a `RefreshToken`/`RefreshTokenHash` (newtypes over
-`Text`), the workflows convert via the underlying `Text`: a freshly generated token
-`RefreshToken t` becomes `OneTimeToken t`, and its hash `RefreshTokenHash h` becomes
-`OneTimeTokenHash h`. Provide tiny converters in the workflow module (not exported) rather than
-adding a second generator. This reuse is exactly what IP-2 mandates.
-
-### IP-2 — verification token (`shomei-core/src/Shomei/Domain/VerificationToken.hs`, new)
-
-```haskell
-{- | An email-verification token row: which user it verifies, the stored hash, its TTL,
-and its single-use status. Modeled on 'Shomei.Domain.RefreshToken.PersistedRefreshToken'.
--}
-module Shomei.Domain.VerificationToken (
-    PersistedVerificationToken (..),
-    NewVerificationToken (..),
-) where
-
-import Shomei.Prelude
-
-import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus)
-import Shomei.Id (UserId, VerificationTokenId)
-
-data PersistedVerificationToken = PersistedVerificationToken
-    { verificationTokenId :: !VerificationTokenId
-    , userId :: !UserId
-    , tokenHash :: !OneTimeTokenHash
-    , status :: !OneTimeTokenStatus
-    , createdAt :: !UTCTime
-    , expiresAt :: !UTCTime
-    , consumedAt :: !(Maybe UTCTime)
-    }
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-
-data NewVerificationToken = NewVerificationToken
-    { userId :: !UserId
-    , tokenHash :: !OneTimeTokenHash
-    , createdAt :: !UTCTime
-    , expiresAt :: !UTCTime
-    }
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-```
-
-### IP-2 — password-reset token (`shomei-core/src/Shomei/Domain/PasswordResetToken.hs`, new)
-
-Identical shape, distinct type and id (`password_reset_token_` prefix):
-
-```haskell
-module Shomei.Domain.PasswordResetToken (
-    PersistedPasswordResetToken (..),
-    NewPasswordResetToken (..),
-) where
-
-import Shomei.Prelude
-
-import Shomei.Domain.OneTimeToken (OneTimeTokenHash, OneTimeTokenStatus)
-import Shomei.Id (PasswordResetTokenId, UserId)
-
-data PersistedPasswordResetToken = PersistedPasswordResetToken
-    { passwordResetTokenId :: !PasswordResetTokenId
-    , userId :: !UserId
-    , tokenHash :: !OneTimeTokenHash
-    , status :: !OneTimeTokenStatus
-    , createdAt :: !UTCTime
-    , expiresAt :: !UTCTime
-    , consumedAt :: !(Maybe UTCTime)
-    }
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-
-data NewPasswordResetToken = NewPasswordResetToken
-    { userId :: !UserId
-    , tokenHash :: !OneTimeTokenHash
-    , createdAt :: !UTCTime
-    , expiresAt :: !UTCTime
-    }
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-```
-
-### IP-1 — the `Notification` domain type (`shomei-core/src/Shomei/Domain/Notification.hs`, new)
-
-```haskell
-{- | A notification the system asks the outside world to deliver. Each variant carries the
-recipient 'Email', the RAW one-time token (so the sender can build a link), and the
-token's expiry. The core defines the shape; the @Shomei.Effect.Notifier@ effect carries it to
-a sender. The shipped server's only built-in sender is the dev log-only one in
-@shomei-server@'s @Shomei.Notify@; an operator forwards it to their own provider via their own
-interpreter (Shōmei does not send email).
--}
-module Shomei.Domain.Notification (
-    Notification (..),
-) where
-
-import Shomei.Prelude
-
-import Shomei.Domain.Email (Email)
-import Shomei.Domain.OneTimeToken (OneTimeToken)
-
-data Notification
-    = EmailVerificationRequested
-        { recipient :: !Email
-        , token :: !OneTimeToken
-        , expiresAt :: !UTCTime
-        }
-    | PasswordResetRequested
-        { recipient :: !Email
-        , token :: !OneTimeToken
-        , expiresAt :: !UTCTime
-        }
-    deriving stock (Generic, Eq, Show)
-```
-
-Note: `Notification` carries a raw `OneTimeToken` (a secret) so it deliberately gets **no**
-`ToJSON`/`FromJSON` instance — it is never serialized over the wire or persisted; it only
-crosses the in-process `Notifier` effect to a sender. (`OneTimeToken` itself has JSON instances
-for the DTO layer, but the `Notification` wrapper does not.)
-
-### IP-1 — the Notifier effect (`shomei-core/src/Shomei/Effect/Notifier.hs`, new)
-
-```haskell
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeFamilies #-}
-
-{- | The notification effect (IP-1): hand a 'Notification' (an email-verification or
-password-reset link) to a sender. The core defines only the shape; the one built-in sender —
-the dev log-only interpreter — lives in @shomei-server@'s @Shomei.Notify@, and a
-list-capturing interpreter for tests lives in @Shomei.Effect.InMemory@. Shōmei does not deliver
-email: an operator forwards the 'Notification' to their own provider by supplying their own
-interpreter of this effect.
--}
-module Shomei.Effect.Notifier (
-    Notifier (..),
-    sendNotification,
-) where
-
-import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
-import Effectful.Dispatch.Dynamic (send)
-
-import Shomei.Domain.Notification (Notification)
-
-data Notifier :: Effect where
-    SendNotification :: Notification -> Notifier m ()
-
-type instance DispatchOf Notifier = Dynamic
-
 sendNotification :: (Notifier :> es) => Notification -> Eff es ()
-sendNotification = send . SendNotification
 ```
 
-### IP-2 — the two store effects (new)
+It is a dynamic effect with `SendNotification :: Notification -> Notifier m ()`,
+`DispatchOf Notifier = Dynamic`, a `send` smart constructor, and first-order `interpret_`
+handlers. A smart constructor here dispatches an operation; validation constructors such as
+`mkEmail` serve a different role by enforcing a value's invariants.
 
-`shomei-core/src/Shomei/Effect/VerificationTokenStore.hs`:
+Both token stores export `create...Token`, `find...TokenByHash`, `mark...TokenConsumed`, and
+`revokeUser...Tokens`. The exact consume and unit-of-work interfaces are:
 
 ```haskell
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeFamilies #-}
+markVerificationTokenConsumed ::
+  (VerificationTokenStore :> es) => VerificationTokenId -> UTCTime -> Eff es Bool
+markPasswordResetTokenConsumed ::
+  (PasswordResetTokenStore :> es) => PasswordResetTokenId -> UTCTime -> Eff es Bool
 
-module Shomei.Effect.VerificationTokenStore (
-    VerificationTokenStore (..),
-    createVerificationToken,
-    findVerificationTokenByHash,
-    consumeVerificationToken,
-) where
-
-import Shomei.Prelude
-
-import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
-import Effectful.Dispatch.Dynamic (send)
-
-import Shomei.Domain.OneTimeToken (OneTimeTokenHash)
-import Shomei.Domain.VerificationToken (NewVerificationToken, PersistedVerificationToken)
-import Shomei.Id (VerificationTokenId)
-
-data VerificationTokenStore :: Effect where
-    CreateVerificationToken :: NewVerificationToken -> VerificationTokenStore m PersistedVerificationToken
-    FindVerificationTokenByHash :: OneTimeTokenHash -> VerificationTokenStore m (Maybe PersistedVerificationToken)
-    ConsumeVerificationToken :: VerificationTokenId -> UTCTime -> VerificationTokenStore m ()
-
-type instance DispatchOf VerificationTokenStore = Dynamic
-
-createVerificationToken :: (VerificationTokenStore :> es) => NewVerificationToken -> Eff es PersistedVerificationToken
-createVerificationToken = send . CreateVerificationToken
-
-findVerificationTokenByHash :: (VerificationTokenStore :> es) => OneTimeTokenHash -> Eff es (Maybe PersistedVerificationToken)
-findVerificationTokenByHash = send . FindVerificationTokenByHash
-
-consumeVerificationToken :: (VerificationTokenStore :> es) => VerificationTokenId -> UTCTime -> Eff es ()
-consumeVerificationToken i t = send (ConsumeVerificationToken i t)
+completePasswordReset ::
+  (AuthUnitOfWork :> es) =>
+  PasswordResetTokenId -> UserId -> PasswordHash -> UTCTime -> [AuthEvent] -> Eff es Bool
+completePasswordChange ::
+  (AuthUnitOfWork :> es) =>
+  UserId -> PasswordHash -> UTCTime -> [AuthEvent] -> Eff es ()
 ```
 
-`shomei-core/src/Shomei/Effect/PasswordResetTokenStore.hs` is identical in form with
-`PasswordResetTokenId`/`PersistedPasswordResetToken`/`NewPasswordResetToken` and the smart
-constructors `createPasswordResetToken`, `findPasswordResetTokenByHash`,
-`consumePasswordResetToken`.
-
-### Extend `Shomei.Effect.UserStore` and `Shomei.Effect.RefreshTokenStore`
-
-In `shomei-core/src/Shomei/Effect/UserStore.hs`, add to the GADT and exports:
+The workflow commands remain `RequestEmailVerification Email`,
+`ConfirmEmailVerification OneTimeToken`, `RequestPasswordReset Email`,
+`ConfirmPasswordReset OneTimeToken PlainPassword`, and
+`ChangePassword UserId PlainPassword PlainPassword`, with the named fields in
+`Shomei.Account.Lifecycle.Workflow`. All five return `Eff es (Either AuthError ())`.
+The exact effect constraints and arguments are:
 
 ```haskell
-    MarkUserEmailVerified :: UserId -> UTCTime -> UserStore m ()
--- and the smart constructor:
-markUserEmailVerified :: (UserStore :> es) => UserId -> UTCTime -> Eff es ()
-markUserEmailVerified uid t = send (MarkUserEmailVerified uid t)
+requestEmailVerification ::
+  (UserStore :> es, VerificationTokenStore :> es, Notifier :> es,
+   AuthEventPublisher :> es, Clock :> es, TokenGen :> es) =>
+  ShomeiConfig -> RequestEmailVerification -> Eff es (Either AuthError ())
+
+confirmEmailVerification ::
+  (VerificationTokenStore :> es, UserStore :> es, AuthEventPublisher :> es,
+   Clock :> es, TokenGen :> es) =>
+  ShomeiConfig -> ConfirmEmailVerification -> Eff es (Either AuthError ())
+
+requestPasswordReset ::
+  (UserStore :> es, PasswordResetTokenStore :> es, Notifier :> es,
+   AuthEventPublisher :> es, Clock :> es, TokenGen :> es) =>
+  ShomeiConfig -> RequestPasswordReset -> Eff es (Either AuthError ())
+
+confirmPasswordReset ::
+  (UserStore :> es, PasswordResetTokenStore :> es, PasswordHasher :> es,
+   PasswordBreachChecker :> es, AuthUnitOfWork :> es, Clock :> es, TokenGen :> es) =>
+  ShomeiConfig -> ConfirmPasswordReset -> Eff es (Either AuthError ())
+
+changePassword ::
+  (UserStore :> es, CredentialStore :> es, PasswordHasher :> es,
+   PasswordBreachChecker :> es, AuthUnitOfWork :> es, AuthEventPublisher :> es,
+   LoginAttemptStore :> es, Clock :> es) =>
+  ShomeiConfig -> ProofContext -> ChangePassword -> Eff es (Either AuthError ())
 ```
 
-In `shomei-core/src/Shomei/Effect/RefreshTokenStore.hs`, add:
+Request workflows notify only active users with an email; verification also requires that
+email to be unverified. Unknown/ineligible users produce `Right ()` without notification.
+Confirmation hashes the presented token, checks active status and expiry, and resolves its
+user. Verification rejects a missing email, returns `EmailAlreadyVerified` if already verified,
+and proceeds only after a successful token CAS. It then marks the user, revokes sibling
+verification tokens, and publishes `EmailVerified` as separate operations.
 
-```haskell
-    RevokeAllUserRefreshTokens :: UserId -> UTCTime -> RefreshTokenStore m ()
--- and the smart constructor:
-revokeAllUserRefreshTokens :: (RefreshTokenStore :> es) => UserId -> UTCTime -> Eff es ()
-revokeAllUserRefreshTokens uid t = send (RevokeAllUserRefreshTokens uid t)
-```
+Reset validates the replacement password with email/display-name context and applies the
+configured breach check before hashing. `completePasswordReset` owns its entire write tail;
+a false result becomes `PasswordResetTokenInvalid`. Change derives the abuse key from
+`ProofContext` and the user's login ID, performs a dummy password check when locked, checks
+new-password policy/breach status, verifies the existing credential by login ID, records proof
+success/failure, hashes the replacement, and calls `completePasswordChange`. The audit payloads
+are the existing `Event.*Data` constructors in `Shomei.Audit.Event.Domain`, not the obsolete
+four-record sketch from the initial plan.
 
-This needs `UserId` imported in `RefreshTokenStore` (it already imports `SessionId`,
-`RefreshTokenId` from `Shomei.Id`).
+### Persistence and expiry
 
-### Extend `Shomei.Domain.User`
 
-Add `emailVerifiedAt :: !(Maybe UTCTime)` to the `User` record (NOT to `NewUser` — a fresh user
-is always unverified). Every place that constructs a `User` (the in-memory and PostgreSQL
-`CreateUser` interpreters) sets `emailVerifiedAt = Nothing`.
-
-### IP-3 — extend `Shomei.Config` (append-only)
-
-Add a new sub-record and a `notifierConfig` field; extend `defaultShomeiConfig`. Per the IP-3
-rule, this is *additive* and defaulted so older config files still parse.
-
-```haskell
--- Email sending is descoped (2026-06-17): the log sender is the only built-in, so this enum
--- has a single constructor. It stays an enum (not a bare flag) so a future built-in — e.g. a
--- `shomei-email` provider — can be added without reshaping NotifierConfig. The implemented
--- name is `LogNotifier` (this listing predates that rename).
-data NotifierTransport = LogNotifier
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-
-data NotifierConfig = NotifierConfig
-    { emailVerificationRequired :: !Bool
-    -- ^ if True, the server requires a verified email for protected operations
-    , verificationTokenTTL :: !NominalDiffTime
-    , passwordResetTokenTTL :: !NominalDiffTime
-    , notifierTransport :: !NotifierTransport
-    , linkBaseUrl :: !Text
-    -- ^ e.g. "https://app.example.com"; senders build links as <base>/verify-email?token=…
-    }
-    deriving stock (Generic, Eq, Show)
-    deriving anyclass (FromJSON, ToJSON)
-
--- Add to ShomeiConfig:
---   , notifierConfig :: !NotifierConfig
-
-defaultVerificationTokenTTL, defaultPasswordResetTokenTTL :: NominalDiffTime
-defaultVerificationTokenTTL = 24 * 60 * 60   -- 24 hours
-defaultPasswordResetTokenTTL = 60 * 60       -- 1 hour
-
-defaultNotifierConfig :: NotifierConfig
-defaultNotifierConfig = NotifierConfig
-    { emailVerificationRequired = False
-    , verificationTokenTTL = defaultVerificationTokenTTL
-    , passwordResetTokenTTL = defaultPasswordResetTokenTTL
-    , notifierTransport = LogNotifier
-    , linkBaseUrl = "http://localhost:8080"
-    }
-
--- In defaultShomeiConfig, add:  notifierConfig = defaultNotifierConfig
-```
-
-Export `NotifierConfig (..)`, `NotifierTransport (..)`, `defaultNotifierConfig`,
-`defaultVerificationTokenTTL`, `defaultPasswordResetTokenTTL` from `Shomei.Config`.
-
-### Extend `Shomei.Error`
-
-Add three `AuthError` variants:
-
-```haskell
-    | VerificationTokenInvalid     -- unknown/consumed/revoked/expired verification token
-    | PasswordResetTokenInvalid    -- unknown/consumed/revoked/expired reset token
-    | EmailAlreadyVerified         -- requesting verification when already verified
-```
-
-`VerificationTokenInvalid`/`PasswordResetTokenInvalid` are deliberately generic (they do not
-distinguish "unknown" from "expired") so a confirm endpoint cannot be used as an oracle.
-
-### Extend `Shomei.Domain.Event`
-
-Add four `*Data` records and `AuthEvent` arms (all `deriving (Generic, Eq, Show)` +
-`(FromJSON, ToJSON)`), following the existing `*Data` style (carry the relevant ids + email +
-`occurredAt`):
-
-```haskell
-data EmailVerificationRequestedData = EmailVerificationRequestedData
-    { userId :: !UserId, email :: !Email, occurredAt :: !UTCTime } …
-data EmailVerifiedData = EmailVerifiedData
-    { userId :: !UserId, occurredAt :: !UTCTime } …
-data PasswordResetRequestedData = PasswordResetRequestedData
-    { email :: !Email, occurredAt :: !UTCTime } …   -- NB: no userId, to avoid leaking existence in logs
-data PasswordResetCompletedData = PasswordResetCompletedData
-    { userId :: !UserId, occurredAt :: !UTCTime } …
-
--- AuthEvent arms:
---   | EmailVerificationRequested EmailVerificationRequestedData
---   | EmailVerified EmailVerifiedData
---   | PasswordResetRequested PasswordResetRequestedData
---   | PasswordResetCompleted PasswordResetCompletedData
-```
-
-The PostgreSQL `AuthEventPublisher` interpreter (already in `shomei-postgres`) projects each
-`AuthEvent` constructor to `(user_id?, session_id?, event_type, toJSON payload, occurredAt)`;
-the new arms slot in there with `event_type` strings like `"email_verified"` (extend that
-interpreter's projection function when M2 lands the new arms — `cabal build shomei-postgres`
-will fail with a non-exhaustive-pattern warning-as-error until you do, which is the reminder).
-
-### The five account workflows (`shomei-core/src/Shomei/Workflow/Account.hs`, new)
-
-Each workflow is a function over the effect interfaces returning `Eff es (Either AuthError <result>)`,
-following the patterns in `shomei-core/src/Shomei/Workflow.hs` (which to read first).
-The command records (place them in `Shomei.Domain.Command` alongside the existing
-`SignupCommand`/`LoginCommand`, or define them locally in the workflow module):
-
-```haskell
-newtype RequestEmailVerification = RequestEmailVerification { email :: Email }
-newtype ConfirmEmailVerification = ConfirmEmailVerification { token :: OneTimeToken }
-newtype RequestPasswordReset = RequestPasswordReset { email :: Email }
-data ConfirmPasswordReset = ConfirmPasswordReset { token :: OneTimeToken, newPassword :: PlainPassword }
-data ChangePassword = ChangePassword { userId :: UserId, currentPassword :: PlainPassword, newPassword :: PlainPassword }
-```
-
-Behavioural contract (the rules, in prose):
-
-- **`requestEmailVerification cfg cmd`** — effects: `UserStore`, `TokenGen`,
-  `VerificationTokenStore`, `Notifier`, `AuthEventPublisher`, `Clock`. Normalize the email,
-  look up the user. If absent, return `Right ()` (no leak). If present and already verified
-  (`emailVerifiedAt /= Nothing`), return `Right ()` (idempotent; optionally
-  `Left EmailAlreadyVerified` if `emailVerificationRequired` — keep it `Right ()` for the MVP).
-  Otherwise: `raw <- generateOpaqueToken`, `h <- hashRefreshToken raw`, create a
-  `NewVerificationToken` (TTL from `cfg.notifierConfig.verificationTokenTTL`),
-  `sendNotification (EmailVerificationRequested user.email (toOTT raw) expiry)`, publish
-  `EmailVerificationRequested`, return `Right ()`.
-- **`confirmEmailVerification cfg cmd`** — effects: `VerificationTokenStore`, `UserStore`,
-  `AuthEventPublisher`, `Clock`. Hash the presented token, find the row. If absent, or status
-  `/= OneTimeTokenActive`, or `expiresAt <= now`, return `Left VerificationTokenInvalid`.
-  Otherwise: `consumeVerificationToken` the row, `markUserEmailVerified row.userId now`, publish
-  `EmailVerified`, return `Right ()`.
-- **`requestPasswordReset cfg cmd`** — effects: `UserStore`, `TokenGen`,
-  `PasswordResetTokenStore`, `Notifier`, `AuthEventPublisher`, `Clock`. Same generic-response
-  shape as `requestEmailVerification`: look up the user; on absence return `Right ()` and emit
-  nothing; on presence mint a reset token (TTL `cfg.notifierConfig.passwordResetTokenTTL`),
-  send `PasswordResetRequested`, publish `PasswordResetRequested`, return `Right ()`.
-- **`confirmPasswordReset cfg cmd`** — effects: `PasswordResetTokenStore`, `UserStore`,
-  `CredentialStore`, `PasswordHasher`, `SessionStore`, `RefreshTokenStore`,
-  `AuthEventPublisher`, `Clock`. Validate the token exactly as confirm-verification (generic
-  `Left PasswordResetTokenInvalid` on any failure). Validate the new password against
-  `cfg.passwordPolicy` (`Left (WeakPassword …)` on failure). Then: hash the new password
-  (`hashPassword`), `updatePasswordHash row.userId newHash`, `consumePasswordResetToken` the
-  token, **`revokeAllUserSessions row.userId now`** and **`revokeAllUserRefreshTokens
-  row.userId now`**, publish `PasswordResetCompleted`, return `Right ()`.
-- **`changePassword cfg cmd`** — effects: `UserStore`, `CredentialStore`, `PasswordHasher`,
-  `SessionStore`, `RefreshTokenStore`, `AuthEventPublisher`, `Clock`. Look up the user's
-  credential; verify `currentPassword` against the stored hash (`Left InvalidCredentials` on
-  mismatch — the generic credential error). Validate the new password against the policy. Then
-  hash and `updatePasswordHash`, revoke all the user's sessions and refresh tokens, publish
-  `PasswordChanged` (the existing event), return `Right ()`.
-
-Use the existing `runErrorNoCallStack`/`throwError` short-circuit style from `Shomei.Workflow`
-for the validation-heavy workflows, or explicit `case` analysis for the token-validation ones —
-match whichever reads more clearly, as the existing module does. The unexported `toOTT`/`toOTTH`
-converters rewrap `RefreshToken`/`RefreshTokenHash` `Text` into `OneTimeToken`/`OneTimeTokenHash`.
-
-### In-memory interpreter additions (`Shomei.Effect.InMemory`)
-
-Add to `World` (and `emptyWorld`):
-
-```haskell
-    , verificationTokens :: !(Map VerificationTokenId PersistedVerificationToken)
-    , verificationByHash :: !(Map OneTimeTokenHash VerificationTokenId)
-    , passwordResetTokens :: !(Map PasswordResetTokenId PersistedPasswordResetToken)
-    , passwordResetByHash :: !(Map OneTimeTokenHash PasswordResetTokenId)
-    , sentNotifications :: ![Notification]   -- newest-first
-```
-
-Add `runVerificationTokenStore`, `runPasswordResetTokenStore` (mirroring
-`runRefreshTokenStore`: `Create…` allocates an id via `genVerificationTokenId`/
-`genPasswordResetTokenId` and inserts into both maps; `Find…ByHash` looks up via the hash map;
-`Consume…` adjusts status to `OneTimeTokenConsumed` and sets `consumedAt`), and `runNotifier`
-(`SendNotification n -> modifyIORef' ref (#sentNotifications %~ (n :))`). Extend `runUserStore`'s
-`CreateUser` to set `emailVerifiedAt = Nothing` and add the `MarkUserEmailVerified uid t`
-case (`#users %~ Map.adjust (#emailVerifiedAt .~ Just t) uid`). Extend `runRefreshTokenStore`
-with `RevokeAllUserRefreshTokens uid t` — but note: refresh-token rows are keyed by session, so
-to revoke "all the user's" tokens, the interpreter must look up which sessions belong to the
-user (`#sessions` map) and revoke tokens for those sessions. (The PostgreSQL version does this
-with a `WHERE session_id IN (SELECT session_id FROM shomei.shomei_sessions WHERE user_id = $1)`
-subquery — see below.) Add `Notifier`, `VerificationTokenStore`, `PasswordResetTokenStore` to
-the `runInMemory` effect-row and interpreter stack.
-
-### IP-7 — the three migrations (new files under `shomei-migrations/sql-migrations/`)
-
-`<ts>-shomei-users-email-verified.sql` (additive column, defaulted NULL):
+The token table row mappings include both optional `consumed_at` and `revoked_at` timestamps.
+A successful consume statement has the shape below; the reset store uses its own table/id.
+`D.rowMaybe` returns `Maybe UUID`, which the interpreter turns into the public `Bool`.
 
 ```sql
--- codd: in-txn
-
-SET search_path TO shomei, pg_catalog;
-
-ALTER TABLE shomei_users
-  ADD COLUMN IF NOT EXISTS email_verified_at timestamptz NULL;
+UPDATE shomei.shomei_email_verification_tokens
+SET status = 'consumed', consumed_at = $2
+WHERE verification_token_id = $1 AND status = 'active'
+RETURNING verification_token_id;
 ```
 
-`<ts>-shomei-email-verification-tokens.sql`:
+This statement does not recheck TTL or user state. The workflow's earlier `expiresAt > ts`
+check is the current expiry contract. `AuthUnitOfWork` runs its writes with
+`Hasql.Transaction.statement` under `runTransaction`; `runDatabasePool` selects
+`Tx.transaction Tx.ReadCommitted Tx.Write`. Hasql statements use `preparable` with `Text`
+SQL and applicative row decoders. Database errors are translated through
+`postgresUnavailable` to `DependencyUnavailable PostgreSQL`, not exposed as driver strings
+inside `InternalAuthError`. The standard HTTP mapping reports a 503 dependency problem.
 
-```sql
--- codd: in-txn
+### Configuration and runtime assembly
 
-SET search_path TO shomei, pg_catalog;
 
-CREATE TABLE IF NOT EXISTS shomei_email_verification_tokens (
-  verification_token_id uuid PRIMARY KEY,
-  user_id               uuid NOT NULL REFERENCES shomei_users(user_id),
-  token_hash            text NOT NULL UNIQUE,
-  status                text NOT NULL,
-  created_at            timestamptz NOT NULL,
-  expires_at            timestamptz NOT NULL,
-  consumed_at           timestamptz NULL
-);
+`cfg.notifierConfig` contains `emailVerificationRequired`, `verificationTokenTTL`,
+`passwordResetTokenTTL`, `notifierTransport`, `publicBaseUrl`, `logRawTokens`, `smtpConfig`,
+`webhookConfig`, and `alsoLogNotifications`. Defaults are a 24-hour verification TTL, one-hour
+reset TTL, `LogNotifier`, `http://localhost:8080`, false flags, and absent optional transport
+sub-configs. The notifier default is constructed inside `defaultShomeiConfig`; there is no
+exported `defaultNotifierConfig` or `linkBaseUrl` field.
 
-CREATE INDEX IF NOT EXISTS shomei_email_verification_tokens_user_id_idx
-  ON shomei_email_verification_tokens (user_id);
-CREATE INDEX IF NOT EXISTS shomei_email_verification_tokens_status_idx
-  ON shomei_email_verification_tokens (status);
-```
+`emailVerificationRequired` controls token-issuance gates through
+`shomei-core/src/Shomei/Session/Workflow.hs` and its callers. It is not a general check on
+every protected operation: signup still issues its initial pair, subsequent gated login and
+refresh reject unverified email accounts, and accounts with no email are exempt. The default
+is false. Preserve the dedicated verification-gate tests when modifying this behavior.
 
-`<ts>-shomei-password-reset-tokens.sql` (identical shape, different table name):
-
-```sql
--- codd: in-txn
-
-SET search_path TO shomei, pg_catalog;
-
-CREATE TABLE IF NOT EXISTS shomei_password_reset_tokens (
-  password_reset_token_id uuid PRIMARY KEY,
-  user_id                 uuid NOT NULL REFERENCES shomei_users(user_id),
-  token_hash              text NOT NULL UNIQUE,
-  status                  text NOT NULL,
-  created_at              timestamptz NOT NULL,
-  expires_at              timestamptz NOT NULL,
-  consumed_at             timestamptz NULL
-);
-
-CREATE INDEX IF NOT EXISTS shomei_password_reset_tokens_user_id_idx
-  ON shomei_password_reset_tokens (user_id);
-CREATE INDEX IF NOT EXISTS shomei_password_reset_tokens_status_idx
-  ON shomei_password_reset_tokens (status);
-```
-
-### PostgreSQL interpreters (mirror `Shomei.Postgres.RefreshTokenStore`)
-
-`shomei-postgres/src/Shomei/Postgres/VerificationTokenStore.hs` follows
-`RefreshTokenStore.hs` exactly. The row type, the four statements, and the interpreter:
+Current notifier assembly signatures include:
 
 ```haskell
-type VerificationTokenRow = (UUID, UUID, Text, Text, UTCTime, UTCTime, Maybe UTCTime)
-
--- CreateVerificationToken: allocate id, INSERT 7 columns (use contrazip7).
--- FindVerificationTokenByHash: SELECT … WHERE token_hash = $1 (D.rowMaybe).
--- ConsumeVerificationToken: UPDATE … SET status = 'consumed', consumed_at = $2 WHERE verification_token_id = $1.
+runNotifierLog ::
+  (IOE :> es) => NotifierConfig -> Eff (Notifier : es) a -> Eff es a
+runNotifierEnqueue ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  NotifierQueue -> Text -> Eff (Notifier : es) a -> Eff es a
+runNotifierFromConfig ::
+  (IOE :> es, AuthEventPublisher :> es, Clock :> es) =>
+  Manager -> NotifierSecrets -> ShomeiConfig -> Eff (Notifier : es) a -> Eff es a
 ```
 
-Use `oneTimeTokenStatusToText`/`oneTimeTokenStatusFromText` (added to `Shomei.Postgres.Codec`,
-mapping `OneTimeTokenActive`→`"active"`, `OneTimeTokenConsumed`→`"consumed"`,
-`OneTimeTokenRevoked`→`"revoked"`, `OneTimeTokenExpired`→`"expired"`), and the
-`verificationTokenIdToUUID`/`…FromUUID` and `userIdToUUID`/`…FromUUID` converters. Map a
-`Left UsageError` to `throwError (InternalAuthError …)` exactly as the refresh-token interpreter
-does. `shomei-postgres/src/Shomei/Postgres/PasswordResetTokenStore.hs` is identical
-with the reset id/types and the `shomei_password_reset_tokens` table.
+`runNotifierFromConfig` is a synchronous dispatch interpreter useful for explicit embedding;
+the standalone request path uses `runNotifierEnqueue`, and its worker calls
+`deliverNotification`. `NotifierSecrets` supplies SMTP/webhook credentials separately from
+public policy. Default logs contain a token hash prefix, not the secret or full link.
 
-The PostgreSQL `RevokeAllUserRefreshTokens` (added to
-`shomei-postgres/src/Shomei/Postgres/RefreshTokenStore.hs`) is one statement:
+### Dependency API evidence
 
-```sql
-UPDATE shomei.shomei_refresh_tokens
-SET status = 'revoked', revoked_at = $2
-WHERE session_id IN (SELECT session_id FROM shomei.shomei_sessions WHERE user_id = $1)
-```
 
-And `MarkUserEmailVerified` (added to
-`shomei-postgres/src/Shomei/Postgres/UserStore.hs`):
+This update selected no new versions or bounds. Existing package manifests and the successful
+Cabal test build determine the resolved APIs. Dependency source was discovered with
+`mori registry list`, `mori registry search`, `mori registry show --full`, and
+`mori registry docs`, and read directly from the registered source checkouts.
 
-```sql
-UPDATE shomei.shomei_users SET email_verified_at = $2, updated_at = $2 WHERE user_id = $1
-```
-
-Widen `UserRow` to `(UUID, Text, Maybe Text, Text, Maybe UTCTime, UTCTime, UTCTime)` (the new
-`email_verified_at` slot), add `D.column (D.nullable D.timestamptz)` to `userRowDecoder`, add it
-to both `SELECT` column lists and the `INSERT` (use `contrazip7`, passing `Nothing` for the new
-user), and set `emailVerifiedAt` in `rebuildUser`/`mkUser`.
-
-### IP-5 — DTOs and routes (extend `shomei-servant`, after EP-5)
-
-Request DTOs (each `deriving anyclass (FromJSON, ToJSON)` with EP-5's JSON conventions):
-
-```haskell
-newtype VerifyEmailRequestBody   = VerifyEmailRequestBody   { email :: Text }
-newtype VerifyEmailConfirmBody   = VerifyEmailConfirmBody   { token :: Text }
-newtype PasswordResetRequestBody = PasswordResetRequestBody { email :: Text }
-data    PasswordResetConfirmBody = PasswordResetConfirmBody { token :: Text, newPassword :: Text }
-data    PasswordChangeBody       = PasswordChangeBody       { currentPassword :: Text, newPassword :: Text }
-```
-
-(Passwords arrive as `Text` in the DTO and are wrapped into `PlainPassword` in the handler,
-matching how EP-5 maps `SignupRequest.password`.) Add five fields to the `ShomeiAPI` NamedRoutes
-record; the four request/confirm routes return `202 Accepted` (or EP-5's no-content response
-type) and `password/change` is wrapped in EP-5's auth combinator (the one guarding
-`GET /auth/me`), receiving the authenticated `UserId` from the access-token claims so the
-handler builds `ChangePassword claims.subject …`.
-
-### The `Notifier` sender (`shomei-server/src/Shomei/Notify.hs`, after EP-6)
-
-```haskell
-runNotifierLog        :: (IOE :> es) => NotifierConfig -> Eff (Notifier : es) a -> Eff es a
-runNotifierFromConfig :: (IOE :> es) => ShomeiConfig  -> Eff (Notifier : es) a -> Eff es a
-```
-
-`runNotifierLog` renders each `Notification` to one log line that includes the full link
-(`cfg.publicBaseUrl <> "/auth/verify-email/confirm?token=" <> rawToken` for verification,
-`"/auth/password-reset/confirm?token=" <> rawToken` for reset) and the expiry — this is what
-the curl walkthrough greps for. `runNotifierFromConfig` dispatches on
-`cfg.notifierConfig.notifierTransport`, which has the single value `LogNotifier`.
-
-**There is no SMTP sender** (email sending descoped 2026-06-17). Shōmei does not deliver email:
-an operator who wants real delivery writes their own `Notifier` interpreter that forwards the
-`Notification` to their provider (SendGrid, Resend, SES, an SMTP relay, …) and wires it into
-their own server assembly in place of `runNotifierLog`; a future `shomei-email` package may
-package such senders in-tree.
-
+The checked dependencies are `mori://effectful/effectful/packages/effectful-core` for
+`Effectful.Dispatch.Dynamic.interpret_` and dynamic effects;
+`mori://MMZK1526/mmzk-typeid/packages/mmzk-typeid` for `Data.KindID.V7`;
+`mori://hasql/hasql/packages/hasql` and
+`mori://hasql/hasql/packages/hasql-transaction` for statement construction and transactions;
+`mori://haskell-servant/servant/packages/servant` for `NamedRoutes`, `MultiVerb`, and
+`RespondEmpty`; and `mori://shinzui/pg-migrate/packages/pg-migrate-embed` for
+`embedMigrationManifest`. The Hasql API migration guidance was read through
+`mori://hasql/hasql/docs/hasql-1.10-migration` and confirmed against source and current imports.
+These references locate API evidence, not assertions that the local corpus is the latest release.
+Any future dependency-bound or compatibility decision must first verify released versions
+against the authoritative registry and upstream tags, as required by the repository instructions.
 
 ## Revision Notes
 
-2026-06-04: Updated after the package-layout refactor and MasterPlan audit. Package paths now
-refer to top-level directories, effect modules use `Shomei.Effect.*`, and the precondition
-reflects that MasterPlan 1's JWT, Servant, server, client, and demo packages are implemented.
 
-2026-06-17: **Descoped email sending; EP-1 marked Complete.** Per the user's decision, Shōmei is
-not responsible for delivering email — the `Shomei.Effect.Notifier` effect is the integration
-seam, the shipped server emits the notification and logs the link, and operators forward it to
-their own provider; a future `shomei-email` package may add in-tree senders. Removed the
-`SmtpNotifier` constructor and `runNotifierSmtp` stub from the code (`NotifierTransport =
-LogNotifier` is the sole built-in; `Shomei.Notify` exposes only `runNotifierLog`). Updated
-Purpose, Milestone M4 (M4.1b/M4.3 marked descoped), Progress, Surprises, the Decision Log
-(original SMTP-module decision annotated + a new descoping decision), Outcomes & Retrospective,
-the IP-1 quote, the Plan-of-Work/Concrete-Steps M4 prose, and the Interfaces contract
-(`Notification`/`Notifier` doc comments, `NotifierTransport`, the sender signatures). `cabal
-build all` / `cabal test all` are green and fourmolu is clean. This plan's parent MasterPlan
-(`docs/masterplans/2-…`) was updated in lockstep.
+2026-06-04: Updated after the package-layout refactor and MasterPlan audit; replaced nested
+package paths and bootstrap-placeholder assumptions with the then-current implemented modules.
+
+2026-06-17: Descoped SMTP delivery from this plan and marked original EP-1 complete after the
+log-based live walkthrough. Removed the then-vestigial SMTP constructor/stub. This historical
+entry does not describe the transports introduced by later work.
+
+2026-10-14: Validated correctness and APIs against the current working tree and Mori-discovered
+dependency source. Replaced obsolete creation listings and codd commands with concept-owned
+module contracts and manifest-based migration instructions; corrected DTOs, statuses, `/v1`
+routing, notifier signatures/default redaction, credential transactions, proof context, and
+session-aware revocation. Added relevant ADR context, explicit verification atomicity/expiry
+limits, current acceptance commands and a corrected local demonstration. Consolidated historical
+completion entries without claiming a new implementation or a rerun of the manual walkthrough.
+All eight test suites in the four relevant packages passed.
