@@ -73,7 +73,7 @@
     #
     #   packages.default = (pkgs.haskell.packages.ghc9124.override { ... }).my-package;
     #
-    # With nix.haskell-nix = true, `inputs.haskell-nix` is the shared patch registry.
+    # `inputs.haskell-nix` is the always-locked shared patch registry.
     # Compose its extension ahead of your own overrides:
     #
     #   packages.default = (pkgs.haskell.packages.ghc9124.override {
@@ -97,5 +97,5 @@
   # `inputs` (a Nix requirement — inputs cannot be declared from an imported
   # module). That is the one edit that will conflict on a future migration;
   # resolve it with "accept new" and re-add your input line. (haskell-nix is
-  # module-owned: set nix.haskell-nix = true instead of adding it by hand.)
+  # already module-owned and available as inputs.haskell-nix; do not add it by hand.)
 }
