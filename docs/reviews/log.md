@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-10-28
+* **Addition**: Add REV-11, auditing remediation completeness at `65d21a3433d0ea329390c6737d0af4e35fee53b9`; track residual findings in IR-3 without rewriting the historical reviews.
+
 ## 2026-09-05
 * **Migrate**: Repin the shared `assurance.reviews` profile to okf-profiles v0.13.1, the current published release.
 

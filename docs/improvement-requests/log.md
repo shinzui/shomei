@@ -1,5 +1,9 @@
 # Bundle Update Log
 
+## 2026-10-28
+* **Update**: Link IR-3 to MasterPlan 9, its seven child ExecPlans, and the finding ledger; implementation remains open.
+* **Addition**: Add IR-3 to track residual security, performance, interoperability, and test-coverage findings from REV-11.
+
 ## 2026-09-05
 * **Migrate**: Repin the shared `coordination.improvement-requests` profile to okf-profiles v0.13.1; the pinned Dhall semantic hash is unchanged from v0.12.0.
 

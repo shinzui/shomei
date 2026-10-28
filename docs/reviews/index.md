@@ -36,6 +36,10 @@ just reviews-validate
 
 ## Reviews
 
+Current follow-up: [REV-11 — remediation completeness audit](remediation-completeness-audit.md)
+finds that MasterPlan 8's completed scope does not close every original subitem.
+Remaining work is tracked in [IR-3](../improvement-requests/close-residual-review-findings.md).
+
 The first sweep, at `ee00382509c6cf4b3db2a3c87ff0bd029932c770` (2026-08-27), read every shipped
 package with a security and performance emphasis, because Shōmei is the authentication half of
 the two-tier story whose authorization half is [en](mori://shinzui/en). REV-1 carries the
