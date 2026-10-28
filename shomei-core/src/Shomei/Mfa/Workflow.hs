@@ -17,9 +17,11 @@
 module Shomei.Mfa.Workflow
   ( prepareMfaChallenge,
     completeMfa,
+    completeMfaWith,
     MfaCompletion (..),
     beginPasswordlessLogin,
     completePasswordlessLogin,
+    completePasswordlessLoginWith,
   )
 where
 
@@ -173,7 +175,35 @@ completeMfa ::
   CeremonyId ->
   MfaCompletion ->
   Eff es (Either AuthError (User, TokenPair))
-completeMfa cfg pctx ceremonyId completion = runErrorNoCallStack do
+completeMfa cfg pctx = completeMfaWith cfg pctx False
+
+-- | 'completeMfa' for a sign-in whose owner may have asked to stay signed in. The decision
+-- arrives with the second factor rather than the password, because the password step issues
+-- no session.
+completeMfaWith ::
+  ( UserStore :> es,
+    AuthUnitOfWork :> es,
+    PasskeyStore :> es,
+    PendingCeremonyStore :> es,
+    WebAuthnCeremony :> es,
+    TotpCredentialStore :> es,
+    RecoveryCodeStore :> es,
+    TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
+    AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
+    Clock :> es,
+    TokenGen :> es
+  ) =>
+  ShomeiConfig ->
+  ProofContext ->
+  -- | whether the person asked to stay signed in
+  Bool ->
+  CeremonyId ->
+  MfaCompletion ->
+  Eff es (Either AuthError (User, TokenPair))
+completeMfaWith cfg pctx remember ceremonyId completion = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, userId = mUid, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
@@ -208,7 +238,7 @@ completeMfa cfg pctx ceremonyId completion = runErrorNoCallStack do
     MfaTotp code -> completeTotp failure uid ts code
     MfaRecoveryCode code -> completeRecovery failure uid ts code
   recordProofSuccess ctx factor gate.standingLockout ts
-  (sid, pair) <- issueSession cfg user ts
+  (sid, pair) <- issueSession cfg remember user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData uid sid ts))
   pure (user, pair)
 
@@ -314,7 +344,31 @@ completePasswordlessLogin ::
   CeremonyId ->
   Value ->
   Eff es (Either AuthError (User, TokenPair))
-completePasswordlessLogin cfg pctx ceremonyId assertion = runErrorNoCallStack do
+completePasswordlessLogin cfg pctx = completePasswordlessLoginWith cfg pctx False
+
+-- | 'completePasswordlessLogin' for a sign-in whose owner may have asked to stay signed in.
+completePasswordlessLoginWith ::
+  ( UserStore :> es,
+    AuthUnitOfWork :> es,
+    PasskeyStore :> es,
+    PendingCeremonyStore :> es,
+    WebAuthnCeremony :> es,
+    TokenSigner :> es,
+    RoleStore :> es,
+    ClaimsEnricher :> es,
+    AuthEventPublisher :> es,
+    LoginAttemptStore :> es,
+    Clock :> es,
+    TokenGen :> es
+  ) =>
+  ShomeiConfig ->
+  ProofContext ->
+  -- | whether the person asked to stay signed in
+  Bool ->
+  CeremonyId ->
+  Value ->
+  Eff es (Either AuthError (User, TokenPair))
+completePasswordlessLoginWith cfg pctx remember ceremonyId assertion = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
@@ -341,7 +395,7 @@ completePasswordlessLogin cfg pctx ceremonyId assertion = runErrorNoCallStack do
   won <- updatePasskeySignCounter passkeyId newSignCounter ts
   unless won (failMfa failure (Just pkUid) "signature counter replayed")
   recordProofSuccess ctx FactorPasskey gate.standingLockout ts
-  (sid, pair) <- issueSession cfg user ts
+  (sid, pair) <- issueSession cfg remember user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData pkUid sid ts))
   pure (user, pair)
 

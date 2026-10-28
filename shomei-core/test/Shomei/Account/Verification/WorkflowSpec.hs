@@ -71,7 +71,7 @@ tests =
         ref <- newIORef (emptyWorld fixedTime)
         let lid = mkLoginId' "alice"
         _ <- expectRight =<< runInMemory ref (signup gatedCfg (signupLoginId lid))
-        result <- runInMemory ref (login gatedCfg (ctxForLogin lid) (LoginCommand lid strongPw))
+        result <- runInMemory ref (login gatedCfg (ctxForLogin lid) (LoginCommand lid strongPw False))
         _ <- expectRight result
         pure (),
       testCase "with the flag off an unverified account logs in (the default)" do
@@ -186,7 +186,7 @@ signupLoginId l =
   SignupCommand {loginId = l, email = Nothing, password = strongPw, displayName = Nothing}
 
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw, remember = False}
 
 ctxForLogin :: LoginId -> ClientContext
 ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))

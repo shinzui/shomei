@@ -64,7 +64,7 @@ loginCompleteH :: Env -> SockAddr -> PasskeyLoginCompleteRequest -> Handler Pass
 loginCompleteH env peer request = runApplicationHandler do
   ceremonyId <- parseCeremonyId request.ceremonyId
   let pctx = ProofContext {clientIp = ClientIp (clientIpText peer), accountKeyOf = env.accountKeyOf}
-  (_, tokens) <- workflow env (Mfa.completePasswordlessLogin env.config pctx ceremonyId request.assertion)
+  (_, tokens) <- workflow env (Mfa.completePasswordlessLoginWith env.config pctx (request.remember == Just True) ceremonyId request.assertion)
   pure (cookieResponse env.config (tokenCookies env.config tokens) (tokenPairToResponse env.config tokens))
 
 parseCeremonyId :: Text -> ApplicationHandler CeremonyId

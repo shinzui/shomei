@@ -69,7 +69,7 @@ tests =
 
             loginResponse <-
               fmap C.cookieBody . expectApplicationSuccess "login"
-                =<< C.login cenv LoginRequest {loginId = email, password = password}
+                =<< C.login cenv LoginRequest {loginId = email, password = password, remember = Nothing}
             lr <- case loginResponse of
               complete@LoginCompleteResponse {} -> pure complete
               LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"

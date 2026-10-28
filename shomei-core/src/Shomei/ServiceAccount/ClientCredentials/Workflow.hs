@@ -19,6 +19,7 @@ import Data.Set qualified as Set
 import Data.Time (NominalDiffTime, addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
+
 -- Imported WITHOUT (..): 'ServiceAccount' shares the field names @userId@ and @status@ with
 -- 'Shomei.Account.User.Domain.User', and bringing both record's fields into scope defeats
 -- @OverloadedRecordDot@'s 'HasField' resolution (a MasterPlan-3 discovery). Every field below is
@@ -104,7 +105,8 @@ grantClientCredentials cfg cmd = runErrorNoCallStack do
           oauthClientId = Nothing,
           kind = MachineSession,
           grantedScopes = Set.empty,
-          authenticatedAt = ts
+          authenticatedAt = ts,
+          remembered = False
         }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)

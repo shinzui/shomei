@@ -163,7 +163,8 @@ signup cfg cmd = runErrorNoCallStack do
           oauthClientId = Nothing,
           kind = InteractiveSession,
           grantedScopes = Set.empty,
-          authenticatedAt = ts
+          authenticatedAt = ts,
+          remembered = False
         }
       NewSessionToken
         { tokenHash = tokHash,
@@ -177,7 +178,7 @@ signup cfg cmd = runErrorNoCallStack do
   access <- signAccessToken =<< buildEnrichedClaims cfg user.userId session.sessionId ts
   pure
     ( user,
-      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL}
+      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL, remembered = session.remembered}
     )
 
 -- | Authenticate a login-id/password pair, with EP-2 abuse protection layered on the
@@ -265,7 +266,7 @@ login cfg ctx cmd = runErrorNoCallStack do
     else do
       convertLoginAttemptToSuccess outcome.attemptId
       when (outcome.lockedNow || isJust outcome.priorLockout) (clearAccountLockout ctx.accountKey)
-      (_sid, pair) <- issueSession cfg user ts
+      (_sid, pair) <- issueSession cfg cmd.remember user ts
       pure (LoginComplete user pair)
 
 -- | 'failLogin' preceded by a dummy Argon2id verification, for the login paths that fail
@@ -427,7 +428,7 @@ refreshFrom origin cfg cmd = do
                         pure
                           ( Right
                               Refreshed
-                                { tokens = TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL},
+                                { tokens = TokenPair {accessToken = access, refreshToken = rawNew, expiresIn = cfg.accessTokenTTL, remembered = s.remembered},
                                   grantedScopes = s.grantedScopes
                                 }
                           )

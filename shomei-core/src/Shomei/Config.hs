@@ -41,6 +41,7 @@ module Shomei.Config
     defaultAccessTokenTTL,
     defaultRefreshTokenTTL,
     defaultSessionTTL,
+    defaultRememberedSessionTTL,
     defaultVerificationTokenTTL,
     defaultPasswordResetTokenTTL,
     defaultRateLimitConfig,
@@ -438,6 +439,11 @@ data ShomeiConfig = ShomeiConfig
     accessTokenTTL :: !NominalDiffTime,
     refreshTokenTTL :: !NominalDiffTime,
     sessionTTL :: !NominalDiffTime,
+    -- | the absolute lifetime of a session whose owner asked to stay signed in at sign-in (the
+    --     @remember@ request field). Refresh tokens keep their 'refreshTokenTTL' sliding window
+    --     and never outlive the session, so a remembered browser left unused for longer than
+    --     'refreshTokenTTL' still has to sign in again.
+    rememberedSessionTTL :: !NominalDiffTime,
     passwordPolicy :: !PasswordPolicy,
     tokenTransport :: !TokenTransport,
     signingKeyConfig :: !SigningKeyConfig,
@@ -465,10 +471,11 @@ data ShomeiConfig = ShomeiConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
-defaultAccessTokenTTL, defaultRefreshTokenTTL, defaultSessionTTL :: NominalDiffTime
+defaultAccessTokenTTL, defaultRefreshTokenTTL, defaultSessionTTL, defaultRememberedSessionTTL :: NominalDiffTime
 defaultAccessTokenTTL = 15 * 60 -- 15 minutes
 defaultRefreshTokenTTL = 30 * 24 * 60 * 60 -- 30 days
 defaultSessionTTL = 30 * 24 * 60 * 60 -- 30 days
+defaultRememberedSessionTTL = 365 * 24 * 60 * 60 -- 365 days
 
 defaultVerificationTokenTTL, defaultPasswordResetTokenTTL :: NominalDiffTime
 defaultVerificationTokenTTL = 24 * 60 * 60 -- 24 hours
@@ -509,6 +516,7 @@ defaultShomeiConfig iss aud =
       accessTokenTTL = defaultAccessTokenTTL,
       refreshTokenTTL = defaultRefreshTokenTTL,
       sessionTTL = defaultSessionTTL,
+      rememberedSessionTTL = defaultRememberedSessionTTL,
       passwordPolicy = defaultPasswordPolicy,
       tokenTransport = BearerToken,
       signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30},

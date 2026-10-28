@@ -112,7 +112,7 @@ main =
       jwksBytes <- fetchBody mgr jwksUrl
       cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show authPort)
       _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = testEmail, email = Just testEmail, password = testPassword, displayName = "MS"}
-      loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword}
+      loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword, remember = Nothing}
       lr <- case loginResponse of
         complete@LoginCompleteResponse {} -> pure complete
         LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
@@ -394,7 +394,7 @@ getProjectsAgainst cache token =
 
 loginToken :: C.ClientEnv -> IO Text
 loginToken cenv = do
-  response <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword}
+  response <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = testEmail, password = testPassword, remember = Nothing}
   case response of
     LoginCompleteResponse {token} -> maybe (assertFailure "expected a bearer access token") pure token.accessToken
     LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"

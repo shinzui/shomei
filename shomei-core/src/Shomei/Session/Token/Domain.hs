@@ -23,6 +23,9 @@ instance Show AccessToken where
 data TokenPair = TokenPair
   { accessToken :: !AccessToken,
     refreshToken :: !RefreshToken,
-    expiresIn :: !NominalDiffTime
+    expiresIn :: !NominalDiffTime,
+    -- | whether the session behind this pair is remembered (see
+    --     'Shomei.Session.Domain.Session'); constant for the session's whole life.
+    remembered :: !Bool
   }
   deriving stock (Generic, Eq, Show)

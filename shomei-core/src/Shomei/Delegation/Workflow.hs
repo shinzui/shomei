@@ -156,7 +156,8 @@ mintDelegatedToken cfg ts mint = do
           oauthClientId = Nothing,
           kind = DelegatedSession,
           grantedScopes = Set.empty,
-          authenticatedAt = ts
+          authenticatedAt = ts,
+          remembered = False
         }
   let claims =
         AuthClaims

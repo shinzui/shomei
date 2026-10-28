@@ -32,6 +32,7 @@ let ConfigType =
       , accessTokenTtlSeconds : Optional Natural
       , refreshTokenTtlSeconds : Optional Natural
       , sessionTtlSeconds : Optional Natural
+      , rememberedSessionTtlSeconds : Optional Natural
       , publicBaseUrl : Optional Text
       , emailVerificationRequired : Optional Bool
       , notifierTransport : Optional Text
@@ -113,6 +114,7 @@ let default =
       , accessTokenTtlSeconds = None Natural
       , refreshTokenTtlSeconds = None Natural
       , sessionTtlSeconds = None Natural
+      , rememberedSessionTtlSeconds = None Natural
       , publicBaseUrl = None Text
       , emailVerificationRequired = None Bool
       , notifierTransport = None Text

@@ -122,7 +122,7 @@ challengeOf = parseMaybe (withObject "options" (\o -> o .: "challenge"))
 
 -- | Assert a token pair carries a non-empty access token.
 assertTokenPresent :: (User, TokenPair) -> IO ()
-assertTokenPresent (_user, TokenPair (AccessToken at) _ _) =
+assertTokenPresent (_user, TokenPair (AccessToken at) _ _ _) =
   assertBool "access token present" (not (T.null at))
 
 -- Tests ----------------------------------------------------------------------
@@ -146,7 +146,7 @@ testNoPasskeyComplete :: TestTree
 testNoPasskeyComplete = testCase "no-passkey login yields LoginComplete with a token" do
   ref <- newIORef (emptyWorld fixedTime)
   _ <- expectRight =<< runInMemory ref (signup cfg (SignupCommand {loginId = either (error . show) id (mkLoginId (emailText aliceEmail)), email = Just aliceEmail, password = strongPw, displayName = Just "Alice"}))
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw False))
   case res of
     LoginComplete u pair -> assertTokenPresent (u, pair)
     MfaRequired _ -> assertFailure "expected LoginComplete (no passkey enrolled)"
@@ -155,7 +155,7 @@ testMfaRequired :: TestTree
 testMfaRequired = testCase "passkey + required second factor yields MfaRequired, no token" do
   ref <- newIORef (emptyWorld fixedTime)
   seedUserWithPasskey ref
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw False))
   case res of
     MfaRequired (MfaChallenge _cid opts _methods) ->
       assertBool "a challenge is present in the options" (challengeOf opts /= Nothing)
@@ -217,7 +217,7 @@ testBadPasskeysLock = testCase "five bad passkey assertions lock the account" do
             ]
     result <- runInMemory ref (completeMfa cfg proofContext cid (MfaPasskey wrong))
     result @?= Left MfaAssertionInvalid
-  denied <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
+  denied <- runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw False))
   denied @?= Left InvalidCredentials
 
 testSecondFactorSuccessClearsLockout :: TestTree
@@ -265,7 +265,7 @@ testPasswordless = testCase "passwordless login resolves the user and mints toke
 -- ceremony id and options.
 loginExpectingChallenge :: IORef World -> IO (CeremonyId, Value)
 loginExpectingChallenge ref = do
-  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw))
+  res <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (LoginCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) strongPw False))
   case res of
     MfaRequired (MfaChallenge cid opts _methods) -> pure (cid, opts)
     LoginComplete _ _ -> assertFailure "expected MfaRequired"

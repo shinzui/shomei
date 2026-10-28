@@ -35,6 +35,7 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
 | `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` | seconds of tolerance the verifier grants `exp`/`nbf`/`iat` (inherited by downstream hosts using `shomei-jwt`'s `verifyToken`); must be non-negative | `30` |
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
+| `SHOMEI_REMEMBERED_SESSION_TTL` | lifetime (seconds) of a session signed in with `"remember": true`; its refresh tokens still expire after `SHOMEI_REFRESH_TTL` of disuse | `31536000` (365 days) |
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both`. `cookie`/`both` set `HttpOnly` cookies and accept them as credentials; `bearer` neither sets nor accepts them | `bearer` |
 | `SHOMEI_COOKIE_SECURE` | mark Shōmei's cookies `Secure` (HTTPS only; browsers exempt localhost) | `true` |
 | `SHOMEI_COOKIE_SAMESITE` | `strict` \| `lax` \| `none` | `lax` |

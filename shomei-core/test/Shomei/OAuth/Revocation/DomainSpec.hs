@@ -64,6 +64,7 @@ withPrincipals assertion = do
             oauthClientId = Just "oauthclient_owner",
             kind = InteractiveSession,
             grantedScopes = Set.empty,
-            authenticatedAt = t0
+            authenticatedAt = t0,
+            remembered = False
           }
   assertion account subjectUser session

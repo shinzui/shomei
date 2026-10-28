@@ -4,6 +4,15 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** `Session`, `NewSession`, `TokenPair`, `LoginCommand` and `SessionOptions` gain a
+  `remembered`/`remember` field, and `issueSession` takes the remember choice. `ShomeiConfig` gains
+  `rememberedSessionTTL` (`defaultRememberedSessionTTL`, 365 days), used for remembered sessions.
+  `completeMfaWith` and `completePasswordlessLoginWith` take the choice; `completeMfa` and
+  `completePasswordlessLogin` keep their signatures and are not remembered. The refresh token issued
+  at sign-in no longer outlives its session.
+
 ## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** `AccessToken`, `RefreshToken`, and `TokenPair` no longer expose generic JSON

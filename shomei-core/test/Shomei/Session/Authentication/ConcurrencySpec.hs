@@ -23,6 +23,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpose, passthrough)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+
 -- Qualified: several 'AuthError' constructors share names with 'SessionStatus' constructors.
 
 import Shomei.Account.Lifecycle.Workflow
@@ -199,7 +200,7 @@ testConcurrentWrongPasswordsRespectTheBudget =
             }
         lid = either (error . show) id (mkLoginId (emailText aliceEmail))
         ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (loginIdText lid))
-        wrongLogin = login raceCfg ctx (LoginCommand lid (PlainPassword "wrong password"))
+        wrongLogin = login raceCfg ctx (LoginCommand lid (PlainPassword "wrong password") False)
     _ <-
       expectRight
         =<< runInMemory
@@ -279,7 +280,7 @@ testConcurrentTotpCompletionsHaveOneWinner =
     loginExpectingTotpChallenge ref = do
       let lid = either (error . show) id (mkLoginId (emailText aliceEmail))
           ctx = ClientContext (ClientIp "10.0.0.10") (AccountKey (loginIdText lid))
-      result <- expectRight =<< runInMemory ref (login raceCfg ctx (LoginCommand lid strongPw))
+      result <- expectRight =<< runInMemory ref (login raceCfg ctx (LoginCommand lid strongPw False))
       case result of
         MfaRequired MfaChallenge {ceremonyId} -> pure ceremonyId
         LoginComplete _ _ -> assertFailure "expected a TOTP MFA challenge"

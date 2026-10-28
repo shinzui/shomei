@@ -527,6 +527,7 @@ tests =
     testSessionActorRoundTrip,
     testSessionKindRoundTrip,
     testSessionGrantedScopesRoundTrip,
+    testSessionRememberedRoundTrip,
     testSessionKindNullReadsInteractive,
     testRefreshTokenMarkUsed,
     testVerificationTokenRoundTrip,
@@ -1058,9 +1059,9 @@ testListSessionsForUser = testCase "listSessionsForUser returns every status, ne
     alice <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     bob <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
     t <- now
-    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
-    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = addUTCTime 1 t})
-    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
+    s1 <- createSession (NewSession {userId = alice.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
+    s2 <- createSession (NewSession {userId = alice.userId, createdAt = addUTCTime 1 t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = addUTCTime 1 t, remembered = False})
+    _ <- createSession (NewSession {userId = bob.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     revokeSession s1.sessionId t
     aliceSessions <- listSessionsForUser alice.userId
     pure (s1, s2, aliceSessions)
@@ -1154,7 +1155,7 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     revokeSession s.sessionId t
     findSessionById s.sessionId
   found <- expectApp result
@@ -1176,10 +1177,11 @@ testSessionActorRoundTrip = testCase "create delegated session persists actor" $
               oauthClientId = Nothing,
               kind = DelegatedSession,
               grantedScopes = Set.empty,
-              authenticatedAt = t
+              authenticatedAt = t,
+              remembered = False
             }
         )
-    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
+    normal <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     foundDelegated <- findSessionById delegated.sessionId
     foundNormal <- findSessionById normal.sessionId
     pure (operator.userId, foundDelegated, foundNormal)
@@ -1192,9 +1194,9 @@ testSessionKindRoundTrip = testCase "create session persists its kind (machine, 
   result <- runApp pool do
     subject <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    interactive <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
-    machine <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = MachineSession, grantedScopes = Set.empty, authenticatedAt = t})
-    delegated <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Just subject.userId, oauthClientId = Nothing, kind = DelegatedSession, grantedScopes = Set.empty, authenticatedAt = t})
+    interactive <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
+    machine <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = MachineSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
+    delegated <- createSession (NewSession {userId = subject.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Just subject.userId, oauthClientId = Nothing, kind = DelegatedSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     foundInteractive <- findSessionById interactive.sessionId
     foundMachine <- findSessionById machine.sessionId
     foundDelegated <- findSessionById delegated.sessionId
@@ -1221,7 +1223,8 @@ testSessionGrantedScopesRoundTrip = testCase "session scopes and auth time round
             oauthClientId = Just "oauthclient_roundtrip",
             kind = InteractiveSession,
             grantedScopes = granted,
-            authenticatedAt = authenticated
+            authenticatedAt = authenticated,
+            remembered = False
           }
     found <- findSessionById session.sessionId
     pure (session.sessionId, authenticated, found)
@@ -1251,12 +1254,54 @@ testSessionGrantedScopesRoundTrip = testCase "session scopes and auth time round
   defaulted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE granted_scopes = '{}'::text[]"
   defaulted @?= 1
 
+testSessionRememberedRoundTrip :: TestTree
+testSessionRememberedRoundTrip = testCase "a session's remembered flag round-trips; rows from before the column read remembered" $ withDb \pool -> do
+  created <- runApp pool do
+    user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+    t <- now
+    let new remembered =
+          NewSession
+            { userId = user.userId,
+              createdAt = t,
+              expiresAt = addUTCTime 3600 t,
+              actor = Nothing,
+              oauthClientId = Nothing,
+              kind = InteractiveSession,
+              grantedScopes = Set.empty,
+              authenticatedAt = t,
+              remembered
+            }
+    rememberedSession <- createSession (new True)
+    forgottenSession <- createSession (new False)
+    (,) <$> findSessionById rememberedSession.sessionId <*> findSessionById forgottenSession.sessionId
+  (foundRemembered, foundForgotten) <- expectApp created
+  fmap (.remembered) foundRemembered @?= Just True
+  fmap (.remembered) foundForgotten @?= Just False
+
+  execSql
+    pool
+    """
+    INSERT INTO shomei.shomei_sessions
+      (session_id, user_id, status, created_at, expires_at, kind)
+    SELECT
+      '00000000-0000-4000-8000-000000000053'::uuid,
+      user_id,
+      'active',
+      now(),
+      now() + interval '1 hour',
+      'interactive'
+    FROM shomei.shomei_users
+    LIMIT 1
+    """
+  defaulted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE remembered"
+  defaulted @?= 2
+
 testSessionKindNullReadsInteractive :: TestTree
 testSessionKindNullReadsInteractive = testCase "a session row whose kind is NULL reads as interactive" $ withDb \pool -> do
   created <- runApp pool do
     user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
+    createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
   session <- expectApp created
   execSql pool "UPDATE shomei.shomei_sessions SET kind = NULL"
   found <- expectApp =<< runApp pool (findSessionById session.sessionId)
@@ -1271,7 +1316,7 @@ testRefreshTokenMarkUsed = testCase "refresh token: find-by-hash + mark-used is 
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t})
+    s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     h <- hashRefreshToken (RefreshToken "token-1")
     persisted <-
       createRefreshToken
@@ -1600,7 +1645,7 @@ testLoginRoundTripBudget = testCase "a successful login costs exactly 10 databas
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
-  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw)))
+  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin strongPw False)))
   _ <- expectApp loginRes >>= expectRight
   readIORef counter >>= (@?= 10)
 
@@ -1613,7 +1658,7 @@ testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 data
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
-  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin (PlainPassword "wrong"))))
+  loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin (PlainPassword "wrong") False)))
   expectApp loginRes >>= (@?= Left InvalidCredentials)
   readIORef counter >>= (@?= 4)
 
@@ -1736,7 +1781,7 @@ testWorkflowPasswordReset = testCase "workflow: password reset changes password 
   siblingRes <- runAppWithNotifications notifications pool (confirmPasswordReset cfg (ConfirmPasswordReset second (PlainPassword "correct horse battery staple three")))
   sibling <- expectApp siblingRes
   sibling @?= Left PasswordResetTokenInvalid
-  loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (loginIdText aliceLogin))) (LoginCommand aliceLogin (PlainPassword "correct horse battery staple two")))
+  loginRes <- runAppWithNotifications notifications pool (login cfg (ClientContext (ClientIp "test-ip") (AccountKey (loginIdText aliceLogin))) (LoginCommand aliceLogin (PlainPassword "correct horse battery staple two") False))
   _ <- expectApp loginRes >>= expectRight
   oldRefreshRes <- runAppWithNotifications notifications pool (refresh cfg (RefreshCommand pair.refreshToken))
   oldRefresh <- expectApp oldRefreshRes
@@ -1839,7 +1884,7 @@ testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlo
   seeded <- runAppAtTime t0 pool (signup lockCfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp seeded >>= expectRight
   let ctx = ClientContext (ClientIp "10.0.0.9") (AccountKey (loginIdText aliceLogin))
-      badLogin = login lockCfg ctx (LoginCommand aliceLogin (PlainPassword "wrong"))
+      badLogin = login lockCfg ctx (LoginCommand aliceLogin (PlainPassword "wrong") False)
   _ <- runAppAtTime t0 pool badLogin >>= expectApp
   _ <- runAppAtTime t0 pool badLogin >>= expectApp
   r3 <- runAppAtTime t0 pool badLogin >>= expectApp
@@ -1847,10 +1892,10 @@ testWorkflowLockout = testCase "workflow over PostgreSQL: lock-after-N then unlo
   locked <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts WHERE locked_until IS NOT NULL"
   locked @?= 1
   -- The correct password while still locked returns the SAME generic error (no leak).
-  denied <- runAppAtTime t0 pool (login lockCfg ctx (LoginCommand aliceLogin strongPw)) >>= expectApp
+  denied <- runAppAtTime t0 pool (login lockCfg ctx (LoginCommand aliceLogin strongPw False)) >>= expectApp
   denied @?= Left InvalidCredentials
   -- After the cooldown (15 min default) the correct password succeeds and clears the lockout.
-  ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceLogin strongPw)) >>= expectApp
+  ok <- runAppAtTime (addUTCTime (16 * 60) t0) pool (login lockCfg ctx (LoginCommand aliceLogin strongPw False)) >>= expectApp
   _ <- expectRight ok
   remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_account_lockouts"
   remaining @?= 0

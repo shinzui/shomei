@@ -29,7 +29,11 @@ import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 data TokenPairResponse = TokenPairResponse
   { accessToken :: !(Maybe Text),
     refreshToken :: !(Maybe Text),
-    expiresIn :: !Int
+    expiresIn :: !Int,
+    -- | whether the session behind these tokens is remembered (signed in with @remember@), so a
+    --     browser-facing embedder can decide between persistent and browser-session cookies.
+    --     Always present in Shōmei's own responses; optional on the wire for older servers.
+    remembered :: !(Maybe Bool)
   }
   deriving stock (Generic)
 
@@ -39,7 +43,8 @@ instance ToJSON TokenPairResponse where
       catMaybes
         [ ("accessToken" Aeson..=) <$> response.accessToken,
           ("refreshToken" Aeson..=) <$> response.refreshToken,
-          Just ("expiresIn" Aeson..= response.expiresIn)
+          Just ("expiresIn" Aeson..= response.expiresIn),
+          ("remembered" Aeson..=) <$> response.remembered
         ]
 
 instance FromJSON TokenPairResponse where
@@ -48,10 +53,13 @@ instance FromJSON TokenPairResponse where
       <$> objectValue Aeson..:? "accessToken"
       <*> objectValue Aeson..:? "refreshToken"
       <*> objectValue .: "expiresIn"
+      <*> objectValue Aeson..:? "remembered"
 
 data LoginRequest = LoginRequest
   { loginId :: !Text,
-    password :: !Text
+    password :: !Text,
+    -- | stay signed in: a remembered session lasts @rememberedSessionTTL@. Absent means no.
+    remember :: !(Maybe Bool)
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)
@@ -108,7 +116,8 @@ tokenPairToResponse config pair =
   TokenPairResponse
     { accessToken = bodyToken (unAccess pair.accessToken),
       refreshToken = bodyToken (unRefresh pair.refreshToken),
-      expiresIn = round (realToFrac pair.expiresIn :: Double)
+      expiresIn = round (realToFrac pair.expiresIn :: Double),
+      remembered = Just pair.remembered
     }
   where
     bodyToken token = if transportIncludesBodyTokens config.tokenTransport then Just token else Nothing

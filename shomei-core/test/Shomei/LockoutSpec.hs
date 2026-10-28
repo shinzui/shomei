@@ -74,10 +74,10 @@ ctxOf :: ClientIp -> Email -> ClientContext
 ctxOf ip e = ClientContext ip (keyOf e)
 
 badLogin :: IORef World -> ClientIp -> Email -> IO (Either AuthError ())
-badLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) wrongPw))
+badLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) wrongPw False))
 
 goodLogin :: IORef World -> ClientIp -> Email -> IO (Either AuthError ())
-goodLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw))
+goodLogin ref ip e = fmap (const ()) <$> runInMemory ref (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw False))
 
 advanceClock :: IORef World -> UTCTime -> IO ()
 advanceClock ref t = modifyIORef' ref (\w -> w {clock = t})
@@ -117,7 +117,7 @@ tracedGoodLogin ref ip e = do
   r <-
     runInMemory
       ref
-      (recordAttemptOps traceRef (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw)))
+      (recordAttemptOps traceRef (login cfg (ctxOf ip e) (LoginCommand (either (error . show) id (mkLoginId (emailText e))) strongPw False)))
   ops <- readIORef traceRef
   pure (fmap (const ()) r, ops)
 

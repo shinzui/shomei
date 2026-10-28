@@ -11,6 +11,12 @@ project-level roundup of what shipped together.
 
 ## Unreleased
 
+- Remembered sessions: `POST /v1/auth/login`, `/v1/auth/mfa/complete` and
+  `/v1/auth/login/passkey/complete` accept an optional `"remember"`. A remembered session lasts
+  `rememberedSessionTTL` (default 365 days, `SHOMEI_REMEMBERED_SESSION_TTL`), and every token pair
+  reports `"remembered"` so a browser-facing embedder can choose its cookies' persistence.
+  Migration `0037-remembered-sessions` adds `shomei_sessions.remembered` (existing rows read `true`).
+
 ## 2026-08-27 — second Hackage release
 
 Every package moved to `0.2.0.0`. Five were published:

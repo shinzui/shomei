@@ -79,7 +79,7 @@ signupCmd =
     }
 
 loginCmd :: LoginCommand
-loginCmd = LoginCommand {loginId = aliceLogin, password = strongPw}
+loginCmd = LoginCommand {loginId = aliceLogin, password = strongPw, remember = False}
 
 -- | Unwrap a workflow's @Either AuthError@ inside the effect stack; a 'Left' is a test bug.
 orFail :: (Show e) => Either e a -> Eff es a

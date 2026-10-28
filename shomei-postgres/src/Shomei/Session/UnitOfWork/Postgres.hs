@@ -167,7 +167,8 @@ sessionRow session =
     session.oauthClientId,
     Just (sessionKindToText session.kind),
     [scope | Scope scope <- Set.toList session.grantedScopes],
-    Just session.authenticatedAt
+    Just session.authenticatedAt,
+    session.remembered
   )
 
 -- | The column tuple 'insertRefreshTokenStmt' encodes. A freshly inserted token is always

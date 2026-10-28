@@ -4,6 +4,10 @@ All notable changes to `shomei-postgres` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- The session store persists and reads `shomei_sessions.remembered`.
+
 ## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** requires `shomei-core ^>=0.2.0.0` and `shomei-migrations ^>=0.2.0.0`.

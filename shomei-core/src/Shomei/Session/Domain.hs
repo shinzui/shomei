@@ -52,7 +52,12 @@ data Session = Session
     --     every row that predates the column.
     grantedScopes :: !(Set Scope),
     -- | when the last credential was proven; preserved across refresh and emitted as @auth_time@.
-    authenticatedAt :: !UTCTime
+    authenticatedAt :: !UTCTime,
+    -- | whether the person asked to stay signed in when this session began. A remembered
+    --     session lasts 'Shomei.Config.rememberedSessionTTL' instead of 'Shomei.Config.sessionTTL',
+    --     and every token pair it yields reports it so the embedder can keep its cookies across
+    --     browser restarts. Rows that predate the column read as remembered.
+    remembered :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -70,7 +75,9 @@ data NewSession = NewSession
     -- | the authorization-code grant's persisted scope set; empty for every other flow.
     grantedScopes :: !(Set Scope),
     -- | when the credential establishing this session was proven.
-    authenticatedAt :: !UTCTime
+    authenticatedAt :: !UTCTime,
+    -- | whether the person asked to stay signed in; see 'Session'.
+    remembered :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

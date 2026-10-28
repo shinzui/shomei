@@ -155,12 +155,15 @@ data SessionOptions = SessionOptions
     oauthClientId :: !(Maybe Text),
     -- | scopes the OAuth authorization-code grant granted, persisted on the session and added to
     --     the minted access token beyond whatever the 'ClaimsEnricher' supplies.
-    extraScopes :: !(Set Scope)
+    extraScopes :: !(Set Scope),
+    -- | the person asked to stay signed in: the session lasts 'rememberedSessionTTL' instead of
+    --     'sessionTTL' and every token pair it yields reports @remembered@.
+    remember :: !Bool
   }
   deriving stock (Generic, Eq, Show)
 
 defaultSessionOptions :: SessionOptions
-defaultSessionOptions = SessionOptions {oauthClientId = Nothing, extraScopes = Set.empty}
+defaultSessionOptions = SessionOptions {oauthClientId = Nothing, extraScopes = Set.empty, remember = False}
 
 issueSession ::
   ( AuthUnitOfWork :> es,
@@ -170,11 +173,13 @@ issueSession ::
     ClaimsEnricher :> es
   ) =>
   ShomeiConfig ->
+  -- | whether the person asked to stay signed in (the sign-in request's @remember@)
+  Bool ->
   User ->
   UTCTime ->
   Eff es (SessionId, TokenPair)
-issueSession cfg user ts = do
-  (sid, pair, _claims) <- issueSessionWith cfg defaultSessionOptions user ts
+issueSession cfg remember user ts = do
+  (sid, pair, _claims) <- issueSessionWith cfg defaultSessionOptions {remember} user ts
   pure (sid, pair)
 
 -- | 'issueSession' with the OAuth-specific knobs, and returning the claims it signed.
@@ -197,23 +202,26 @@ issueSessionWith ::
 issueSessionWith cfg opts user ts = do
   rawToken <- generateOpaqueToken
   tokHash <- hashRefreshToken rawToken
+  let sessionExpiresAt = addUTCTime (if opts.remember then cfg.rememberedSessionTTL else cfg.sessionTTL) ts
   (session, _token) <-
     persistNewSession
       NewSession
         { userId = user.userId,
           createdAt = ts,
-          expiresAt = addUTCTime cfg.sessionTTL ts,
+          expiresAt = sessionExpiresAt,
           actor = Nothing,
           oauthClientId = opts.oauthClientId,
           -- Every caller is an interactive login or a code exchange authorized by one.
           kind = InteractiveSession,
           grantedScopes = opts.extraScopes,
-          authenticatedAt = ts
+          authenticatedAt = ts,
+          remembered = opts.remember
         }
       NewSessionToken
         { tokenHash = tokHash,
           createdAt = ts,
-          expiresAt = addUTCTime cfg.refreshTokenTTL ts
+          -- Never mint a token that outlives its session, as rotation also guarantees.
+          expiresAt = min (addUTCTime cfg.refreshTokenTTL ts) sessionExpiresAt
         }
       \sid ->
         [ Event.LoginSucceeded (Event.LoginSucceededData user.userId sid ts),
@@ -226,6 +234,6 @@ issueSessionWith cfg opts user ts = do
   access <- signAccessToken claims
   pure
     ( session.sessionId,
-      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL},
+      TokenPair {accessToken = access, refreshToken = rawToken, expiresIn = cfg.accessTokenTTL, remembered = session.remembered},
       claims
     )

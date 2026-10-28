@@ -36,6 +36,7 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
+
 -- Imported WITHOUT (..): both share field names with 'Shomei.Account.User.Domain.User', which would defeat
 -- @OverloadedRecordDot@. Read through generic-lens labels.
 
@@ -193,7 +194,7 @@ exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
   (sid, pair, claims) <-
     issueSessionWith
       cfg
-      SessionOptions {oauthClientId = Just (cmd ^. #clientId), extraScopes = granted}
+      SessionOptions {oauthClientId = Just (cmd ^. #clientId), extraScopes = granted, remember = False}
       user
       ts
   bindAuthorizationCodeSession (row ^. #codeHash) sid

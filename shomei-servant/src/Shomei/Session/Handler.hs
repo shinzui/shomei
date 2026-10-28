@@ -70,7 +70,7 @@ adminSessionServer env =
 loginH :: Env -> SockAddr -> LoginRequest -> Handler LoginResult
 loginH env peer request = runApplicationHandler do
   loginId <- either rejectAuth pure (mkLoginId request.loginId)
-  let command = LoginCommand {loginId, password = PlainPassword request.password}
+  let command = LoginCommand {loginId, password = PlainPassword request.password, remember = request.remember == Just True}
       context =
         ClientContext
           { clientIp = ClientIp (clientIpText peer),

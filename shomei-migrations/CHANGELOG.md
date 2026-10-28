@@ -4,6 +4,10 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- `0037-remembered-sessions` adds `shomei_sessions.remembered boolean NOT NULL DEFAULT true`.
+
 ## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** every migration in the 36-file history was rewritten to schema-qualify each Shōmei

@@ -50,7 +50,9 @@ data PasskeyLoginBeginResponse = PasskeyLoginBeginResponse
 
 data PasskeyLoginCompleteRequest = PasskeyLoginCompleteRequest
   { ceremonyId :: !Text,
-    assertion :: !Value
+    assertion :: !Value,
+    -- | stay signed in, as on @POST /v1/auth/login@.
+    remember :: !(Maybe Bool)
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)

@@ -264,7 +264,7 @@ signupEmail e pw =
   SignupCommand {loginId = either (error . show) id (mkLoginId (emailText e)), email = Just e, password = pw, displayName = Nothing}
 
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw, remember = False}
 
 ctxForLogin :: LoginId -> ClientContext
 ctxForLogin l = ClientContext (ClientIp "test-ip") (AccountKey (loginIdText l))

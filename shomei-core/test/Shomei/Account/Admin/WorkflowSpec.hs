@@ -67,7 +67,7 @@ signupCmd =
     }
 
 loginCmd :: LoginCommand
-loginCmd = LoginCommand {loginId = aliceLogin, password = strongPw}
+loginCmd = LoginCommand {loginId = aliceLogin, password = strongPw, remember = False}
 
 orFail :: (Show e) => Either e a -> Eff es a
 orFail = either (\e -> error ("workflow failed: " <> show e)) pure

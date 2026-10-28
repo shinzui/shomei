@@ -4,6 +4,11 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** `LoginRequest`, `MfaCompleteRequest` and `PasskeyLoginCompleteRequest` gain an
+  optional `remember`, and `TokenPairResponse` gains `remembered`, present in every token pair.
+
 ## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** requires `shomei-core ^>=0.2.0.0`.

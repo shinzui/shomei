@@ -587,13 +587,13 @@ instance Arbitrary UserResponse where
   arbitrary = UserResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary TokenPairResponse where
-  arbitrary = TokenPairResponse <$> arbitrary <*> arbitrary <*> arbitrary
+  arbitrary = TokenPairResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary SignupResponse where
   arbitrary = SignupResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary LoginRequest where
-  arbitrary = LoginRequest <$> arbitrary <*> arbitrary
+  arbitrary = LoginRequest <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary LoginResponse where
   arbitrary =
@@ -621,7 +621,7 @@ instance Arbitrary ChangePasswordRequest where
   arbitrary = ChangePasswordRequest <$> arbitrary <*> arbitrary
 
 instance Arbitrary MfaCompleteRequest where
-  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary
+  arbitrary = MfaCompleteRequest <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary MfaProof where
   arbitrary = oneof [PasskeyProof <$> arbitrary, TotpProof <$> arbitrary, RecoveryCodeProof <$> arbitrary]
@@ -654,7 +654,7 @@ instance Arbitrary PasskeyLoginBeginResponse where
   arbitrary = PasskeyLoginBeginResponse <$> arbitrary <*> arbitrary
 
 instance Arbitrary PasskeyLoginCompleteRequest where
-  arbitrary = PasskeyLoginCompleteRequest <$> arbitrary <*> arbitrary
+  arbitrary = PasskeyLoginCompleteRequest <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary TokenResponse where
   arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

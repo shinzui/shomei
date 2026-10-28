@@ -88,7 +88,7 @@ tests =
             -- Sign up + log in through the mounted /auth routes (via the real client).
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
             _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = email, email = Just email, password = password, displayName = "Dev"}
-            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = email, password = password}
+            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = email, password = password, remember = Nothing}
             lr <- case loginResponse of
               complete@LoginCompleteResponse {} -> pure complete
               LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"
@@ -117,7 +117,7 @@ tests =
             let rotateEmail = "rotate@example.com"
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
             _ <- expectApplicationSuccess "signup" =<< C.signup cenv SignupRequest {loginId = rotateEmail, email = Just rotateEmail, password = password, displayName = "Rotate"}
-            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = rotateEmail, password = password}
+            loginResponse <- fmap C.cookieBody . expectApplicationSuccess "login" =<< C.login cenv LoginRequest {loginId = rotateEmail, password = password, remember = Nothing}
             token <- case loginResponse of
               LoginCompleteResponse {token} -> pure token.accessToken
               LoginMfaRequiredResponse {} -> assertFailure "login unexpectedly required MFA"

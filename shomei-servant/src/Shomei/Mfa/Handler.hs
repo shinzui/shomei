@@ -47,7 +47,7 @@ completeH env peer request = runApplicationHandler do
       (const (rejectProblem pcBadRequest (detailOccurrence "invalid ceremonyId")))
       pure
       (parseId request.ceremonyId)
-  (_, tokens) <- workflow env (Mfa.completeMfa env.config (proofContext env peer) ceremonyId (mfaCompletionOf request))
+  (_, tokens) <- workflow env (Mfa.completeMfaWith env.config (proofContext env peer) (request.remember == Just True) ceremonyId (mfaCompletionOf request))
   pure (cookieResponse env.config (tokenCookies env.config tokens) (tokenPairToResponse env.config tokens))
 
 totpEnrollH :: Env -> AuthUser -> Handler TotpEnrollResult

@@ -234,7 +234,8 @@ runAuthorizeWithAllowed registeredScopes clientType params = do
             oauthClientId = Nothing,
             kind = InteractiveSession,
             grantedScopes = Set.empty,
-            authenticatedAt = t0
+            authenticatedAt = t0,
+            remembered = False
           }
     ocid <- genOAuthClientId
     client <-

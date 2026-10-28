@@ -98,7 +98,8 @@ runAuthorize kind state carriesActor = do
             oauthClientId = Nothing,
             kind,
             grantedScopes = Set.empty,
-            authenticatedAt = fixedTime
+            authenticatedAt = fixedTime,
+            remembered = False
           }
     case state of
       Revoked -> revokeSession session.sessionId fixedTime

@@ -458,7 +458,8 @@ mkSession sid ns =
       oauthClientId = ns.oauthClientId,
       kind = ns.kind,
       grantedScopes = ns.grantedScopes,
-      authenticatedAt = ns.authenticatedAt
+      authenticatedAt = ns.authenticatedAt,
+      remembered = ns.remembered
     }
 
 runRefreshTokenStore :: (IOE :> es) => IORef World -> Eff (RefreshTokenStore : es) a -> Eff es a

@@ -51,7 +51,10 @@ instance ToJSON MfaProof where
 
 data MfaCompleteRequest = MfaCompleteRequest
   { ceremonyId :: !Text,
-    proof :: !MfaProof
+    proof :: !MfaProof,
+    -- | stay signed in, as on @POST /v1/auth/login@; a password sign-in that needs a second
+    --     factor makes the decision here, because the password step issues no session.
+    remember :: !(Maybe Bool)
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)

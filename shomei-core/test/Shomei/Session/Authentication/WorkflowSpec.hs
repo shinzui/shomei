@@ -7,6 +7,7 @@
 -- 'Either' and, for state-changing cases, on the 'World' read back from the 'IORef'.
 module Shomei.Session.Authentication.WorkflowSpec (tests) where
 
+import Control.Monad (foldM)
 import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
@@ -28,6 +29,7 @@ import Shomei.Error
   ( AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
     PasswordPolicyViolation (PasswordResemblesIdentity, PasswordTooCommon),
   )
+
 -- Qualified: 'Shomei.Error.SessionExpired' (an 'AuthError') and
 -- 'Shomei.Session.Domain.SessionExpired' (a 'SessionStatus') share a name.
 import Shomei.Error qualified as Err
@@ -81,7 +83,7 @@ signupEmail e pw dn =
 
 -- | An email-first login command keyed on the email-derived login id.
 loginEmail :: Email -> PlainPassword -> LoginCommand
-loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw}
+loginEmail e pw = LoginCommand {loginId = either (error . show) id (mkLoginId (emailText e)), password = pw, remember = False}
 
 -- | A fixed client context per login id: a constant test IP and the login-id text as the
 -- account key (mirroring how the HTTP layer derives the abuse key from the principal).
@@ -118,6 +120,10 @@ tests =
       testBespokeRefreshRejectsOAuthSession,
       testRefreshRejectsExpiredSession,
       testSlidingRefreshStillDiesAtDeadline,
+      testRememberedSessionLastsAYear,
+      testUnrememberedSessionKeepsSessionTTL,
+      testRememberedSessionSlidesPastSessionTTL,
+      testSignupIsNotRemembered,
       testVerifyTokenRejectsExpiredSession,
       testMarkUsedIsCompareAndSwap,
       testReuseDetected,
@@ -169,7 +175,7 @@ testSignupLoginByIdentifierNoEmail = testCase "signup+login by identifier with n
   user.email @?= Nothing
   user.loginId @?= agentLogin
   loginRes <-
-    expectRight =<< runInMemory ref (login cfg (ctxForLogin agentLogin) (LoginCommand agentLogin strongPw))
+    expectRight =<< runInMemory ref (login cfg (ctxForLogin agentLogin) (LoginCommand agentLogin strongPw False))
   case loginRes of
     LoginComplete u _ -> u.userId @?= user.userId
     MfaRequired _ -> assertFailure "expected LoginComplete (agent has no passkey), got MfaRequired"
@@ -202,7 +208,8 @@ testBespokeRefreshRejectsOAuthSession = testCase "bespoke refresh refuses a clie
           cfg
           SessionOptions
             { oauthClientId = Just "oauthclient_test",
-              extraScopes = granted
+              extraScopes = granted,
+              remember = False
             }
           user
           fixedTime
@@ -259,6 +266,83 @@ testSlidingRefreshStillDiesAtDeadline = testCase "sliding refresh still dies at 
     rotateAt ref delta tok = do
       advanceTo ref delta
       expectRight =<< runInMemory ref (refresh longTokenCfg (RefreshCommand tok))
+
+-- | Log alice in with the given @remember@ choice and return the token pair and the session
+-- row it created.
+loginRemembering :: IORef World -> Bool -> IO (TokenPair, Session)
+loginRemembering ref remember = do
+  result <- expectRight =<< runInMemory ref (login cfg (ctxFor aliceEmail) (loginEmail aliceEmail strongPw) {remember})
+  pair <- case result of
+    LoginComplete _ p -> pure p
+    MfaRequired _ -> assertFailure "expected LoginComplete (alice has no second factor), got MfaRequired"
+  claims <- expectRight =<< runInMemory ref (verifyToken cfg pair.accessToken)
+  w <- readIORef ref
+  case Map.lookup claims.sessionId w.sessions of
+    Just s -> pure (pair, s)
+    Nothing -> assertFailure "the login's access token names no session"
+
+-- | Every refresh token of the session expires no later than the session itself.
+assertTokensWithinSession :: IORef World -> Session -> IO ()
+assertTokensWithinSession ref session = do
+  w <- readIORef ref
+  let tokens = filter ((== session.sessionId) . (.sessionId)) (Map.elems w.refreshTokens)
+  assertBool "the session has refresh tokens" (not (null tokens))
+  assertBool "no refresh token outlives its session" (all (\t -> t.expiresAt <= session.expiresAt) tokens)
+
+testRememberedSessionLastsAYear :: TestTree
+testRememberedSessionLastsAYear = testCase "a remembered login lasts rememberedSessionTTL and reports remembered on refresh" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  (pair, session) <- loginRemembering ref True
+  session.expiresAt @?= addUTCTime (365 * day) fixedTime
+  pair.remembered @?= True
+  advanceTo ref 60
+  refreshed <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
+  refreshed.remembered @?= True
+  assertTokensWithinSession ref session
+  where
+    day = 24 * 60 * 60 :: NominalDiffTime
+
+testUnrememberedSessionKeepsSessionTTL :: TestTree
+testUnrememberedSessionKeepsSessionTTL = testCase "a login without remember lasts sessionTTL and reports not remembered" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  (pair, session) <- loginRemembering ref False
+  session.expiresAt @?= addUTCTime cfg.sessionTTL fixedTime
+  pair.remembered @?= False
+  advanceTo ref 60
+  refreshed <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand pair.refreshToken))
+  refreshed.remembered @?= False
+  assertTokensWithinSession ref session
+
+testRememberedSessionSlidesPastSessionTTL :: TestTree
+testRememberedSessionSlidesPastSessionTTL = testCase "a remembered session keeps refreshing past sessionTTL and dies at its own deadline" do
+  ref <- newIORef (emptyWorld fixedTime)
+  _ <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  (pair, session) <- loginRemembering ref True
+  -- One rotation every 25 days stays inside the 30-day refresh window and walks well past the
+  -- 30-day sessionTTL.
+  let rotateAt tok delta = do
+        advanceTo ref delta
+        p <- expectRight =<< runInMemory ref (refresh cfg (RefreshCommand tok))
+        p.remembered @?= True
+        pure p.refreshToken
+  final <- foldM rotateAt pair.refreshToken [25 * day, 50 * day .. 350 * day]
+  w <- readIORef ref
+  refreshedSession <- maybe (assertFailure "the session disappeared") pure (Map.lookup session.sessionId w.sessions)
+  refreshedSession.status @?= SessionActive
+  assertTokensWithinSession ref session
+  advanceTo ref (cfg.rememberedSessionTTL + 1)
+  res <- runInMemory ref (refresh cfg (RefreshCommand final))
+  res @?= Left Err.SessionExpired
+  where
+    day = 24 * 60 * 60 :: NominalDiffTime
+
+testSignupIsNotRemembered :: TestTree
+testSignupIsNotRemembered = testCase "the session signup starts is not remembered" do
+  ref <- newIORef (emptyWorld fixedTime)
+  (_, pair) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
+  pair.remembered @?= False
 
 testVerifyTokenRejectsExpiredSession :: TestTree
 testVerifyTokenRejectsExpiredSession = testCase "verifyToken (token+session) rejects an expired session" do

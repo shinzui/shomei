@@ -153,7 +153,7 @@ policy/format failures. In cookie transport this response also sets the
 names when `SHOMEI_COOKIE_SECURE=false`).
 
 ### `POST /v1/auth/login`
-Body `{"loginId","password"}`. → `200` with a tagged response:
+Body `{"loginId","password","remember"?}`. → `200` with a tagged response:
 `{"status":"complete","user":{…},"token":{…}}`, or
 `{"status":"mfa_required","ceremonyId":"…","options":{…},"methods":[…]}` when the account
 has an enrolled second factor and `mfaConfig.requireSecondFactor` is enabled. `methods` is required
@@ -161,8 +161,20 @@ and names the factors that can complete the challenge: `passkey`, `totp`, or `re
 Credential and lockout failures are the same `401 invalid_login`; the per-IP failure throttle is
 `429 too_many_requests`; an enforced unverified email is `403 email_not_verified`.
 
+**Staying signed in.** `"remember": true` asks for a *remembered* session: it lasts
+`rememberedSessionTTL` (default 365 days, `SHOMEI_REMEMBERED_SESSION_TTL`) instead of `sessionTTL`
+(default 30 days). Its refresh tokens keep the same `refreshTokenTTL` sliding window, so a remembered
+session left unused for longer than that still has to sign in again. An absent or `false` value is
+an ordinary session. A password sign-in that answers `mfa_required` issues no session yet, so it
+takes the decision on `POST /v1/auth/mfa/complete`; a passkey-only sign-in takes it on
+`POST /v1/auth/login/passkey/complete`. Every token pair Shōmei returns — on sign-in, MFA completion,
+passkey completion, and every refresh — carries `"remembered"`, constant for the session's life, so
+a browser-facing embedder can choose persistent cookies for a remembered session and
+browser-session cookies otherwise. Signup, OAuth, delegated and machine sessions are never
+remembered.
+
 ### `POST /v1/auth/refresh`
-Body `{"refreshToken"}` — **optional**: in secure cookie transport the token is read from the `__Secure-shomei_refresh` cookie instead and a browser client posts `{}`. With `SHOMEI_COOKIE_SECURE=false`, the bare `shomei_refresh` name is used. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. A token already revoked by logout, password recovery, or another session revocation instead answers `401 session_revoked` and does not report theft. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
+Body `{"refreshToken"}` — **optional**: in secure cookie transport the token is read from the `__Secure-shomei_refresh` cookie instead and a browser client posts `{}`. With `SHOMEI_COOKIE_SECURE=false`, the bare `shomei_refresh` name is used. A body value takes precedence. A cookie-borne token is CSRF-gated (an allow-listed `Origin`/`Referer` is required, else `403 csrf_rejected`). → `200` `{"accessToken","refreshToken","expiresIn","remembered"}` (the old refresh token is rotated and invalidated). The new access token gets a new `iat`, but preserves the session's `auth_time`, the instant the last credential was proven; refresh therefore never satisfies a recent-authentication gate. → `401 token_invalid` for a refresh token an OAuth client minted; rotate it at `POST /oauth/token` as that client. Presenting a reused token revokes the whole token family and the session (`401 token_reuse`); so does losing a race, since two concurrent presentations of one token can never both rotate it. A token already revoked by logout, password recovery, or another session revocation instead answers `401 session_revoked` and does not report theft. Once the session reaches its absolute lifetime (`sessionTTL`, default 30 days from login, or `rememberedSessionTTL`, default 365 days, for a remembered session) refreshing no longer works: `401 session_expired` — the client must log in again. → `403 email_not_verified` when `emailVerificationRequired` is enabled and the account's email is unverified.
 
 ### `POST /oauth/token`
 

@@ -33,7 +33,9 @@ data SignupCommand = SignupCommand
 
 data LoginCommand = LoginCommand
   { loginId :: !LoginId,
-    password :: !PlainPassword
+    password :: !PlainPassword,
+    -- | the person asked to stay signed in; see 'Shomei.Session.Domain.Session'.
+    remember :: !Bool
   }
   deriving stock (Generic, Show)
 

@@ -563,7 +563,8 @@ seedOperatorPrincipal pool = do
                 oauthClientId = Nothing,
                 kind = InteractiveSession,
                 grantedScopes = Set.empty,
-                authenticatedAt = ts
+                authenticatedAt = ts,
+                remembered = False
               }
         pure (userId, session.sessionId)
   either (assertFailure . ("could not seed the operator user: " <>) . show) pure outcome
@@ -775,6 +776,27 @@ scenario pool port = do
   lStatus @?= 200
   lresp <- must "login body" lBody
   loginAccess <- must "login accessToken" (dig ["token", "accessToken"] lresp >>= asText)
+  -- A login without "remember" is not remembered, and neither is its refresh.
+  dig ["token", "remembered"] lresp @?= Just (Bool False)
+  loginRefresh <- must "login refreshToken" (dig ["token", "refreshToken"] lresp >>= asText)
+  (lrStatus, lrBody) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= loginRefresh])
+  lrStatus @?= 200
+  (lrBody >>= dig ["remembered"]) @?= Just (Bool False)
+
+  -- (b') a remembered login: reported on sign-in and on every refresh, with a year-long session.
+  (rlStatus, rlBody) <-
+    postJSON mgr port "/v1/auth/login" (object ["loginId" .= email, "password" .= password, "remember" .= True])
+  rlStatus @?= 200
+  rlresp <- must "remembered login body" rlBody
+  dig ["token", "remembered"] rlresp @?= Just (Bool True)
+  rememberedRefresh <- must "remembered refreshToken" (dig ["token", "refreshToken"] rlresp >>= asText)
+  (rrStatus, rrBody) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= rememberedRefresh])
+  rrStatus @?= 200
+  (rrBody >>= dig ["remembered"]) @?= Just (Bool True)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE remembered AND expires_at - created_at = interval '365 days'"
+    >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE NOT remembered AND expires_at - created_at = interval '30 days'"
+    >>= (@?= 2)
 
   -- (c) me with Bearer → 200; (d) without → 401.
   (meStatus, meBody) <- getJSON mgr port "/v1/auth/me" (bearer loginAccess)
