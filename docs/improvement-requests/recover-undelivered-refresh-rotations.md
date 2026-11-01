@@ -2,16 +2,25 @@
 type: Improvement Request
 title: Stop revoking sessions when a rotated refresh token never reached the client
 description: Treat a replay of a spent refresh token whose replacement was never used as a retry, while keeping theft detection.
-timestamp: "2026-11-01T20:39:41Z"
+timestamp: "2026-11-01T21:33:00Z"
 generated:
   by: process:claude-code
   at: "2026-11-01T20:39:41Z"
 requestId: IR-4
-status: proposed
+status: rejected
+resolution: "Rejected 2026-11-01: a fix that keeps Shōmei's strict reuse-detection contract was found outside this change, so Shōmei will not accept a replayed spent token; the analysed design, its security argument, and the theft window it would have accepted are preserved in the withdrawn docs/plans/69-recover-undelivered-refresh-token-rotations-without-weakening-theft-detection.md."
+targetPlan: docs/plans/69-recover-undelivered-refresh-token-rotations-without-weakening-theft-detection.md
 origin: mori://tan/tan-ng-labs/plans/12-keep-labs-sign-ins-alive-and-add-a-remember-me-option
 ---
 
 # Recover undelivered refresh-token rotations
+
+**Rejected on 2026-11-01.** A fix that does not require Shōmei to accept a replayed spent
+token was found, so the reuse-detection contract in `docs/user/security.md` stays exactly as
+it is. The design that would have implemented this request, with its security argument and
+the bounded theft window it would have accepted, is preserved in the withdrawn
+[ExecPlan 69](../plans/69-recover-undelivered-refresh-token-rotations-without-weakening-theft-detection.md)
+in case the trade is ever reconsidered. The evidence and analysis below are kept as recorded.
 
 A rotated refresh token can be lost on its way to the client. Shōmei commits the
 rotation before the client has the new token, so a client that never receives

@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-01
+* **Update**: Reject IR-4: a fix that keeps the strict reuse-detection contract was found; the analysed design stays in the withdrawn ExecPlan 69.
 * **Addition**: Add IR-4 to stop revoking sessions when a rotated refresh token never reached the client, from sign-outs observed on mori://tan/tan-ng-labs.
 
 ## 2026-10-28
