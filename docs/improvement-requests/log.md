@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-11-01
+* **Addition**: Add IR-4 to stop revoking sessions when a rotated refresh token never reached the client, from sign-outs observed on mori://tan/tan-ng-labs.
+
 ## 2026-10-28
 * **Update**: Link IR-3 to MasterPlan 9, its seven child ExecPlans, and the finding ledger; implementation remains open.
 * **Addition**: Add IR-3 to track residual security, performance, interoperability, and test-coverage findings from REV-11.
