@@ -10,6 +10,18 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-10-28T18:34:37Z
+  reviews:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      verdict: "changes-requested"
+      note: "Security review: ledger rows owned by EP-3/4/6 absent from their plans; non-string act dropped silently; EP-7 M1 gate too coarse"
+  revisions:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      mode: "update"
+      note: "Split EP-7 into inventory gate, parallel verification, integration, closure; added row-ownership rule and verified actor behavior"
 ---
 
 # Close All Security and Performance Review Findings
@@ -42,15 +54,15 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Not Started |
 | 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Not Started |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Not Started |
-| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1: none; M2/M3: EP-1–EP-6 complete | None | Not Started |
+| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | Not Started |
 
 Status values are Not Started, In Progress, Complete, Cancelled. Dependencies name milestones deliberately; a whole-child dependency requires the child to be Complete.
 
 ## Dependency Graph
 
-Start with EP-7 M1: accept the complete clause inventory and assign every row. Each behavior child may establish its M1 regression independently, but its M2 expansion waits for that inventory so small subitems cannot disappear again. Then implement EP-1 through EP-6 in registry order by default. Their behavior work has no hard inter-child dependencies; soft relationships describe useful reuse, not permission to skip acceptance. If work is later delegated, serialize allocation of migration files and coordinate shared configuration changes.
+Start with EP-7 M1: accept the complete clause inventory and assign every row. M1 is an inventory gate only; the independent re-verification of historical fix and risk evidence is EP-7 M2, which runs alongside the behavior children and blocks nothing, so confirmed defects such as the TOTP transplant, the PKCE verifier shape, and the silently dropped non-string actor claim are not held behind a documentation audit. Each behavior child may establish its M1 regression independently, but its M2 expansion waits for the accepted inventory so small subitems cannot disappear again. Then implement EP-1 through EP-6 in registry order by default. Their behavior work has no hard inter-child dependencies; soft relationships describe useful reuse, not permission to skip acceptance. If work is later delegated, serialize allocation of migration files and coordinate shared configuration changes.
 
-After EP-1 through EP-6 are Complete, EP-7 M2 runs final integration and performance/upgrade checks; EP-7 M3 publishes the new review and closes the initiative. This explicit milestone sequence avoids a cycle between inventory-first and evidence-last work. Integration failures reopen the responsible child and invalidate affected final evidence.
+After EP-1 through EP-6 are Complete, EP-7 M3 runs final integration and performance/upgrade checks; EP-7 M4 publishes the new review and closes the initiative. This explicit milestone sequence avoids a cycle between inventory-first and evidence-last work. Integration failures reopen the responsible child and invalidate affected final evidence.
 
 ## Integration Points
 
@@ -58,23 +70,27 @@ EP-1 owns TOTP envelope/version columns and the offline conversion command. EP-4
 
 EP-2 owns field limits and passkey quota operations. EP-4 owns session quota/paging and bulk-revocation operations. Both enforce quotas atomically in PostgreSQL and mirror them in the in-memory interpreter. A pre-read count is not enforcement. EP-5 owns signed WebAuthn fixtures and validates the production ceremony interpreter; EP-2 owns cap behavior even when those fixtures are not yet available.
 
-EP-3 owns PKCE, bearer parsing, actor wire shape, and verifier lifetime policy. EP-6 consumes decoded actor/subject identities for audit, never raw token claims. Their first integration check is issuer → downstream verification → persisted actor/subject audit, with old and new actor forms. No child may turn an invalid actor into an ordinary token.
+EP-3 owns PKCE, bearer parsing, actor wire shape, and verifier lifetime policy. EP-6 consumes decoded actor/subject identities for audit, never raw token claims. Their first integration check is issuer → downstream verification → persisted actor/subject audit, with old and new actor forms. No child may turn an invalid actor into an ordinary token. Today `claimsToAuth` in `shomei-jwt/src/Shomei/SigningKey/Verify/Jwt.hs` reads `act` through a helper that returns nothing for any non-string JSON value, so a present object, array, number, or null actor verifies as an ordinary token; EP-3 lands that fail-closed regression in its M1, before any object-form emission, and EP-6 audits only identities that passed it.
 
 Each child adding configuration owns its named fields in `shomei-core/src/Shomei/Config.hs`, `shomei-server/src/Shomei/Server/Config.hs`, and `config/shomei-types.dhall`, together with default/example/documentation edits. EP-7 checks the combined schema. EP-6 owns shared Warp assembly so admission/bind settings reach both standalone and embedded hosts. Source changes in shared files must preserve other children's changes.
 
-EP-4 owns PostgreSQL concurrency evidence; EP-5 owns signed ceremony evidence; EP-3 owns HTTP protocol negatives; EP-6 owns performance/admission/audit-sink evidence. EP-7 owns ledger structure and final review. Each owner supplies exact tests, commands, tested commit, result, and residual exposure. API breaks require package changelog/version-policy notes and updates to workspace examples; actual release publication is separate authorization.
+EP-4 owns PostgreSQL concurrency evidence; EP-5 owns signed ceremony evidence; EP-3 owns HTTP protocol negatives; EP-6 owns performance/admission/audit-sink evidence. EP-7 owns ledger structure and final review. Each owner supplies exact tests, commands, tested commit, result, and residual exposure. Every ledger row names an owner, and the owner's plan must name that row in its Plan of Work or Validation and Acceptance; a child is not Complete while any row it owns is open. At planning time the ledger assigned the REV-3.7, REV-3.9, and REV-10.7 subrows to EP-3, REV-2.20.1, REV-5.9.1–5.9.3, REV-5.10.1, and REV-5.12.5 to EP-4, and REV-8.17.1–8.17.3, REV-8.17.7, and REV-10.7.1 to EP-6 without those plans mentioning them; the 2026-11-03 revision added them. EP-7 M1 reassigns a row only by editing the ledger and both affected plans in the same commit. API breaks require package changelog/version-policy notes and updates to workspace examples; actual release publication is separate authorization.
 
 New ADRs are expected for TOTP envelope migration, atomic quota/retention policy, bounded retry semantics, and the attestation trust boundary. Update ADR-3 for actor/lifetime compatibility, ADR-8 for configuration contracts, ADR-7 for bulk atomic behavior, and ADR-17 for host settings where needed. Use `agents/skills/exec-plan/ADR.md` before allocation or edits. Proposed decisions here become durable records when implemented and verified, not blanket risk approvals.
 
 ## Progress
 
-Planning is complete: seven child ExecPlans and the initial coverage ledger are authored, all implementation remains Not Started. First executable milestone is EP-7 M1. Final acceptance still requires the new behavior, candidate-commit test/benchmark evidence, upgrade proof, and a commit-pinned closure review. No runtime changes were made while drafting.
+Planning is complete: seven child ExecPlans and the initial coverage ledger are authored, all implementation remains Not Started. A security-focused plan review on 2026-11-03 split EP-7 into an inventory gate (M1), parallel historical verification (M2), integration (M3), and closure (M4), and added verified code facts and the missing ledger rows to the behavior children. First executable milestone is EP-7 M1; EP-7 M2 and the behavior children's M1 regressions may then proceed together. Final acceptance still requires the new behavior, candidate-commit test/benchmark evidence, upgrade proof, and a commit-pinned closure review. No runtime changes were made while drafting or reviewing.
 
 ## Surprises & Discoveries
 
 REV-11 showed that all 108 parent findings can appear covered by historical plans while individual clauses remain open. Therefore completeness is checked at clause level, including informational observations and index/performance appendices. ADR-13 additionally names ID-token diagnostics as a deferred related item; EP-7 must explicitly reconcile that boundary rather than infer all token wrappers are redacted.
 
 The intention was created with `mina ci --json` as requested. Mina warned that its default parent was outside the Shōmei Rei project scope; the intention ID was successfully returned and is attached to all plans. Project-scope synchronization is an administrative follow-up, not an implementation prerequisite.
+
+2026-11-03: The initial ledger assigned twenty verification subrows to EP-3, EP-4, and EP-6 that none of those plans mentioned, reproducing the REV-11 failure mode inside the initiative written to prevent it. The ownership rule in Integration Points now makes a child's acceptance include its rows.
+
+2026-11-03: Code inspection found two defects the plans had treated as wire-shape observations. The verifier treats any non-string `act` claim as absent, so a token carrying an RFC 8693 object actor verifies as an ordinary non-delegated token; exploitation needs a trusted signing key, but it is exactly the failure this MasterPlan forbids, so EP-3 M1 now fixes it before the compatibility window opens. The login workflow never applies the password policy's 256-code-point maximum, which only `signup`, change, and reset enforce, so EP-2 bounds login input before any Argon2 work. Separately, `Shomei.Session.Store` already exposes a bulk `RevokeAllUserSessions` statement without a winner result that the admin workflow does not use; EP-4 extends it rather than adding a parallel operation.
 
 ## Decision Log
 
@@ -84,4 +100,16 @@ The intention was created with `mina ci --json` as requested. Mina warned that i
 
 2026-10-28: Retain existing explicit product/risk decisions with evidence, but forbid silently converting new defects into accepted risks. The user requested comprehensive resolution, not an unreviewed reduction of scope.
 
+2026-11-03: Split EP-7's first milestone so the gate the behavior children wait on is inventory acceptance alone, with independent historical verification as a parallel milestone. Holding confirmed defects behind the re-verification of roughly seventy historical rows would extend exposure without improving the fixes; the clause-level inventory is what prevents subitems from disappearing, and it is small.
+
+2026-11-03: A child's acceptance includes every ledger row it owns, named in its own plan. Letting EP-7 M1 route rows by editing only the ledger is how clauses were lost before.
+
+2026-11-03: The standalone verifier's maximum accepted token lifetime is a required finite setting with no unbounded option; the issuer-side default derives from the configured issuance TTLs. An optional ceiling defaulting to unbounded would leave downstream consumers with the original REV-3 §7 exposure.
+
 ## Outcomes & Retrospective
+
+
+## Revision Notes
+
+
+2026-11-03: Security-focused review applied in update mode. EP-7 milestones were renumbered into an inventory gate, parallel historical verification, integration, and closure; the registry and Dependency Graph follow. Integration Points gained the ledger-row ownership rule and the verified non-string actor behavior. Each behavior child received the ledger rows it owned but did not name and the code facts verified on 2026-11-03. No scope was removed and no new risk acceptance was introduced.

@@ -11,6 +11,18 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-10-28T18:34:46Z
+  reviews:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      verdict: "changes-requested"
+      note: "Security review: login never applies password maximum; oversized-input semantics under ADR-5 unspecified"
+  revisions:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      mode: "update"
+      note: "Added login-path gap, request-shape semantics for oversized login input, unused passkey count port"
 ---
 
 # Bound Authentication Inputs and Passkey Enrollment
@@ -53,7 +65,7 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 ## Context and Orientation
 
 
-`shomei-core/src/Shomei/Account/LoginId/Domain.hs` and `Account/Email/Domain.hs` normalize values but currently derive JSON decoding and impose no size ceiling. `shomei-core/src/Shomei/Passkey/Workflow.hs` registers after ceremony verification; `shomei-core/src/Shomei/Passkey/Store.hs` and `shomei-postgres/src/Shomei/Passkey/Postgres.hs` own storage. `shomei-servant/src/Shomei/Account/Handler.hs` and the passkey/role handlers are HTTP entry points. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) require database-enforced races, synchronized strict configuration, and redacted diagnostics.
+`shomei-core/src/Shomei/Account/LoginId/Domain.hs` and `Account/Email/Domain.hs` normalize values but currently derive JSON decoding and impose no size ceiling. `shomei-core/src/Shomei/Account/Password/Domain.hs` defines the 256-code-point maximum, but `validatePassword` is applied only by `signup` in `shomei-core/src/Shomei/Session/Authentication/Workflow.hs` and by the change/reset paths in `Account/Lifecycle/Workflow.hs`; `login` and `shomei-servant/src/Shomei/Account/Handler.hs` build `PlainPassword` straight from the request. `Shomei.Passkey.Store` exposes `countPasskeysByUser`, but the authentication workflow uses it only to route login and no caller enforces a ceiling. `shomei-core/src/Shomei/Passkey/Workflow.hs` registers after ceremony verification; `shomei-core/src/Shomei/Passkey/Store.hs` and `shomei-postgres/src/Shomei/Passkey/Postgres.hs` own storage. `shomei-servant/src/Shomei/Account/Handler.hs` and the passkey/role handlers are HTTP entry points. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) require database-enforced races, synchronized strict configuration, and redacted diagnostics.
 
 All commands run from the repository root, `/Users/shinzui/Keikaku/bokuno/shomei`. Use the existing development shell when tools are absent (`nix develop`), without searching or reading `/nix/store`. Tests use the existing ephemeral PostgreSQL harness; never aim destructive fixtures at a deployment database. Locate dependency APIs with `mori registry search`, `mori registry show --full`, and `mori registry docs`; read source before coding. Before changing dependency bounds or choosing a compatibility workaround, verify the current released version against the authoritative registry and upstream tags. Preserve concurrent workspace edits and the current branch.
 
@@ -63,7 +75,7 @@ Each milestone updates its rows in [the finding ledger](../review-remediation/fi
 ## Plan of Work
 
 
-M1 introduces shared validation functions for new writes: normalized login IDs at most 256 Unicode code points, email at most 254 UTF-8 bytes, display name at most 256 code points, passkey label at most 128 code points, and role/scope names at most 128 Unicode code points while preserving the current accepted character vocabulary. Preserve the current password policy maximum of 256 code points and enforce it for login as well as creation/change/reset. Validate before normalization copies or expensive hashing where possible; also validate the normalized result. Do not echo rejected values. Replace derived JSON decoders that bypass constructors; map errors to the established domain/HTTP vocabulary and update OpenAPI schemas. Check role captures and CLI inputs, not only JSON bodies.
+M1 introduces shared validation functions for new writes: normalized login IDs at most 256 Unicode code points, email at most 254 UTF-8 bytes, display name at most 256 code points, passkey label at most 128 code points, and role/scope names at most 128 Unicode code points while preserving the current accepted character vocabulary. Preserve the current password policy maximum of 256 code points and enforce it for login as well as creation/change/reset. At login, an oversized password or identifier is a request-shape rejection made before user lookup and before any real or dummy Argon2 work: it uses the existing invalid-input error vocabulary, its status and timing do not vary with account existence, it records no login attempt and changes no lockout state because no credential proof was presented ([ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md) budgets proofs, not malformed requests), and it still passes through the edge request throttle. Validate before normalization copies or expensive hashing where possible; also validate the normalized result. Do not echo rejected values. Replace derived JSON decoders that bypass constructors; map errors to the established domain/HTTP vocabulary and update OpenAPI schemas. Check role captures and CLI inputs, not only JSON bodies.
 
 M2 adds a default maximum of 20 passkeys per account, configurable to 1–100 through the core config, environment loader, and Dhall schema. A begin-time check is only an optimization. The persistence operation must atomically lock the account enrollment namespace, count, and insert, returning a typed limit result; mirror this in the in-memory interpreter. Two completions racing for the last slot must yield exactly one stored credential and one success audit event. Do not delete a user's existing credentials to satisfy a lowered cap; existing credentials remain usable and removable while further enrollment is refused.
 
@@ -97,3 +109,9 @@ Validation changes need no destructive cleanup. Run the compatibility report bef
 
 
 Owns common field validation and passkey quota policy. Plan docs/plans/64-complete-oauth-and-jwt-wire-validation.md owns PKCE and bearer parsing and must reuse error conventions. Plan docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md owns generic transaction policy; enrollment atomicity must work independently. Schema/loader changes follow ADR-8 with explicit field ownership. Before M2, require the accepted ledger/subitem allocation from M1 of `docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md`. M1 may establish the representative regression first. This is a milestone prerequisite, not a dependency on the whole closure plan.
+
+
+## Revision Notes
+
+
+2026-11-03: Security-focused review added the verified login-path gap (the password maximum is applied at signup, change, and reset but not at login), the request-shape semantics of oversized login input under ADR-5, and the existing unused passkey count port. Scope unchanged.

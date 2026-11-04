@@ -11,6 +11,18 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-10-28T18:34:46Z
+  reviews:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      verdict: "changes-requested"
+      note: "Security review: M1 bundles inventory gate with full historical re-verification, delaying confirmed defect fixes"
+  revisions:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      mode: "update"
+      note: "Split M1 into inventory gate and parallel historical verification; renumbered M3/M4; row-ownership rule; load result redaction"
 ---
 
 # Verify Every Review Finding and Publish Closure Evidence
@@ -27,9 +39,10 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 ## Progress
 
 
-- [ ] M1: every original finding/subitem is assigned and existing fix or risk evidence is independently checked.
-- [ ] M2: integrated tests, performance checks, upgrades, and documentation validate the completed child changes.
-- [ ] M3: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
+- [ ] M1: every original finding/subitem is assigned to an owner whose plan names it, and the inventory is accepted.
+- [ ] M2: existing fix or risk evidence for every row this plan owns is independently checked against the current tree.
+- [ ] M3: integrated tests, performance checks, upgrades, and documentation validate the completed child changes.
+- [ ] M4: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
 
 
 ## Surprises & Discoveries
@@ -63,11 +76,13 @@ Each milestone updates its rows in [the finding ledger](../review-remediation/fi
 ## Plan of Work
 
 
-M1 runs first, before broad implementation. Read every finding paragraph, including informational clauses, appendices, and the unnumbered performance section. Split compound findings into subrows; keep the parent open until all subrows close. The supplied ledger gives initial assignments, not automatic closure. Associate existing tests and source locations with every claimed fix and rerun relevant tests if evidence is stale. In particular enumerate all REV-2 §23, REV-3 §§9,10, REV-5 §§9,10,12 and index observations, REV-7 §§13,16, and REV-8 §17 subitems. Route any uncovered defect to the responsible existing child and update its acceptance; do not park findings under a generic future-work label. Existing documented decisions about ES256, consent, signup disclosure, audit retention, reset timing, migration locks, and library-level suspended-account errors need exact source/decision citations and stated residual exposure. Any newly proposed acceptance of an actual defect remains open until explicitly decided by the project owner.
+M1 runs first, before broad implementation, and is an inventory gate only. Read every finding paragraph, including informational clauses, appendices, and the unnumbered performance section. Split compound findings into subrows; keep the parent open until all subrows close. The supplied ledger gives initial assignments, not automatic closure. In particular enumerate all REV-2 §23, REV-3 §§9,10, REV-5 §§9,10,12 and index observations, REV-7 §§13,16, and REV-8 §17 subitems. Route any uncovered defect to the responsible existing child and update its acceptance; do not park findings under a generic future-work label. A row owned by a behavior child must be named in that child's Plan of Work or Validation and Acceptance; reassign a row only by editing the ledger and both affected plans in the same commit. M1 is accepted when every row has an owner whose plan names it. That acceptance is the prerequisite the behavior children wait on before expanding past their first regression.
 
-M2 starts only after all six behavior plans are complete. Add `scripts/review-remediation-load.sh` as a reproducible driver around an isolated ephemeral server/database, with a fixed 10,000-session fixture and 1,000 repeated OpenAPI requests. It must refuse non-loopback targets, set finite concurrency/duration, and record JSON results; the intended command is `scripts/review-remediation-load.sh --scenario all --output /tmp/shomei-review-load.json`. Include the existing `scripts/argon2-load-test.sh` scenario after correcting its stale configuration instructions to the current schema. Compare functional query counts/encoding counts as stable acceptance and report latency/RSS as measurements with noise limits; require no unbounded growth when input size is fixed. Run the full 14-suite workspace gate, separately build `examples/embedded-with-en`, check migration and ADR/review profiles, and validate user-facing configuration/CLI examples. Repeat the Argon2 bounded-load check and newly added OpenAPI/session workloads with captured configuration, fixture size, wall time, allocations or RSS, and error counts. Compare results to pre-change baselines rather than claiming improvements from passing unit tests. Check upgrade sequencing for TOTP envelopes and actor claims against the deployed compatibility contract using ephemeral old/new fixtures. Verify no secret-bearing fixture leaks to logs. If integration exposes a regression, reopen its owning child and rerun affected acceptance before continuing.
+M2 runs alongside the behavior children and needs none of them complete. Associate existing tests and source locations with every claimed fix on the rows this plan owns and rerun relevant tests if evidence is stale. Existing documented decisions about ES256, consent, signup disclosure, audit retention, reset timing, migration locks, and library-level suspended-account errors need exact source/decision citations and stated residual exposure. Any newly proposed acceptance of an actual defect remains open until explicitly decided by the project owner.
 
-M3 creates a new review using `okf id next` and the exact tested commit, with previousReview linking to REV-11 and coverage/limits stated. Never rewrite the original review outcomes. Resolve IR-3 only when all parent/subrows are fixed with evidence, explicitly accepted under an existing or newly approved decision, or shown inapplicable with evidence; “deferred” is not closure. Distill durable decisions into ADRs through the profile workflow, triage implementation friction, update the MasterPlan and every child outcome, and link the final review from the review index. Record strict-validation provenance warnings honestly; do not invent independent reviews to make a profile pass.
+M3 starts only after all six behavior plans are complete. Add `scripts/review-remediation-load.sh` as a reproducible driver around an isolated ephemeral server/database, with a fixed 10,000-session fixture and 1,000 repeated OpenAPI requests. It must refuse non-loopback targets, set finite concurrency/duration, and record JSON results that contain no tokens, cookies, or credentials; the intended command is `scripts/review-remediation-load.sh --scenario all --output /tmp/shomei-review-load.json`. Include the existing `scripts/argon2-load-test.sh` scenario after correcting its stale configuration instructions to the current schema. Compare functional query counts/encoding counts as stable acceptance and report latency/RSS as measurements with noise limits; require no unbounded growth when input size is fixed. Run the full 14-suite workspace gate, separately build `examples/embedded-with-en`, check migration and ADR/review profiles, and validate user-facing configuration/CLI examples. Repeat the Argon2 bounded-load check and newly added OpenAPI/session workloads with captured configuration, fixture size, wall time, allocations or RSS, and error counts. Compare results to pre-change baselines rather than claiming improvements from passing unit tests. Check upgrade sequencing for TOTP envelopes and actor claims against the deployed compatibility contract using ephemeral old/new fixtures. Verify no secret-bearing fixture leaks to logs. If integration exposes a regression, reopen its owning child and rerun affected acceptance before continuing.
+
+M4 creates a new review using `okf id next` and the exact tested commit, with previousReview linking to REV-11 and coverage/limits stated. Never rewrite the original review outcomes. Resolve IR-3 only when all parent/subrows are fixed with evidence, explicitly accepted under an existing or newly approved decision, or shown inapplicable with evidence; “deferred” is not closure. Distill durable decisions into ADRs through the profile workflow, triage implementation friction, update the MasterPlan and every child outcome, and link the final review from the review index. Record strict-validation provenance warnings honestly; do not invent independent reviews to make a profile pass.
 
 
 ## Concrete Steps
@@ -103,4 +118,10 @@ The ledger and plans are append/update documentation; preserve source review his
 ## Interfaces and Dependencies
 
 
-M1 has no hard dependency and must be accepted before M2 of any behavior child begins expanding implementation. M2 and M3 have hard dependencies on completion of docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md, docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md, docs/plans/64-complete-oauth-and-jwt-wire-validation.md, docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md, docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md, docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md. This milestone-level sequence avoids a dependency cycle. This plan owns the ledger schema and closure verdict; behavior children supply evidence for their rows.
+M1 has no hard dependency and must be accepted before M2 of any behavior child begins expanding implementation. M2 has no hard dependency and runs alongside the behavior children. M3 and M4 have hard dependencies on completion of docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md, docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md, docs/plans/64-complete-oauth-and-jwt-wire-validation.md, docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md, docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md, docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md. This milestone-level sequence avoids a dependency cycle. This plan owns the ledger schema and closure verdict; behavior children supply evidence for their rows.
+
+
+## Revision Notes
+
+
+2026-11-03: Security-focused review split the first milestone into an inventory gate (M1) and parallel historical verification (M2), renumbering integration to M3 and closure to M4, so confirmed defects are not held behind historical re-verification. Added the row-ownership rule and result redaction for the load driver.

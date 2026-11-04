@@ -11,6 +11,18 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-10-28T18:34:46Z
+  reviews:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      verdict: "changes-requested"
+      note: "Security review: upsert identifier contract, pending rows, nonce freshness, keyless --check missing"
+  revisions:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      mode: "update"
+      note: "Added verified upsert behavior, pending-row coverage, nonce freshness, keyless --check"
 ---
 
 # Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes
@@ -63,9 +75,9 @@ Each milestone updates its rows in [the finding ledger](../review-remediation/fi
 ## Plan of Work
 
 
-M1 changes the encryption boundary to require credential ID and user ID. Authenticate a fixed domain/version label and unambiguous fixed-width encodings of both IDs. Add an explicit format version rather than guessing whether random nonce bytes are a prefix. Prefer a schema version column with a constrained vocabulary and a matching envelope marker; never fall back to legacy decoding after a versioned authentication failure. Check the upsert conflict path: authenticate the identifier actually persisted, including re-enrollment of an existing user. Exercise that path before expanding the migration command. Keep key material and plaintext out of error strings.
+M1 changes the encryption boundary to require credential ID and user ID. Authenticate a fixed domain/version label and unambiguous fixed-width encodings of both IDs. Add an explicit format version rather than guessing whether random nonce bytes are a prefix. Prefer a schema version column with a constrained vocabulary and a matching envelope marker; never fall back to legacy decoding after a versioned authentication failure. Check the upsert conflict path: authenticate the identifier actually persisted, including re-enrollment of an existing user. Today `upsertStmt` resolves `ON CONFLICT (user_id)` by writing `EXCLUDED.totp_credential_id` into the existing row, so the persisted credential identifier equals the one the workflow generated; the regression asserts that equality after re-enrollment and after conversion, and fails if a future statement keeps the old identifier. Unconfirmed enrollment rows (`confirmed_at IS NULL`) hold ciphertext too and receive the same version, binding, and conversion treatment as confirmed rows. Exercise that path before expanding the migration command. Keep key material and plaintext out of error strings.
 
-M2 adds an additive migration using `just new-migration add-totp-envelope-version`, with old rows explicitly marked legacy. Add `shomei-admin totp migrate-envelopes` as a dedicated operator command that reads the existing TOTP key through the secret loader. Require an offline window: stop all Shōmei writers and use a transaction-scoped migration lock plus conditional updates on the original blob/version. Process at most 100 rows per transaction, decrypt/re-encrypt outside long-lived locks, compare-and-swap the original values, and retry conflicts rather than overwriting a concurrent enrollment. Print only counts and opaque identifiers needed for recovery. Provide a read-only `--check` mode reporting legacy/invalid-version counts. Normal runtime accepts only the new version and refuses readiness/startup when legacy rows remain; legacy decryption exists only in the explicit converter. The converter must be usable before normal strict boot checks, with the deployment key and schema checks intact.
+M2 adds an additive migration using `just new-migration add-totp-envelope-version`, with old rows explicitly marked legacy. Add `shomei-admin totp migrate-envelopes` as a dedicated operator command that reads the existing TOTP key through the secret loader. Require an offline window: stop all Shōmei writers and use a transaction-scoped migration lock plus conditional updates on the original blob/version. Process at most 100 rows per transaction, decrypt/re-encrypt outside long-lived locks, compare-and-swap the original values, and retry conflicts rather than overwriting a concurrent enrollment. Print only counts and opaque identifiers needed for recovery. Provide a read-only `--check` mode reporting legacy/invalid-version counts; it reads the version column only and must work without the TOTP key. Every re-encryption draws a fresh 96-bit nonce; the converter never reuses a legacy nonce or one nonce for two rows. Normal runtime accepts only the new version and refuses readiness/startup when legacy rows remain; legacy decryption exists only in the explicit converter. The converter must be usable before normal strict boot checks, with the deployment key and schema checks intact.
 
 M3 tests genuine second-factor login before and after conversion using the same secret. Cover interruption between batches, a wrong key, an invalid tag, a row changed between read/write, repeated conversion, zero rows, and a transplant after conversion. Document that a ciphertext already transplanted before conversion cannot be retroactively detected; conversion binds existing database associations, so backup provenance matters.
 
@@ -85,7 +97,7 @@ just adr-validate
 ## Validation and Acceptance
 
 
-Two independently enrolled users must not accept each other's stored blob. Changes to either authenticated identifier, version, nonce, ciphertext, or tag must fail closed. Conversion reruns change zero already-converted rows; failures never overwrite unreadable material. A partially converted database cannot serve authentication with a permanent legacy fallback. The existing factor flow and re-enrollment both continue to work.
+Two independently enrolled users must not accept each other's stored blob, whether the rows are confirmed or still pending. Changes to either authenticated identifier, version, nonce, ciphertext, or tag must fail closed. Conversion reruns change zero already-converted rows; failures never overwrite unreadable material. A partially converted database cannot serve authentication with a permanent legacy fallback. The existing factor flow and re-enrollment both continue to work.
 
 
 ## Idempotence and Recovery
@@ -98,3 +110,9 @@ Take a database backup and retain the deployment TOTP key before the maintenance
 
 
 Owns the encrypted-row version and converter API. Integrates with plan docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md for persistence time/deadline helpers, but has no hard dependency on that plan. Do not place conversion work inside request transactions. The first producer/consumer check is re-enrollment upsert followed by strict row reconstruction. Before M2, require the accepted ledger/subitem allocation from M1 of `docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md`. M1 may establish the representative regression first. This is a milestone prerequisite, not a dependency on the whole closure plan.
+
+
+## Revision Notes
+
+
+2026-11-03: Security-focused review under MasterPlan 9 added the verified upsert identifier behavior, pending-row coverage, nonce freshness, and the keyless `--check` mode. Scope and acceptance obligations are otherwise unchanged.

@@ -11,6 +11,18 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-10-28T18:34:46Z
+  reviews:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      verdict: "changes-requested"
+      note: "Security review: counter regression to zero, ceremony-type confusion, cross-user credential negatives missing"
+  revisions:
+    - model: "claude-fable-5-1"
+      harness: "claude-code"
+      at: 2026-11-04T06:09:13Z
+      mode: "update"
+      note: "Added counter-regression, ceremony-type confusion, cross-user credential negatives"
 ---
 
 # Prove WebAuthn Ceremonies and Document Attestation Trust
@@ -65,7 +77,7 @@ Each milestone updates its rows in [the finding ledger](../review-remediation/fi
 
 M1 locates the fork and its test fixture APIs with Mori before choosing helpers. Use a deterministic software authenticator fixture in the package tests that generates the credential key and signs authenticator/client data; no browser or physical key is required. Freeze challenge/time in the fixture without replacing the production verification interpreter. Demonstrate registration produces a credential that then successfully asserts through the actual wrapper. Keep private fixture keys clearly test-only and never copy deployment credentials.
 
-M2 mutates one authenticated property at a time: origin, relying-party hash, challenge, UV/user-presence flags, signature, credential owner, and stored/returned counters. Re-sign mutated payloads where needed so a test reaches the intended policy rather than failing on a generic bad signature first. Cover counterless (0,0), advancing counters, repeated/non-advancing nonzero counters, malformed blobs, empty origins, and expiry/consume-once at the workflow boundary. Verify passwordless assertions require UV even when step-up is configured preferred or discouraged. Resolve the unreachable cloneWarning branch: propagate a meaningful typed clone result if auditing needs it, or remove dead logic and test the existing error/audit path.
+M2 mutates one authenticated property at a time: origin, relying-party hash, challenge, UV/user-presence flags, signature, credential owner, and stored/returned counters. Re-sign mutated payloads where needed so a test reaches the intended policy rather than failing on a generic bad signature first. Cover counterless (0,0), advancing counters, repeated/non-advancing nonzero counters, a returned counter of zero when the stored counter is nonzero, malformed blobs, empty origins, and expiry/consume-once at the workflow boundary. Also cover ceremony-type confusion, where correctly signed `webauthn.create` client data is presented to the assertion ceremony and `webauthn.get` client data to registration, and a correctly signed assertion over a credential that belongs to a different user. Verify passwordless assertions require UV even when step-up is configured preferred or discouraged. Resolve the unreachable cloneWarning branch: propagate a meaningful typed clone result if auditing needs it, or remove dead logic and test the existing error/audit path.
 
 M3 makes the attestation contract explicit in `docs/user/passkeys.md` and the ceremony module: direct asks for attestation evidence but does not establish a trusted-device policy while metadata is empty and the trust verdict is unused. Preserve none as the default. Adding an MDS service or authenticator allow-list is a separate feature, not a prerequisite to truthfully closing this documentation finding. Record the deliberate boundary in an ADR. Link negative fixtures to the ledger so later dependency upgrades rerun them.
 
@@ -84,7 +96,7 @@ just adr-validate
 ## Validation and Acceptance
 
 
-The suite contains at least one fully valid registration followed by assertion and targeted negatives that reach each named policy. A correct signature with forbidden origin or absent required UV must fail. Counterless authenticators continue working; nonzero replay fails. Workflow lockout/audit semantics remain intact. No test claims device trust merely because registration succeeds.
+The suite contains at least one fully valid registration followed by assertion and targeted negatives that reach each named policy. A correct signature with forbidden origin or absent required UV must fail. Counterless authenticators continue working; nonzero replay and a counter that regresses to zero fail. A signed assertion for another user's credential, or with the wrong ceremony type, fails. Workflow lockout/audit semantics remain intact. No test claims device trust merely because registration succeeds.
 
 
 ## Idempotence and Recovery
@@ -97,3 +109,9 @@ Fixtures are local and repeatable. Do not update the fork or package bounds just
 
 
 No hard dependency. Integrates with docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md on enrollment cap behavior and docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md on persisted counter races. This plan owns real cryptographic fixture generation; those plans reuse it only where needed and retain their own persistence tests. Before M2, require the accepted ledger/subitem allocation from M1 of `docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md`. M1 may establish the representative regression first. This is a milestone prerequisite, not a dependency on the whole closure plan.
+
+
+## Revision Notes
+
+
+2026-11-03: Security-focused review added counter-regression, ceremony-type confusion, and cross-user credential negatives to M2 and to acceptance.

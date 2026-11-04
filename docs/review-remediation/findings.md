@@ -1,6 +1,6 @@
 # MasterPlan 9 finding ledger
 
-This ledger belongs to [MasterPlan 9](../masterplans/9-close-all-security-and-performance-review-findings.md). Original reviews remain immutable. Initial rows are **Open**: historical completion is not current verification. EP-7 M1 must inspect every clause and add any missing subrows before accepting inventory. Owners are registry numbers in the MasterPlan; each links to its full child plan below.
+This ledger belongs to [MasterPlan 9](../masterplans/9-close-all-security-and-performance-review-findings.md). Original reviews remain immutable. Initial rows are **Open**: historical completion is not current verification. EP-7 M1 must inspect every clause and add any missing subrows before accepting inventory. Owners are registry numbers in the MasterPlan; each links to its full child plan below. An owner's plan must name every row assigned to it in its Plan of Work or Validation and Acceptance, and a row moves owners only when the ledger and both plans change in the same commit.
 
 Closing a row requires a named test or exact documented decision, a tested commit, command/result, and residual exposure. Allowed terminal dispositions are Fixed, Existing decision verified, Owner-approved decision, or Inapplicable with proof. Open, Pending verification, and Deferred are never final closure. A parent closes only when all its subrows close. A known defect cannot be accepted by the implementing agent merely to finish the plan.
 
