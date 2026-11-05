@@ -59,9 +59,9 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-3.4](../reviews/shomei-jwt-security-and-performance.md) | Low — issuer or audience text containing `:` that is not a parseable URI makes every mint and every verify throw. | EP-7 | Open | Pending verification |
 | [REV-3.5](../reviews/shomei-jwt-security-and-performance.md) | Low — the accepted `alg` set is jose's full default and there is no `typ` header. | EP-7 | Open | Pending verification |
 | [REV-3.6](../reviews/shomei-jwt-security-and-performance.md) | Low — `kid` does not select the verification key. | EP-7 | Open | Pending verification |
-| [REV-3.7](../reviews/shomei-jwt-security-and-performance.md) | Low — lenient claim shapes. | EP-3 | Open | Pending verification |
+| [REV-3.7](../reviews/shomei-jwt-security-and-performance.md) | Low — lenient claim shapes. | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.7. |
 | [REV-3.8](../reviews/shomei-jwt-security-and-performance.md) | Low — `keys rewrap`'s write pass is not one transaction. | EP-7 | Open | Pending verification |
-| [REV-3.9](../reviews/shomei-jwt-security-and-performance.md) | Info. | EP-3 | Open | Pending verification |
+| [REV-3.9](../reviews/shomei-jwt-security-and-performance.md) | Info. | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.9. |
 | [REV-3.10](../reviews/shomei-jwt-security-and-performance.md) | Info — test coverage. | EP-7 | Open | Pending verification |
 | [REV-4.1](../reviews/shomei-webauthn-security.md) | Medium — passwordless login accepts assertions without user verification under the default policy. | EP-7 | Open | Pending verification |
 | [REV-4.2](../reviews/shomei-webauthn-security.md) | Low — an empty `origins` list crashes every ceremony completion. | EP-7 | Open | Pending verification |
@@ -96,10 +96,10 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-7.10](../reviews/shomei-servant-security-and-performance.md) | Low — no boot-time warning when cookie transport is on with the default `http://localhost:8080` allow-list | EP-7 | Open | Pending verification |
 | [REV-7.11](../reviews/shomei-servant-security-and-performance.md) | Low — `POST /v1/auth/login/passkey/begin` is unauthenticated, unthrottled, and writes a pending-ceremony row per call | EP-7 | Open | Pending verification |
 | [REV-7.12](../reviews/shomei-servant-security-and-performance.md) | Low — `refresh_token` grant responds with `"scope": ""` | EP-7 | Open | Pending verification |
-| [REV-7.13](../reviews/shomei-servant-security-and-performance.md) | Info — interop and shape. | EP-3 | Open | Pending verification |
+| [REV-7.13](../reviews/shomei-servant-security-and-performance.md) | Info — interop and shape. | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13. |
 | [REV-7.14](../reviews/shomei-servant-security-and-performance.md) | Info — performance. | EP-6 | Open | Pending verification |
 | [REV-7.15](../reviews/shomei-servant-security-and-performance.md) | Info — documentation. | EP-7 | Open | Pending verification |
-| [REV-7.16](../reviews/shomei-servant-security-and-performance.md) | Info — test coverage gaps. | EP-3 | Open | Pending verification |
+| [REV-7.16](../reviews/shomei-servant-security-and-performance.md) | Info — test coverage gaps. | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16. |
 | [REV-8.1](../reviews/shomei-server-security-and-performance.md) | High — an SMTP relay that rejects at the DATA stage persists the live one-time token. | EP-7 | Open | Pending verification |
 | [REV-8.2](../reviews/shomei-server-security-and-performance.md) | High — behind a reverse proxy the per-IP defences collapse into one bucket. | EP-7 | Open | Pending verification |
 | [REV-8.3](../reviews/shomei-server-security-and-performance.md) | High — the embedding entry point ships none of the runtime stack. | EP-7 | Open | Pending verification |
@@ -136,19 +136,19 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-2.20.1 | logout/reuse audit distinction | EP-4 | Open | Pending verification |
 | REV-2.20.2 | concurrent admin lifecycle winner-only audit | EP-4 | Open | Pending verification |
 | REV-2.20.3 | machine/delegated row-per-mint cost | EP-4 | Open | Pending verification |
-| REV-2.23.1 | actor object interoperability | EP-3 | Open | Pending verification |
-| REV-2.23.2 | PKCE verifier shape | EP-3 | Open | Pending verification |
+| REV-2.23.1 | actor object interoperability | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-2.23.1. |
+| REV-2.23.2 | PKCE verifier shape | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-2.23.2. |
 | REV-2.23.3 | refresh token diagnostic redaction | EP-7 | Open | Pending verification |
 | REV-2.23.4 | dead clone-warning branch | EP-5 | Open | Pending verification |
 | REV-2.23.5 | passkey count ceiling | EP-2 | Fixed | `3cf27a0`: PostgreSQL `passkey quota: eight database racers spend one final slot`, core workflow winner-only audit race, HTTP 409 assertion and config schema tests pass. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1`; ADR-21 preserves existing credentials under lowered limits. |
 | REV-2.23.6 | library suspended-account error distinction | EP-7 | Open | Pending verification |
-| REV-3.7.1 | strict list claims | EP-3 | Open | Pending verification |
-| REV-3.7.2 | single audience semantics | EP-3 | Open | Pending verification |
-| REV-3.7.3 | maximum exp minus iat | EP-3 | Open | Pending verification |
-| REV-3.7.4 | reserved nbf and jti | EP-3 | Open | Pending verification |
-| REV-3.9.1 | JWKS alg metadata | EP-3 | Open | Pending verification |
-| REV-3.9.2 | jti correlation disposition | EP-3 | Open | Pending verification |
-| REV-3.9.3 | public-key projection fails closed | EP-3 | Open | Pending verification |
+| REV-3.7.1 | strict list claims | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.7.1. |
+| REV-3.7.2 | single audience semantics | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.7.2. |
+| REV-3.7.3 | maximum exp minus iat | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.7.3. |
+| REV-3.7.4 | reserved nbf and jti | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.7.4. |
+| REV-3.9.1 | JWKS alg metadata | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.9.1. |
+| REV-3.9.2 | jti correlation disposition | EP-3 | Existing decision verified | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.9.2. |
+| REV-3.9.3 | public-key projection fails closed | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-3.9.3. |
 | REV-3.10.1 | alg none | EP-7 | Open | Pending verification |
 | REV-3.10.2 | HMAC with public key | EP-7 | Open | Pending verification |
 | REV-3.10.3 | RSA algorithm over EC key | EP-7 | Open | Pending verification |
@@ -174,24 +174,24 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-5.12.4 | database ceremony consume race | EP-4 | Open | Pending verification |
 | REV-5.12.5 | TOTP and passkey counter races | EP-4 | Open | Pending verification |
 | REV-5.12.6 | sweeper versus live rotation | EP-4 | Open | Pending verification |
-| REV-7.13.1 | case-insensitive bearer scheme and spacing | EP-3 | Open | Pending verification |
-| REV-7.13.2 | form-decoded Basic credentials | EP-3 | Open | Pending verification |
-| REV-7.13.3 | trusted-client consent policy | EP-3 | Open | Pending verification |
-| REV-7.13.4 | token-exchange discovery | EP-3 | Open | Pending verification |
-| REV-7.13.5 | refresh introspection without hint | EP-3 | Open | Pending verification |
-| REV-7.13.6 | missing credential challenge | EP-3 | Open | Pending verification |
-| REV-7.13.7 | capture parsing before authentication | EP-3 | Open | Pending verification |
-| REV-7.16.1 | Origin null | EP-3 | Open | Pending verification |
-| REV-7.16.2 | disallowed Origin and allowed Referer | EP-3 | Open | Pending verification |
-| REV-7.16.3 | HEAD and OPTIONS | EP-3 | Open | Pending verification |
-| REV-7.16.4 | OAuth token at bespoke refresh | EP-3 | Open | Pending verification |
-| REV-7.16.5 | cross-client revoke | EP-3 | Open | Pending verification |
-| REV-7.16.6 | lowercase bearer | EP-3 | Open | Pending verification |
-| REV-7.16.7 | invalid UTF-8 headers | EP-3 | Open | Pending verification |
-| REV-7.16.8 | chunked body cap | EP-3 | Open | Pending verification |
-| REV-7.16.9 | plain PKCE refusal | EP-3 | Open | Pending verification |
-| REV-7.16.10 | UserInfo scopes | EP-3 | Open | Pending verification |
-| REV-7.16.11 | freshness after refresh | EP-3 | Open | Pending verification |
+| REV-7.13.1 | case-insensitive bearer scheme and spacing | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.1. |
+| REV-7.13.2 | form-decoded Basic credentials | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.2. |
+| REV-7.13.3 | trusted-client consent policy | EP-3 | Existing decision verified | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.3. |
+| REV-7.13.4 | token-exchange discovery | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.4. |
+| REV-7.13.5 | refresh introspection without hint | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.5. |
+| REV-7.13.6 | missing credential challenge | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.6. |
+| REV-7.13.7 | capture parsing before authentication | EP-3 | Existing decision verified | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.13.7. |
+| REV-7.16.1 | Origin null | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.1. |
+| REV-7.16.2 | disallowed Origin and allowed Referer | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.2. |
+| REV-7.16.3 | HEAD and OPTIONS | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.3. |
+| REV-7.16.4 | OAuth token at bespoke refresh | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.4. |
+| REV-7.16.5 | cross-client revoke | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.5. |
+| REV-7.16.6 | lowercase bearer | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.6. |
+| REV-7.16.7 | invalid UTF-8 headers | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.7. |
+| REV-7.16.8 | chunked body cap | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.8. |
+| REV-7.16.9 | plain PKCE refusal | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.9. |
+| REV-7.16.10 | UserInfo scopes | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.10. |
+| REV-7.16.11 | freshness after refresh | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.11. |
 | REV-8.17.1 | atomic key activation | EP-6 | Open | Pending verification |
 | REV-8.17.2 | atomic key rewrap | EP-6 | Open | Pending verification |
 | REV-8.17.3 | multiple active keys fail closed | EP-6 | Open | Pending verification |
@@ -203,9 +203,9 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-8.17.9 | connection admission cap | EP-6 | Open | Pending verification |
 | REV-8.17.10 | explicit bind host | EP-6 | Open | Pending verification |
 | REV-10.7.1 | JWKS cache-control documentation | EP-6 | Open | Pending verification |
-| REV-10.7.2 | safe Authorization decoding | EP-3 | Open | Pending verification |
-| REV-10.7.3 | 401 Bearer challenge | EP-3 | Open | Pending verification |
-| REV-10.7.4 | skew and algorithm policy | EP-3 | Open | Pending verification |
+| REV-10.7.2 | safe Authorization decoding | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.2. |
+| REV-10.7.3 | 401 Bearer challenge | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.3. |
+| REV-10.7.4 | skew and algorithm policy | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.4. |
 
 ## Unnumbered costs and retained decisions
 
