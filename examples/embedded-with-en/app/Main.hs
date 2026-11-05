@@ -13,6 +13,7 @@ import Shomei.Server.Boot (HostBackgroundTasks (..), buildEnv, hostMiddleware, i
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 import Shomei.Server.Middleware.RateLimit (newRateLimiterFor)
 import Shomei.Server.Observability.Metrics (newMetrics)
+import Shomei.Server.Runtime (hostWarpSettings)
 import System.IO (hPutStrLn, stderr)
 
 main :: IO ()
@@ -28,5 +29,6 @@ main = do
   -- restarting the process resets all en state — say so in the README.
   tuples <- newIORef []
   hPutStrLn stderr ("[embedded-with-en] shomei auth mounted; en project schema compiled; listening on :" <> show settings.serverPort)
-  Warp.run settings.serverPort (hostMiddleware cfg settings limiter metrics (embeddedEnApplication env liveness readiness tuples))
+  warpSettings <- hostWarpSettings cfg settings Warp.defaultSettings
+  Warp.runSettings warpSettings (hostMiddleware cfg settings limiter metrics (embeddedEnApplication env liveness readiness tuples))
   stopHostBackgroundTasks backgroundTasks cfg.observabilityConfig.gracefulShutdownTimeoutSeconds

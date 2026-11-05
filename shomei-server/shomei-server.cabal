@@ -73,6 +73,7 @@ library
     Shomei.Server.Middleware.TrustedProxy
     Shomei.Server.Observability.Logging
     Shomei.Server.Observability.Metrics
+    Shomei.Server.Runtime
     Shomei.Server.Supervisor
 
   build-depends:
@@ -253,6 +254,7 @@ test-suite shomei-server-test
     Shomei.Server.E2ESpec
     Shomei.Server.MiddlewareSpec
     Shomei.Server.NotifySpec
+    Shomei.Server.RuntimeSpec
     Shomei.Server.SupervisorSpec
 
   ghc-options:

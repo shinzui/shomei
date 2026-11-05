@@ -12,6 +12,7 @@ import Shomei.Server.Boot (HostBackgroundTasks (..), buildEnv, hostMiddleware, i
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 import Shomei.Server.Middleware.RateLimit (newRateLimiterFor)
 import Shomei.Server.Observability.Metrics (newMetrics)
+import Shomei.Server.Runtime (hostWarpSettings)
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 
@@ -29,5 +30,6 @@ main = do
   wwwDir <- fromMaybe "www" <$> lookupEnv "SHOMEI_DEMO_WWW"
   hPutStrLn stderr ("[embedded-servant-app] listening on :" <> show settings.serverPort)
   hPutStrLn stderr ("[embedded-servant-app] serving demo assets from " <> wwwDir)
-  Warp.run settings.serverPort (hostMiddleware cfg settings limiter metrics (embeddedApplicationWith wwwDir env liveness readiness))
+  warpSettings <- hostWarpSettings cfg settings Warp.defaultSettings
+  Warp.runSettings warpSettings (hostMiddleware cfg settings limiter metrics (embeddedApplicationWith wwwDir env liveness readiness))
   stopHostBackgroundTasks backgroundTasks cfg.observabilityConfig.gracefulShutdownTimeoutSeconds

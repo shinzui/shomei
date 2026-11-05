@@ -39,6 +39,9 @@ dhallContents =
   "{ issuer = \"shomei-prod\""
     <> ", databaseUrl = \"host=fromfile dbname=shomei\""
     <> ", port = 8080"
+    <> ", bindHost = \"127.0.0.1\""
+    <> ", maxConnections = 32"
+    <> ", slowClientTimeoutSeconds = 12"
     <> ", dbPoolSize = 25"
     <> ", dbPoolAcquisitionTimeoutMs = 2500"
     <> ", dbStatementTimeoutMs = 5000"
@@ -72,6 +75,9 @@ poolDefaults = do
   unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   (_, settings) <- loadConfigFromEnv
+  settings.serverBindHost @?= "*4"
+  settings.serverMaxConnections @?= 1024
+  settings.serverSlowClientTimeoutSeconds @?= 30
   settings.serverDbPoolSize @?= 10
   settings.serverDbPoolAcquisitionTimeoutMs @?= 10000
   settings.serverDbStatementTimeoutMs @?= 30000
@@ -109,7 +115,7 @@ poolRejectsNonPositive = do
         expectUserErrorNaming key invalid
         unsetEnv key
     )
-    ["SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS", "SHOMEI_DB_TRANSACTION_DEADLINE_MS"]
+    ["SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS", "SHOMEI_DB_TRANSACTION_DEADLINE_MS", "SHOMEI_MAX_CONNECTIONS", "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS"]
   setEnv "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS" "2"
   setEnv "SHOMEI_DB_TRANSACTION_DEADLINE_MS" "250"
   (_, bounded) <- loadConfigFromEnv
@@ -322,6 +328,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   setEnv "SHOMEI_CONFIG" configPath
   setEnv "PG_CONNECTION_STRING" "host=fromenv dbname=shomei"
   unsetEnv "SHOMEI_PORT"
+  unsetEnv "SHOMEI_BIND_HOST"
+  unsetEnv "SHOMEI_MAX_CONNECTIONS"
+  unsetEnv "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS"
   unsetEnv "SHOMEI_ISSUER"
   unsetEnv "SHOMEI_WEBAUTHN_RP_ID"
   unsetEnv "SHOMEI_MFA_REQUIRE_SECOND_FACTOR"
@@ -336,6 +345,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   (cfg, settings) <- loadConfig
   -- File values beat the defaults (default maxFailedLoginsPerAccount is 5, metrics default True):
   settings.serverPort @?= 8080
+  settings.serverBindHost @?= "127.0.0.1"
+  settings.serverMaxConnections @?= 32
+  settings.serverSlowClientTimeoutSeconds @?= 12
   -- The pool knobs load from the file (defaults are 10 / 10000):
   settings.serverDbPoolSize @?= 25
   settings.serverDbPoolAcquisitionTimeoutMs @?= 2500
@@ -363,6 +375,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   cfg.machineTokenConfig.machineTokenTTL @?= 120
   -- An env var overrides the file's port:
   setEnv "SHOMEI_PORT" "9999"
+  setEnv "SHOMEI_BIND_HOST" "::1"
+  setEnv "SHOMEI_MAX_CONNECTIONS" "64"
+  setEnv "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS" "8"
   -- and the file's pool knobs (file says 25 / 2500):
   setEnv "SHOMEI_DB_POOL_SIZE" "33"
   setEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "2000"
@@ -374,6 +389,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   setEnv "SHOMEI_MACHINE_TOKEN_TTL" "60"
   (cfg2, settings2) <- loadConfig
   settings2.serverPort @?= 9999
+  settings2.serverBindHost @?= "::1"
+  settings2.serverMaxConnections @?= 64
+  settings2.serverSlowClientTimeoutSeconds @?= 8
   settings2.serverDbPoolSize @?= 33
   settings2.serverDbPoolAcquisitionTimeoutMs @?= 2000
   settings2.serverDbStatementTimeoutMs @?= 7000
@@ -400,6 +418,9 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   unsetEnv "SHOMEI_PASSWORD_MIN_LENGTH"
   unsetEnv "SHOMEI_CONFIG"
   unsetEnv "SHOMEI_PORT"
+  unsetEnv "SHOMEI_BIND_HOST"
+  unsetEnv "SHOMEI_MAX_CONNECTIONS"
+  unsetEnv "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS"
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"

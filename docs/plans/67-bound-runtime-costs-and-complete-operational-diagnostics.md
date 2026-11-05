@@ -45,7 +45,7 @@ Remove recurring OpenAPI encoding work and make operational behavior observable 
 
 
 - [x] (2026-11-05) M1: shared CachedJson response forces encoding once, preserves exact HTTP bytes/media type/schema, and passes schema plus actual HTTP tests. 1000 renderer calls allocate 2,945,392,000 bytes for the uncached baseline versus 32,000 cached bytes; [measurement](../review-remediation/openapi-allocations.txt). Haskell route consumers use cachedJsonValue; wire contract stays stable.
-- [ ] M2: shared host runtime exposes admission/bind policy and secret-free failure diagnostics.
+- [ ] M2: shared host runtime exposes admission/bind policy and secret-free failure diagnostics. Partial: shared Warp policy, real socket lifecycle/timeout/shutdown tests, strict synchronized config and overrides, status severity, entrypoint de-duplication, server/embedded builds and embedded suite pass. HIBP diagnostic acceptance remains.
 - [ ] M3: audit CLI identities and downstream actor/subject audit records work end to end.
 
 

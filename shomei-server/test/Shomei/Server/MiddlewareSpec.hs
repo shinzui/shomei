@@ -42,7 +42,7 @@ import Shomei.Server.ExceptionResponse (problemExceptionResponse)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterFor, newRateLimiterWith, takeToken, throttledPath)
 import Shomei.Server.Middleware.TrustedProxy (emptyTrustedProxies, parseTrustedProxies, trustedProxyMiddleware)
-import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, serverErrorLine)
+import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, responseLogLevel, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.IO (BufferMode (LineBuffering), hClose, hSetBuffering, openTempFile)
@@ -81,7 +81,9 @@ tests =
         ],
       testGroup
         "logging"
-        [ testRenderLogLineIsOneJsonLine,
+        [ testCase "request severity distinguishes 5xx, throttle and ordinary authentication failures" do
+            map responseLogLevel [200, 401, 403, 429, 500, 503] @?= ["info", "info", "info", "warn", "error", "error"],
+          testRenderLogLineIsOneJsonLine,
           testPlainFormatStripsControlCharacters,
           testConcurrentWritersProduceIntactLines,
           testServerErrorLineIsStructured,
@@ -396,6 +398,9 @@ testHostMiddlewareOrder = testCase "hostMiddleware refuses oversized bodies outs
       settings =
         ServerSettings
           { serverPort = 0,
+            serverBindHost = "127.0.0.1",
+            serverMaxConnections = 1024,
+            serverSlowClientTimeoutSeconds = 30,
             serverConnStr = "",
             serverTrustedProxies = emptyTrustedProxies,
             serverProxyProtocol = ProxyProtocolOff,

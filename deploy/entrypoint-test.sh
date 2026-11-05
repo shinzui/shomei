@@ -22,8 +22,7 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/shomei-admin" <<'STUB'
 #!/usr/bin/env sh
 case "$1 ${2:-}" in
-  "keys list") echo "kid=abc KeyActive" ;;
-  *) : ;;
+  *) echo "unexpected duplicate admin bootstrap" >&2; exit 99 ;;
 esac
 STUB
 # Prints the RTS arguments it was exec'd with, and whether GHCRTS leaked into its environment.

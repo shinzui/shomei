@@ -21,6 +21,7 @@ module Shomei.Server.Observability.Logging
     emitLine,
     logServerError,
     serverErrorLine,
+    responseLogLevel,
   )
 where
 
@@ -71,7 +72,7 @@ requestLoggingMiddleware cfg app req respond
 -- | The fields every line carries, in a stable order.
 lineFields :: ByteString -> Request -> Int -> Double -> [(Key, Value)]
 lineFields reqId req status durMs =
-  [ "level" .= ("info" :: Text),
+  [ "level" .= responseLogLevel status,
     "msg" .= ("request" :: Text),
     "request_id" .= decodeUtf8Lenient reqId,
     "method" .= decodeUtf8Lenient (requestMethod req),
@@ -154,3 +155,11 @@ resolveRequestId req =
 -- | The peer host as text (dotted-quad for IPv4), with the ephemeral port dropped.
 clientIp :: Request -> Text
 clientIp = clientIpText . remoteHost
+
+-- Ordinary authentication failures are attacker-triggerable and stay at info, avoiding
+-- warning floods. Availability failures and throttling need operational attention.
+responseLogLevel :: Int -> Text
+responseLogLevel status
+  | status >= 500 = "error"
+  | status == 429 = "warn"
+  | otherwise = "info"

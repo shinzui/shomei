@@ -137,6 +137,9 @@ testServerSettings :: Text -> ServerSettings
 testServerSettings connStr =
   ServerSettings
     { serverPort = 0,
+      serverBindHost = "127.0.0.1",
+      serverMaxConnections = 1024,
+      serverSlowClientTimeoutSeconds = 30,
       serverConnStr = connStr,
       serverTrustedProxies = emptyTrustedProxies,
       serverProxyProtocol = ProxyProtocolOff,

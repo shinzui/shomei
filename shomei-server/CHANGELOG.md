@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** ServerSettings gains bind host, finite connection limit (1024) and slow-client timeout (30 seconds). Standalone and embedded Warp hosts use shared `hostWarpSettings`; excess connections close immediately and all close paths restore capacity. Dhall/environment settings are synchronized.
+- Container entrypoint delegates migration and active-key bootstrap to shared server boot. Request severity is error for 5xx, warn for 429 and info otherwise.
+
 - **Breaking:** PostgreSQL assembly uses the managed `Shomei.Persistence.Pool.Postgres.Pool` and its `UsageError`, `use` and `release` operations. Interrupted/failed sessions discard their connection and restore capacity; the external pool dependency is removed.
 
 - Machine and delegated mints atomically enforce the configurable active principal ceiling (default 1000), preserving existing sessions after lowering the cap. Expiry frees capacity; finite sweeper retention bounds ordinary history by issuance rate and retention.

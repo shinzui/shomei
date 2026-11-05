@@ -11,6 +11,9 @@ let ConfigType =
       { issuer : Optional Text
       , audience : Optional Text
       , databaseUrl : Optional Text
+      , bindHost : Optional Text
+      , maxConnections : Optional Natural
+      , slowClientTimeoutSeconds : Optional Natural
       , port : Optional Natural
       , trustedProxies : Optional (List Text)
       , proxyProtocol : Optional Text
@@ -99,6 +102,9 @@ let default =
       { issuer = None Text
       , audience = None Text
       , databaseUrl = None Text
+      , bindHost = None Text
+      , maxConnections = None Natural
+      , slowClientTimeoutSeconds = None Natural
       , port = None Natural
       , trustedProxies = None (List Text)
       , proxyProtocol = None Text

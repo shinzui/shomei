@@ -80,13 +80,13 @@ import Shomei.Servant.Seam qualified as Seam
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
-import Shomei.Server.ExceptionResponse (problemExceptionResponse)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
 import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddleware)
 import Shomei.Server.Middleware.TrustedProxy (TrustedProxies, trustedProxyMiddleware, trustedProxyTexts)
-import Shomei.Server.Observability.Logging (logServerError, requestLoggingMiddleware)
+import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (Metrics, metricsEndpointMiddleware, metricsMiddleware, newMetrics)
+import Shomei.Server.Runtime (hostWarpSettings)
 import Shomei.Server.Supervisor (logJsonLine, supervisedLoop, supervisedLoopMicros)
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
 import Shomei.Time.Postgres (runClockIO)
@@ -157,23 +157,7 @@ main = do
         _ <- installHandler sigTERM (Signals.Catch (stop "SIGTERM")) Nothing
         _ <- installHandler sigINT (Signals.Catch (stop "SIGINT")) Nothing
         pure ()
-      -- An exception escaping a handler must land on stdout as a structured line, next to the
-      -- request lines, rather than as warp's default unstructured prose on stderr.
-      -- 'Warp.defaultShouldDisplayException' filters the routine ones (a client hanging up
-      -- mid-request is not an incident).
-      onServerException mreq e =
-        when (Warp.defaultShouldDisplayException e) (logServerError mreq e)
-      proxyProtocolSettings = case settings.serverProxyProtocol of
-        ProxyProtocolOff -> Warp.setProxyProtocolNone
-        ProxyProtocolRequired -> Warp.setProxyProtocolRequired
-      warpSettings =
-        Warp.setPort settings.serverPort
-          . Warp.setGracefulShutdownTimeout (Just obs.gracefulShutdownTimeoutSeconds)
-          . Warp.setServerName "shomei"
-          . Warp.setOnException onServerException
-          . Warp.setOnExceptionResponse problemExceptionResponse
-          . proxyProtocolSettings
-          $ Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings
+  warpSettings <- hostWarpSettings cfg settings (Warp.setInstallShutdownHandler installShutdown Warp.defaultSettings)
   hPutStrLn stderr ("[shomei] listening on :" <> show settings.serverPort)
   Warp.runSettings warpSettings (hostMiddleware cfg settings rl metrics (application env liveness readiness))
   stopHostBackgroundTasks backgroundTasks obs.gracefulShutdownTimeoutSeconds

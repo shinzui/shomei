@@ -8,6 +8,9 @@ in  Shomei::{
       databaseUrl = Some
         "host=localhost dbname=shomei user=shomei password=shomei"
     , port = Some 8080
+    , bindHost = Some "*4"
+    , maxConnections = Some 1024
+    , slowClientTimeoutSeconds = Some 30
     , publicBaseUrl = Some "http://localhost:8080"
     , -- Default "log" writes verification/reset links to the server log. Use "smtp" for a
       -- provider relay or "webhook" for a signed JSON POST; their secrets stay in the environment.

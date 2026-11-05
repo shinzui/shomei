@@ -18,6 +18,9 @@ but any value containing `:` must parse as a URI. The server validates both valu
 |---|---|---|
 | `PG_CONNECTION_STRING` | libpq connection string (required for the server) | — |
 | `SHOMEI_CONFIG` | path to a Dhall config file (optional) | unset |
+| `SHOMEI_BIND_HOST` | Warp bind host (`bindHost` in Dhall), non-empty; `*4` listens on all IPv4 addresses | `*4` |
+| `SHOMEI_MAX_CONNECTIONS` | accepted TCP connections per listener (`maxConnections`), positive | `1024` |
+| `SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS` | Warp slow-client/idle timeout (`slowClientTimeoutSeconds`), positive seconds | `30` |
 | `SHOMEI_PORT` | warp listen port | `8080` |
 | `SHOMEI_TRUSTED_PROXIES` | comma-separated proxy addresses or CIDR blocks whose `X-Forwarded-For` chain may supply client identity | empty (trust nobody) |
 | `SHOMEI_PROXY_PROTOCOL` | warp PROXY protocol v1 mode: `none` or `required` | `none` |
@@ -328,8 +331,8 @@ shomei-admin sweep [flags]                        # delete expired/dead rows onc
 ```
 
 A fresh deployment runbook: `migrate` → `keys generate` → `keys activate <kid>` → optionally
-`users create`. The container entrypoint (`deploy/entrypoint.sh`) does the first three
-automatically.
+`users create`. Shared server boot applies migrations and bootstraps the active key automatically. The container
+entrypoint delegates to that one sequence.
 
 `users create` reads the password from stdin by default (with echo disabled when stdin is a
 terminal), or from `--password-file PATH`. It removes one trailing line ending and refuses an
@@ -448,9 +451,8 @@ docker load < result             # loads shomei-server:latest
 ```
 
 `flake.module.nix` defines it with `dockerTools.buildLayeredImage` (the server, the admin CLI,
-and `dhall-to-json`). Its `deploy/entrypoint.sh` runs migrations, ensures an active signing key,
-computes container-aware GHC RTS options (see [GHC runtime options in
-containers](#ghc-runtime-options-in-containers)), then `exec`s the server so SIGTERM (e.g. on pod
+and `dhall-to-json`). Its `deploy/entrypoint.sh` computes container-aware GHC RTS options (see [GHC runtime options in
+containers](#ghc-runtime-options-in-containers)), then `exec`s the server, whose shared boot applies migrations and bootstraps keys once, so SIGTERM (e.g. on pod
 termination) reaches it; the server drains in-flight requests (up to
 `gracefulShutdownTimeoutSeconds`), closes the notifier queue and gives its queued/in-flight
 deliveries the same bounded drain window, then closes the connection pools and exits 0. A plain
@@ -632,3 +634,23 @@ Measure actual row/index bytes and sweep throughput for the deployment. A disabl
 sweeper permits history to grow indefinitely; the active ceiling is not an absolute disk cap.
 Preview the expired rows and their dependent tokens before changing retention, and retain the
 existing forensic window for refresh-token reuse detection when changing the shared policy.
+
+
+### TCP admission and embedding
+
+`hostWarpSettings cfg settings Warp.defaultSettings` is required by both standalone and embedded
+Warp hosts. It preserves the caller's shutdown-handler installation and applies the shared bind,
+admission, timeout, proxy and error policy. Call it once per listener and use its returned settings
+with `Warp.runSettings`. Hosts using another server must provide equivalent connection admission,
+close-on-rejection, disconnect/exception/shutdown cleanup and slow-client timeout.
+
+The default `*4` listens on every IPv4 interface; select `127.0.0.1` behind a local proxy when
+appropriate. The default 1024 cap counts admitted TCP connections, including idle keep-alive ones;
+it is separate from HTTP request concurrency, hashing permits and PostgreSQL pool capacity.
+Surplus sockets close promptly without waiting for capacity. Idle/slow clients can occupy all
+slots until their configured timeout, so configure per-client connection and request limits at the
+reverse proxy too. Size file-descriptor and memory budgets per listener and replica, monitor
+rejections, and reserve proxy headroom. Lowering a cap affects a newly assembled listener.
+
+Request logs use error for 5xx, warn for 429 and info for ordinary responses including 401/403.
+Authentication failures are attacker-triggerable; logging each at warning would create alert floods.

@@ -5,7 +5,7 @@ description: Hosts embedding Shomei install its background services and wrap the
 docId: ADR-17
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-28T01:58:26Z
+timestamp: 2026-11-05T17:03:09Z
 originatingPlan: docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md
 generated:
   by: openai-codex/gpt-5
@@ -40,6 +40,19 @@ The host creates the Shōmei limiter and metrics values, then wraps its whole WA
 request-ID and structured logging, HTTP metrics and the metrics endpoint, metered request-body cap,
 then per-client rate limiting. The mounted Shōmei routes and host-owned routes therefore share one
 edge policy and one resolved client identity.
+
+Warp hosts also call `hostWarpSettings` once for each listener. This shared assembly sets bind
+host (default `*4`, preserving all-IPv4 behavior), a finite admission cap (default 1024), and a
+slow-client/idle timeout (default 30 seconds), alongside the proxy, error and graceful-shutdown
+settings. Admission rejects surplus sockets immediately; it does not wait in a permit queue.
+Warp brackets open/close hooks even for rejected opens, so only admitted worker identities own
+permits. Disconnects, exceptions, timeouts and shutdown release their permits. The state tracks
+at most the configured admitted count. Connection admission is distinct from HTTP request
+concurrency and per-client proxy limits. A non-Warp host must implement the equivalent lifecycle.
+
+Shared `buildEnv` owns serialized idempotent migrations and active-key bootstrap for both host
+forms. The container entrypoint only sizes the RTS and execs the server; it must not repeat the
+same migration/key sequence. Explicit admin migration remains available for maintenance.
 
 The standalone executable consumes these same exported functions. It is the reference consumer,
 not a separate assembly with private protections.

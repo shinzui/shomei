@@ -84,6 +84,9 @@ import Text.Read (readMaybe)
 -- PostgreSQL exists. The pool is a server deployment concern exactly like the listen port.
 data ServerSettings = ServerSettings
   { serverPort :: !Int,
+    serverBindHost :: !Text,
+    serverMaxConnections :: !Int,
+    serverSlowClientTimeoutSeconds :: !Int,
     serverConnStr :: !Text,
     -- | socket peers allowed to supply X-Forwarded-For client identity
     serverTrustedProxies :: !TrustedProxies,
@@ -201,6 +204,9 @@ data FileConfig = FileConfig
     audience :: !(Maybe Text),
     databaseUrl :: !(Maybe Text),
     port :: !(Maybe Int),
+    bindHost :: !(Maybe Text),
+    maxConnections :: !(Maybe Int),
+    slowClientTimeoutSeconds :: !(Maybe Int),
     trustedProxies :: !(Maybe [Text]),
     proxyProtocol :: !(Maybe Text),
     -- | connections held open by the @hasql@ pool
@@ -362,6 +368,9 @@ baseDefaults =
     ( defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients"),
       ServerSettings
         { serverPort = 8080,
+          serverBindHost = "*4",
+          serverMaxConnections = 1024,
+          serverSlowClientTimeoutSeconds = 30,
           serverConnStr = "",
           serverTrustedProxies = emptyTrustedProxies,
           serverProxyProtocol = ProxyProtocolOff,
@@ -470,6 +479,9 @@ baseFromFile (Just fc) = do
       settings =
         ServerSettings
           { serverPort = fromMaybe 8080 fc.port,
+            serverBindHost = fromMaybe "*4" fc.bindHost,
+            serverMaxConnections = fromMaybe 1024 fc.maxConnections,
+            serverSlowClientTimeoutSeconds = fromMaybe 30 fc.slowClientTimeoutSeconds,
             serverConnStr = fromMaybe "" fc.databaseUrl,
             serverTrustedProxies = trustedProxiesFile,
             serverProxyProtocol = fromMaybe ProxyProtocolOff proxyProtocolFile,
@@ -532,6 +544,9 @@ overlayFromEnvBoth :: ShomeiConfig -> ServerSettings -> IO (ShomeiConfig, Server
 overlayFromEnvBoth baseCfg baseSettings = do
   connStr <- textEnv "PG_CONNECTION_STRING" baseSettings.serverConnStr
   portV <- intEnv "SHOMEI_PORT" baseSettings.serverPort
+  host <- textEnv "SHOMEI_BIND_HOST" baseSettings.serverBindHost
+  connections <- intEnv "SHOMEI_MAX_CONNECTIONS" baseSettings.serverMaxConnections
+  slowTimeout <- intEnv "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS" baseSettings.serverSlowClientTimeoutSeconds
   trustedProxyOverride <- trustedProxiesEnv
   trustedProxies <- maybe (pure baseSettings.serverTrustedProxies) parseTrustedProxyList trustedProxyOverride
   proxyProtocol <- proxyProtocolEnv baseSettings.serverProxyProtocol
@@ -559,6 +574,10 @@ overlayFromEnvBoth baseCfg baseSettings = do
   -- Validated after the overlay so a bad value fails the boot whichever layer supplied it.
   -- A zero-size pool deadlocks every request and a zero acquisition timeout fails every
   -- checkout, so neither is a survivable "disable" setting: refuse to start.
+  when (Text.null (Text.strip host)) (ioError (userError "SHOMEI_BIND_HOST (Dhall field bindHost) must be non-empty"))
+  requirePositive "SHOMEI_MAX_CONNECTIONS" "maxConnections" connections
+  requirePositive "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS" "slowClientTimeoutSeconds" slowTimeout
+  when (slowTimeout > maxBound `div` 1000000) (ioError (userError "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS is not representable in microseconds"))
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
   requireNonNegative "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "dbStatementTimeoutMs" statementTimeout
@@ -613,6 +632,9 @@ overlayFromEnvBoth baseCfg baseSettings = do
     ( cfg,
       ServerSettings
         { serverPort = portV,
+          serverBindHost = host,
+          serverMaxConnections = connections,
+          serverSlowClientTimeoutSeconds = slowTimeout,
           serverConnStr = connStr,
           serverTrustedProxies = trustedProxies,
           serverProxyProtocol = proxyProtocol,
