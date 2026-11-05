@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** database transactions use the bounded statement wrapper; session bulk revocation returns winning IDs and the audited unit of work returns a count. Administrative session HTTP listing returns a keyset page (default 50, maximum 200). Server transaction limits default to three attempts/five seconds.
+
 - Enforce finite new-write identity, display-name, passkey-label and role/scope budgets; preserve legacy identity authentication and snapshots. Login passwords over 256 code points fail before credential proof accounting. PostgreSQL adds migration 0039; see `docs/user/input-limits.md`.
 
 - **Breaking:** `SigningKeyConfig` gains `legacyActorUntilUnix` and `emitLegacyActor` for the

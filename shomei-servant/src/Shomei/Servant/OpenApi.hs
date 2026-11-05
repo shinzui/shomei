@@ -93,7 +93,7 @@ import Shomei.Servant.Result
     CsrfPreHandlerResponses,
     RateLimitPreHandlerResponses,
   )
-import Shomei.Session.Dto (LoginRequest, LoginResponse, RefreshRequest, SessionResponse, TokenPairResponse)
+import Shomei.Session.Dto (LoginRequest, LoginResponse, RefreshRequest, SessionPageCursor, SessionResponse, SessionsPage, TokenPairResponse)
 import Web.FormUrlEncoded (Form)
 
 -- servant-openapi-hs 5.1 understands MultiVerb and WithHeaders, but its released header
@@ -166,6 +166,11 @@ instance ToSchema ChangePasswordRequest where
 instance ToSchema TokenPairResponse
 
 instance ToSchema UserResponse
+
+instance ToSchema SessionsPage
+
+instance ToParamSchema SessionPageCursor where
+  toParamSchema _ = stringSchema & O.description ?~ "Opaque session keyset cursor from nextCursor."
 
 instance ToSchema SessionResponse
 

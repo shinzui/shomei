@@ -13,10 +13,10 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
-import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
 import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
 import Shomei.SigningKey.Domain (SigningKeyStatus (KeyActive), StoredSigningKey (..))
 import Shomei.SigningKey.Store (SigningKeyStore (..))

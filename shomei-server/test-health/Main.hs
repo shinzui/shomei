@@ -18,6 +18,7 @@ import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
+import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Prelude
 import Shomei.Server.App (Env (..), runAppIO)
@@ -110,6 +111,7 @@ buildTestEnv connectionString = do
   pure
     Env
       { envPool = pool,
+        envDbRetryPolicy = defaultTransactionRetryPolicy,
         envConfig = config,
         envKeys = keys,
         envKek = testKek,

@@ -44,12 +44,14 @@ Bound database work across retries and bulk operations while preserving exactly-
 ## Progress
 
 
-- [ ] M1: transaction retries terminate under attempt/time budgets and release usable pool connections.
-- [ ] M2: bulk session revoke is atomic with winner-only audit; listing and machine-session state are bounded.
+- [x] (2026-11-05) M1: three-attempt/five-second defaults, strict policy/configuration, rollback-safe SQLSTATE classification and abstract database-only statement wrapper. Forced retry states stop at three attempts; real lock timeout rolls back and returns a usable sole connection. Successive slow statements share a shrinking server budget.
+- [ ] M2: bulk session revoke is atomic with winner-only audit; listing and machine-session state are bounded. Bulk revocation and paging are accepted (2026-11-05): 10,000 sessions, injected audit rollback, eight database racers, fake winner audit race, default/cap/tied-key paging and actual HTTP page walk pass. Query-plan evidence justified migration 0040. Active machine/delegated quota and explicit retention acceptance remain.
 - [ ] M3: timestamp/clock/expiry consistency and real PostgreSQL race tests pass.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: FRIC-3 records a repeated 30-second result under a 100ms client timeout: Hasql cleanup drains results before cancellation. A server deadline shrunk before each prepared statement is required in addition to the outer monotonic deadline. The focused real-lock, rollback and reuse tests now pass.
 
 
 
@@ -57,11 +59,15 @@ Bound database work across retries and bulk operations while preserving exactly-
 
 ## Decision Log
 
+2026-11-05: ADR-23 records abstract database-only transactions, server-side shrinking statement budgets, winner-only bulk audit CTEs and stable session paging. The existing raw bulk statement now returns winners; audited bulk revocation consumes the same update inside SQL without building an application list.
+
 
 2026-10-28: Deliver the stated behavior with explicit upgrade and failure semantics; preserve established product policies unless an owner explicitly changes them. New risk acceptance is not a substitute for implementing a confirmed defect.
 
 
 ## Outcomes & Retrospective
+
+Checkpoint: `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites. M1 and bulk/paging parts of M2 pass, including actual caller cancellation, shrinking per-statement budgets and settings reset. FRIC-3 remains logged with the tested workaround; registry/tag/released-source verification confirms that upgrading to current Hasql 2.0.1.0 would retain the cleanup limitation. Machine/delegated issuance and the remaining M3 evidence are still required.
 
 
 

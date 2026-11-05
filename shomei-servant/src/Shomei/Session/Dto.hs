@@ -5,6 +5,10 @@ module Shomei.Session.Dto
     LoginResponse (..),
     RefreshRequest (..),
     SessionResponse (..),
+    SessionsPage (..),
+    SessionPageCursor (..),
+    encodeSessionCursor,
+    decodeSessionCursor,
     tokenPairToResponse,
     loginResultToResponse,
     sessionToResponse,
@@ -16,15 +20,18 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (Parser)
 import Data.Maybe (catMaybes)
 import Data.Text qualified as Text
-import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
+import Data.UUID qualified as UUID
 import Shomei.Account.User.Dto (UserResponse, userToResponse)
 import Shomei.Config (ShomeiConfig (..), transportIncludesBodyTokens)
-import Shomei.Id (idText)
+import Shomei.Id (idText, sessionIdFromUUID, sessionIdToUUID)
 import Shomei.Prelude
 import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
 import Shomei.Session.RefreshToken.Domain (RefreshToken (..))
+import Shomei.Session.Store (SessionCursor (..))
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
+import Web.HttpApiData (FromHttpApiData (..), ToHttpApiData (..))
 
 data TokenPairResponse = TokenPairResponse
   { accessToken :: !(Maybe Text),
@@ -146,3 +153,29 @@ sessionToResponse session =
       SessionActive -> "active"
       SessionRevoked -> "revoked"
       SessionExpired -> "expired"
+
+data SessionsPage = SessionsPage
+  { sessions :: ![SessionResponse],
+    nextCursor :: !(Maybe Text)
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+newtype SessionPageCursor = SessionPageCursor {sessionCursor :: SessionCursor}
+  deriving stock (Eq, Show)
+
+instance FromHttpApiData SessionPageCursor where
+  parseUrlPiece value = maybe (Left "invalid session cursor") (Right . SessionPageCursor) (decodeSessionCursor value)
+
+instance ToHttpApiData SessionPageCursor where
+  toUrlPiece = encodeSessionCursor . (.sessionCursor)
+
+encodeSessionCursor :: SessionCursor -> Text
+encodeSessionCursor cursor = Text.pack (iso8601Show cursor.cursorCreatedAt) <> ";" <> UUID.toText (sessionIdToUUID cursor.cursorSessionId)
+
+decodeSessionCursor :: Text -> Maybe SessionCursor
+decodeSessionCursor value = case Text.breakOn ";" value of
+  (timestamp, rest)
+    | Just identifier <- Text.stripPrefix ";" rest ->
+        SessionCursor <$> iso8601ParseM (Text.unpack timestamp) <*> (sessionIdFromUUID <$> UUID.fromText identifier)
+  _ -> Nothing

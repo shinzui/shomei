@@ -30,6 +30,8 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_LOCKOUT_DURATION_SECONDS` | account lockout duration after the threshold is reached; must be positive | `900` |
 | `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
+| `SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS` | maximum whole transaction attempts; only serialization failures/deadlocks retry; positive | `3` |
+| `SHOMEI_DB_TRANSACTION_DEADLINE_MS` | total transaction budget including checkout and backoff; positive, at most 2147483647 ms | `5000` |
 | `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
@@ -576,3 +578,25 @@ never takes the server down, and `GET /health/live` keeps answering throughout.
 
 `.github/workflows/ci.yaml` runs `cabal build all`, `cabal test all`, and
 `nix fmt -- --fail-on-change` on every push and pull request, all inside the Nix dev shell.
+
+### Transaction deadlines and administrative session pages
+
+Transactions have a finite total deadline and attempt budget. Their statements receive a
+shrinking PostgreSQL statement timeout, so query cancellation and rollback remain bounded
+under lock contention. A stricter pool statement timeout still wins. Connection failures and
+uncertain commit outcomes never replay. Embedding hosts can use `runDatabasePoolWith`; the
+ordinary interpreter and admin CLI retain the three-attempt/five-second defaults. Dhall fields
+`dbTransactionMaxAttempts` and `dbTransactionDeadlineMs` configure the server equivalents.
+
+Administrative session listing now returns `{"sessions": [...], "nextCursor": ...}`. Use
+`?limit=50` and pass `nextCursor` as the URL-encoded `before` query parameter. The default is 50
+and the maximum is 200, with stable timestamp-plus-ID ordering. The unbounded library
+`listSessionsForUser` remains for compatibility and must not be used for request handlers.
+Migration 0040 builds the ordered per-user session index. Schedule index construction in the
+deployment migration window for large tables; it is transactional. The 10,000-row EXPLAIN
+fixture removed the top-N sort and reduced the measured page scan from 154 to 51 buffer hits
+(see `docs/review-remediation/session-query-plan.txt`); timings are local fixture evidence.
+
+Bulk administrative revocation performs one SQL operation and returns the actual winner count
+to library callers. Session transitions, refresh-token revocation and winner audit rows commit
+together; repeated/concurrent requests do not duplicate events.

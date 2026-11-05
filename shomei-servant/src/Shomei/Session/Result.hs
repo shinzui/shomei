@@ -18,7 +18,7 @@ module Shomei.Session.Result
 where
 
 import Shomei.Servant.Result
-import Shomei.Session.Dto (LoginResponse, SessionResponse, TokenPairResponse)
+import Shomei.Session.Dto (LoginResponse, SessionResponse, SessionsPage, TokenPairResponse)
 
 type LoginResponses = ApplicationCookieResponses 200 "Authenticated" LoginResponse
 
@@ -36,9 +36,9 @@ type CurrentSessionResponses = ApplicationResponses 200 "Current session" Sessio
 
 type CurrentSessionResult = ApplicationResult SessionResponse
 
-type ListSessionsResponses = ApplicationResponses 200 "Sessions" [SessionResponse]
+type ListSessionsResponses = ApplicationResponses 200 "Sessions" SessionsPage
 
-type ListSessionsResult = ApplicationResult [SessionResponse]
+type ListSessionsResult = ApplicationResult SessionsPage
 
 type RevokeSessionsResponses = ApplicationEmptyResponses 204 "Sessions revoked"
 

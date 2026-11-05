@@ -197,7 +197,7 @@ import Shomei.Session.RefreshToken.Domain
     RefreshTokenStatus (..),
   )
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore (..))
-import Shomei.Session.Store (SessionStore (..))
+import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore (..), clampSessionLimit)
 import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.Session.Token.Generator (TokenGen (..))
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork (..), NewSessionToken (..), RotationOutcome (..))
@@ -433,14 +433,22 @@ runSessionStore ref = interpret_ \case
     liftIO (modifyWorld ref (#sessions %~ Map.adjust (revoke t) sid))
   RevokeAllUserSessions uid t ->
     liftIO
-      ( modifyWorld
-          ref
-          (#sessions %~ Map.map (\s -> if s.userId == uid then revoke t s else s))
+      ( atomicModifyIORef' ref \w ->
+          let winners = [s.sessionId | s <- Map.elems w.sessions, s.userId == uid, s.status == SessionActive]
+           in (w & #sessions %~ Map.map (\s -> if s.userId == uid then revoke t s else s), winners)
       )
+  ListSessionPage uid query -> liftIO do
+    w <- readIORef ref
+    let before s = case query.queryBefore of
+          Nothing -> True
+          Just cursor -> (s.createdAt, sessionIdToUUID s.sessionId) < (cursor.cursorCreatedAt, sessionIdToUUID cursor.cursorSessionId)
+    pure (take (clampSessionLimit query.queryLimit) (filter before (sessionsOf uid w)))
   ListSessionsForUser uid ->
     liftIO (sessionsOf uid <$> readIORef ref)
   where
-    revoke t s = s & #status .~ SessionRevoked & #revokedAt .~ Just t
+    revoke t s
+      | s.status == SessionActive = s & #status .~ SessionRevoked & #revokedAt .~ Just t
+      | otherwise = s
     sessionsOf uid w =
       sortOn (Down . \s -> (s.createdAt, sessionIdToUUID s.sessionId)) [s | s <- Map.elems w.sessions, s.userId == uid]
 
@@ -685,6 +693,22 @@ runAuthUnitOfWork ref = interpret_ \case
                 %~ Map.map (revokeUserRefreshToken userSessions uid ts)
                 & #publishedEvents
                 %~ (reverse events <>)
+      )
+  RevokeUserSessionsWithAudit actor uid ts ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          let winners = [s | s <- Map.elems w.sessions, s.userId == uid, s.status == SessionActive]
+              ids = Set.fromList (map (.sessionId) winners)
+              events = [Event.SessionRevoked (Event.SessionRevokedData s.sessionId (Just actor) ts) | s <- winners]
+           in ( w
+                  & #sessions
+                  %~ Map.map (revokeUserSession uid ts)
+                  & #refreshTokens
+                  %~ Map.map (\tok -> if tok.sessionId `Set.member` ids then tok & #status .~ RefreshTokenRevoked & #revokedAt .~ Just ts else tok)
+                  & #publishedEvents
+                  %~ (reverse events <>),
+                length winners
+              )
       )
   RevokeSessionWithTokens sid ts events ->
     liftIO

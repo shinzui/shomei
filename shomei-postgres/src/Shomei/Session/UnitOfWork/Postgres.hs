@@ -17,13 +17,20 @@ module Shomei.Session.UnitOfWork.Postgres
   )
 where
 
+import Contravariant.Extras (contrazip3)
+import Data.Aeson (Value, object)
+import Data.Aeson qualified as Aeson
 import Data.Foldable (traverse_)
+import Data.Int (Int64)
 import Data.Set qualified as Set
+import Data.UUID (UUID)
 import Data.UUID.V4 qualified as UUIDv4
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
-import Hasql.Transaction qualified as Tx
+import Hasql.Decoders qualified as D
+import Hasql.Encoders qualified as E
+import Hasql.Statement (Statement, preparable)
 import Shomei.Account.Credential.Postgres (updatePasswordHashStmt)
 import Shomei.Account.Password.Domain (PasswordHash (..))
 import Shomei.Account.PasswordReset.Postgres qualified as PR
@@ -43,12 +50,14 @@ import Shomei.Id
   )
 import Shomei.Persistence.Codec.Postgres (refreshTokenStatusToText, sessionKindToText, sessionStatusToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
 import Shomei.Session.Domain (Session (..), SessionStatus (SessionActive))
 import Shomei.Session.Postgres
   ( SessionRow,
     insertSessionStmt,
     mkSession,
+    revokeAllUserSessionsSql,
     revokeAllUserSessionsStmt,
     revokeSessionStmt,
   )
@@ -115,7 +124,7 @@ runAuthUnitOfWorkPostgres = interpret_ \case
         Nothing -> pure False
         Just _ -> do
           Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
-          Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
+          _ <- Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
           Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
           -- The consumed token is no longer active, so this revokes only its live siblings.
           Tx.statement (userIdToUUID uid, ts) PR.revokeUserTokensStmt
@@ -125,10 +134,14 @@ runAuthUnitOfWorkPostgres = interpret_ \case
     eventRows <- traverse toEventRow events
     res <- runTransaction do
       Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
-      Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
+      _ <- Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
       Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
       traverse_ (\row -> Tx.statement row insertAuthEventStmt) eventRows
     either dbFail pure res
+  RevokeUserSessionsWithAudit actor uid ts -> do
+    let payload = object ["revokedBy" Aeson..= actor, "occurredAt" Aeson..= ts]
+    res <- runTransaction (Tx.statement (userIdToUUID uid, ts, payload) revokeUserSessionsWithAuditStmt)
+    either dbFail (pure . fromIntegral) res
   RevokeSessionWithTokens sid ts events -> do
     eventRows <- traverse toEventRow events
     res <- runTransaction do
@@ -185,3 +198,26 @@ tokenRow rid nrt =
     Nothing,
     Nothing
   )
+
+-- Winners and audit payloads remain inside PostgreSQL: the application receives one count.
+-- A bulk revocation's event UUID is the unique session UUID; each session has at most one
+-- active→revoked winner. All other event writers allocate UUIDv4 keys independently.
+revokeUserSessionsWithAuditStmt :: Statement (UUID, UTCTime, Value) Int64
+revokeUserSessionsWithAuditStmt =
+  preparable
+    ( "WITH winners AS ("
+        <> revokeAllUserSessionsSql
+        <> """
+           ), tokens AS (
+             UPDATE shomei.shomei_refresh_tokens SET status = 'revoked', revoked_at = $2
+             WHERE session_id IN (SELECT session_id FROM winners) AND status <> 'revoked'
+           ), events AS (
+             INSERT INTO shomei.shomei_auth_events(event_id, user_id, session_id, event_type, payload, created_at)
+             SELECT session_id, NULL, session_id, 'session_revoked',
+               $3::jsonb || jsonb_build_object('sessionId', session_id::text), $2 FROM winners
+             RETURNING event_id
+           ) SELECT count(*) FROM events
+           """
+    )
+    (contrazip3 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)) (E.param (E.nonNullable E.jsonb)))
+    (D.singleRow (D.column (D.nonNullable D.int8)))

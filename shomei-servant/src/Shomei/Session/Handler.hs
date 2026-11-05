@@ -44,11 +44,12 @@ import Shomei.Session.Command
     LogoutCommand (..),
     RefreshCommand (..),
   )
+import Shomei.Session.Domain (Session (..))
 import Shomei.Session.Dto
 import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
 import Shomei.Session.RefreshToken.Domain (RefreshToken (..))
 import Shomei.Session.Result
-import Shomei.Session.Store (findSessionById, listSessionsForUser)
+import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), clampSessionLimit, findSessionById, listSessionPage)
 
 sessionServer :: Env -> SessionApi (AsServerT Handler)
 sessionServer env =
@@ -116,10 +117,15 @@ currentSessionH env user = runApplicationHandler do
   found <- port env (findSessionById user.authSessionId)
   maybe (rejectProblem pcSessionNotFound noProblemOccurrence) (pure . sessionToResponse) found
 
-adminListSessionsH :: Env -> AuthUser -> UserId -> Handler ListSessionsResult
-adminListSessionsH env _ target = runApplicationHandler do
+adminListSessionsH :: Env -> AuthUser -> UserId -> Maybe Int -> Maybe SessionPageCursor -> Handler ListSessionsResult
+adminListSessionsH env _ target limit cursor = runApplicationHandler do
   _ <- requireExistingUser env target
-  map sessionToResponse <$> port env (listSessionsForUser target)
+  let pageSize = clampSessionLimit (fromMaybe 50 limit)
+  rows <- port env (listSessionPage target (SessionListQuery pageSize ((.sessionCursor) <$> cursor)))
+  let nextCursor = case reverse rows of
+        lastRow : _ | length rows == pageSize -> Just (encodeSessionCursor (SessionCursor lastRow.createdAt lastRow.sessionId))
+        _ -> Nothing
+  pure (SessionsPage (map sessionToResponse rows) nextCursor)
 
 adminRevokeSessionsH :: Env -> AuthUser -> UserId -> Handler RevokeSessionsResult
 adminRevokeSessionsH env actor target = runApplicationHandler do

@@ -95,6 +95,8 @@ data ServerSettings = ServerSettings
     serverDbPoolAcquisitionTimeoutMs :: !Int,
     -- | PostgreSQL statement and idle-in-transaction timeout installed on every connection
     serverDbStatementTimeoutMs :: !Int,
+    serverDbTransactionMaxAttempts :: !Int,
+    serverDbTransactionDeadlineMs :: !Int,
     -- | bounded in-memory notification queue capacity
     serverNotifierQueueSize :: !Int,
     -- | non-fatal configuration posture warnings printed by the standalone boot path
@@ -207,6 +209,8 @@ data FileConfig = FileConfig
     dbPoolAcquisitionTimeoutMs :: !(Maybe Int),
     -- | maximum statement or idle-in-transaction duration; zero disables both
     dbStatementTimeoutMs :: !(Maybe Int),
+    dbTransactionMaxAttempts :: !(Maybe Int),
+    dbTransactionDeadlineMs :: !(Maybe Int),
     -- | run the background expired-data sweeper in-process
     sweepEnabled :: !(Maybe Bool),
     sweepIntervalSeconds :: !(Maybe Int),
@@ -363,6 +367,8 @@ baseDefaults =
           serverDbPoolSize = defaultDbPoolSize,
           serverDbPoolAcquisitionTimeoutMs = defaultDbPoolAcquisitionTimeoutMs,
           serverDbStatementTimeoutMs = defaultDbStatementTimeoutMs,
+          serverDbTransactionMaxAttempts = 3,
+          serverDbTransactionDeadlineMs = 5000,
           serverNotifierQueueSize = defaultNotifierQueueSize,
           serverWarnings = [],
           serverSweep = defaultSweepSettings,
@@ -470,6 +476,8 @@ baseFromFile (Just fc) = do
               fromMaybe defaultDbPoolAcquisitionTimeoutMs fc.dbPoolAcquisitionTimeoutMs,
             serverDbStatementTimeoutMs =
               fromMaybe defaultDbStatementTimeoutMs fc.dbStatementTimeoutMs,
+            serverDbTransactionMaxAttempts = fromMaybe 3 fc.dbTransactionMaxAttempts,
+            serverDbTransactionDeadlineMs = fromMaybe 5000 fc.dbTransactionDeadlineMs,
             serverNotifierQueueSize = fromMaybe defaultNotifierQueueSize fc.notifierQueueSize,
             serverWarnings = [],
             serverSweep = mergeSweep defaultSweepSettings fc,
@@ -528,6 +536,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
   poolSize <- intEnv "SHOMEI_DB_POOL_SIZE" baseSettings.serverDbPoolSize
   poolTimeout <- intEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" baseSettings.serverDbPoolAcquisitionTimeoutMs
   statementTimeout <- intEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" baseSettings.serverDbStatementTimeoutMs
+  transactionAttempts <- intEnv "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS" baseSettings.serverDbTransactionMaxAttempts
+  transactionDeadline <- intEnv "SHOMEI_DB_TRANSACTION_DEADLINE_MS" baseSettings.serverDbTransactionDeadlineMs
   notifierQueueSize <- intEnv "SHOMEI_NOTIFIER_QUEUE_SIZE" baseSettings.serverNotifierQueueSize
   sweep <- overlaySweepFromEnv baseSettings.serverSweep
   argon2 <- overlayArgon2FromEnv baseSettings.serverArgon2
@@ -550,6 +560,9 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
   requireNonNegative "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "dbStatementTimeoutMs" statementTimeout
+  requirePositive "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS" "dbTransactionMaxAttempts" transactionAttempts
+  requirePositive "SHOMEI_DB_TRANSACTION_DEADLINE_MS" "dbTransactionDeadlineMs" transactionDeadline
+  when (transactionDeadline > min 2147483647 (maxBound `div` 1000)) (ioError (userError "SHOMEI_DB_TRANSACTION_DEADLINE_MS is not representable"))
   requirePositive "SHOMEI_NOTIFIER_QUEUE_SIZE" "notifierQueueSize" notifierQueueSize
   -- A zero interval would spin the sweeper; a zero batch size would make it delete nothing
   -- forever. Neither is a survivable "disable" setting — sweepEnabled=false is.
@@ -604,6 +617,8 @@ overlayFromEnvBoth baseCfg baseSettings = do
           serverDbPoolSize = poolSize,
           serverDbPoolAcquisitionTimeoutMs = poolTimeout,
           serverDbStatementTimeoutMs = statementTimeout,
+          serverDbTransactionMaxAttempts = transactionAttempts,
+          serverDbTransactionDeadlineMs = transactionDeadline,
           serverNotifierQueueSize = notifierQueueSize,
           serverWarnings = warnings,
           serverSweep = sweep,

@@ -35,14 +35,13 @@ import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Session.Domain (Session (..), SessionStatus (..))
+import Shomei.Session.Domain (Session (..))
 import Shomei.Session.Store
   ( SessionStore,
     findSessionById,
-    listSessionsForUser,
     revokeAllUserSessions,
-    revokeSession,
   )
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, revokeSessionWithTokens, revokeUserSessionsWithAudit)
 import Shomei.Time.Store (Clock, now)
 
 -- | Suspend an active user and kill their sessions.
@@ -63,7 +62,7 @@ suspendUser ::
   Eff es (Either AuthError ())
 suspendUser actingAdmin target =
   transition target [UserActive] UserSuspended \ts -> do
-    revokeAllUserSessions target ts
+    void (revokeAllUserSessions target ts)
     publishAuthEvent (Event.UserSuspended (Event.UserSuspendedData target (Just actingAdmin) ts))
 
 -- | Return a suspended user to service. Their sessions stay revoked; they log in again.
@@ -84,7 +83,7 @@ deleteUser ::
   Eff es (Either AuthError ())
 deleteUser actingAdmin target =
   transition target [UserActive, UserSuspended] UserDeleted \ts -> do
-    revokeAllUserSessions target ts
+    void (revokeAllUserSessions target ts)
     publishAuthEvent (Event.UserDeleted (Event.UserDeletedData target (Just actingAdmin) ts))
 
 -- | Look the target up, check it is in one of @allowed@, move it to @newStatus@, and run
@@ -115,22 +114,17 @@ transition target allowed newStatus after = do
 -- number of sessions this call actually ended and the audit trail carries no duplicate
 -- revocations for a session that was already dead.
 revokeUserSessions ::
-  (SessionStore :> es, AuthEventPublisher :> es, Clock :> es) =>
+  (AuthUnitOfWork :> es, Clock :> es) =>
   UserId ->
   UserId ->
   Eff es (Either AuthError Int)
 revokeUserSessions actingAdmin target = do
-  sessions <- listSessionsForUser target
   ts <- now
-  let active = [s | s <- sessions, s.status == SessionActive]
-  forM_ active \s -> do
-    revokeSession s.sessionId ts
-    publishAuthEvent (Event.SessionRevoked (Event.SessionRevokedData s.sessionId (Just actingAdmin) ts))
-  pure (Right (length active))
+  Right <$> revokeUserSessionsWithAudit actingAdmin target ts
 
 -- | Revoke one session by id, whoever owns it.
 revokeOneSession ::
-  (SessionStore :> es, AuthEventPublisher :> es, Clock :> es) =>
+  (SessionStore :> es, AuthUnitOfWork :> es, Clock :> es) =>
   UserId ->
   SessionId ->
   Eff es (Either AuthError ())
@@ -140,6 +134,5 @@ revokeOneSession actingAdmin sid = do
     Nothing -> pure (Left SessionNotFound)
     Just _ -> do
       ts <- now
-      revokeSession sid ts
-      publishAuthEvent (Event.SessionRevoked (Event.SessionRevokedData sid (Just actingAdmin) ts))
+      void (revokeSessionWithTokens sid ts [Event.SessionRevoked (Event.SessionRevokedData sid (Just actingAdmin) ts)])
       pure (Right ())

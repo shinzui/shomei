@@ -86,11 +86,14 @@
                 "type": "object"
             },
             "ChangePasswordRequest": {
+                "description": "Password values have a hard maximum of 256 Unicode code points.",
                 "properties": {
                     "currentPassword": {
+                        "maxLength": 256,
                         "type": "string"
                     },
                     "newPassword": {
+                        "maxLength": 256,
                         "type": "string"
                     }
                 },
@@ -112,8 +115,10 @@
                 "type": "object"
             },
             "ConfirmPasswordResetRequest": {
+                "description": "New password policy has a hard maximum of 256 Unicode code points.",
                 "properties": {
                     "newPassword": {
+                        "maxLength": 256,
                         "type": "string"
                     },
                     "token": {
@@ -127,12 +132,17 @@
                 "type": "object"
             },
             "LoginRequest": {
+                "description": "Legacy login identifiers may exceed the new-write limit. Oversized passwords are rejected before credential lookup or proof accounting.",
                 "properties": {
                     "loginId": {
                         "type": "string"
                     },
                     "password": {
+                        "maxLength": 256,
                         "type": "string"
+                    },
+                    "remember": {
+                        "type": "boolean"
                     }
                 },
                 "required": [
@@ -197,6 +207,9 @@
                     },
                     "proof": {
                         "$ref": "#/components/schemas/MfaProof"
+                    },
+                    "remember": {
+                        "type": "boolean"
                     }
                 },
                 "required": [
@@ -303,6 +316,9 @@
                     },
                     "ceremonyId": {
                         "type": "string"
+                    },
+                    "remember": {
+                        "type": "boolean"
                     }
                 },
                 "required": [
@@ -327,6 +343,7 @@
                 "type": "object"
             },
             "PasskeyRegisterCompleteRequest": {
+                "description": "Passkey labels are limited to 128 Unicode code points.",
                 "properties": {
                     "ceremonyId": {
                         "type": "string"
@@ -335,6 +352,7 @@
                         "$ref": "#/components/schemas/AnyValue"
                     },
                     "label": {
+                        "maxLength": 128,
                         "type": "string"
                     }
                 },
@@ -505,18 +523,39 @@
                 ],
                 "type": "object"
             },
+            "SessionsPage": {
+                "properties": {
+                    "nextCursor": {
+                        "type": "string"
+                    },
+                    "sessions": {
+                        "items": {
+                            "$ref": "#/components/schemas/SessionResponse"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "sessions"
+                ],
+                "type": "object"
+            },
             "SignupRequest": {
+                "description": "New email addresses are limited to 254 UTF-8 bytes; limits apply before and after normalization.",
                 "properties": {
                     "displayName": {
+                        "maxLength": 256,
                         "type": "string"
                     },
                     "email": {
                         "type": "string"
                     },
                     "loginId": {
+                        "maxLength": 256,
                         "type": "string"
                     },
                     "password": {
+                        "maxLength": 256,
                         "type": "string"
                     }
                 },
@@ -554,6 +593,9 @@
                     },
                     "refreshToken": {
                         "type": "string"
+                    },
+                    "remembered": {
+                        "type": "boolean"
                     }
                 },
                 "required": [
@@ -3961,6 +4003,25 @@
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    {
+                        "in": "query",
+                        "name": "limit",
+                        "required": false,
+                        "schema": {
+                            "maximum": 9223372036854775807,
+                            "minimum": -9223372036854775808,
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "in": "query",
+                        "name": "before",
+                        "required": false,
+                        "schema": {
+                            "description": "Opaque session keyset cursor from nextCursor.",
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -3968,18 +4029,12 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "items": {
-                                        "$ref": "#/components/schemas/SessionResponse"
-                                    },
-                                    "type": "array"
+                                    "$ref": "#/components/schemas/SessionsPage"
                                 }
                             },
                             "application/json;charset=utf-8": {
                                 "schema": {
-                                    "items": {
-                                        "$ref": "#/components/schemas/SessionResponse"
-                                    },
-                                    "type": "array"
+                                    "$ref": "#/components/schemas/SessionsPage"
                                 }
                             }
                         },
@@ -3993,7 +4048,7 @@
                                 }
                             }
                         },
-                        "description": "Bad request"
+                        "description": "Bad request or `before` or `limit`"
                     },
                     "401": {
                         "content": {

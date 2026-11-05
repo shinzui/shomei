@@ -16,6 +16,8 @@ let ConfigType =
       , proxyProtocol : Optional Text
       , dbPoolSize : Optional Natural
       , dbPoolAcquisitionTimeoutMs : Optional Natural
+      , dbTransactionMaxAttempts : Optional Natural
+      , dbTransactionDeadlineMs : Optional Natural
       , dbStatementTimeoutMs : Optional Natural
       , sweepEnabled : Optional Bool
       , sweepIntervalSeconds : Optional Natural
@@ -101,6 +103,8 @@ let default =
       , proxyProtocol = None Text
       , dbPoolSize = None Natural
       , dbPoolAcquisitionTimeoutMs = None Natural
+      , dbTransactionMaxAttempts = None Natural
+      , dbTransactionDeadlineMs = None Natural
       , dbStatementTimeoutMs = None Natural
       , sweepEnabled = None Bool
       , sweepIntervalSeconds = None Natural

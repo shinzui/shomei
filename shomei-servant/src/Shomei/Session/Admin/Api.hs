@@ -14,9 +14,10 @@ import Shomei.Prelude
 import Shomei.Servant.Authz (RequireAdmin)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses)
 import Shomei.Servant.Result (ApplicationContentTypes, BadRequestPreHandlerResponses)
+import Shomei.Session.Dto (SessionPageCursor)
 import Shomei.Session.Result
 
-type ListSessionsRoute = "users" :> RequireAdmin :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "userId" UserId :> "sessions" :> MultiVerb 'GET ApplicationContentTypes ListSessionsResponses ListSessionsResult
+type ListSessionsRoute = "users" :> RequireAdmin :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "userId" UserId :> "sessions" :> QueryParam "limit" Int :> QueryParam "before" SessionPageCursor :> MultiVerb 'GET ApplicationContentTypes ListSessionsResponses ListSessionsResult
 
 type RevokeSessionsRoute = "users" :> RequireAdmin :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "userId" UserId :> "sessions" :> MultiVerb 'DELETE ApplicationContentTypes RevokeSessionsResponses RevokeSessionsResult
 

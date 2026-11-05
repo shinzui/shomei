@@ -37,3 +37,4 @@
 0037-remembered-sessions.sql
 0038-add-totp-envelope-version.sql
 0039-enforce-new-field-budgets.sql
+0040-add-session-keyset-index.sql

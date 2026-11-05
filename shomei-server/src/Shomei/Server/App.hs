@@ -61,7 +61,7 @@ import Shomei.Passkey.Ceremony.Postgres (runPendingCeremonyStorePostgres)
 import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
 import Shomei.Passkey.Postgres (runPasskeyStorePostgres)
 import Shomei.Passkey.Store (PasskeyStore)
-import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.Persistence.Database.Postgres (Database, TransactionRetryPolicy, runDatabasePoolWith)
 import Shomei.Prelude
 import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
 import Shomei.Server.Keys (LoadedKeys (..))
@@ -134,6 +134,7 @@ type AppEffects =
 -- @shomei-admin keys activate@ take effect without a restart.
 data Env = Env
   { envPool :: !Pool,
+    envDbRetryPolicy :: !TransactionRetryPolicy,
     envConfig :: !ShomeiConfig,
     envKeys :: !(IORef LoadedKeys),
     -- | the key-encryption key used to decrypt the signer during reloads. It is deliberately
@@ -173,7 +174,7 @@ runAppIO env action = do
   keys <- readIORef env.envKeys
   runEff
     . runErrorNoCallStack
-    . runDatabasePool env.envPool
+    . runDatabasePoolWith env.envDbRetryPolicy env.envPool
     . runTokenGenCrypto
     . runClockIO
     . runSigningKeyStorePostgres

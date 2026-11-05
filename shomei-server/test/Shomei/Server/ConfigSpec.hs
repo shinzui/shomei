@@ -75,6 +75,8 @@ poolDefaults = do
   settings.serverDbPoolSize @?= 10
   settings.serverDbPoolAcquisitionTimeoutMs @?= 10000
   settings.serverDbStatementTimeoutMs @?= 30000
+  settings.serverDbTransactionMaxAttempts @?= 3
+  settings.serverDbTransactionDeadlineMs @?= 5000
   settings.serverNotifierQueueSize @?= 1024
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -100,6 +102,21 @@ poolRejectsNonPositive = do
   notifierQueueResult <- try loadConfigFromEnv
   expectUserErrorNaming "SHOMEI_NOTIFIER_QUEUE_SIZE" notifierQueueResult
   unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
+  mapM_
+    ( \key -> do
+        setEnv key "0"
+        invalid <- try loadConfigFromEnv
+        expectUserErrorNaming key invalid
+        unsetEnv key
+    )
+    ["SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS", "SHOMEI_DB_TRANSACTION_DEADLINE_MS"]
+  setEnv "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS" "2"
+  setEnv "SHOMEI_DB_TRANSACTION_DEADLINE_MS" "250"
+  (_, bounded) <- loadConfigFromEnv
+  bounded.serverDbTransactionMaxAttempts @?= 2
+  bounded.serverDbTransactionDeadlineMs @?= 250
+  unsetEnv "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS"
+  unsetEnv "SHOMEI_DB_TRANSACTION_DEADLINE_MS"
   unsetEnv "PG_CONNECTION_STRING"
 
 sweepEnvVars :: [String]

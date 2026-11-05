@@ -75,7 +75,7 @@ import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
 import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
-import Shomei.Persistence.Database.Postgres (runDatabasePool)
+import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy, runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (NotifierWorker (..), application, installNotifierWorker)
@@ -115,7 +115,7 @@ tests =
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) (scenario pool),
       testCase "EP-4: service account → POST /oauth/token → the token authenticates and is audited" $
         withShomeiMigratedDatabase \connStr -> do
@@ -125,7 +125,7 @@ tests =
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedServiceAccount pool
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oauthScenario pool clientId),
       testCase "EP-5: authorize → exchange (PKCE) → verify id_token vs JWKS → userinfo → introspect → revoke → introspect" $
@@ -138,7 +138,7 @@ tests =
           -- OIDC needs an http(s) issuer (it doubles as the endpoint base URL) and the provider on.
           let baseCfg = defaultShomeiConfig (Issuer "http://localhost") (Audience "shomei-clients")
               cfg = baseCfg {oauthConfig = baseCfg.oauthConfig {oidcEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedOAuthClient pool
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
@@ -152,7 +152,7 @@ tests =
           windowNow <- getCurrentTime
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {signingKeyConfig = baseCfg.signingKeyConfig {emitLegacyActor = legacy, legacyActorUntilUnix = Just (ceiling (utcTimeToPOSIXSeconds (addUTCTime 7200 windowNow)))}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedExchangeServiceAccount pool
           -- The operator token must verify against the server's own key material, so it is signed
           -- with the active signing key (scope granting is host-side; here the host is the test).
@@ -186,7 +186,7 @@ tests =
           notifierQueue <- newNotifierQueue 64
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {totpConfig = baseCfg.totpConfig {totpEnabled = True}}
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) (totpScenario pool),
       testCase "EP-8: webhook transport delivers a signed verification payload whose token is live" $
         withShomeiMigratedDatabase \connStr -> do
@@ -213,7 +213,7 @@ tests =
                     }
                 cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
                 secrets = NotifierSecrets {smtpPassword = Nothing, webhookSecret = Just (WebhookSecret whSecret)}
-                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = secrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+                env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = secrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
             worker <- installNotifierWorker env
             testWithApplication (pure (application env healthyProbe healthyProbe)) (webhookScenario captured whSecret)
             drainNotifierWorker worker 10,
@@ -242,7 +242,7 @@ tests =
                     }
                 cfg = baseCfg {notifierConfig = nc0 {notifierTransport = WebhookNotifier, webhookConfig = Just webhookCfg}}
                 secrets = NotifierSecrets {smtpPassword = Nothing, webhookSecret = Just (WebhookSecret whSecret)}
-                env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = secrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+                env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = secrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
             worker <- installNotifierWorker env
             testWithApplication (pure (application env healthyProbe healthyProbe)) (slowWebhookScenario captured)
             drainNotifierWorker worker 10

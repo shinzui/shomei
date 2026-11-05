@@ -5,8 +5,8 @@
 -- PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Exception (evaluate)
+import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Exception (SomeException, bracket, bracket_, evaluate, try)
 import Control.Monad (forM, forM_, replicateM, void, when, (<=<))
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AEAD, AEADMode (AEAD_GCM), AuthTag (..), aeadInit, aeadSimpleEncrypt, cipherInit)
@@ -22,6 +22,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
@@ -211,7 +212,7 @@ import Shomei.Passkey.Store
     findPasskeysByUserHandle,
     updatePasskeySignCounter,
   )
-import Shomei.Persistence.Database.Postgres (Database (..), runDatabasePool)
+import Shomei.Persistence.Database.Postgres (Database (..), TransactionRetryPolicy (..), retryableTransactionError, runDatabasePool, runDatabasePoolWith, runTransaction)
 import Shomei.Persistence.Maintenance.Postgres
   ( SweepConfig (..),
     SweepReport (..),
@@ -220,6 +221,7 @@ import Shomei.Persistence.Maintenance.Postgres
     sweepOnce,
   )
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
 import Shomei.ServiceAccount.Store
@@ -248,11 +250,11 @@ import Shomei.Session.Postgres (runSessionStorePostgres)
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Session.RefreshToken.Postgres (runRefreshTokenStorePostgres)
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
-import Shomei.Session.Store (SessionStore, createSession, findSessionById, listSessionsForUser, revokeSession)
+import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore, createSession, emptySessionListQuery, findSessionById, listSessionPage, listSessionsForUser, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
-import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, revokeSessionWithTokens)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, revokeSessionWithTokens, revokeUserSessionsWithAudit)
 import Shomei.Session.Workflow (buildEnrichedClaims)
 import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
@@ -261,6 +263,7 @@ import Shomei.SigningKey.Store (SigningKeyStore, findSigningKeyByKid, insertSign
 import Shomei.Test.InMemory (emptyWorld, runPasswordBreachCheckerFake, runWebAuthnCeremonyFake)
 import Shomei.Time.Postgres (runClockIO)
 import Shomei.Time.Store (Clock (..), now)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -520,7 +523,14 @@ main = defaultMain (testGroup "shomei-postgres" tests)
 
 tests :: [TestTree]
 tests =
-  [ testUserRoundTrip,
+  [ testRetryBudgets,
+    testTransactionDeadline,
+    testShrinkingStatementBudget,
+    testBulkRevocation,
+    testSessionPages,
+    testSessionQueryPlan,
+    testDatabaseTimeouts,
+    testUserRoundTrip,
     testUserNoEmailAndUniqueLoginId,
     testFieldBudgets,
     testSchemaRejectsInvalidUserStatusAndCaseVariantIdentities,
@@ -2985,3 +2995,167 @@ testFieldBudgets = testCase "new-write field budgets preserve legacy rows and se
   execSql pool "UPDATE shomei.shomei_users SET login_id = repeat('🔑',256), email = repeat('é',125)||'@a.b', display_name = repeat('🔑',256)"
   execSqlExpectState pool "22001" "INSERT INTO shomei.shomei_roles(role, created_at) VALUES (repeat('a',129),now())"
   execSql pool "INSERT INTO shomei.shomei_roles(role, created_at) VALUES (repeat('界',128),now())"
+
+testRetryBudgets :: TestTree
+testRetryBudgets = testCase "transaction retries classify only rollback-safe states and stop at three attempts" $ withDb \pool -> do
+  execSql pool "CREATE SEQUENCE retry_attempts; CREATE TABLE retry_writes(value integer)"
+  let run policy body = runEff . runDatabasePoolWith policy pool $ runTransaction body
+      failure code = Tx.statement () (preparable ("DO $$ BEGIN INSERT INTO retry_writes VALUES(1); PERFORM nextval('retry_attempts'); RAISE EXCEPTION 'injected' USING ERRCODE = '" <> TE.decodeUtf8 code <> "'; END $$") E.noParams D.noResult)
+  forM_ ["40001", "40P01", "23505", "08006"] $ \code -> do
+    execSql pool "ALTER SEQUENCE retry_attempts RESTART WITH 1"
+    result <- run (TransactionRetryPolicy 3 1000) (failure code)
+    assertBool "injected transaction fails" (isLeft result)
+    count <- scalarInt pool "SELECT last_value FROM retry_attempts"
+    count @?= if code == "40001" || code == "40P01" then 3 else 1
+    scalarInt pool "SELECT count(*) FROM retry_writes" >>= (@?= 0)
+    scalarInt pool "SELECT 1::bigint" >>= (@?= 1)
+  retryableTransactionError Pool.AcquisitionTimeoutUsageError @?= False
+  retryableTransactionError (Pool.ConnectionUsageError (Hasql.OtherConnectionError "ambiguous commit")) @?= False
+  invalid <- run (TransactionRetryPolicy 0 1000) (Tx.statement () (preparable "INSERT INTO retry_writes VALUES(1)" E.noParams D.noResult))
+  assertBool "invalid policy does no work" (isLeft invalid)
+  scalarInt pool "SELECT count(*) FROM retry_writes" >>= (@?= 0)
+
+testTransactionDeadline :: TestTree
+testTransactionDeadline = testCase "transaction deadline cancels a real lock wait, rolls back and returns a usable sole connection" $
+  withShomeiMigratedDatabase \conn ->
+    bracket (acquirePool 1 1 30000 conn) Pool.release \pool ->
+      bracket (acquirePool 1 1 30000 conn) Pool.release \holder -> do
+        execSql pool "CREATE TABLE deadline_writes(value integer)"
+        bracket_
+          (execSql holder "SELECT pg_advisory_lock(1936224116, 17)")
+          (execSql holder "SELECT pg_advisory_unlock(1936224116, 17)")
+          do
+            started <- getMonotonicTimeNSec
+            result <-
+              timeout
+                2000000
+                ( runEff . runDatabasePoolWith (TransactionRetryPolicy 3 100) pool $
+                    runTransaction (Tx.statement () (preparable "DO $$ BEGIN INSERT INTO deadline_writes VALUES(1); PERFORM pg_advisory_xact_lock(1936224116, 17); END $$" E.noParams D.noResult))
+                )
+            ended <- getMonotonicTimeNSec
+            assertBool "deadline returns unavailable" (case result of Just (Left _) -> True; _ -> False)
+            assertBool "total deadline is finite" (ended - started < 2000000000)
+            usable <- timeout 1000000 (scalarInt pool "SELECT count(*) FROM deadline_writes")
+            usable @?= Just 0
+            completed <- newEmptyMVar
+            worker <- forkIO do
+              outcome <-
+                try @SomeException
+                  ( runEff . runDatabasePoolWith (TransactionRetryPolicy 3 500) pool $
+                      runTransaction (Tx.statement () (preparable "DO $$ BEGIN INSERT INTO deadline_writes VALUES(2); PERFORM pg_advisory_xact_lock(1936224116, 17); END $$" E.noParams D.noResult))
+                  )
+              putMVar completed outcome
+            let awaitWaiter = do
+                  waiting <- scalarInt holder "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=1936224116 AND objid=17 AND NOT granted"
+                  if waiting > 0 then pure () else threadDelay 1000 >> awaitWaiter
+            barrier <- timeout 1000000 awaitWaiter
+            barrier @?= Just ()
+            killThread worker
+            cancelled <- timeout 2000000 (takeMVar completed)
+            assertBool "caller cancellation returns after cleanup" (case cancelled of Just (Left _) -> True; _ -> False)
+            reused <- timeout 1000000 (scalarInt pool "SELECT count(*) FROM deadline_writes")
+            reused @?= Just 0
+
+testDatabaseTimeouts :: TestTree
+testDatabaseTimeouts = testCase "every connection installs statement and idle transaction timeouts; hung statement is cancelled" $
+  withShomeiMigratedDatabase \conn ->
+    bracket (acquirePool 2 1 75 conn) Pool.release \pool -> do
+      settings <- scalarInt pool "SELECT CASE WHEN current_setting('statement_timeout')='75ms' AND current_setting('idle_in_transaction_session_timeout')='75ms' THEN 1 ELSE 0 END::bigint"
+      settings @?= 1
+      execSqlExpectState pool "57014" "SELECT pg_sleep(1)"
+      scalarInt pool "SELECT 1::bigint" >>= (@?= 1)
+
+testBulkRevocation :: TestTree
+testBulkRevocation = testCase "bulk revoke: 10000 winners and audits stay atomic under failure and eight racers" $ withDb \pool -> do
+  user <- expectApp =<< runApp pool (createUser (NewUser aliceLogin Nothing Nothing))
+  actor <- genUserId
+  let uid = "'" <> Text.pack (show (userIdToUUID user.userId)) <> "'"
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,status,created_at,expires_at) SELECT gen_random_uuid(), " <> uid <> ", 'active', now(), now()+interval '1 day' FROM generate_series(1,10000)")
+  execSql pool "INSERT INTO shomei.shomei_refresh_tokens(refresh_token_id,session_id,token_hash,status,created_at,expires_at) SELECT gen_random_uuid(),session_id,md5(session_id::text),'active',created_at,expires_at FROM shomei.shomei_sessions"
+  execSql pool "ALTER TABLE shomei.shomei_auth_events ADD CONSTRAINT fail_bulk_audit CHECK(event_type <> 'session_revoked')"
+  failed <- runApp pool (revokeUserSessionsWithAudit actor user.userId t0)
+  assertBool "audit failure rejects entire operation" (isLeft failed)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 10000)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 10000)
+  execSql pool "ALTER TABLE shomei.shomei_auth_events DROP CONSTRAINT fail_bulk_audit"
+  start <- newEmptyMVar
+  completed <- replicateM 8 do
+    done <- newEmptyMVar
+    _ <- forkIO do
+      readMVar start
+      result <- runApp pool (revokeUserSessionsWithAudit actor user.userId t0)
+      putMVar done result
+    pure done
+  putMVar start ()
+  results <- traverse (expectApp <=< takeMVar) completed
+  sum results @?= 10000
+  length (filter (> 0) results) @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='session_revoked'" >>= (@?= 10000)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status<>'revoked'" >>= (@?= 0)
+  repeated <- expectApp =<< runApp pool (revokeUserSessionsWithAudit actor user.userId (addUTCTime 60 t0))
+  repeated @?= 0
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE revoked_at <> '2026-01-01T00:00:00Z'" >>= (@?= 0)
+  events <- expectApp =<< runApp pool (queryAuthEvents emptyAuditQuery {queryEventTypes = ["session_revoked"], queryLimit = 1})
+  case events of
+    [event] -> case reconstructAuthEvent event.storedEventType event.storedPayload of
+      Right (Event.SessionRevoked details) -> do
+        details.revokedBy @?= Just actor
+        details.occurredAt @?= t0
+      other -> assertFailure ("bulk payload failed reconstruction: " <> show other)
+    _ -> assertFailure "expected one event page"
+
+testSessionPages :: TestTree
+testSessionPages = testCase "session pages default to 50, cap at 200 and keyset-walk timestamp ties without gaps" $ withDb \pool -> do
+  user <- expectApp =<< runApp pool (createUser (NewUser aliceLogin Nothing Nothing))
+  let uid = "'" <> Text.pack (show (userIdToUUID user.userId)) <> "'"
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,status,created_at,expires_at) SELECT gen_random_uuid(), " <> uid <> ", 'active', '2026-01-01', '2027-01-01' FROM generate_series(1,505)")
+  first <- expectApp =<< runApp pool (listSessionPage user.userId emptySessionListQuery)
+  length first @?= 50
+  capped <- expectApp =<< runApp pool (listSessionPage user.userId (SessionListQuery 10000 Nothing))
+  length capped @?= 200
+  let walk cursor accumulated = do
+        page <- expectApp =<< runApp pool (listSessionPage user.userId (SessionListQuery 73 cursor))
+        case reverse page of
+          [] -> pure accumulated
+          lastRow : _ -> walk (Just (SessionCursor lastRow.createdAt lastRow.sessionId)) (accumulated <> map (.sessionId) page)
+  identifiers <- walk Nothing []
+  length identifiers @?= 505
+  Set.size (Set.fromList identifiers) @?= 505
+
+testShrinkingStatementBudget :: TestTree
+testShrinkingStatementBudget = testCase "transaction statement budgets shrink across successive slow statements and reset afterward" $ withDb \pool -> do
+  let pause = Tx.statement () (preparable "DO $$ BEGIN PERFORM pg_sleep(0.065); END $$" E.noParams D.noResult)
+  started <- getMonotonicTimeNSec
+  result <- runEff . runDatabasePoolWith (TransactionRetryPolicy 3 100) pool $ runTransaction (pause >> pause)
+  ended <- getMonotonicTimeNSec
+  assertBool "second statement cannot spend a fresh 100ms" (isLeft result)
+  assertBool "whole attempt remains bounded" (ended - started < 1000000000)
+  setting <- scalarInt pool "SELECT CASE WHEN current_setting('statement_timeout')='30s' THEN 1 ELSE 0 END::bigint"
+  setting @?= 1
+
+testSessionQueryPlan :: TestTree
+testSessionQueryPlan = testCase "session keyset index removes the 10000-row sort for a 50-row page" $ withDb \pool -> do
+  user <- expectApp =<< runApp pool (createUser (NewUser aliceLogin Nothing Nothing))
+  let uid = "'" <> Text.pack (show (userIdToUUID user.userId)) <> "'"
+      explain = do
+        result <-
+          Pool.use
+            pool
+            ( Session.statement
+                ()
+                ( preparable
+                    ("EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM shomei.shomei_sessions WHERE user_id=" <> uid <> " ORDER BY created_at DESC,session_id DESC LIMIT 50")
+                    E.noParams
+                    (D.rowList (D.column (D.nonNullable D.text)))
+                )
+            )
+        expectApp result
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,status,created_at,expires_at) SELECT gen_random_uuid(), " <> uid <> ", 'active', now(), now()+interval '1 day' FROM generate_series(1,10000)")
+  execSql pool "DROP INDEX IF EXISTS shomei.shomei_sessions_user_created_id_idx; ANALYZE shomei.shomei_sessions"
+  before <- explain
+  assertBool "baseline sorts the matching sessions" (any (Text.isInfixOf "Sort") before)
+  execSql pool "CREATE INDEX shomei_sessions_user_created_id_idx ON shomei.shomei_sessions(user_id,created_at DESC,session_id DESC)"
+  after <- explain
+  assertBool "bounded page uses ordered index" (any (Text.isInfixOf "shomei_sessions_user_created_id_idx") after)
+  assertBool "ordered index removes sort" (not (any (Text.isInfixOf "Sort") after))
+  writeFile "/tmp/shomei-session-query-plan.txt" (Text.unpack (Text.unlines (["Before compound index:"] <> before <> ["After compound index:"] <> after)))

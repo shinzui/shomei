@@ -17,7 +17,6 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
-import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
 import Shomei.Id
   ( genPasskeyId,
@@ -36,6 +35,7 @@ import Shomei.Passkey.Domain
   )
 import Shomei.Passkey.Store (PasskeyStore (..))
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
 
 -- | The stored-credential row, column order matching @shomei_webauthn_credentials@:

@@ -13,9 +13,12 @@ module Shomei.Audit.Dto
 where
 
 import Data.Aeson (Value)
+import Data.Aeson qualified as Aeson
 import Data.Text qualified as Text
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 import Data.UUID qualified as UUID
+import Shomei.Audit.Event.Codec (reconstructAuthEvent)
+import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Reader.Store (AuditCursor (..), StoredAuthEvent (..))
 import Shomei.Id (SessionId, UserId, idText, parseId)
 import Shomei.Prelude
@@ -83,7 +86,9 @@ storedToResponse stored =
       userId = UUID.toText <$> stored.storedUserId,
       sessionId = UUID.toText <$> stored.storedSessionId,
       createdAt = Text.pack (iso8601Show stored.storedCreatedAt),
-      payload = stored.storedPayload
+      payload = case reconstructAuthEvent stored.storedEventType stored.storedPayload of
+        Right (Event.SessionRevoked details) -> Aeson.toJSON details
+        _ -> stored.storedPayload
     }
 
 encodeCursor :: AuditCursor -> Text

@@ -10,7 +10,7 @@
 -- rotation, the public JWKS document, and the @RequireRole "admin"@ guard (403/200).
 module Main (main) where
 
-import Control.Monad (replicateM_)
+import Control.Monad (replicateM, replicateM_, void)
 import Crypto.JOSE.Compact (decodeCompact)
 import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.JWK (JWK, JWKSet)
@@ -114,6 +114,8 @@ import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (SignupCommand (..))
+import Shomei.Session.Domain (Session (..))
+import Shomei.Session.Domain qualified as SessionDomain
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..))
 import Shomei.Session.Store (revokeAllUserSessions)
 import Shomei.Session.Token.Domain (AccessToken (..))
@@ -320,7 +322,7 @@ revokeAllSessionsOf ref userIdText = do
   uid <- parseUserId userIdText
   runInMemory ref do
     ts <- now
-    revokeAllUserSessions uid ts
+    void (revokeAllUserSessions uid ts)
 
 suspendUserIn :: IORef World -> UserId -> IO ()
 suspendUserIn ref uid = runInMemory ref do
@@ -1025,8 +1027,8 @@ scenarioAdminLifecycle ref port = do
   (sessStatus, sessBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
   sessStatus @?= 200
   sessions <- must "sessions body" sessBody
-  case sessions of
-    Array xs -> assertBool "every session is revoked" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
+  case dig ["sessions"] sessions of
+    Just (Array xs) -> assertBool "every session is revoked" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
     _ -> assertFailure "expected a JSON array of sessions"
 
   -- A second admin racing the first learns the state already changed.
@@ -1071,8 +1073,8 @@ scenarioAdminSessionsAndAudit ref port = do
   (sessStatus, sessBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
   sessStatus @?= 200
   sessions <- must "sessions" sessBody
-  firstSession <- case sessions of
-    Array xs | (s0 : _) <- toList xs -> must "session id" (dig ["sessionId"] s0 >>= asText)
+  firstSession <- case dig ["sessions"] sessions of
+    Just (Array xs) | (s0 : _) <- toList xs -> must "session id" (dig ["sessionId"] s0 >>= asText)
     _ -> assertFailure "expected at least one session"
 
   (one, _) <- deleteAuth mgr port ("/v1/admin/sessions/" <> T.unpack firstSession) (bearer adminToken')
@@ -1083,8 +1085,8 @@ scenarioAdminSessionsAndAudit ref port = do
   (afterStatus, afterBody) <- getJSON mgr port (target <> "/sessions") (bearer adminToken')
   afterStatus @?= 200
   after <- must "sessions after" afterBody
-  case after of
-    Array xs -> assertBool "no session survives" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
+  case dig ["sessions"] after of
+    Just (Array xs) -> assertBool "no session survives" (all (\v -> (dig ["status"] v >>= asText) == Just "revoked") xs)
     _ -> assertFailure "expected an array"
 
   -- The suspension event carries the acting admin, readable through the audit endpoint.
@@ -1385,7 +1387,10 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "input boundaries and legacy HTTP login" $ do
+    [ testCase "HTTP session pages default to 50, cap at 200 and walk tied timestamps" $ do
+        (r, e) <- freshPermissionEnv
+        testWithApplication (pure (app e)) (scenarioSessionPaging r),
+      testCase "input boundaries and legacy HTTP login" $ do
         (r, e) <- freshPermissionEnv
         testWithApplication (pure (app e)) (scenarioInputBounds r),
       testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
@@ -3839,3 +3844,38 @@ scenarioInputBounds ref port = do
   forM_ [legacyText, "unknown-bounded-account"] $ \ident -> do
     (status, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ident, "password" .= T.replicate 257 "🔐"])
     status @?= 400
+
+scenarioSessionPaging :: IORef World -> Int -> IO ()
+scenarioSessionPaging ref port = do
+  mgr <- newManager defaultManagerSettings
+  admin <- becomeAdmin ref mgr port "paging-admin@example.com"
+  (targetId, _) <- signupOver mgr port "paging-target@example.com"
+  uid <- parseUserId targetId
+  world <- readIORef ref
+  template <- case [s | s <- Map.elems world.sessions, s.userId == uid] of
+    s : _ -> pure s
+    _ -> assertFailure "missing target session"
+  identifiers <- replicateM 205 genSessionId
+  modifyIORef' ref (\w -> w {sessions = foldr (\sid -> Map.insert sid template {SessionDomain.sessionId = sid}) w.sessions identifiers})
+  let base = "/v1/admin/users/" <> T.unpack targetId <> "/sessions"
+      readPage path = do
+        (status, body) <- getJSON mgr port path (bearer admin)
+        status @?= 200
+        doc <- must "session page" body
+        values <- case dig ["sessions"] doc of
+          Just (Array xs) -> traverse (\v -> must "session ID" (dig ["sessionId"] v >>= asText)) (toList xs)
+          _ -> assertFailure "missing sessions array"
+        pure (values, dig ["nextCursor"] doc >>= asText)
+  (defaults, _) <- readPage base
+  length defaults @?= 50
+  (capped, _) <- readPage (base <> "?limit=10000")
+  length capped @?= 200
+  let walk cursor accumulated = do
+        let suffix = maybe "" (\c -> "&before=" <> urlEncodeText c) cursor
+        (values, next) <- readPage (base <> "?limit=73" <> suffix)
+        case next of
+          Nothing -> pure (accumulated <> values)
+          Just c -> walk (Just c) (accumulated <> values)
+  allIds <- walk Nothing []
+  length allIds @?= 206
+  Set.size (Set.fromList allIds) @?= 206

@@ -1,0 +1,25 @@
+Before compound index:
+Limit  (cost=611.19..611.32 rows=50 width=145) (actual time=1.460..1.463 rows=50.00 loops=1)
+  Buffers: shared hit=154
+  ->  Sort  (cost=611.19..636.19 rows=10000 width=145) (actual time=1.459..1.460 rows=50.00 loops=1)
+        Sort Key: created_at DESC, session_id DESC
+        Sort Method: top-N heapsort  Memory: 36kB
+        Buffers: shared hit=154
+        ->  Seq Scan on shomei_sessions  (cost=0.00..279.00 rows=10000 width=145) (actual time=0.006..0.621 rows=10000.00 loops=1)
+              Filter: (user_id = '01a1ac4b-50c0-7751-879e-2fe7a8644d03'::uuid)
+              Buffers: shared hit=154
+Planning:
+  Buffers: shared hit=93 read=1
+Planning Time: 0.163 ms
+Execution Time: 1.471 ms
+After compound index:
+Limit  (cost=0.29..2.30 rows=50 width=145) (actual time=0.004..0.023 rows=50.00 loops=1)
+  Buffers: shared hit=51
+  ->  Index Scan using shomei_sessions_user_created_id_idx on shomei_sessions  (cost=0.29..403.29 rows=10000 width=145) (actual time=0.004..0.021 rows=50.00 loops=1)
+        Index Cond: (user_id = '01a1ac4b-50c0-7751-879e-2fe7a8644d03'::uuid)
+        Index Searches: 1
+        Buffers: shared hit=51
+Planning:
+  Buffers: shared hit=26
+Planning Time: 0.097 ms
+Execution Time: 0.030 ms

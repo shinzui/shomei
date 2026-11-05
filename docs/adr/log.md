@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Decision**: Accept finite database-only transaction budgets and atomic winner-audited session revocation.
 * **Decision**: Accept finite new-write input budgets with explicit legacy authentication and snapshot compatibility.
 * **Update**: ADR-3 defines finite token lifetimes and a reader-first actor upgrade whose legacy mints fit the read cutoff.
 * **Update**: ADR-3 requires present malformed actor claims to fail verification instead of losing identity.

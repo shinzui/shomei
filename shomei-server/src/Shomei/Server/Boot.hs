@@ -64,7 +64,7 @@ import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, checkTotpEnvelopeVersions, t
 import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Notify (deliverNotification)
 import Shomei.Notify.Queue (closeNotifierQueue, drainNotifierQueue, newNotifierQueue, withDequeued)
-import Shomei.Persistence.Database.Postgres (runDatabasePool)
+import Shomei.Persistence.Database.Postgres (TransactionRetryPolicy (..), runDatabasePoolWith)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 
@@ -263,7 +263,7 @@ validateDefaultRoles cfg env = do
   outcome <-
     runEff
       . runErrorNoCallStack @AuthError
-      . runDatabasePool env.envPool
+      . runDatabasePoolWith env.envDbRetryPolicy env.envPool
       . runRoleStorePostgres
       $ undefinedDefaultRoles cfg
   case outcome of
@@ -402,7 +402,7 @@ installNotifierWorker env = do
         result <-
           runEff
             . runErrorNoCallStack @AuthError
-            . runDatabasePool env.envPool
+            . runDatabasePoolWith env.envDbRetryPolicy env.envPool
             . runClockIO
             . runAuthEventPublisherPostgres
             $ deliverNotification env.envHttpManager env.envNotifierSecrets env.envConfig notification
@@ -479,6 +479,7 @@ buildEnv cfg settings = do
   pure
     Env
       { envPool = pool,
+        envDbRetryPolicy = TransactionRetryPolicy settings.serverDbTransactionMaxAttempts settings.serverDbTransactionDeadlineMs,
         envConfig = cfg,
         envKeys = keysRef,
         envKek = kek,

@@ -542,6 +542,8 @@ deriving stock instance Show TokenPairResponse
 
 deriving stock instance Show UserResponse
 
+deriving stock instance Show SessionsPage
+
 deriving stock instance Show SessionResponse
 
 deriving stock instance Show AdminUserResponse
@@ -658,6 +660,9 @@ instance Arbitrary PasskeyLoginCompleteRequest where
 
 instance Arbitrary TokenResponse where
   arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary SessionsPage where
+  arbitrary = SessionsPage <$> arbitrary <*> arbitrary
 
 instance Arbitrary SessionResponse where
   arbitrary = SessionResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary

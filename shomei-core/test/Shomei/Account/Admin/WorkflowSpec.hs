@@ -41,6 +41,7 @@ tests =
       testDeleteIsTerminal,
       testReinstateRestoresLogin,
       testRevokeUserSessionsCountsOnlyActiveOnes,
+      testConcurrentBulkRevocation,
       testRevokeOneSessionRecordsActor,
       testMissingTargetsAreNotFound
     ]
@@ -224,3 +225,12 @@ testMissingTargetsAreNotFound =
     suspendMissing @?= Left UserNotFound
     revokeMissing @?= Right 0
     revokeGhostSession @?= Left SessionNotFound
+
+testConcurrentBulkRevocation :: TestTree
+testConcurrentBulkRevocation = testCase "eight bulk revokers audit each active session exactly once" $ withWorld \ref -> do
+  (user, _) <- either (assertFailure . show) pure =<< runInMemory ref (signup cfg signupCmd)
+  admin <- genUserId
+  results <- mapConcurrently (\_ -> runInMemory ref (revokeUserSessions admin user.userId)) [1 .. 8 :: Int]
+  sum <$> traverse (either (assertFailure . show) pure) results >>= (@?= 1)
+  events <- (.publishedEvents) <$> readIORef ref
+  length [() | Event.SessionRevoked _ <- events] @?= 1

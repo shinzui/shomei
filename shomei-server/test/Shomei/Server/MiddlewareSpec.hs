@@ -402,6 +402,8 @@ testHostMiddlewareOrder = testCase "hostMiddleware refuses oversized bodies outs
             serverDbPoolSize = 1,
             serverDbPoolAcquisitionTimeoutMs = 1000,
             serverDbStatementTimeoutMs = 1000,
+            serverDbTransactionMaxAttempts = 3,
+            serverDbTransactionDeadlineMs = 5000,
             serverNotifierQueueSize = 16,
             serverWarnings = [],
             serverSweep = defaultSweepSettings {sweepEnabled = False},

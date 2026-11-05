@@ -21,11 +21,11 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
-import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
 import Shomei.Id (genLoginAttemptId, loginAttemptIdToUUID)
 import Shomei.Persistence.Codec.Postgres (attemptFactorToText, loginOutcomeToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey (..),

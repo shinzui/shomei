@@ -57,11 +57,12 @@ where
 
 import Data.Aeson (withObject, (.:), (.:?))
 import Data.Set (Set)
+import Data.UUID qualified as UUID
 import Shomei.Account.Email.Domain (Email, parseStoredEmail)
 import Shomei.Account.LoginId.Domain (LoginId, parseLoginIdForAuthentication)
 import Shomei.Authorization.Claims.Domain (Role, Scope)
 import Shomei.Config (ServiceAccountId)
-import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
+import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId, parseId, sessionIdFromUUID)
 import Shomei.Prelude
 import Shomei.Session.LoginAttempt.Domain (AccountKey, ClientIp)
 
@@ -108,7 +109,7 @@ data SessionRevokedData = SessionRevokedData
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving anyclass (ToJSON)
 
 data RefreshTokenRotatedData = RefreshTokenRotatedData
   { sessionId :: !SessionId,
@@ -572,3 +573,13 @@ instance FromJSON PasswordResetRequestedData where
   parseJSON = withObject "PasswordResetRequestedData" \o -> do
     email <- o .: "email" >>= either (const (fail "invalid stored email")) pure . parseStoredEmail
     PasswordResetRequestedData <$> o .: "userId" <*> pure email <*> o .: "occurredAt"
+
+-- Bulk SQL keeps the persisted session UUID in its payload. Public encoding remains the
+-- canonical TypeID, matching ordinary single-session events and the session_id column.
+instance FromJSON SessionRevokedData where
+  parseJSON = withObject "SessionRevokedData" \o -> do
+    raw <- o .: "sessionId"
+    sid <- case parseId raw of
+      Right typed -> pure typed
+      Left _ -> maybe (fail "invalid audit session identifier") (pure . sessionIdFromUUID) (UUID.fromText raw)
+    SessionRevokedData sid <$> o .:? "revokedBy" <*> o .: "occurredAt"

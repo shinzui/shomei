@@ -9,20 +9,28 @@ module Shomei.Persistence.Database.Postgres
     uniqueViolation,
     postgresWriteError,
     runDatabasePool,
+    runDatabasePoolWith,
+    TransactionRetryPolicy (..),
+    defaultTransactionRetryPolicy,
+    validateTransactionRetryPolicy,
+    retryableTransactionError,
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpret_, send)
+import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Errors qualified as Hasql
 import Hasql.Pool (Pool, UsageError)
 import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
-import Hasql.Transaction (Transaction)
-import Hasql.Transaction.Sessions qualified as Tx
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable))
+import Shomei.Persistence.Transaction.Postgres (Transaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Bounded
+import System.Timeout (timeout)
 
 data Database :: Effect where
   RunSession :: Session a -> Database m (Either UsageError a)
@@ -75,10 +83,61 @@ constraintName message =
   where
     marker = "unique constraint \""
 
--- | Interpret @Database@ against a concrete @hasql@ 'Pool'. Transactions run
--- read-committed, read-write (with @hasql-transaction@'s automatic retry on
--- serialization failures).
+-- | Validated at startup; an invalid direct policy refuses work without touching the pool.
+-- The deadline covers checkout, every attempt, and backoff. No retry follows an ambiguous
+-- connection/commit failure. Transaction bodies are Hasql database statements only.
+data TransactionRetryPolicy = TransactionRetryPolicy
+  { maxAttempts :: !Int,
+    deadlineMs :: !Int
+  }
+  deriving stock (Eq, Show)
+
+defaultTransactionRetryPolicy :: TransactionRetryPolicy
+defaultTransactionRetryPolicy = TransactionRetryPolicy 3 5000
+
+validateTransactionRetryPolicy :: TransactionRetryPolicy -> Either Text ()
+validateTransactionRetryPolicy policy
+  | policy.maxAttempts < 1 = Left "transaction max attempts must be positive"
+  | policy.deadlineMs < 1 || policy.deadlineMs > min 2147483647 (maxBound `div` 1000) = Left "transaction deadline milliseconds must be positive and representable"
+  | otherwise = Right ()
+
+retryableTransactionError :: UsageError -> Bool
+retryableTransactionError = \case
+  Pool.SessionUsageError (Hasql.StatementSessionError _ _ _ _ _ (Hasql.ServerStatementError (Hasql.ServerError code _ _ _ _))) -> retryable code
+  Pool.SessionUsageError (Hasql.ScriptSessionError _ (Hasql.ServerError code _ _ _ _)) -> retryable code
+  _ -> False
+  where
+    retryable code = code == "40001" || code == "40P01"
+
 runDatabasePool :: (IOE :> es) => Pool -> Eff (Database : es) a -> Eff es a
-runDatabasePool pool = interpret_ \case
+runDatabasePool = runDatabasePoolWith defaultTransactionRetryPolicy
+
+runDatabasePoolWith :: (IOE :> es) => TransactionRetryPolicy -> Pool -> Eff (Database : es) a -> Eff es a
+runDatabasePoolWith policy pool = interpret_ \case
   RunSession sess -> liftIO (Pool.use pool sess)
-  RunTransaction t -> liftIO (Pool.use pool (Tx.transaction Tx.ReadCommitted Tx.Write t))
+  RunTransaction transaction -> liftIO do
+    case validateTransactionRetryPolicy policy of
+      Left _ -> pure (Left Pool.AcquisitionTimeoutUsageError)
+      Right () -> do
+        started <- getMonotonicTimeNSec
+        let deadline = toInteger started + toInteger policy.deadlineMs * 1000000
+            attempt remainingAttempts = do
+              now <- getMonotonicTimeNSec
+              let remainingMicros = (deadline - toInteger now) `div` 1000
+              if remainingMicros <= 0
+                then pure (Left Pool.AcquisitionTimeoutUsageError)
+                else do
+                  -- Hasql cancels and rolls back an interrupted session before returning its
+                  -- connection. Keep the operation unmasked so the deadline can interrupt
+                  -- query I/O. A timeout is never retried.
+                  result <- timeout (fromInteger remainingMicros) (Pool.use pool (Bounded.transactionSession (max 1 (fromInteger (remainingMicros `div` 1000))) transaction))
+                  case result of
+                    Nothing -> pure (Left Pool.AcquisitionTimeoutUsageError)
+                    Just (Left err) | remainingAttempts > 1 && retryableTransactionError err -> do
+                      after <- getMonotonicTimeNSec
+                      let pause = min 10000 ((deadline - toInteger after) `div` 1000)
+                      if pause <= 0
+                        then pure (Left err)
+                        else threadDelay (fromInteger pause) >> attempt (remainingAttempts - 1)
+                    Just outcome -> pure outcome
+        attempt policy.maxAttempts

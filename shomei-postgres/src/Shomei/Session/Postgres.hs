@@ -13,10 +13,12 @@ module Shomei.Session.Postgres
     mkSession,
     revokeSessionStmt,
     revokeAllUserSessionsStmt,
+    revokeAllUserSessionsSql,
   )
 where
 
-import Contravariant.Extras (contrazip12, contrazip2)
+import Contravariant.Extras (contrazip12, contrazip2, contrazip4)
+import Data.Int (Int64)
 import Data.Set qualified as Set
 import Data.UUID (UUID)
 import Effectful (Eff, IOE, (:>))
@@ -33,7 +35,7 @@ import Shomei.Persistence.Codec.Postgres (sessionKindFromText, sessionKindToText
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
 import Shomei.Prelude
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
-import Shomei.Session.Store (SessionStore (..))
+import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore (..), clampSessionLimit)
 
 type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID, Maybe Text, Maybe Text, [Text], Maybe UTCTime, Bool)
 
@@ -70,7 +72,12 @@ runSessionStorePostgres = interpret_ \case
     either dbFail (const (pure ())) res
   RevokeAllUserSessions uid t -> do
     res <- runSession (Session.statement (userIdToUUID uid, t) revokeAllUserSessionsStmt)
-    either dbFail (const (pure ())) res
+    either dbFail (pure . map sessionIdFromUUID) res
+  ListSessionPage uid query -> do
+    let params = (userIdToUUID uid, (.cursorCreatedAt) <$> query.queryBefore, sessionIdToUUID . (.cursorSessionId) <$> query.queryBefore, fromIntegral (clampSessionLimit query.queryLimit))
+    res <- runSession (Session.statement params listSessionPageStmt)
+    rows <- either dbFail pure res
+    traverse rebuild rows
   ListSessionsForUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) listSessionsForUserStmt)
     rows <- either dbFail pure res
@@ -194,13 +201,36 @@ revokeSessionStmt =
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
     (D.rowMaybe (D.column (D.nonNullable D.uuid)))
 
-revokeAllUserSessionsStmt :: Statement (UUID, UTCTime) ()
+revokeAllUserSessionsStmt :: Statement (UUID, UTCTime) [UUID]
 revokeAllUserSessionsStmt =
   preparable
-    """
-    UPDATE shomei.shomei_sessions
-    SET status = 'revoked', revoked_at = $2
-    WHERE user_id = $1 AND status = 'active'
-    """
+    revokeAllUserSessionsSql
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
-    D.noResult
+    (D.rowList (D.column (D.nonNullable D.uuid)))
+
+-- | Shared winner-producing update, also embedded in the bulk audited CTE. No application
+-- materialization of winners is needed by that operation.
+revokeAllUserSessionsSql :: Text
+revokeAllUserSessionsSql =
+  """
+  UPDATE shomei.shomei_sessions SET status = 'revoked', revoked_at = $2
+  WHERE user_id = $1 AND status = 'active'
+  RETURNING session_id
+  """
+
+listSessionPageStmt :: Statement (UUID, Maybe UTCTime, Maybe UUID, Int64) [SessionRow]
+listSessionPageStmt =
+  preparable
+    """
+    SELECT session_id, user_id, status, created_at, expires_at, revoked_at, actor_user_id, oauth_client_id, kind, granted_scopes, authenticated_at, remembered
+    FROM shomei.shomei_sessions
+    WHERE user_id = $1 AND ($2::timestamptz IS NULL OR (created_at, session_id) < ($2,$3))
+    ORDER BY created_at DESC, session_id DESC LIMIT $4
+    """
+    ( contrazip4
+        (E.param (E.nonNullable E.uuid))
+        (E.param (E.nullable E.timestamptz))
+        (E.param (E.nullable E.uuid))
+        (E.param (E.nonNullable E.int8))
+    )
+    (D.rowList sessionRowDecoder)

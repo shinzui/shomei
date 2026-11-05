@@ -25,6 +25,7 @@ module Shomei.Session.UnitOfWork.Store
     completePasswordReset,
     completePasswordChange,
     revokeSessionWithTokens,
+    revokeUserSessionsWithAudit,
   )
 where
 
@@ -106,6 +107,7 @@ data AuthUnitOfWork :: Effect where
     AuthUnitOfWork m ()
   -- | CAS the session @active → revoked@; only on success revoke its refresh tokens and record
   -- the events. 'False' means the session was already dead and nothing was written.
+  RevokeUserSessionsWithAudit :: UserId -> UserId -> UTCTime -> AuthUnitOfWork m Int
   RevokeSessionWithTokens ::
     SessionId ->
     UTCTime ->
@@ -164,3 +166,8 @@ revokeSessionWithTokens ::
   [AuthEvent] ->
   Eff es Bool
 revokeSessionWithTokens sid ts events = send (RevokeSessionWithTokens sid ts events)
+
+-- | Revoke every active session and its tokens, auditing each winner in the same commit.
+-- Arguments are actor, target and the application clock timestamp. Returns the winner count.
+revokeUserSessionsWithAudit :: (AuthUnitOfWork :> es) => UserId -> UserId -> UTCTime -> Eff es Int
+revokeUserSessionsWithAudit actor target ts = send (RevokeUserSessionsWithAudit actor target ts)
