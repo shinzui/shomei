@@ -402,7 +402,7 @@ completePasswordlessLoginWith cfg pctx remember ceremonyId assertion = runErrorN
 -- | Verify a WebAuthn assertion against the stored passkey it names. Reads the credential
 -- id from the assertion JSON (the lookup key — the cryptographic verification still happens in
 -- the ceremony interpreter), looks the passkey up to build the verifier input, and calls
--- 'completeAuthenticationCeremony'. On a decode/verify failure, a clone-counter warning, or a
+-- 'completeAuthenticationCeremony'. On a decode/verify failure, a clone-counter error, or a
 -- missing credential, publishes 'MfaFailed' and throws 'MfaAssertionInvalid'. Returns the
 -- looked-up passkey (so callers can read its owning user) alongside the verified result.
 verifyAssertion ::
@@ -432,11 +432,7 @@ verifyAssertion onFailure mUid blob assertion = do
   res <- completeAuthenticationCeremony blob stored assertion
   case res of
     Left _ -> failMfa onFailure mUid "assertion verification failed"
-    Right verified ->
-      let VerifiedAuthentication {cloneWarning} = verified
-       in if cloneWarning
-            then failMfa onFailure mUid "signature counter clone warning"
-            else pure (passkey, verified)
+    Right verified -> pure (passkey, verified)
 
 -- | Publish 'MfaFailed' and abort with the generic 'MfaAssertionInvalid'. The reason is
 -- recorded in the audit event only; the HTTP body the caller eventually returns stays generic.

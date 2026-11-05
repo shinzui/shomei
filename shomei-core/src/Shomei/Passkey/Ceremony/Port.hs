@@ -98,8 +98,7 @@ data VerifiedRegistration = VerifiedRegistration
 
 data VerifiedAuthentication = VerifiedAuthentication
   { credentialId :: !WebAuthnCredentialId,
-    newSignCounter :: !SignatureCounter,
-    cloneWarning :: !Bool
+    newSignCounter :: !SignatureCounter
   }
   deriving stock (Generic, Eq, Show)
 

@@ -4,6 +4,12 @@ All notable changes to `shomei-webauthn` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** remove `VerifiedAuthentication.cloneWarning`; cloned/regressed counters return `WebAuthnCounterCloned` through the MFA failure/audit path.
+- Add deterministic signed ES256 registration/assertion wire fixtures and real-verifier workflow tests.
+- Document that direct attestation requests evidence without enforcing device trust (ADR-25).
+
 ## 0.2.0.0 — 2026-08-27
 
 Not yet published to Hackage: the library depends on a fork of `webauthn`

@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Addition**: ADR-25 defines attestation conveyance as evidence request without device trust enforcement and preserves fail-closed counter policy.
 * **amended**: ADR-7 requires Clock-derived creation and one timestamp across credential tails; bounded expiry cleanup.
 * **Amendment**: Own cancellation-safe pool capacity over the supported connection API after repeated interruption failures; current upstream fix requires incompatible released driver dependencies.
 * **Decision**: Accept atomic active actor and subject budgets for machine and delegated session issuance.

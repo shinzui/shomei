@@ -73,15 +73,24 @@ test-suite shomei-webauthn-test
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
-  other-modules: Shomei.WebAuthn.CeremonySpec
+  other-modules:
+    Shomei.WebAuthn.CeremonySpec
+    Shomei.WebAuthn.SoftwareAuthenticator
+    Shomei.WebAuthn.WorkflowSpec
+
   build-depends:
     aeson >=2.1 && <2.3,
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
+    containers >=0.6 && <0.9,
+    crypton >=1.1.0 && <1.2,
     effectful >=2.5 && <2.8,
+    effectful-core >=2.5 && <2.8,
+    ram >=0.22 && <0.23,
     shomei-core ^>=0.2.0.0,
     shomei-webauthn ^>=0.2.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
     text >=2.0 && <2.2,
+    time >=1.12 && <1.15,
     webauthn >=0.11 && <0.12,

@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** remove the unreachable `VerifiedAuthentication.cloneWarning` field. Cloned/regressed counters return typed `WebAuthnCounterCloned` and follow the shared MFA failure/audit path. Signed software-authenticator fixtures now exercise the production verifier and workflows.
+
 - **Breaking:** remove the unused unbatched authorization-code expiry port; cleanup uses the bounded sweeper. Password-hash updates now advance credential `updatedAt` in the fake interpreter as well.
 
 - **Breaking:** PostgreSQL assembly uses the managed `Shomei.Persistence.Pool.Postgres.Pool` and its `UsageError`, `use` and `release` operations. Interrupted/failed sessions discard their connection and restore capacity; the external pool dependency is removed.

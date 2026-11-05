@@ -117,8 +117,7 @@ registerThenAuthenticate = do
     @?= Right
       VerifiedAuthentication
         { credentialId = WebAuthnCredentialId cidBytes,
-          newSignCounter = SignatureCounter 1,
-          cloneWarning = False
+          newSignCounter = SignatureCounter 1
         }
 
 configHasWebAuthnDefault :: IO ()

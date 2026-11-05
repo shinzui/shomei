@@ -17,8 +17,9 @@
 --     result (or the library's error families) to the small closed 'WebAuthnError' set.
 --
 -- A potentially-cloned signature counter fails closed ('WebAuthnCounterCloned'), per the
--- EP-1 Decision Log. The Metadata Service registry is empty ('mempty') — consumer
--- passkeys with @attestation = none@; MDS trust is deferred per the MasterPlan scope.
+-- ADR-25. The Metadata Service registry is empty ('mempty') and the registration trust
+-- verdict is not used. @direct@ requests attestation conveyance; it does not require
+-- trusted hardware or apply a device allow-list. @none@ remains the default.
 --
 -- Note: 'WebAuthnConfig' fields are read via their plain selectors (@rpId cfg@, …) rather
 -- than @cfg.rpId@ record-dot, because GHC does not derive @HasField@ for these records
@@ -174,7 +175,7 @@ completeAuthentication cfg blob (StoredCredentialForVerify scid suh spk scnt str
       WA.SignatureCounterPotentiallyCloned -> Left WebAuthnCounterCloned
   where
     verifiedAuth cid newCounter =
-      VerifiedAuthentication {credentialId = cid, newSignCounter = newCounter, cloneWarning = False}
+      VerifiedAuthentication {credentialId = cid, newSignCounter = newCounter}
 
 -- Options / credential (de)serialization --------------------------------------
 

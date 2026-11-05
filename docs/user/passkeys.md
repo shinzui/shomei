@@ -97,6 +97,14 @@ wins). See [deployment.md](deployment.md) for the loader overview.
 | `ceremonyTimeout` | `webauthnCeremonyTimeoutSeconds` | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` | `300` | browser ceremony timeout (seconds) |
 | `pendingCeremonyTTL` | `webauthnPendingCeremonyTtlSeconds` | `SHOMEI_WEBAUTHN_PENDING_TTL` | `300` | how long a begun ceremony stays valid server-side (seconds) |
 
+`none` is the default attestation conveyance policy. `direct` asks the browser for attestation
+evidence. The library verifies the response and its applicable format checks, but Shōmei passes
+an empty Metadata Service registry and does not enforce the returned trust verdict. Successful
+registration therefore proves an accepted credential ceremony; it does not certify a trusted
+authenticator vendor, hardware device, or managed fleet. Neither setting is an authenticator
+allow-list. An MDS service and device trust enforcement require a separate policy and feature.
+[ADR-25](../adr/0025-attestation-conveyance-does-not-establish-device-trust.md) records this boundary.
+
 The cross-factor policy lives in `mfaConfig`, not `webauthnConfig`:
 
 | Field (`mfaConfig`) | Dhall key | Env var | Default | Meaning |

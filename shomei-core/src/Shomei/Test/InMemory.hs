@@ -1439,7 +1439,7 @@ runTokenGen ref = interpret_ \case
 --
 --   * 'CompleteAuthenticationCeremony' additionally requires the crafted
 --     @credentialId@ to equal the @StoredCredentialForVerify@'s; on success it returns
---     @newSignCounter = stored + 1@ and @cloneWarning = False@, on a credential-id
+--     @newSignCounter = stored + 1@, on a credential-id
 --     mismatch @Left WebAuthnSignatureInvalid@, on a challenge mismatch
 --     @Left WebAuthnChallengeMismatch@.
 runWebAuthnCeremonyFake :: (IOE :> es) => IORef World -> Eff (WebAuthnCeremony : es) a -> Eff es a
@@ -1497,8 +1497,7 @@ fakeCompleteAuthentication blob StoredCredentialForVerify {credentialId = stored
           Right
             VerifiedAuthentication
               { credentialId = storedCid,
-                newSignCounter = SignatureCounter (n + 1),
-                cloneWarning = False
+                newSignCounter = SignatureCounter (n + 1)
               }
 
 -- | Run an 'Eff' computation that uses every port against a shared in-memory 'World', with no
