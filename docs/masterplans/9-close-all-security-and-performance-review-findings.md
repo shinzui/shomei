@@ -53,7 +53,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|---|---|---|---|---|
-| 1 | Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes | [docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md](../plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Not Started |
+| 1 | Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes | [docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md](../plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md) | EP-7 M1 before M2 | EP-4 transaction helpers | In Progress |
 | 2 | Bound Authentication Inputs and Passkey Enrollment | [docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md](../plans/63-bound-authentication-inputs-and-passkey-enrollment.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Not Started |
 | 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | Not Started |
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Not Started |
@@ -85,7 +85,7 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
-Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 is next in the execution order; historical verification and all final integration gates remain open.
+Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 has passed its envelope, offline conversion and upgrade gates; its row awaits commit-pinned evidence before registry completion. EP-2 is next; its conflicting oversized-login compatibility requirements have been raised for a scope decision while independent work remains available. EP-7 historical verification includes the completed ID-token diagnostic follow-up; final integration gates remain open.
 
 ## Surprises & Discoveries
 

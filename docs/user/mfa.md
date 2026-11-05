@@ -16,6 +16,32 @@ second factor — a passkey or a confirmed TOTP credential — must complete MFA
 
 ## TOTP parameters
 
+Stored secrets use versioned AES-256-GCM envelopes authenticated to the credential and account
+IDs, including pending enrollments. Copying an envelope into another row fails authentication.
+
+Before upgrading a database containing legacy TOTP enrollments, take a database backup and
+retain its matching `SHOMEI_TOTP_ENCRYPTION_KEY`. Stop **all** Shōmei writers, including embedded
+hosts and administrative enrollment jobs. Apply the additive migrations with the new tools,
+then inspect and convert using the existing deployment configuration:
+
+```bash
+cabal run shomei-admin -- migrate
+cabal run shomei-admin -- totp migrate-envelopes --check
+cabal run shomei-admin -- totp migrate-envelopes --offline
+cabal run shomei-admin -- totp migrate-envelopes --check
+```
+
+`--check` reads version counts without the TOTP key; the final result must be `legacy=0
+invalid_versions=0`. Conversion requires the key, uses fresh nonces in transactions of at most
+100 rows, and prints counts only. An interrupted run resumes safely. A wrong key or unreadable
+batch changes no rows in that batch; restore the correct key or investigate the snapshot before
+retrying. Normal server startup refuses remaining legacy rows and never falls back to legacy
+decryption. Start the new servers only after the final check succeeds.
+
+Conversion binds the database's current associations: it cannot detect ciphertext transplanted
+before the upgrade. Use a trusted backup. Old binaries cannot read converted envelopes; rollback
+requires restoring the entire matching pre-upgrade database/key backup during the outage.
+
 Fixed and **not configurable**, because these are what every mainstream authenticator app
 implements: **SHA-1**, a **30-second** period, **6 digits**, and a **±1 step** acceptance window
 (tolerating ~30 s of clock skew each way). A verified code is never accepted twice: each

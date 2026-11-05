@@ -8,6 +8,10 @@ module Main (main) where
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (evaluate)
 import Control.Monad (forM_, replicateM, void, when)
+import Crypto.Cipher.AES (AES256)
+import Crypto.Cipher.Types (AEAD, AEADMode (AEAD_GCM), AuthTag (..), aeadInit, aeadSimpleEncrypt, cipherInit)
+import Crypto.Error (CryptoFailable (..))
+import Data.ByteArray qualified as BA
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Either (isLeft)
@@ -131,7 +135,7 @@ import Shomei.Authorization.Role.Workflow (grantRoleTo)
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, EmailAlreadyRegistered, InvalidCredentials, LoginIdAlreadyRegistered, PasswordResetTokenInvalid, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Error qualified as Err
-import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, userIdToUUID)
+import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, totpCredentialIdToUUID, userIdToUUID)
 import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
 import Shomei.Mfa.RecoveryCode.Store
   ( RecoveryCodeStore,
@@ -139,10 +143,12 @@ import Shomei.Mfa.RecoveryCode.Store
     countUnusedRecoveryCodes,
     replaceRecoveryCodes,
   )
-import Shomei.Mfa.Totp.Algorithm (TotpSecret (..))
+import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), totpCode, totpCounter)
 import Shomei.Mfa.Totp.Domain (NewRecoveryCode (..), NewTotpCredential (..), TotpCredential (..))
 import Shomei.Mfa.Totp.Postgres
   ( TotpEncryptionKey,
+    checkTotpEnvelopeVersions,
+    migrateTotpEnvelopeBatch,
     runTotpCredentialStorePostgres,
     totpEncryptionKeyFromBytes,
   )
@@ -154,6 +160,7 @@ import Shomei.Mfa.Totp.Store
     setTotpLastUsedCounter,
     upsertTotpEnrollment,
   )
+import Shomei.Mfa.Workflow (MfaCompletion (..), completeMfa, prepareMfaChallenge)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
@@ -224,7 +231,7 @@ import Shomei.ServiceAccount.Store
     rotateServiceAccountSecret,
   )
 import Shomei.Session.Authentication.Workflow (login, logout, refresh, signup)
-import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), SignupCommand (..))
+import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), ProofContext (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), AttemptFactor (..), ClientIp (..), FailureOutcome (..), LockPolicy (..), LoginOutcome (..), NewLoginAttempt (..))
 import Shomei.Session.LoginAttempt.Postgres (runLoginAttemptStorePostgres)
@@ -565,6 +572,11 @@ tests =
     testTotpCounterIsCompareAndSwap,
     testTotpCounterCasUnderRace,
     testTotpEncryptionAtRest,
+    testTotpEnvelopeBinding,
+    testTotpEnvelopeConversion,
+    testTotpConversionBatches,
+    testTotpConvertedFactor,
+    testTotpConversionConflict,
     testRecoveryCodeCasAndReplace,
     testPendingCeremonyConsumeOnce,
     testPendingCeremonyExpired,
@@ -863,7 +875,205 @@ testTotpEncryptionAtRest =
     stored <- scalarBytea pool "SELECT secret_enc FROM shomei.shomei_totp_credentials LIMIT 1"
     assertBool "stored ciphertext must differ from the plaintext secret" (stored /= totpRawSecret)
     -- 12-byte nonce + 20-byte ciphertext + 16-byte GCM tag
-    BS.length stored @?= 48
+    BS.length stored @?= 54
+
+testTotpEnvelopeBinding :: TestTree
+testTotpEnvelopeBinding =
+  testCase "totp envelopes bind pending/confirmed rows and reject transplant, version and payload tampering" $ withDb \pool -> do
+    (alice, bob) <-
+      expectApp =<< runApp pool do
+        a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+        b <- createUser (NewUser {loginId = bobLogin, email = Just bobEmail, displayName = Nothing})
+        forM_ [a, b] \u -> do
+          tcid <- genTotpCredentialId
+          t <- now
+          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          pure ()
+        pure (a, b)
+    let aliceId = "'" <> Text.pack (show (userIdToUUID alice.userId)) <> "'"
+        bobId = "'" <> Text.pack (show (userIdToUUID bob.userId)) <> "'"
+        restore = execSql pool ("UPDATE shomei.shomei_totp_credentials SET secret_enc = saved.secret_enc, envelope_version = 1 FROM saved WHERE shomei_totp_credentials.user_id = saved.user_id")
+    -- Persist snapshots in an ordinary fixture table because pool checkouts may differ.
+    execSql pool "CREATE TABLE saved AS SELECT * FROM shomei.shomei_totp_credentials"
+    forM_ [False, True] \confirmed -> do
+      when confirmed $ execSql pool "UPDATE shomei.shomei_totp_credentials SET confirmed_at = created_at"
+      execSql pool ("UPDATE shomei.shomei_totp_credentials SET secret_enc = (SELECT secret_enc FROM saved WHERE user_id = " <> aliceId <> ") WHERE user_id = " <> bobId)
+      transplanted <- runApp pool (findTotpByUser bob.userId)
+      assertBool "transplanted secret rejected" (isLeft transplanted)
+      restore
+    forM_ [0, 6, 18, 53] \offset -> do
+      execSql pool ("UPDATE shomei.shomei_totp_credentials SET secret_enc = set_byte(secret_enc, " <> Text.pack (show (offset :: Int)) <> ", get_byte(secret_enc, " <> Text.pack (show offset) <> ") # 1)")
+      tampered <- runApp pool (findTotpByUser alice.userId)
+      assertBool "marker/nonce/ciphertext/tag tampering rejected" (isLeft tampered)
+      restore
+    execSql pool "UPDATE shomei.shomei_totp_credentials SET envelope_version = 0"
+    legacy <- runApp pool (findTotpByUser alice.userId)
+    assertBool "strict runtime never sniffs a legacy version" (isLeft legacy)
+    restore
+    changedId <- genTotpCredentialId
+    let newId = "'" <> Text.pack (show (totpCredentialIdToUUID changedId)) <> "'"
+    execSql pool ("UPDATE shomei.shomei_totp_credentials SET totp_credential_id = " <> newId <> " WHERE user_id = " <> aliceId)
+    relabeled <- runApp pool (findTotpByUser alice.userId)
+    assertBool "credential-id mutation rejected" (isLeft relabeled)
+    execSql pool "UPDATE shomei.shomei_totp_credentials SET totp_credential_id = saved.totp_credential_id FROM saved WHERE shomei_totp_credentials.user_id = saved.user_id"
+    replacement <-
+      expectApp =<< runApp pool do
+        tcid <- genTotpCredentialId
+        t <- now
+        c <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = alice.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        found <- findTotpByUser alice.userId
+        pure (c, found)
+    fmap (\TotpCredential {totpCredentialId} -> totpCredentialId) (snd replacement)
+      @?= Just (case fst replacement of TotpCredential {totpCredentialId} -> totpCredentialId)
+
+-- Legacy format is deliberately constructed only in tests, never through a runtime writer.
+legacyTotpBlob :: ByteString
+legacyTotpBlob = case cipherInit (BS.replicate 32 7) >>= (\cipher -> aeadInit AEAD_GCM cipher (BS.replicate 12 3)) :: CryptoFailable (AEAD AES256) of
+  CryptoFailed _ -> error "test-only AES initialization failed"
+  CryptoPassed st ->
+    let (tag, ciphertext) = aeadSimpleEncrypt st (BS.empty :: ByteString) totpRawSecret 16
+     in BS.replicate 12 3 <> ciphertext <> BA.convert (unAuthTag tag)
+
+testTotpEnvelopeConversion :: TestTree
+testTotpEnvelopeConversion =
+  testCase "totp conversion is keyless-checkable, resumable, strict and nonce-fresh" $ withDb \pool -> do
+    uid <-
+      expectApp =<< runApp pool do
+        a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+        tcid <- genTotpCredentialId
+        t <- now
+        _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        pure a.userId
+    let seed =
+          preparable
+            "UPDATE shomei.shomei_totp_credentials SET secret_enc = $1, envelope_version = 0"
+            (E.param (E.nonNullable E.bytea))
+            D.noResult
+    _ <- expectRight =<< Pool.use pool (Session.statement legacyTotpBlob seed)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (1, 0))
+    wrongKey <- expectRight (totpEncryptionKeyFromBytes (BS.replicate 32 8))
+    failed <- migrateTotpEnvelopeBatch wrongKey pool
+    assertBool "wrong key fails without changing rows" (isLeft failed)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (1, 0))
+    execSql pool "UPDATE shomei.shomei_totp_credentials SET secret_enc = set_byte(secret_enc, 47, get_byte(secret_enc, 47) # 1)"
+    corrupt <- migrateTotpEnvelopeBatch testTotpKey pool
+    assertBool "invalid legacy tag leaves the row unchanged" (isLeft corrupt)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (1, 0))
+    _ <- expectRight =<< Pool.use pool (Session.statement legacyTotpBlob seed)
+    migrateTotpEnvelopeBatch testTotpKey pool >>= (@?= Right 1)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (0, 0))
+    migrateTotpEnvelopeBatch testTotpKey pool >>= (@?= Right 0)
+    actual <- expectApp =<< runApp pool (findTotpByUser uid)
+    fmap tcSecret actual @?= Just (TotpSecret totpRawSecret)
+    stored <- scalarBytea pool "SELECT secret_enc FROM shomei.shomei_totp_credentials LIMIT 1"
+    assertBool "conversion uses a fresh nonce" (BS.take 12 (BS.drop 6 stored) /= BS.take 12 legacyTotpBlob)
+
+testTotpConversionBatches :: TestTree
+testTotpConversionBatches =
+  testCase "totp conversion resumes after 100 rows and preserves pending/confirmed state" $ withDb \pool -> do
+    _ <-
+      expectApp =<< runApp pool do
+        forM_ [1 .. 101 :: Int] \i -> do
+          lid <- either (error . show) pure (mkLoginId ("totp-batch-" <> Text.pack (show i)))
+          u <- createUser (NewUser {loginId = lid, email = Nothing, displayName = Nothing})
+          tcid <- genTotpCredentialId
+          t <- now
+          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          when (even i) (confirmTotp tcid t)
+    let seed =
+          preparable
+            "UPDATE shomei.shomei_totp_credentials SET secret_enc = $1, envelope_version = 0"
+            (E.param (E.nonNullable E.bytea))
+            D.noResult
+    _ <- expectRight =<< Pool.use pool (Session.statement legacyTotpBlob seed)
+    migrateTotpEnvelopeBatch testTotpKey pool >>= (@?= Right 100)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (1, 0))
+    -- An interruption here requires no retained process state or cursor.
+    migrateTotpEnvelopeBatch testTotpKey pool >>= (@?= Right 1)
+    checkTotpEnvelopeVersions pool >>= (@?= Right (0, 0))
+    scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials WHERE confirmed_at IS NOT NULL" >>= (@?= 50)
+    scalarInt pool "SELECT count(DISTINCT substring(secret_enc FROM 7 FOR 12)) FROM shomei.shomei_totp_credentials" >>= (@?= 101)
+
+testTotpConvertedFactor :: TestTree
+testTotpConvertedFactor =
+  testCase "totp factor completion succeeds with the same secret before and after offline conversion" $ withDb \pool -> do
+    u <-
+      expectApp =<< runAppAtTime t0 pool do
+        a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+        tcid <- genTotpCredentialId
+        _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t0}
+        confirmTotp tcid t0
+        pure a
+    let completeAt ts = do
+          result <- runAppAtTime ts pool do
+            (cid, _, methods) <- prepareMfaChallenge cfg u ts
+            liftIO (assertBool "TOTP offered" ("totp" `elem` methods))
+            completeMfa
+              cfg
+              (ProofContext (ClientIp "test-ip") AccountKey)
+              cid
+              (MfaTotp (totpCode 6 (TotpSecret totpRawSecret) (totpCounter ts)))
+          _ <- expectApp result >>= expectRight
+          pure ()
+    completeAt t0
+    let seed =
+          preparable
+            "UPDATE shomei.shomei_totp_credentials SET secret_enc = $1, envelope_version = 0"
+            (E.param (E.nonNullable E.bytea))
+            D.noResult
+    _ <- expectRight =<< Pool.use pool (Session.statement legacyTotpBlob seed)
+    migrateTotpEnvelopeBatch testTotpKey pool >>= (@?= Right 1)
+    completeAt (addUTCTime 30 t0)
+
+testTotpConversionConflict :: TestTree
+testTotpConversionConflict =
+  testCase "totp converter CAS preserves enrollment changed after its snapshot" $
+    withShomeiMigratedDatabase \connStr -> do
+      pool <- acquirePool 4 10 30000 connStr
+      gatePool <- acquirePool 1 10 30000 connStr
+      u <-
+        expectApp =<< runApp pool do
+          a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
+          tcid <- genTotpCredentialId
+          t <- now
+          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          pure a
+      let seed =
+            preparable
+              "UPDATE shomei.shomei_totp_credentials SET secret_enc = $1, envelope_version = 0"
+              (E.param (E.nonNullable E.bytea))
+              D.noResult
+          awaitLock sql =
+            let loop n = do
+                  count <- scalarInt pool sql
+                  if count > 0
+                    then pure ()
+                    else
+                      if n == (0 :: Int) then assertFailure "advisory-lock barrier not reached" else threadDelay 10000 >> loop (n - 1)
+             in loop 500
+      _ <- expectRight =<< Pool.use pool (Session.statement legacyTotpBlob seed)
+      -- A separate one-connection pool holds a session lock that gates the converter lock.
+      execSql gatePool "SELECT pg_advisory_lock(1936224116, 2)"
+      blocker <- newEmptyMVar
+      _ <- forkIO $ do
+        result <- Pool.use pool (Session.script "BEGIN; SELECT pg_advisory_xact_lock(1936224116, 1); SELECT pg_advisory_xact_lock(1936224116, 2); COMMIT")
+        putMVar blocker result
+      awaitLock "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 1936224116 AND objid = 1 AND granted"
+      converted <- newEmptyMVar
+      _ <- forkIO (putMVar converted =<< migrateTotpEnvelopeBatch testTotpKey pool)
+      awaitLock "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 1936224116 AND objid = 1 AND NOT granted"
+      fresh <-
+        expectApp =<< runApp pool do
+          tcid <- genTotpCredentialId
+          t <- now
+          upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret "new enrollment secret", createdAt = t}
+      execSql gatePool "SELECT pg_advisory_unlock(1936224116, 2)"
+      _ <- expectRight =<< takeMVar blocker
+      takeMVar converted >>= (@?= Right 0)
+      stored <- expectApp =<< runApp pool (findTotpByUser u.userId)
+      fmap tcSecret stored @?= Just (tcSecret fresh)
+      Pool.release gatePool
+      Pool.release pool
 
 -- | The recovery-code store's contract: a replaced set is the live set, consumption is a
 -- consume-once compare-and-set, the unused count tracks it, and regeneration drops the old set.

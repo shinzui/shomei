@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import re
+import sys
 
 root = Path(__file__).resolve().parent.parent
 expected = set()
@@ -21,6 +22,15 @@ for line in ledger.splitlines():
     if not match:
         continue
     handle = match[1]
+    if "--closed" in sys.argv:
+        columns = [part.strip() for part in line.split("|")][1:-1]
+        assert columns[3] in {
+            "Fixed", "Existing decision verified", "Owner-approved decision", "Inapplicable with proof"
+        }, f"Unclosed row: {handle} ({columns[3]})"
+        evidence = columns[4]
+        assert "Pending" not in evidence and re.search(r"\b[0-9a-f]{7,40}\b", evidence), (
+            f"Missing commit-pinned evidence: {handle}"
+        )
     assert handle not in seen, f"Duplicate ledger row: {handle}"
     seen.add(handle)
     if re.fullmatch(r"REV-\d+\.\d+", handle):

@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** `IdToken` now redacts `Show` and has no generic JSON instances. OAuth wire
+  responses explicitly unwrap it, consistent with access and refresh token diagnostics.
+
 - **Breaking:** `Session`, `NewSession`, `TokenPair`, `LoginCommand` and `SessionOptions` gain a
   `remembered`/`remember` field, and `issueSession` takes the remember choice. `ShomeiConfig` gains
   `rememberedSessionTTL` (`defaultRememberedSessionTTL`, 365 days), used for remembered sessions.

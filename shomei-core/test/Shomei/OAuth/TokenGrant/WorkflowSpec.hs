@@ -20,6 +20,7 @@ import Shomei.OAuth.AuthorizationCode.Domain (NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store (putAuthorizationCode)
 import Shomei.OAuth.Client.Domain (ClientType (ConfidentialClient), NewOAuthClient (..), OAuthClient (..))
 import Shomei.OAuth.Client.Store (createOAuthClient)
+import Shomei.OAuth.IdToken.Domain (IdToken (..))
 import Shomei.OAuth.TokenGrant.Workflow
   ( ExchangeAuthorizationCode (..),
     TokenGrantError (..),
@@ -36,7 +37,8 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.OAuth.TokenGrant.Workflow"
-    [ testCase "authorization-code exchange refuses an unverified email when the gate is enabled" testUnverifiedEmail,
+    [ testCase "ID token diagnostics redact the credential" (show (IdToken "sensitive-jwt") @?= "IdToken <redacted>"),
+      testCase "authorization-code exchange refuses an unverified email when the gate is enabled" testUnverifiedEmail,
       testCase "authorization-code exchange accepts an unverified email when the gate is disabled" testUngatedEmail,
       testCase "authorization-code exchange accepts a verified email when the gate is enabled" testVerifiedEmail,
       testCase "authorization-code exchange exempts a login-id-only account from the email gate" testNoEmail

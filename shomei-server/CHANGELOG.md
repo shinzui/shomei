@@ -6,6 +6,11 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add `shomei-admin totp migrate-envelopes --check|--offline`; shared server startup refuses
+  legacy TOTP envelopes. See the MFA guide for the required offline upgrade and rollback steps.
+- Require released `smtp-mail >=0.5.0.2`, which fixes the `getHostName` import conflict with
+  `network >=3.2.10`.
+
 - `SHOMEI_REMEMBERED_SESSION_TTL` and the Dhall field `rememberedSessionTtlSeconds` set the
   lifetime of a remembered session.
 

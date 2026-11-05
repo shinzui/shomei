@@ -35,3 +35,4 @@
 0035-status-checks-and-case-insensitive-identity.sql
 0036-unique-password-credential-per-user.sql
 0037-remembered-sessions.sql
+0038-add-totp-envelope-version.sql

@@ -1,5 +1,9 @@
 # Bundle Update Log
 
+## 2026-11-05
+* **Update**: ADR-13 extends diagnostic redaction and explicit wire-only serialization to ID tokens.
+* **Addition**: ADR-20 binds TOTP envelopes to row identities and requires resumable offline conversion.
+
 ## 2026-08-28
 * **Addition**: ADR-19 requires schema-qualified migration objects and transaction-local namespace state.
 * **Addition**: ADR-18 makes downstream JWKS transport, cache freshness, and unknown-key refresh a bounded local policy.

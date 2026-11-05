@@ -374,5 +374,12 @@ in  Schema.Project::{
         , okfVersion = "0.2"
         , description = Some "Shomei architecture decision records"
         }
+      , Schema.OkfBundle::{
+        , name = "friction-log"
+        , path = "docs/friction-log"
+        , profile = Some "docs/friction-log/profile.dhall"
+        , okfVersion = "0.2"
+        , description = Some "Friction encountered while implementing plans"
+        }
       ]
     }

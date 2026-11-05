@@ -20,9 +20,11 @@ import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
+import Shomei.Mfa.Totp.Postgres (checkTotpEnvelopeVersions, migrateTotpEnvelopeBatch, totpEncryptionKeyFromBase64)
 import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Server.Keys (loadKekFromEnv, loadNamedKekFromEnv)
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (hFlush, hIsTerminalDevice, hPutStr, hPutStrLn, hSetEcho, stderr, stdin)
 
@@ -37,6 +39,7 @@ data Command
   | OAuthClients OAuthClientsCommand
   | Audit AuditCommand
   | Sweep SweepOptions
+  | TotpMigrateEnvelopes Bool Bool
 
 data KeysCommand
   = KeysGenerate SigningAlgorithm
@@ -64,6 +67,21 @@ commandParser =
         <> command "oauth-clients" (info (OAuthClients <$> oauthClientsParser) (progDesc "Manage OAuth2/OIDC clients for the authorization-code flow"))
         <> command "audit" (info (Audit <$> auditParser) (progDesc "Query the audit log / security events"))
         <> command "sweep" (info (Sweep <$> sweepParser) (progDesc "Delete expired and dead rows once, then exit"))
+        <> command "totp" (info totpParser (progDesc "Maintain encrypted TOTP envelopes"))
+    )
+
+totpParser :: Parser Command
+totpParser =
+  hsubparser
+    ( command
+        "migrate-envelopes"
+        ( info
+            ( TotpMigrateEnvelopes
+                <$> switch (long "check" <> help "Read version counts only; requires no TOTP key")
+                <*> switch (long "offline" <> help "Confirm all Shomei writers are stopped and a matching backup exists")
+            )
+            (progDesc "Convert legacy TOTP envelopes in resumable batches of at most 100 rows")
+        )
     )
 
 keysParser :: Parser KeysCommand
@@ -158,6 +176,36 @@ run = \case
   Sweep opts -> do
     env <- loadAdminEnv
     runSweep env opts
+  TotpMigrateEnvelopes check offline -> do
+    env <- loadAdminEnv
+    let die message = hPutStrLn stderr message >> exitFailure
+        counts = checkTotpEnvelopeVersions env.pool >>= either (const (die "shomei-admin: TOTP version/schema check failed")) pure
+    (legacy, invalid) <- counts
+    putStrLn ("legacy=" <> show legacy <> " invalid_versions=" <> show invalid)
+    if check
+      then pure ()
+      else do
+        if not offline then die "shomei-admin: stop all Shomei writers, retain database/key backup, then pass --offline" else pure ()
+        if invalid /= 0 then die "shomei-admin: unknown TOTP envelope version; conversion refused" else pure ()
+        raw <- lookupEnv "SHOMEI_TOTP_ENCRYPTION_KEY"
+        key <-
+          either
+            (const (die "shomei-admin: valid SHOMEI_TOTP_ENCRYPTION_KEY required"))
+            pure
+            (maybe (Left "missing") (totpEncryptionKeyFromBase64 . Text.pack) raw)
+        let loop total conflicts = do
+              (remaining, unknown) <- counts
+              if unknown /= 0
+                then die "shomei-admin: unknown TOTP envelope version"
+                else
+                  if remaining == 0
+                    then putStrLn ("converted=" <> show total)
+                    else do
+                      converted <- migrateTotpEnvelopeBatch key env.pool >>= either (const (die "shomei-admin: TOTP batch failed; restore key/snapshot and retry; no unreadable row overwritten")) pure
+                      if converted == 0 && conflicts >= (2 :: Int)
+                        then die "shomei-admin: repeated conversion conflicts; verify all writers are stopped"
+                        else loop (total + converted) (if converted == 0 then conflicts + 1 else 0)
+        loop (0 :: Int) 0
 
 -- | Read a secret without placing it in argv. A terminal gets a no-echo prompt; redirected
 -- stdin and files are consumed in full. Remove exactly one conventional line ending so

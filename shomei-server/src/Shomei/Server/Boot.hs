@@ -60,13 +60,14 @@ import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
 import Shomei.Config (OAuthConfig (..), ObservabilityConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), configSigningAlgorithm)
 import Shomei.Error (AuthError)
 import Shomei.Health.Server (buildHealthChecks)
-import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
+import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, checkTotpEnvelopeVersions, totpEncryptionKeyFromBase64, totpEncryptionKeyFromBytes)
 import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Notify (deliverNotification)
 import Shomei.Notify.Queue (closeNotifierQueue, drainNotifierQueue, newNotifierQueue, withDequeued)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
 import Shomei.Prelude hiding (Context, (.=))
@@ -450,6 +451,12 @@ buildEnv cfg settings = do
       (millisToDiffTime settings.serverDbPoolAcquisitionTimeoutMs)
       settings.serverDbStatementTimeoutMs
       settings.serverConnStr
+  checkTotpEnvelopeVersions pool >>= \case
+    Right (0, 0) -> pure ()
+    _ -> do
+      Pool.release pool
+      hPutStrLn stderr "[shomei] FATAL: TOTP envelope conversion required; stop writers and run shomei-admin totp migrate-envelopes --check, then --offline"
+      exitFailure
   kek <- loadKekFromEnv
   totpKey <- loadTotpKeyFromEnv cfg
   notifierSecrets <- loadNotifierSecretsFromEnv cfg

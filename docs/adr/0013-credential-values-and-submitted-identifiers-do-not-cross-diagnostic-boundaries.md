@@ -5,7 +5,7 @@ description: Secret-bearing token values are non-serializable and redacted, whil
 docId: ADR-13
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-27T22:07:01Z
+timestamp: 2026-11-05T13:28:00Z
 originatingPlan: docs/plans/57-notifier-and-log-hygiene-no-token-or-secret-reaches-a-log-audit-row-or-config-dump.md
 generated:
   by: openai-codex/gpt-5
@@ -26,9 +26,9 @@ resolved, query the failure by its subject user. Historical failed-login rows mu
 
 ## Decision
 
-`AccessToken`, `RefreshToken`, and the client `Token` have explicit `Show` instances that emit only
+`AccessToken`, `RefreshToken`, `IdToken`, and the client `Token` have explicit `Show` instances that emit only
 a redaction marker. The core token types and `TokenPair` have no generic JSON instances; wire DTOs
-remain the only serialization boundary.
+remain the only serialization boundary, including the explicit ID-token unwrap in OAuth responses.
 
 New `login_failed` events store the already-derived SHA-256 `AccountKey` and an optional resolved
 `UserId`, never the submitted `LoginId`. The resolved user also populates the audit envelope's
@@ -38,9 +38,8 @@ New `login_failed` events store the already-derived SHA-256 `AccountKey` and an 
 ## Consequences
 
 Generic diagnostics cannot render or serialize these bearer credentials. Callers that used the
-removed core JSON instances must serialize an explicit wire DTO. `IdToken` retains its existing
-instances and is a separately tracked follow-up because OIDC response modeling is outside this
-remediation's compatibility boundary.
+removed core JSON instances must serialize an explicit wire DTO. The ID-token follow-up was
+completed under MasterPlan 9; the diagnostic guarantee now includes all issued bearer credentials.
 
 Failed-login and account-lock events can be joined by `accountKey`, and resolved failures appear in
 user-filtered audit queries. New SIEM rules must move from `payload.loginId` to

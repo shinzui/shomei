@@ -52,6 +52,8 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 
 ## Surprises & Discoveries
 
+2026-11-05: Independent historical verification found the ID-token exception in ADR-13 still present. `IdToken` now redacts diagnostics and no longer has generic JSON instances; the OAuth handler explicitly unwraps it. The core regression passes, and ADR-13 documents the completed follow-up. Remaining historical rows still require their own evidence.
+
 
 
 

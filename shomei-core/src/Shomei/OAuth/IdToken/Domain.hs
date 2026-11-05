@@ -18,7 +18,11 @@ import Shomei.Prelude
 -- | A signed OIDC ID token (a compact JWS), beside 'Shomei.Session.Token.Domain.AccessToken'.
 newtype IdToken = IdToken Text
   deriving stock (Generic)
-  deriving newtype (Eq, Show, FromJSON, ToJSON)
+  deriving newtype (Eq)
+
+-- | Wire DTOs explicitly unwrap ID tokens. Generic diagnostics never expose a credential.
+instance Show IdToken where
+  show _ = "IdToken <redacted>"
 
 data IdTokenClaims = IdTokenClaims
   { issuer :: !Issuer,

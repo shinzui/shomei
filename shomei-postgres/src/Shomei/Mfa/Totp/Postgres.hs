@@ -6,19 +6,20 @@
 -- The port ('Shomei.Mfa.Totp.Store') speaks in raw 'Shomei.Mfa.Totp.Algorithm.TotpSecret's;
 -- encryption lives here so the workflows stay pure policy over ports and the in-memory tests
 -- exercise TOTP logic rather than AES (Decision Log). Each write draws a fresh 96-bit nonce and
--- stores @nonce || ciphertext || tag@ in one @bytea@; the key comes from the server 'Env'
+-- stores @marker || nonce || ciphertext || tag@ in one @bytea@; the key comes from the server 'Env'
 -- (@SHOMEI_TOTP_ENCRYPTION_KEY@), never from the database, so a dump alone yields no usable
--- secret. This follows the ChaChaPoly1305 AEAD shape in
--- @shomei-jwt/src/Shomei/Jwt/KeyProtection.hs@, adapted to AES-256-GCM.
+-- secret. The authenticated context binds the format, credential and user identifiers.
 module Shomei.Mfa.Totp.Postgres
   ( runTotpCredentialStorePostgres,
     TotpEncryptionKey,
     totpEncryptionKeyFromBytes,
     totpEncryptionKeyFromBase64,
+    checkTotpEnvelopeVersions,
+    migrateTotpEnvelopeBatch,
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip4)
+import Contravariant.Extras (contrazip2, contrazip4, contrazip5)
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types
   ( AEAD,
@@ -35,7 +36,8 @@ import Data.ByteArray qualified as BA
 import Data.ByteArray.Encoding (Base (Base64), convertFromBase)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.Int (Int64)
+import Data.Int (Int16, Int64)
+import Data.Maybe (catMaybes)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.UUID (UUID)
@@ -44,11 +46,15 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
+import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Hasql.Transaction qualified as Tx
+import Hasql.Transaction.Sessions qualified as TxSession
 import Shomei.Error (AuthError (..))
 import Shomei.Id
-  ( totpCredentialIdFromUUID,
+  ( idText,
+    totpCredentialIdFromUUID,
     totpCredentialIdToUUID,
     userIdFromUUID,
     userIdToUUID,
@@ -88,34 +94,52 @@ aeadState key nonce = do
   cipher <- cipherInit key
   aeadInit AEAD_GCM cipher nonce
 
--- | Encrypt raw secret bytes: draw a 96-bit nonce, and lay out @nonce || ciphertext || tag@.
-encryptSecret :: TotpEncryptionKey -> ByteString -> IO ByteString
-encryptSecret (TotpEncryptionKey key) plaintext = do
+-- | Explicit envelope marker; the schema version is authoritative, never sniffed from a nonce.
+envelopeMarker :: ByteString
+envelopeMarker = "STOTP\x01"
+
+-- | Both canonical TypeIDs have fixed width (31 ASCII bytes). The domain/version and
+-- ordered credential/user identities make concatenation unambiguous.
+associatedData :: UUID -> UUID -> ByteString
+associatedData tcid uid =
+  "shomei:totp:aes256gcm:v1:"
+    <> TE.encodeUtf8 (idText (totpCredentialIdFromUUID tcid))
+    <> TE.encodeUtf8 (idText (userIdFromUUID uid))
+
+encryptSecret :: TotpEncryptionKey -> UUID -> UUID -> ByteString -> IO ByteString
+encryptSecret (TotpEncryptionKey key) tcid uid plaintext = do
   nonce <- getRandomBytes 12 :: IO ByteString
   case aeadState key nonce of
     CryptoFailed e -> ioError (userError ("shomei: cannot initialize TOTP encryption: " <> show e))
     CryptoPassed st -> do
-      let (tag, ciphertext) = aeadSimpleEncrypt st (BS.empty :: ByteString) plaintext 16
-      pure (nonce <> ciphertext <> BA.convert (unAuthTag tag))
+      let (tag, ciphertext) = aeadSimpleEncrypt st (associatedData tcid uid) plaintext 16
+      pure (envelopeMarker <> nonce <> ciphertext <> BA.convert (unAuthTag tag))
 
 -- | Recover raw secret bytes from a stored @secret_enc@ blob. A wrong key, a tampered
 -- ciphertext, or a truncated blob all fail the same way (one indistinguishable error).
-decryptSecret :: TotpEncryptionKey -> ByteString -> Either Text ByteString
-decryptSecret (TotpEncryptionKey key) blob
-  | BS.length blob < 12 + 16 = Left "TOTP secret ciphertext is shorter than nonce + tag"
+decryptSecret :: TotpEncryptionKey -> UUID -> UUID -> Int16 -> ByteString -> Either Text ByteString
+decryptSecret key tcid uid version blob
+  | version /= 1 = Left "TOTP envelope requires offline conversion"
+  | not (envelopeMarker `BS.isPrefixOf` blob) = Left "TOTP secret failed authentication"
+  | otherwise = decryptPayload key (associatedData tcid uid) (BS.drop (BS.length envelopeMarker) blob)
+
+-- Legacy decoding is reachable only from the explicit offline converter below.
+decryptPayload :: TotpEncryptionKey -> ByteString -> ByteString -> Either Text ByteString
+decryptPayload (TotpEncryptionKey key) aad blob
+  | BS.length blob < 12 + 16 = Left "TOTP secret failed authentication"
   | otherwise =
       let (nonce, rest) = BS.splitAt 12 blob
           (ciphertext, tagBytes) = BS.splitAt (BS.length rest - 16) rest
        in case aeadState key nonce of
             CryptoFailed _ -> Left "TOTP secret: bad AES-GCM initialization"
             CryptoPassed st ->
-              case aeadSimpleDecrypt st (BS.empty :: ByteString) ciphertext (AuthTag (BA.convert tagBytes)) of
+              case aeadSimpleDecrypt st aad ciphertext (AuthTag (BA.convert tagBytes)) of
                 Just pt -> Right pt
                 Nothing -> Left "TOTP secret failed authentication"
 
 -- | The stored row, column order matching @shomei_totp_credentials@:
 -- @(totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at)@.
-type TotpRow = (UUID, UUID, ByteString, Maybe Int64, Maybe UTCTime, UTCTime)
+type TotpRow = (UUID, UUID, ByteString, Maybe Int64, Maybe UTCTime, UTCTime, Int16)
 
 runTotpCredentialStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -124,7 +148,7 @@ runTotpCredentialStorePostgres ::
   Eff es a
 runTotpCredentialStorePostgres key = interpret_ \case
   UpsertTotpEnrollment NewTotpCredential {totpCredentialId, userId, secret = TotpSecret raw, createdAt} -> do
-    enc <- liftIO (encryptSecret key raw)
+    enc <- liftIO (encryptSecret key (totpCredentialIdToUUID totpCredentialId) (userIdToUUID userId) raw)
     let params = (totpCredentialIdToUUID totpCredentialId, userIdToUUID userId, enc, createdAt)
     res <- runSession (Session.statement params upsertStmt)
     either dbFail (const (pure ())) res
@@ -156,8 +180,8 @@ runTotpCredentialStorePostgres key = interpret_ \case
     rebuild row = either (throwError . InternalAuthError) pure (rebuildCredential key row)
 
 rebuildCredential :: TotpEncryptionKey -> TotpRow -> Either Text TotpCredential
-rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created) = do
-  raw <- decryptSecret key enc
+rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created, version) = do
+  raw <- decryptSecret key tcid uid version enc
   pure
     TotpCredential
       { totpCredentialId = totpCredentialIdFromUUID tcid,
@@ -170,16 +194,17 @@ rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created) = do
 
 totpRowDecoder :: D.Row TotpRow
 totpRowDecoder =
-  (,,,,,)
+  (,,,,,,)
     <$> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.bytea)
     <*> D.column (D.nullable D.int8)
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nonNullable D.timestamptz)
+    <*> D.column (D.nonNullable D.int2)
 
 selectCols :: Text
-selectCols = "totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at"
+selectCols = "totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version"
 
 -- | Insert, or replace an existing (unconfirmed) enrollment for the user: on a @user_id@
 -- conflict the id and secret are swapped in and the counter/confirmation are reset to NULL. The
@@ -189,11 +214,12 @@ upsertStmt =
   preparable
     """
     INSERT INTO shomei.shomei_totp_credentials
-      (totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at)
-    VALUES ($1, $2, $3, NULL, NULL, $4)
+      (totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version)
+    VALUES ($1, $2, $3, NULL, NULL, $4, 1)
     ON CONFLICT (user_id) DO UPDATE
     SET totp_credential_id = EXCLUDED.totp_credential_id,
         secret_enc = EXCLUDED.secret_enc,
+        envelope_version = 1,
         last_used_counter = NULL,
         confirmed_at = NULL,
         created_at = EXCLUDED.created_at
@@ -243,3 +269,62 @@ deleteByUserStmt =
     "DELETE FROM shomei.shomei_totp_credentials WHERE user_id = $1"
     (E.param (E.nonNullable E.uuid))
     D.noResult
+
+-- | Read-only and keyless. Returns (legacy rows, unknown versions).
+checkTotpEnvelopeVersions :: Pool.Pool -> IO (Either AuthError (Int64, Int64))
+checkTotpEnvelopeVersions pool =
+  fmap (either (Left . postgresUnavailable) Right) $
+    Pool.use pool (Session.statement () versionCountsStmt)
+
+versionCountsStmt :: Statement () (Int64, Int64)
+versionCountsStmt =
+  preparable
+    "SELECT count(*) FILTER (WHERE envelope_version = 0), count(*) FILTER (WHERE envelope_version NOT IN (0, 1)) FROM shomei.shomei_totp_credentials"
+    E.noParams
+    (D.singleRow ((,) <$> D.column (D.nonNullable D.int8) <*> D.column (D.nonNullable D.int8)))
+
+-- | Convert at most 100 legacy rows. Call only with all authentication writers stopped.
+-- Decrypt the whole batch before writing anything. Each encryption draws its own nonce.
+-- The transaction lock serializes converter writes; CAS protects against stale snapshots.
+-- A caller can safely resume after any completed batch or restart after failure.
+migrateTotpEnvelopeBatch :: TotpEncryptionKey -> Pool.Pool -> IO (Either AuthError Int)
+migrateTotpEnvelopeBatch key pool = do
+  rows <- Pool.use pool (Session.statement () legacyRowsStmt)
+  case rows of
+    Left err -> pure (Left (postgresUnavailable err))
+    Right originals -> case traverse decryptLegacy originals of
+      Left _ -> pure (Left (InternalAuthError "TOTP envelope conversion failed authentication; no batch writes performed"))
+      Right plaintexts -> do
+        replacements <- forM plaintexts \(tcid, uid, original, raw) -> do
+          enc <- encryptSecret key tcid uid raw
+          pure (tcid, uid, original, enc, 0 :: Int16)
+        result <- Pool.use pool $ TxSession.transactionNoRetry TxSession.ReadCommitted TxSession.Write do
+          Tx.statement () conversionLockStmt
+          results <- forM replacements (\params -> Tx.statement params convertRowStmt)
+          pure (length (catMaybes results))
+        pure (either (Left . postgresUnavailable) Right result)
+  where
+    decryptLegacy (tcid, uid, enc) = do
+      raw <- decryptPayload key BS.empty enc
+      pure (tcid, uid, enc, raw)
+
+legacyRowsStmt :: Statement () [(UUID, UUID, ByteString)]
+legacyRowsStmt =
+  preparable
+    "SELECT totp_credential_id, user_id, secret_enc FROM shomei.shomei_totp_credentials WHERE envelope_version = 0 ORDER BY totp_credential_id LIMIT 100"
+    E.noParams
+    (D.rowList ((,,) <$> D.column (D.nonNullable D.uuid) <*> D.column (D.nonNullable D.uuid) <*> D.column (D.nonNullable D.bytea)))
+
+conversionLockStmt :: Statement () ()
+conversionLockStmt =
+  preparable
+    "SELECT pg_advisory_xact_lock(1936224116, 1)"
+    E.noParams
+    D.noResult
+
+convertRowStmt :: Statement (UUID, UUID, ByteString, ByteString, Int16) (Maybe UUID)
+convertRowStmt =
+  preparable
+    "UPDATE shomei.shomei_totp_credentials SET secret_enc = $4, envelope_version = 1 WHERE totp_credential_id = $1 AND user_id = $2 AND secret_enc = $3 AND envelope_version = $5 RETURNING totp_credential_id"
+    (contrazip5 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.bytea)) (E.param (E.nonNullable E.bytea)) (E.param (E.nonNullable E.int2)))
+    (D.rowMaybe (D.column (D.nonNullable D.uuid)))

@@ -44,12 +44,16 @@ Prevent a valid encrypted TOTP secret from being copied to another account while
 ## Progress
 
 
-- [ ] M1: versioned, row-bound encryption rejects ciphertext transplants and tampering.
-- [ ] M2: resumable offline conversion upgrades legacy rows and strict runtime rejects all legacy blobs.
-- [ ] M3: upgrade, interrupted conversion, and factor-login integration tests pass with an operator runbook.
+- [x] (2026-11-05) M1: versioned row binding rejects pending/confirmed transplants, credential-ID changes, and marker/nonce/ciphertext/tag tampering; PostgreSQL binding and re-enrollment regressions pass.
+- [x] (2026-11-05) M2: migration 0038, keyless inspection, offline CLI conversion, and strict startup/read behavior implemented. Wrong-key/tag and lock-barrier stale-snapshot tests pass; conversion resumes after a 100-row batch and reruns change zero converted rows.
+- [x] (2026-11-05) M3: real MFA completion preserves the secret across conversion; core/PostgreSQL/server suites, CLI build/help, migration and ADR checks pass. The MFA guide documents offline sequencing, backup provenance and rollback.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: The first PostgreSQL pass verified the new binding/conversion cases but nine unrelated cases timed out starting ephemeral servers at unrestricted Tasty concurrency. Explicit `--test-options=-j2` passed the suite; FRIC-1 in `docs/friction-log/` records the environment constraint. Cabal `-j1` limits builds, not Tasty cases.
+
+2026-11-05: Fresh dependency resolution exposed smtp-mail 0.5.0.1 failing against network >=3.2.10. Hackage release 0.5.0.2 fixes that exact conflict and its sdist was inspected; the upstream tag listing has no matching release tag. The lower bound now selects the released fix rather than excluding current network. FRIC-2 in `docs/friction-log/` records the detour.
 
 
 
@@ -57,11 +61,17 @@ Prevent a valid encrypted TOTP secret from being copied to another account while
 
 ## Decision Log
 
+2026-11-05: Version 1 authenticates a fixed domain label plus two fixed-width canonical TypeIDs and carries a matching six-byte envelope marker. Schema version 0 is converter-only; both pending and confirmed legacy rows prevent shared server startup. ADR-20 records this upgrade contract.
+
+2026-11-05: Use `transactionNoRetry` for converter batches and require hasql-transaction >=1.2.1. The 1.2 upstream source lacks this export; 1.2.1 exports it. Hackage latest and upstream latest release tag both identify 1.2.3.1.
+
 
 2026-10-28: Deliver the stated behavior with explicit upgrade and failure semantics; preserve established product policies unless an owner explicitly changes them. New risk acceptance is not a substitute for implementing a confirmed defect.
 
 
 ## Outcomes & Retrospective
+
+2026-11-05: Delivered row-bound TOTP encryption and a resumable offline upgrade with no runtime legacy fallback. `cabal test shomei-postgres shomei-core shomei-server --test-show-details=failures --test-options=-j2 -j1` passed, followed by a final core/PostgreSQL rerun after the last assertions. `cabal build shomei-admin -j1`, CLI help, `just migration-check`, and `just adr-validate` pass. ADR-20 holds the durable format/upgrade contract. Historical transplants cannot be detected retroactively, so trusted backup associations remain an explicit limitation. FRIC-1 is accepted with explicit Tasty concurrency; FRIC-2 is resolved by requiring released smtp-mail 0.5.0.2.
 
 
 

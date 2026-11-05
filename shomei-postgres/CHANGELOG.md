@@ -6,6 +6,11 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Upgrade required:** TOTP envelopes bind both row identifiers; normal reads reject legacy
+  ciphertext. Apply migration 0038 and run the offline converter before starting new hosts.
+- Add keyless envelope-version inspection and resumable conversion in batches of 100.
+- Require `hasql-transaction >=1.2.1` for the explicit no-retry transaction primitive.
+
 - The session store persists and reads `shomei_sessions.remembered`.
 
 ## 0.2.0.0 — 2026-08-27
