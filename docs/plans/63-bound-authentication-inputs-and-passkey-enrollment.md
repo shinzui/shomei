@@ -69,7 +69,7 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 
 ## Outcomes & Retrospective
 
-Accepted the owner’s legacy-login choice without truncating identities. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites, including `new identity limits count Unicode code points and email UTF-8 bytes`, `legacy identity snapshots and password login survive new-write limits`, `oversized passwords reject known and unknown accounts without proof work or state changes`, `new-write field budgets preserve legacy rows and security updates`, and `input boundaries and legacy HTTP login`. ADR-22 and `docs/user/input-limits.md` distinguish compatibility parsers from new writes. No new friction under this milestone. Ledger closure awaits the implementation commit identifier.
+Accepted the owner’s legacy-login choice without truncating identities. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites, including `new identity limits count Unicode code points and email UTF-8 bytes`, `legacy identity snapshots and password login survive new-write limits`, `oversized passwords reject known and unknown accounts without proof work or state changes`, `new-write field budgets preserve legacy rows and security updates`, and `input boundaries and legacy HTTP login`. ADR-22 and `docs/user/input-limits.md` distinguish compatibility parsers from new writes. No new friction under this milestone. Implementation commit `c615215`; ledger REV-7.8 and REV-2.23.5 are closed with the matching acceptance evidence.
 
 
 

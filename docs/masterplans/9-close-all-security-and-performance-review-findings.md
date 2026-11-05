@@ -85,6 +85,8 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
+2026-11-05: EP-2 is accepted at `c615215` with the owner’s legacy-login choice and all eight focused suites passing. EP-4 begins with bounded transaction retries. EP-3’s implemented milestones remain accepted at `2472483`; its aggregate parent row awaits EP-5/EP-7 leaves.
+
 Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 is Complete with commit-pinned evidence at `7242c45`. EP-2 M2 is accepted: atomic passkey quotas, configuration, winner-only audit and HTTP refusal pass. Its input/legacy compatibility milestones remain open; the owner chose to preserve legacy-length login while bounding new identity writes at 256 characters. EP-3 implementation milestones now pass; its compound REV-2.23 parent remains open for EP-5/EP-7 subrows. Resume EP-2 input bounds under the owner decision; EP-4 through EP-6 remain ready after inventory acceptance. EP-7 historical verification includes the completed ID-token diagnostic follow-up; final integration gates remain open.
 
 ## Surprises & Discoveries
