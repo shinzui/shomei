@@ -76,7 +76,7 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-5.6](../reviews/shomei-postgres-security-and-performance.md) | Low — signing-key status updates discard their timestamp. | EP-7 | Open | Pending verification |
 | [REV-5.7](../reviews/shomei-postgres-security-and-performance.md) | Low — the reuse-detection and logout tails are three separate autocommits | EP-7 | Open | Pending verification |
 | [REV-5.8](../reviews/shomei-postgres-security-and-performance.md) | Low — audit payload PII. | EP-7 | Open | Pending verification |
-| [REV-5.9](../reviews/shomei-postgres-security-and-performance.md) | Low — operational gaps. | EP-4 | Open | Pending verification |
+| [REV-5.9](../reviews/shomei-postgres-security-and-performance.md) | Low — operational gaps. | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): All subclauses below pass: installed timeouts, isolated/paced cleanup and finite transaction retries. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
 | [REV-5.10](../reviews/shomei-postgres-security-and-performance.md) | Info — minor interpreter inconsistencies. | EP-4 | Open | Pending verification |
 | [REV-5.11](../reviews/shomei-postgres-security-and-performance.md) | Info — documentation. | EP-7 | Open | Pending verification |
 | [REV-5.12](../reviews/shomei-postgres-security-and-performance.md) | Info — test coverage. | EP-4 | Open | Pending verification |
@@ -134,8 +134,8 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | Handle | Subitem | Owner | State | Evidence / decision / commit |
 |---|---|---|---|---|
 | REV-2.20.1 | logout/reuse audit distinction | EP-4 | Open | Pending verification |
-| REV-2.20.2 | concurrent admin lifecycle winner-only audit | EP-4 | Open | Pending verification |
-| REV-2.20.3 | machine/delegated row-per-mint cost | EP-4 | Open | Pending verification |
+| REV-2.20.2 | concurrent admin lifecycle winner-only audit | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): Core `concurrent suspends ...` winner-only audit test and PostgreSQL `user status: eight racing suspends have one winner` verify the same conditional persistence result consumed by the workflow. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
+| REV-2.20.3 | machine/delegated row-per-mint cost | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): Core machine quota workflow/audit race, PostgreSQL actor+subject quota race, expiry/retention/live-row assertions and HTTP OAuth ceiling refusal pass; row-per-mint revocation semantics are retained. ADR-24 sizes history by issuance rate and finite retention, not an absolute disk cap. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
 | REV-2.23.1 | actor object interoperability | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-2.23.1. |
 | REV-2.23.2 | PKCE verifier shape | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-2.23.2. |
 | REV-2.23.3 | refresh token diagnostic redaction | EP-7 | Open | Pending verification |
@@ -159,10 +159,10 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-3.10.8 | ill-typed roles | EP-7 | Open | Pending verification |
 | REV-3.10.9 | multi-audience | EP-7 | Open | Pending verification |
 | REV-3.10.10 | key rotation workflow | EP-7 | Open | Pending verification |
-| REV-5.9.1 | statement timeout | EP-4 | Open | Pending verification |
-| REV-5.9.2 | idle transaction timeout | EP-4 | Open | Pending verification |
-| REV-5.9.3 | isolated paced sweeper | EP-4 | Open | Pending verification |
-| REV-5.9.4 | whole-transaction retry budget | EP-4 | Open | Pending verification |
+| REV-5.9.1 | statement timeout | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): `pool connections bound statements and idle transactions` and the hung-statement cancellation case verify installed settings and SQLSTATE 57014. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
+| REV-5.9.2 | idle transaction timeout | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): `pool connections bound statements and idle transactions` verifies the idle timeout kills a leaked transaction and subsequent checkout succeeds. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
+| REV-5.9.3 | isolated paced sweeper | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): Boot `installSweeper` owns a separate size-one pool; `active session quota ... expiry frees capacity` proves finite retention, live-row survival and a 10ms yield for each successful batch. ADR-24 documents disabled/lagging cleanup exposure. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
+| REV-5.9.4 | whole-transaction retry budget | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): `transaction retries classify only rollback-safe states and stop at three attempts`, real-lock deadline/cancellation, shrinking statement budgets and `managed pool restores interrupted/failed slots ...` pass; invalid policy refuses work and ambiguous failures never retry. ADR-23 records the supported API and lifecycle decision. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
 | REV-5.10.1 | idempotent revoked_at | EP-4 | Open | Pending verification |
 | REV-5.10.2 | user updated_at clock | EP-4 | Open | Pending verification |
 | REV-5.10.3 | user and credential direct clock calls | EP-4 | Open | Pending verification |
@@ -211,8 +211,8 @@ These initial subrows are not an exhaustive substitute for reading all original 
 
 | Handle | Observation | Owner | State | Evidence / decision / commit |
 |---|---|---|---|---|
-| EXTRA-1 | REV-1 Performance: session enumeration and admin per-row revoke | EP-4 | Open | Pending verification |
-| EXTRA-2 | REV-1 Performance: machine/delegated retained state | EP-4 | Open | Pending verification |
+| EXTRA-1 | REV-1 Performance: session enumeration and admin per-row revoke | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): `bulk revoke: 10000 winners and audits stay atomic under failure and eight racers`, fake audit race, default/cap/tied-key page walk and actual HTTP pagination pass. SQL returns one count without application materialization; migrations 0040/0041 have captured EXPLAIN evidence. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
+| EXTRA-2 | REV-1 Performance: machine/delegated retained state | EP-4 | Fixed | `ab922c0` (bulk/paging also `f039373`): Actor/subject quotas atomically bound active issuance, expiry frees capacity without deletion, and paced finite retention removes old rows while preserving a live mint. ADR-24/deployment guide quantify issuance × retention and explicitly retain unbounded historical growth when cleanup is disabled or lagging. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites; client/embedded/downstream gates and focused repeated pool ownership gate also pass. |
 | EXTRA-3 | REV-1 Performance: OpenAPI repeated encoding | EP-6 | Open | Pending verification |
 | EXTRA-4 | REV-1 Performance: Argon2 load bound remains true | EP-7 | Open | Pending verification |
 | EXTRA-5 | REV-1 Performance: indexed credential updates and exact kid verification | EP-7 | Open | Pending verification |
