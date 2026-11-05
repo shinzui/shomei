@@ -89,7 +89,6 @@ test-suite microservice-auth-stack-test
     bytestring,
     effectful,
     effectful-core,
-    hasql-pool,
     http-client,
     http-types,
     jose,

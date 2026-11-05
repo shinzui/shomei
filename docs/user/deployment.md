@@ -30,6 +30,7 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_LOCKOUT_DURATION_SECONDS` | account lockout duration after the threshold is reached; must be positive | `900` |
 | `SHOMEI_DB_POOL_SIZE` | PostgreSQL connections the server holds open. Must be positive; the boot fails otherwise | `10` |
 | `SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS` | how long a request waits for a free pooled connection before failing. Must be positive | `10000` |
+| `SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS` | active machine/delegated session ceiling for each actor and subject; positive | `1000` |
 | `SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS` | maximum whole transaction attempts; only serialization failures/deadlocks retry; positive | `3` |
 | `SHOMEI_DB_TRANSACTION_DEADLINE_MS` | total transaction budget including checkout and backoff; positive, at most 2147483647 ms | `5000` |
 | `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |
@@ -581,6 +582,12 @@ never takes the server down, and `GET /health/live` keeps answering throughout.
 
 ### Transaction deadlines and administrative session pages
 
+Use `Shomei.Persistence.Pool.Postgres` for pool creation, `Pool`, `use` and `release`.
+The managed pool returns capacity after interruption, discards every failed session, and
+shares its connection ceiling across releases and in-flight work. Successful idle connections
+remain until release; there is no idle reaper. Existing external Hasql pool values require
+migration to this adapter.
+
 Transactions have a finite total deadline and attempt budget. Their statements receive a
 shrinking PostgreSQL statement timeout, so query cancellation and rollback remain bounded
 under lock contention. A stricter pool statement timeout still wins. Connection failures and
@@ -600,3 +607,28 @@ fixture removed the top-N sort and reduced the measured page scan from 154 to 51
 Bulk administrative revocation performs one SQL operation and returns the actual winner count
 to library callers. Session transitions, refresh-token revocation and winner audit rows commit
 together; repeated/concurrent requests do not duplicate events.
+
+### Machine and delegated session capacity
+
+`maxActiveNonInteractiveSessions` in Dhall or `SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS` limits
+active machine/delegated sessions per principal (default 1000). A delegation consumes both the
+actor and subject's budgets. A machine grant consumes its service user's budget. Interactive
+sessions do not count. Expired sessions free capacity immediately, independently of cleanup.
+Lowering the limit retains existing sessions and blocks further mints until capacity returns.
+An authenticated OAuth client receives 503 `temporarily_unavailable` at the ceiling; bespoke
+impersonation receives 429 `session_limit_reached`. Revoke unused sessions or wait for expiry.
+
+Migration 0041 adds subject/actor expiry-range indexes. With 10,000 expired rows and 10,000
+live rows belonging to another principal, the quota fixture reduced buffer hits from 308 to 6;
+see `docs/review-remediation/session-quota-query-plan.txt`. Counts stop at the configured cap.
+
+Cleanup is enabled by default and retains expired/revoked sessions for 30 days, controlled by
+`SHOMEI_SWEEP_DEAD_SESSION_GRACE_DAYS`; its bounded batches run on a dedicated connection and yield for 10ms after each successful batch.
+Provision history as issuance rate × (token lifetime + retention + sweep lag), with headroom
+for row/index overhead and a separate audit-retention budget. For example, 10 mints/second
+with five-minute machine tokens and 30-day retention retains about 25.9 million session rows
+plus sweep lag across the issuing principals. The per-principal active cap still applies.
+Measure actual row/index bytes and sweep throughput for the deployment. A disabled or lagging
+sweeper permits history to grow indefinitely; the active ceiling is not an absolute disk cap.
+Preview the expired rows and their dependent tokens before changing retention, and retain the
+existing forensic window for refresh-token reuse detection when changing the shared policy.

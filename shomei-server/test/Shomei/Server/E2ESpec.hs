@@ -32,8 +32,6 @@ import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTime)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
-import Hasql.Pool (Pool)
-import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Network.HTTP.Client
@@ -76,7 +74,8 @@ import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy, runDatabasePool)
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (NotifierWorker (..), application, installNotifierWorker)
 import Shomei.Server.Config (defaultDbStatementTimeoutMs)

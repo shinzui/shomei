@@ -17,6 +17,7 @@ or `code`, not on `title` or `detail`.
 | <a id="email_taken"></a>`email_taken` | Email is already registered | 409 | no | Use another email or recover the existing account. | never |
 | <a id="login_id_taken"></a>`login_id_taken` | Login identifier is already registered | 409 | no | Choose another login identifier. | never |
 | <a id="invalid_login"></a>`invalid_login` | Invalid login identifier or password | 401 | no | Re-enter credentials without probing account existence. | never |
+| <a id="session_limit_reached"></a>`session_limit_reached` | Active machine or delegated session limit reached | 429 | yes | Revoke an unused session or wait for expiry; existing sessions remain usable. | always, in seconds |
 | <a id="too_many_requests"></a>`too_many_requests` | Too many requests | 429 | yes | Wait before retrying. | always, in seconds |
 | <a id="session_not_found"></a>`session_not_found` | Session not found | 404 | no | Refresh local session state. | never |
 | <a id="session_expired"></a>`session_expired` | Session expired | 401 | no | Authenticate again. | never |

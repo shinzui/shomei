@@ -14,10 +14,9 @@ where
 import Data.Foldable (for_)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Hasql.Pool (Pool)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor, defaultArgon2Params)
 import Shomei.Config (ShomeiConfig)
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
 import Shomei.Server.Config (defaultDbStatementTimeoutMs, loadCoreConfig)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)

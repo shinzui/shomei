@@ -41,7 +41,6 @@ import Database.PostgreSQL.Migrate (MigrationReport (..))
 import Effectful (Eff, inject, runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
-import Hasql.Pool qualified as Pool
 import Network.HTTP.Client.TLS (newTlsManager)
 import Network.Wai (Application, Middleware, Request)
 import Network.Wai.Handler.Warp qualified as Warp
@@ -67,6 +66,7 @@ import Shomei.Notify.Queue (closeNotifierQueue, drainNotifierQueue, newNotifierQ
 import Shomei.Persistence.Database.Postgres (TransactionRetryPolicy (..), runDatabasePoolWith)
 import Shomei.Persistence.Maintenance.Postgres (sweepOnce, sweepReportCounts)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.

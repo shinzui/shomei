@@ -5,7 +5,6 @@ import Data.ByteString qualified as BS
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (listToMaybe)
 import GHC.Clock (getMonotonicTimeNSec)
-import Hasql.Pool qualified as Pool
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Servant.Health (ProbeVerdict (..))
 import Servant.Health.TestKit (probeContractTests)
@@ -20,6 +19,7 @@ import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Prelude
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Boot (application)

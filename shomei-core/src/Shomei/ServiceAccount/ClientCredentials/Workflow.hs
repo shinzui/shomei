@@ -38,7 +38,7 @@ import Shomei.ServiceAccount.Domain (ServiceAccount, ServiceAccountStatus (..))
 import Shomei.ServiceAccount.Secret (verifyServiceSecret)
 import Shomei.ServiceAccount.Store (ServiceAccountStore, findServiceAccountByClientId)
 import Shomei.Session.Domain (NewSession (..), SessionKind (MachineSession))
-import Shomei.Session.Store (SessionStore, createSession)
+import Shomei.Session.Store (SessionStore, createSessionWithinLimit)
 import Shomei.Session.Token.Domain (AccessToken)
 import Shomei.Session.Workflow (buildClaims)
 import Shomei.SigningKey.Signer (TokenSigner, signAccessToken)
@@ -97,18 +97,20 @@ grantClientCredentials cfg cmd = runErrorNoCallStack do
   -- A refresh-less session: no NewRefreshToken is ever created for it, so the credential cannot
   -- outlive its TTL. Machine clients re-authenticate instead of refreshing.
   session <-
-    createSession
-      NewSession
-        { userId = serviceUser ^. #userId,
-          createdAt = ts,
-          expiresAt = expires,
-          actor = Nothing,
-          oauthClientId = Nothing,
-          kind = MachineSession,
-          grantedScopes = Set.empty,
-          authenticatedAt = ts,
-          remembered = False
-        }
+    either throwError pure
+      =<< createSessionWithinLimit
+        cfg.maxActiveNonInteractiveSessions
+        NewSession
+          { userId = serviceUser ^. #userId,
+            createdAt = ts,
+            expiresAt = expires,
+            actor = Nothing,
+            oauthClientId = Nothing,
+            kind = MachineSession,
+            grantedScopes = Set.empty,
+            authenticatedAt = ts,
+            remembered = False
+          }
   let claims =
         (buildClaims cfg (serviceUser ^. #userId) (session ^. #sessionId) ts)
           & #expiresAt

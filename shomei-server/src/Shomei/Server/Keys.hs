@@ -40,9 +40,9 @@ import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack)
-import Hasql.Pool (Pool)
 import Shomei.Error (AuthError)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
+import Shomei.Persistence.Pool.Postgres (Pool)
 import Shomei.Prelude
 import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (KeyActive), StoredSigningKey (..))
 import Shomei.SigningKey.Jwks.Jwt (KeySet (..), jwksDocument, keySetPublicJwks)

@@ -106,7 +106,7 @@ import Shomei.Audit.Reader.Store
 import Shomei.Authorization.Claims.Domain (AuthClaims, Issuer (..), Permission (..), Role (..))
 import Shomei.Authorization.Claims.Store (ClaimsDelta, ClaimsEnricher, emptyClaimsDelta, runClaimsEnricherNull, runClaimsEnricherPure)
 import Shomei.Authorization.Role.Store (RoleDefinition (..), RoleStore (..))
-import Shomei.Error (AuthError (PasskeyLimitReached), TokenError (..))
+import Shomei.Error (AuthError (PasskeyLimitReached, SessionLimitReached), TokenError (..))
 import Shomei.Id
   ( CeremonyId,
     LoginAttemptId,
@@ -178,7 +178,7 @@ import Shomei.ServiceAccount.Domain
     ServiceAccountStatus (..),
   )
 import Shomei.ServiceAccount.Store (ServiceAccountStore (..))
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey,
     AccountLockout (..),
@@ -428,6 +428,25 @@ runSessionStore ref = interpret_ \case
     let s = mkSession sid ns
     liftIO (modifyWorld ref (#sessions %~ Map.insert sid s))
     pure s
+  CreateSessionWithinLimit cap ns -> do
+    sid <- genSessionId
+    let session = mkSession sid ns
+        principals = Set.fromList (ns.userId : maybe [] pure ns.actor)
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          let count principal =
+                length
+                  [ ()
+                  | s <- Map.elems w.sessions,
+                    s.status == SessionActive,
+                    s.kind /= InteractiveSession,
+                    s.expiresAt > ns.createdAt,
+                    s.userId == principal || s.actor == Just principal
+                  ]
+           in if any ((>= cap) . count) principals
+                then (w, Left SessionLimitReached)
+                else (w & #sessions %~ Map.insert sid session, Right session)
+      )
   FindSessionById sid -> liftIO ((Map.lookup sid . (.sessions)) <$> readIORef ref)
   RevokeSession sid t ->
     liftIO (modifyWorld ref (#sessions %~ Map.adjust (revoke t) sid))

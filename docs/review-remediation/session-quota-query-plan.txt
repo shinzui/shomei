@@ -1,0 +1,45 @@
+Before active range indexes:
+Aggregate  (cost=131.55..131.56 rows=1 width=8) (actual time=1.226..1.226 rows=1.00 loops=1)
+  Buffers: shared hit=308
+  ->  Limit  (cost=0.29..119.05 rows=1000 width=4) (actual time=0.006..1.224 rows=1.00 loops=1)
+        Buffers: shared hit=308
+        ->  Append  (cost=0.29..891.13 rows=7501 width=4) (actual time=0.006..1.224 rows=1.00 loops=1)
+              Buffers: shared hit=308
+              ->  Index Scan using shomei_sessions_expires_at_idx on shomei_sessions  (cost=0.29..414.31 rows=5001 width=4) (actual time=0.006..0.617 rows=1.00 loops=1)
+                    Index Cond: (expires_at > '2026-01-01 00:00:00-08'::timestamp with time zone)
+                    Filter: ((kind = ANY ('{machine,delegated}'::text[])) AND (user_id = '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid) AND (status = 'active'::text))
+                    Rows Removed by Filter: 10000
+                    Index Searches: 1
+                    Buffers: shared hit=154
+              ->  Index Scan using shomei_sessions_expires_at_idx on shomei_sessions shomei_sessions_1  (cost=0.29..439.32 rows=2500 width=4) (actual time=0.606..0.606 rows=0.00 loops=1)
+                    Index Cond: (expires_at > '2026-01-01 00:00:00-08'::timestamp with time zone)
+                    Filter: ((user_id <> '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid) AND (kind = ANY ('{machine,delegated}'::text[])) AND (actor_user_id = '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid) AND (status = 'active'::text))
+                    Rows Removed by Filter: 10001
+                    Index Searches: 1
+                    Buffers: shared hit=154
+Planning:
+  Buffers: shared hit=80
+Planning Time: 0.219 ms
+Execution Time: 1.239 ms
+After active range indexes:
+Aggregate  (cost=95.12..95.13 rows=1 width=8) (actual time=0.007..0.007 rows=1.00 loops=1)
+  Buffers: shared hit=6
+  ->  Limit  (cost=0.29..82.62 rows=1000 width=4) (actual time=0.004..0.006 rows=1.00 loops=1)
+        Buffers: shared hit=6
+        ->  Append  (cost=0.29..617.87 rows=7501 width=4) (actual time=0.004..0.006 rows=1.00 loops=1)
+              Buffers: shared hit=6
+              ->  Index Only Scan using shomei_sessions_active_subject_idx on shomei_sessions  (cost=0.29..283.93 rows=5001 width=4) (actual time=0.004..0.004 rows=1.00 loops=1)
+                    Index Cond: ((user_id = '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid) AND (expires_at > '2026-01-01 00:00:00-08'::timestamp with time zone))
+                    Heap Fetches: 1
+                    Index Searches: 1
+                    Buffers: shared hit=3
+              ->  Index Scan using shomei_sessions_active_actor_idx on shomei_sessions shomei_sessions_1  (cost=0.29..296.44 rows=2500 width=4) (actual time=0.001..0.001 rows=0.00 loops=1)
+                    Index Cond: ((actor_user_id = '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid) AND (expires_at > '2026-01-01 00:00:00-08'::timestamp with time zone))
+                    Filter: (user_id <> '01a1ac5e-9830-7298-a81d-8c174b2b0d8a'::uuid)
+                    Rows Removed by Filter: 1
+                    Index Searches: 1
+                    Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=39
+Planning Time: 0.154 ms
+Execution Time: 0.014 ms

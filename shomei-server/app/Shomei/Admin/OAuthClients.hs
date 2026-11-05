@@ -51,11 +51,11 @@ import Data.Text qualified as Text
 import Data.Time (UTCTime)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
-import Hasql.Pool (Pool)
 import Options.Applicative
 import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Persistence.Pool.Postgres (Pool)
 
 -- Read by /record pattern/ only, never through @OverloadedRecordDot@: 'OAuthClient' shares
 -- @clientId@ / @displayName@ / @createdAt@ / @status@ with 'Shomei.ServiceAccount.Domain'.

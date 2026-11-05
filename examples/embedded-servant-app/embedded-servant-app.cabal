@@ -79,7 +79,6 @@ test-suite embedded-servant-app-test
     effectful,
     effectful-core,
     embedded-servant-app,
-    hasql-pool,
     http-client,
     http-types,
     servant-health,

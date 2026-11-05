@@ -58,6 +58,7 @@ module Shomei.Client
     adminReinstateUser,
     adminDeleteUser,
     adminListSessions,
+    SessionPageCursor,
     adminRevokeSessions,
     adminRevokeSession,
     adminPasswordReset,
@@ -125,7 +126,7 @@ import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimite
 import Shomei.Servant.Result (ApplicationResult (..), CookieResponse (..))
 import Shomei.Session.Admin.Api qualified as AdminSession
 import Shomei.Session.Api qualified as Session
-import Shomei.Session.Dto (LoginRequest, RefreshRequest)
+import Shomei.Session.Dto (LoginRequest, RefreshRequest, SessionPageCursor)
 import Shomei.Session.Result
 import Web.FormUrlEncoded (toForm)
 
@@ -372,9 +373,9 @@ adminDeleteUser :: ClientEnv -> Token -> UserId -> IO (Either ClientError Delete
 adminDeleteUser env tok uid =
   runClient env (AdminAccount.deleteUser adminAccountClient (bearer tok) uid)
 
--- | Every session of a user, newest first, in every status.
-adminListSessions :: ClientEnv -> Token -> UserId -> IO (Either ClientError ListSessionsResult)
-adminListSessions env tok uid = runClient env (AdminSession.listSessions adminSessionClient (bearer tok) uid)
+-- | A bounded newest-first session page (default 50, maximum 200) in every status.
+adminListSessions :: ClientEnv -> Token -> UserId -> Maybe Int -> Maybe SessionPageCursor -> IO (Either ClientError ListSessionsResult)
+adminListSessions env tok uid limit before = runClient env (AdminSession.listSessions adminSessionClient (bearer tok) uid limit before)
 
 adminRevokeSessions :: ClientEnv -> Token -> UserId -> IO (Either ClientError RevokeSessionsResult)
 adminRevokeSessions env tok uid =

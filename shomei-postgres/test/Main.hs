@@ -32,8 +32,6 @@ import GHC.Conc (getNumCapabilities)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
-import Hasql.Pool (Pool)
-import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Shomei.Account.Credential.Domain (Credential (..))
@@ -220,7 +218,8 @@ import Shomei.Persistence.Maintenance.Postgres
     emptySweepReport,
     sweepOnce,
   )
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
@@ -250,7 +249,7 @@ import Shomei.Session.Postgres (runSessionStorePostgres)
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Session.RefreshToken.Postgres (runRefreshTokenStorePostgres)
 import Shomei.Session.RefreshToken.Store (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
-import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore, createSession, emptySessionListQuery, findSessionById, listSessionPage, listSessionsForUser, revokeSession)
+import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore, createSession, createSessionWithinLimit, emptySessionListQuery, findSessionById, listSessionPage, listSessionsForUser, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
@@ -523,9 +522,12 @@ main = defaultMain (testGroup "shomei-postgres" tests)
 
 tests :: [TestTree]
 tests =
-  [ testRetryBudgets,
+  [ testManagedPoolOwnership,
+    testRetryBudgets,
     testTransactionDeadline,
     testShrinkingStatementBudget,
+    testSessionQuotaQueryPlan,
+    testActiveSessionQuota,
     testBulkRevocation,
     testSessionPages,
     testSessionQueryPlan,
@@ -3052,7 +3054,7 @@ testTransactionDeadline = testCase "transaction deadline cancels a real lock wai
             barrier @?= Just ()
             killThread worker
             cancelled <- timeout 2000000 (takeMVar completed)
-            assertBool "caller cancellation returns after cleanup" (case cancelled of Just (Left _) -> True; _ -> False)
+            assertBool "caller cancellation returns after cleanup" (case cancelled of Just (Left _) -> True; Just (Right (Left _)) -> True; _ -> False)
             reused <- timeout 1000000 (scalarInt pool "SELECT count(*) FROM deadline_writes")
             reused @?= Just 0
 
@@ -3159,3 +3161,106 @@ testSessionQueryPlan = testCase "session keyset index removes the 10000-row sort
   assertBool "bounded page uses ordered index" (any (Text.isInfixOf "shomei_sessions_user_created_id_idx") after)
   assertBool "ordered index removes sort" (not (any (Text.isInfixOf "Sort") after))
   writeFile "/tmp/shomei-session-query-plan.txt" (Text.unpack (Text.unlines (["Before compound index:"] <> before <> ["After compound index:"] <> after)))
+
+testActiveSessionQuota :: TestTree
+testActiveSessionQuota = testCase "active session quota serializes actor and subject budgets across replicas; expiry frees capacity" $ withDb \pool -> do
+  (actor, subject, otherSubject) <-
+    expectApp =<< runApp pool do
+      actor <- createUser (NewUser aliceLogin Nothing Nothing)
+      subject <- createUser (NewUser bobLogin Nothing Nothing)
+      other <- createUser (NewUser (either (error . show) id (mkLoginId "quota-other")) Nothing Nothing)
+      pure (actor, subject, other)
+  let new at uid acting expiry = NewSession uid at expiry acting Nothing DelegatedSession Set.empty at False
+      delegated = new t0 subject.userId (Just actor.userId) (addUTCTime 60 t0)
+      mint ns = runApp pool (createSessionWithinLimit 1 ns)
+  -- Eight independent interpreter invocations contend for the same final slot.
+  start <- newEmptyMVar
+  completions <- replicateM 8 do
+    done <- newEmptyMVar
+    _ <- forkIO (readMVar start >> mint delegated >>= putMVar done)
+    pure done
+  putMVar start ()
+  results <- traverse (expectApp <=< takeMVar) completions
+  length [() | Right _ <- results] @?= 1
+  length [() | Left Err.SessionLimitReached <- results] @?= 7
+  acrossSubjects <- expectApp =<< mint (new t0 otherSubject.userId (Just actor.userId) (addUTCTime 60 t0))
+  acrossSubjects @?= Left Err.SessionLimitReached
+  acrossActors <- expectApp =<< mint (new t0 subject.userId (Just otherSubject.userId) (addUTCTime 60 t0))
+  acrossActors @?= Left Err.SessionLimitReached
+  -- Existing rows survive lowering; expired rows do not spend the active budget.
+  expiredMint <- expectApp =<< runApp pool (createSessionWithinLimit 1 (new (addUTCTime 61 t0) subject.userId (Just actor.userId) (addUTCTime 120 t0)))
+  assertBool "expiry frees a slot without a sweep" (case expiredMint of Right _ -> True; _ -> False)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions" >>= (@?= 2)
+  let future = addUTCTime (31 * 86400) t0
+  live <- expectApp =<< mint (new future subject.userId (Just actor.userId) (addUTCTime 60 future))
+  liveSession <- expectRight live
+  sweepStarted <- getMonotonicTimeNSec
+  report <- expectSweep =<< sweepOnce pool defaultSweepConfig {batchSize = 1} future
+  sweepEnded <- getMonotonicTimeNSec
+  assertBool "two successful delete batches yield at least 10ms each" (sweepEnded - sweepStarted >= 20000000)
+  report.sessionsDeleted @?= 2
+  surviving <- expectApp =<< runApp pool (findSessionById liveSession.sessionId)
+  fmap (.status) surviving @?= Just SessionActive
+
+testSessionQuotaQueryPlan :: TestTree
+testSessionQuotaQueryPlan = testCase "session quota indexes exclude expired history from the bounded live count" $ withDb \pool -> do
+  user <- expectApp =<< runApp pool (createUser (NewUser aliceLogin Nothing Nothing))
+  other <- expectApp =<< runApp pool (createUser (NewUser bobLogin Nothing Nothing))
+  let otherUid = "'" <> Text.pack (show (userIdToUUID other.userId)) <> "'"
+      uid = "'" <> Text.pack (show (userIdToUUID user.userId)) <> "'"
+      query = "EXPLAIN (ANALYZE,BUFFERS) SELECT count(*) FROM (SELECT 1 FROM shomei.shomei_sessions WHERE user_id=" <> uid <> " AND status='active' AND kind IN ('machine','delegated') AND expires_at > '2026-01-01' UNION ALL SELECT 1 FROM shomei.shomei_sessions WHERE actor_user_id=" <> uid <> " AND user_id<>" <> uid <> " AND status='active' AND kind IN ('machine','delegated') AND expires_at>'2026-01-01' LIMIT 1000) active"
+      explain = expectApp =<< Pool.use pool (Session.statement () (preparable query E.noParams (D.rowList (D.column (D.nonNullable D.text)))))
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,actor_user_id,status,kind,created_at,expires_at) SELECT gen_random_uuid()," <> uid <> "," <> uid <> ",'active','delegated','2025-01-01','2025-01-02' FROM generate_series(1,10000)")
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,actor_user_id,status,kind,created_at,expires_at) VALUES(gen_random_uuid()," <> uid <> "," <> uid <> ",'active','delegated','2026-01-01','2027-01-01')")
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,status,kind,created_at,expires_at) SELECT gen_random_uuid()," <> otherUid <> ",'active','machine','2026-01-01','2027-01-01' FROM generate_series(1,10000)")
+  execSql pool "DROP INDEX IF EXISTS shomei.shomei_sessions_active_subject_idx; DROP INDEX IF EXISTS shomei.shomei_sessions_active_actor_idx; ANALYZE shomei.shomei_sessions"
+  before <- explain
+  execSql pool "CREATE INDEX shomei_sessions_active_subject_idx ON shomei.shomei_sessions(user_id,expires_at) WHERE status='active' AND kind IN ('machine','delegated'); CREATE INDEX shomei_sessions_active_actor_idx ON shomei.shomei_sessions(actor_user_id,expires_at) WHERE status='active' AND kind IN ('machine','delegated')"
+  after <- explain
+  writeFile "/tmp/shomei-session-quota-plan.txt" (Text.unpack (Text.unlines (["Before active range indexes:"] <> before <> ["After active range indexes:"] <> after)))
+  assertBool "quota range indexes used" (any (Text.isInfixOf "shomei_sessions_active_") after)
+
+testManagedPoolOwnership :: TestTree
+testManagedPoolOwnership = testCase "managed pool restores interrupted/failed slots and preserves its ceiling across release" $
+  withShomeiMigratedDatabase \conn -> bracket (acquirePool 1 0.05 30000 conn) Pool.release \pool -> do
+    execSql pool "CREATE TABLE pool_cancel_writes(value integer)"
+    -- A gate inside a raw session makes caller interruption deterministic. This session is
+    -- not a retried database transaction, whose abstract type deliberately has no MonadIO.
+    forM_ [1 .. 12 :: Int] $ \_ -> do
+      entered <- newEmptyMVar
+      neverCommit <- newEmptyMVar
+      completed <- newEmptyMVar
+      worker <- forkIO do
+        result <-
+          try @SomeException
+            ( Pool.use pool do
+                Session.script "BEGIN; INSERT INTO pool_cancel_writes VALUES(1)"
+                liftIO (putMVar entered () >> takeMVar neverCommit)
+                Session.script "COMMIT"
+            )
+        putMVar completed result
+      timeout 1000000 (takeMVar entered) >>= (@?= Just ())
+      killThread worker
+      outcome <- timeout 1000000 (takeMVar completed)
+      assertBool "interrupted session did not commit" (case outcome of Just (Left _) -> True; Just (Right (Left _)) -> True; _ -> False)
+      timeout 1000000 (scalarInt pool "SELECT count(*) FROM pool_cancel_writes") >>= (@?= Just 0)
+    -- Failed initialization must also return the reserved capacity, every time.
+    bracket (acquirePool 1 0.05 maxBound conn) Pool.release $ \invalid ->
+      forM_ [1 .. 3 :: Int] $ \_ -> do
+        outcome <- Pool.use invalid (pure ())
+        assertBool
+          "initialization failure retains its typed result, never a leaked-slot timeout"
+          (case outcome of Left (Pool.SessionUsageError _) -> True; _ -> False)
+    entered <- newEmptyMVar
+    finish <- newEmptyMVar
+    completed <- newEmptyMVar
+    _ <- forkIO do
+      result <- Pool.use pool (liftIO (putMVar entered () >> takeMVar finish))
+      putMVar completed result
+    timeout 1000000 (takeMVar entered) >>= (@?= Just ())
+    Pool.release pool
+    exhausted <- Pool.use pool (pure ())
+    exhausted @?= Left Pool.AcquisitionTimeoutUsageError
+    putMVar finish ()
+    timeout 1000000 (takeMVar completed) >>= (@?= Just (Right ()))
+    timeout 1000000 (scalarInt pool "SELECT 1::bigint") >>= (@?= Just 1)

@@ -44,12 +44,15 @@ Bound database work across retries and bulk operations while preserving exactly-
 ## Progress
 
 
-- [x] (2026-11-05) M1: three-attempt/five-second defaults, strict policy/configuration, rollback-safe SQLSTATE classification and abstract database-only statement wrapper. Forced retry states stop at three attempts; real lock timeout rolls back and returns a usable sole connection. Successive slow statements share a shrinking server budget.
-- [ ] M2: bulk session revoke is atomic with winner-only audit; listing and machine-session state are bounded. Bulk revocation and paging are accepted (2026-11-05): 10,000 sessions, injected audit rollback, eight database racers, fake winner audit race, default/cap/tied-key paging and actual HTTP page walk pass. Query-plan evidence justified migration 0040. Active machine/delegated quota and explicit retention acceptance remain.
+- [x] (2026-11-05) M1: managed-pool cancellation/rollback/reuse and 12 repeated interruptions, failed initialization, release during use and capacity ceiling pass. All eight behavior suites and three client/consumer suites pass. Retry behavior: three-attempt/five-second defaults, strict policy/configuration, rollback-safe SQLSTATE classification and abstract database-only statement wrapper. Forced retry states stop at three attempts; real lock timeout rolls back and returns a usable sole connection. Successive slow statements share a shrinking server budget.
+- [x] (2026-11-05) M2: 10,000-session atomic bulk revocation, audit rollback, eight revokers, keyset/HTTP paging, active actor+subject quota races, winner-only audit, HTTP OAuth refusal, finite retention/live-row protection and paced batches pass. Query-plan evidence justifies migrations 0040/0041. All behavior/client/consumer gates pass.
+
 - [ ] M3: timestamp/clock/expiry consistency and real PostgreSQL race tests pass.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: Repeated cancellation caught lost capacity in the external pool. Its current fixed release requires Hasql 2; authoritative current migration/harness releases still require Hasql 1.10. Shōmei now owns masked slot/connection lifecycle over the supported connection API. All eight focused behavior suites and all three client/consumer suites now pass.
 
 2026-11-05: FRIC-3 records a repeated 30-second result under a 100ms client timeout: Hasql cleanup drains results before cancellation. A server deadline shrunk before each prepared statement is required in addition to the outer monotonic deadline. The focused real-lock, rollback and reuse tests now pass.
 
@@ -67,7 +70,7 @@ Bound database work across retries and bulk operations while preserving exactly-
 
 ## Outcomes & Retrospective
 
-Checkpoint: `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites. M1 and bulk/paging parts of M2 pass, including actual caller cancellation, shrinking per-statement budgets and settings reset. FRIC-3 remains logged with the tested workaround; registry/tag/released-source verification confirms that upgrading to current Hasql 2.0.1.0 would retain the cleanup limitation. Machine/delegated issuance and the remaining M3 evidence are still required.
+Checkpoint: `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites. M1 and bulk/paging parts of M2 pass, including actual caller cancellation, shrinking per-statement budgets and settings reset. FRIC-3 remains logged with the tested workaround; registry/tag/released-source verification confirms that upgrading to current Hasql 2.0.1.0 would retain the cleanup limitation. M2 now also passes actor/subject issuance quotas, retention/live-row protection, paced batches, query plans and actual OAuth refusals. M3 clock, expiry-port and remaining concurrency/index evidence are still required.
 
 
 

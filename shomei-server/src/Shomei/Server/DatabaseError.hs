@@ -7,7 +7,7 @@ module Shomei.Server.DatabaseError (summarizeUsageError) where
 
 import Data.Text (Text)
 import Hasql.Errors qualified as Hasql
-import Hasql.Pool (UsageError (..))
+import Shomei.Persistence.Pool.Postgres (UsageError (..))
 
 summarizeUsageError :: UsageError -> Text
 summarizeUsageError = \case

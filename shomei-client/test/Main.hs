@@ -21,6 +21,7 @@ import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
+import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
@@ -59,7 +60,7 @@ tests =
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (application env healthyProbe healthyProbe)) \port -> do
             cenv <- C.shomeiClientEnv ("http://127.0.0.1:" <> show port)
 
@@ -94,7 +95,7 @@ tests =
             expect403 "adminSuspendUser" =<< C.adminSuspendUser cenv tok uid
             expect403 "adminReinstateUser" =<< C.adminReinstateUser cenv tok uid
             expect403 "adminDeleteUser" =<< C.adminDeleteUser cenv tok uid
-            expect403 "adminListSessions" =<< C.adminListSessions cenv tok uid
+            expect403 "adminListSessions" =<< C.adminListSessions cenv tok uid Nothing Nothing
             expect403 "adminRevokeSessions" =<< C.adminRevokeSessions cenv tok uid
             expect403 "adminRevokeSession" =<< C.adminRevokeSession cenv tok sid
             expect403 "adminPasswordReset" =<< C.adminPasswordReset cenv tok uid

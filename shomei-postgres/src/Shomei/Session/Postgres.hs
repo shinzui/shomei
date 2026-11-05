@@ -17,7 +17,7 @@ module Shomei.Session.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip12, contrazip2, contrazip4)
+import Contravariant.Extras (contrazip12, contrazip2, contrazip3, contrazip4)
 import Data.Int (Int64)
 import Data.Set qualified as Set
 import Data.UUID (UUID)
@@ -32,7 +32,8 @@ import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, genSessionId, sessionIdFromUUID, sessionIdToUUID, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Codec.Postgres (sessionKindFromText, sessionKindToText, sessionStatusFromText, sessionStatusToText)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore (..), clampSessionLimit)
@@ -47,22 +48,24 @@ runSessionStorePostgres = interpret_ \case
   CreateSession ns -> do
     sid <- genSessionId
     let session = mkSession sid ns
-        row =
-          ( sessionIdToUUID sid,
-            userIdToUUID ns.userId,
-            sessionStatusToText SessionActive,
-            ns.createdAt,
-            ns.expiresAt,
-            Nothing,
-            userIdToUUID <$> ns.actor,
-            ns.oauthClientId,
-            Just (sessionKindToText ns.kind),
-            [scope | Scope scope <- Set.toList ns.grantedScopes],
-            Just ns.authenticatedAt,
-            ns.remembered
-          )
+        row = sessionToRow session
     res <- runSession (Session.statement row insertSessionStmt)
     either dbFail (const (pure session)) res
+  CreateSessionWithinLimit cap ns -> do
+    sid <- genSessionId
+    let session = mkSession sid ns
+        principals = Set.toAscList (Set.fromList (ns.userId : maybe [] pure ns.actor))
+    res <- runTransaction do
+      -- UUID ordering prevents two overlapping actor/subject pairs from deadlocking.
+      locked <- Tx.statement (map userIdToUUID principals) lockPrincipalsStmt
+      if length locked /= length principals
+        then pure (Left UserNotFound)
+        else do
+          counts <- forM principals \principal -> Tx.statement (userIdToUUID principal, ns.createdAt, fromIntegral cap) activePrincipalSessionsStmt
+          if any (>= fromIntegral cap) counts
+            then pure (Left SessionLimitReached)
+            else Right session <$ Tx.statement (sessionToRow session) insertSessionStmt
+    either dbFail pure res
   FindSessionById sid -> do
     res <- runSession (Session.statement (sessionIdToUUID sid) findSessionByIdStmt)
     row <- either dbFail pure res
@@ -234,3 +237,40 @@ listSessionPageStmt =
         (E.param (E.nonNullable E.int8))
     )
     (D.rowList sessionRowDecoder)
+
+sessionToRow :: Session -> SessionRow
+sessionToRow session =
+  ( sessionIdToUUID session.sessionId,
+    userIdToUUID session.userId,
+    sessionStatusToText session.status,
+    session.createdAt,
+    session.expiresAt,
+    session.revokedAt,
+    userIdToUUID <$> session.actor,
+    session.oauthClientId,
+    Just (sessionKindToText session.kind),
+    [scope | Scope scope <- Set.toList session.grantedScopes],
+    Just session.authenticatedAt,
+    session.remembered
+  )
+
+lockPrincipalsStmt :: Statement [UUID] [UUID]
+lockPrincipalsStmt =
+  preparable
+    "SELECT user_id FROM shomei.shomei_users WHERE user_id = ANY($1) ORDER BY user_id FOR UPDATE"
+    (E.param (E.nonNullable (E.foldableArray (E.nonNullable E.uuid))))
+    (D.rowList (D.column (D.nonNullable D.uuid)))
+
+activePrincipalSessionsStmt :: Statement (UUID, UTCTime, Int64) Int64
+activePrincipalSessionsStmt =
+  preparable
+    """
+    SELECT count(*) FROM (
+      SELECT 1 FROM shomei.shomei_sessions
+      WHERE (user_id=$1 OR actor_user_id=$1) AND status='active'
+        AND kind IN ('machine','delegated') AND expires_at > $2
+      LIMIT $3
+    ) AS active
+    """
+    (contrazip3 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)) (E.param (E.nonNullable E.int8)))
+    (D.singleRow (D.column (D.nonNullable D.int8)))

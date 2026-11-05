@@ -78,6 +78,7 @@ module Shomei.Servant.Error
     pcTokenInvalid,
     pcPasskeyNotFound,
     pcPasskeyLimitReached,
+    pcSessionLimitReached,
     pcCeremonyNotFound,
     pcWebAuthnFailed,
     pcMfaFailed,
@@ -395,8 +396,9 @@ pcEmailNotVerified = problemSpec "email_not_verified" err403 "Email address is n
 pcTokenInvalid :: ProblemSpec
 pcTokenInvalid = problemSpec "token_invalid" err401 "Token is invalid"
 
-pcPasskeyNotFound, pcPasskeyLimitReached, pcCeremonyNotFound, pcWebAuthnFailed, pcMfaFailed :: ProblemSpec
+pcPasskeyNotFound, pcPasskeyLimitReached, pcSessionLimitReached, pcCeremonyNotFound, pcWebAuthnFailed, pcMfaFailed :: ProblemSpec
 pcPasskeyNotFound = problemSpec "passkey_not_found" err404 "Passkey not found"
+pcSessionLimitReached = retryableProblemSpec "session_limit_reached" err429 "Active machine or delegated session limit reached"
 pcPasskeyLimitReached = problemSpec "passkey_limit_reached" err409 "Passkey enrollment limit reached"
 pcCeremonyNotFound = problemSpec "ceremony_not_found" err404 "Registration ceremony not found or expired"
 pcWebAuthnFailed = problemSpec "webauthn_verification_failed" err400 "Passkey registration could not be verified"
@@ -510,6 +512,7 @@ problemCatalog =
     pcTokenInvalid,
     pcPasskeyNotFound,
     pcPasskeyLimitReached,
+    pcSessionLimitReached,
     pcCeremonyNotFound,
     pcWebAuthnFailed,
     pcMfaFailed,
@@ -569,6 +572,7 @@ authErrorProblem = \case
   EmailNotVerified -> plain pcEmailNotVerified
   TokenInvalid _ -> plain pcTokenInvalid
   PasskeyNotFound -> plain pcPasskeyNotFound
+  SessionLimitReached -> plain pcSessionLimitReached
   PasskeyLimitReached -> plain pcPasskeyLimitReached
   PendingCeremonyNotFound -> plain pcCeremonyNotFound
   WebAuthnCeremonyError _ -> plain pcWebAuthnFailed

@@ -137,7 +137,6 @@ in  Schema.Project::{
       , "haskell-servant/servant:servant-client"
       , "haskell-servant/servant:servant-client-core"
       , "hasql/hasql:hasql"
-      , "hasql/hasql:hasql-pool"
       , "hasql/hasql:hasql-transaction"
       , "haskell-hvr/uuid:uuid"
       , "haskell/time:time"
@@ -187,12 +186,6 @@ in  Schema.Project::{
         , name = "hasql"
         , kind = Some Schema.MoriArtifactKind.Package
         , key = Some "hasql"
-        }
-      , Schema.MoriRef::{
-        , namespace = "hasql"
-        , name = "hasql"
-        , kind = Some Schema.MoriArtifactKind.Package
-        , key = Some "hasql-pool"
         }
       , Schema.MoriRef::{
         , namespace = "hasql"

@@ -6,6 +6,7 @@
 -- must not be able to tell them apart.
 module Shomei.ServiceAccount.ClientCredentials.WorkflowSpec (tests) where
 
+import Control.Concurrent.Async (mapConcurrently)
 import Data.Aeson (eitherDecode)
 import Data.Generics.Labels ()
 import Data.IORef (IORef, newIORef, readIORef)
@@ -32,6 +33,7 @@ import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount, revokeServiceAccount)
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
+import Shomei.Session.Domain (Session (..), SessionKind (..))
 import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..))
 import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
@@ -127,7 +129,8 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.ServiceAccount.ClientCredentials.Workflow"
-    [ testOmittedScopeGrantsAll,
+    [ testQuotaRace,
+      testOmittedScopeGrantsAll,
       testRequestedScopeSubset,
       testUnknownClient,
       testWrongSecret,
@@ -234,3 +237,16 @@ testFailureDoesNotMint = testCase "a failed grant creates no session and publish
     isServiceTokenIssued = \case
       Event.ServiceTokenIssued _ -> True
       _ -> False
+
+testQuotaRace :: TestTree
+testQuotaRace = testCase "machine quota has one racing workflow winner and one success audit" do
+  ref <- newIORef (emptyWorld fixedTime)
+  user <- seedUser ref "quota-service"
+  account <- seedAccount ref user.userId
+  let cfg = baseCfg {maxActiveNonInteractiveSessions = 1}
+  results <- mapConcurrently (\_ -> runInMemory ref (grantClientCredentials cfg (grantFor account))) [1 .. 8 :: Int]
+  length [() | Right _ <- results] @?= 1
+  length [() | Left SessionLimitReached <- results] @?= 7
+  world <- readIORef ref
+  length [() | s <- Map.elems world.sessions, s.kind == MachineSession] @?= 1
+  length [() | Event.ServiceTokenIssued _ <- world.publishedEvents] @?= 1

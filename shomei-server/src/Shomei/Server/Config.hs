@@ -232,6 +232,7 @@ data FileConfig = FileConfig
     sessionTtlSeconds :: !(Maybe Int),
     rememberedSessionTtlSeconds :: !(Maybe Int),
     maxPasskeysPerUser :: !(Maybe Int),
+    maxActiveNonInteractiveSessions :: !(Maybe Int),
     publicBaseUrl :: !(Maybe Text),
     emailVerificationRequired :: !(Maybe Bool),
     -- | EP-8 notifier transport: @log@ (default) | @smtp@ | @webhook@. Secrets (SMTP password,
@@ -400,6 +401,7 @@ baseFromFile (Just fc) = do
             sessionTTL = maybe cfg0.sessionTTL fromIntegral fc.sessionTtlSeconds,
             rememberedSessionTTL = maybe cfg0.rememberedSessionTTL fromIntegral fc.rememberedSessionTtlSeconds,
             maxPasskeysPerUser = fromMaybe cfg0.maxPasskeysPerUser fc.maxPasskeysPerUser,
+            maxActiveNonInteractiveSessions = fromMaybe cfg0.maxActiveNonInteractiveSessions fc.maxActiveNonInteractiveSessions,
             notifierConfig =
               cfg0.notifierConfig
                 { emailVerificationRequired = fromMaybe cfg0.notifierConfig.emailVerificationRequired fc.emailVerificationRequired,
@@ -706,6 +708,9 @@ overlayCoreFromEnv base = do
   ref <- ttlEnv "SHOMEI_REFRESH_TTL"
   ses <- ttlEnv "SHOMEI_SESSION_TTL"
   rememberedSes <- ttlEnv "SHOMEI_REMEMBERED_SESSION_TTL"
+  activeSessionCap <- intEnvMaybe "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS"
+  let activeCap = fromMaybe base.maxActiveNonInteractiveSessions activeSessionCap
+  when (activeCap < 1) (ioError (userError "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS (Dhall field maxActiveNonInteractiveSessions) must be positive"))
   passkeyCap <- intEnvMaybe "SHOMEI_MAX_PASSKEYS_PER_USER"
   let cap = fromMaybe base.maxPasskeysPerUser passkeyCap
   when (cap < 1 || cap > 100) (ioError (userError "SHOMEI_MAX_PASSKEYS_PER_USER (Dhall field maxPasskeysPerUser) must be between 1 and 100"))
@@ -774,6 +779,7 @@ overlayCoreFromEnv base = do
         sessionTTL = fromMaybe base.sessionTTL ses,
         rememberedSessionTTL = fromMaybe base.rememberedSessionTTL rememberedSes,
         maxPasskeysPerUser = cap,
+        maxActiveNonInteractiveSessions = activeCap,
         tokenTransport = fromMaybe base.tokenTransport tr,
         cookieConfig =
           base.cookieConfig

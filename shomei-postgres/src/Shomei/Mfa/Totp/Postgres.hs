@@ -46,7 +46,6 @@ import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, throwError)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
-import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Hasql.Transaction qualified as Tx
@@ -64,6 +63,7 @@ import Shomei.Mfa.Totp.Domain (NewTotpCredential (..), TotpCredential (..))
 import Shomei.Mfa.Totp.Store (TotpCredentialStore (..))
 import Shomei.Persistence.Codec.Postgres (tshow)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Prelude
 
 -- | The AES-256-GCM key that encrypts stored TOTP secrets. Abstract: no 'Show', no JSON, so a

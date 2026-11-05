@@ -424,6 +424,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierDefaults
   notifierSmtpDhallAndEnv
   passkeyQuotaSettings
+  sessionQuotaSettings
   actorCompatibilitySettings
 
   notifierWebhookEnv
@@ -822,3 +823,18 @@ actorCompatibilitySettings = do
   expectUserErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" invalid
   unsetEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
   unsetEnv "SHOMEI_EMIT_LEGACY_ACTOR"
+
+sessionQuotaSettings :: Assertion
+sessionQuotaSettings = do
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  unsetEnv "SHOMEI_CONFIG"
+  unsetEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS"
+  (defaults, _) <- loadConfigFromEnv
+  defaults.maxActiveNonInteractiveSessions @?= 1000
+  setEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" "1"
+  (limited, _) <- loadConfigFromEnv
+  limited.maxActiveNonInteractiveSessions @?= 1
+  setEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" "0"
+  bad <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" bad
+  unsetEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS"

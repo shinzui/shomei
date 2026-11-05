@@ -87,7 +87,7 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 2026-11-05: EP-2 is accepted at `c615215` with the owner’s legacy-login choice and all eight focused suites passing. EP-4 begins with bounded transaction retries. EP-3’s implemented milestones remain accepted at `2472483`; its aggregate parent row awaits EP-5/EP-7 leaves.
 
-Implementation started 2026-11-05. EP-7 M1 inventory is accepted: 108 parents and 240 owned rows. EP-1 and EP-2 are Complete with commit-pinned evidence. EP-3 implementation and wire acceptance pass; its aggregate REV-2.23 parent awaits EP-5/EP-7 leaves. EP-4 is In Progress with bounded retry work; EP-5/EP-6 remain ready. EP-7 historical verification and final integration gates remain open.
+Implementation started 2026-11-05. EP-7 M1 inventory is accepted: 108 parents and 240 owned rows. EP-1 and EP-2 are Complete with commit-pinned evidence. EP-3 implementation and wire acceptance pass; its aggregate REV-2.23 parent awaits EP-5/EP-7 leaves. EP-4 M1/M2 are accepted: managed pool lifecycle and bounded retries, atomic bulk audit, paginated session APIs, active actor/subject quotas and paced finite retention pass behavior/client/consumer gates; its M3 clock/race/index acceptance remains open; EP-5/EP-6 remain ready. EP-7 historical verification and final integration gates remain open.
 
 ## Surprises & Discoveries
 

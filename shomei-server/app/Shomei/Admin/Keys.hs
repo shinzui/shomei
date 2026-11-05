@@ -30,8 +30,6 @@ import Data.Time (UTCTime, getCurrentTime)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
-import Hasql.Pool (Pool)
-import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
@@ -39,6 +37,8 @@ import Hasql.Transaction (Transaction)
 import Hasql.Transaction qualified as Tx
 import Hasql.Transaction.Sessions qualified as TxSession
 import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText)
+import Shomei.Persistence.Pool.Postgres (Pool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Server.DatabaseError (summarizeUsageError)
 import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)

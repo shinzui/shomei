@@ -1387,7 +1387,15 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "HTTP session pages default to 50, cap at 200 and walk tied timestamps" $ do
+    [ testCase "OAuth machine quota returns a retryable OAuth error after its last slot" $ do
+        (clientId, e) <- freshOAuthEnv
+        testWithApplication (pure (app e {config = e.config {maxActiveNonInteractiveSessions = 1}})) $ \port -> do
+          mgr <- newManager defaultManagerSettings
+          first <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "client_credentials")]
+          statusOf first @?= 200
+          second <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "client_credentials")]
+          assertOAuthError "machine quota" 503 "temporarily_unavailable" second,
+      testCase "HTTP session pages default to 50, cap at 200 and walk tied timestamps" $ do
         (r, e) <- freshPermissionEnv
         testWithApplication (pure (app e)) (scenarioSessionPaging r),
       testCase "input boundaries and legacy HTTP login" $ do

@@ -40,17 +40,18 @@ module Shomei.Persistence.Maintenance.Postgres
 where
 
 import Contravariant.Extras (contrazip2)
+import Control.Concurrent (threadDelay)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import Data.Int (Int64)
 import Data.Time (addUTCTime)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
-import Hasql.Pool (Pool, UsageError)
-import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Shomei.Error (AuthError)
 import Shomei.Persistence.Database.Postgres (postgresUnavailable)
+import Shomei.Persistence.Pool.Postgres (Pool, UsageError)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Prelude
 
 -- | How much history to keep, and how large each delete batch may be.
@@ -216,7 +217,7 @@ drainTable pool stmt cutoff limit = fmap (either (Left . postgresUnavailable) Ri
         Left err -> pure (Left err)
         Right deleted
           | deleted <= 0 -> pure (Right (fromIntegral acc))
-          | otherwise -> go (acc + deleted)
+          | otherwise -> threadDelay 10000 >> go (acc + deleted)
 
 -- Statements -----------------------------------------------------------------
 

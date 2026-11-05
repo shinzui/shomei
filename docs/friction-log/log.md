@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Addition**: FRIC-4 records detour interface friction with mori://hasql/hasql/packages/hasql-pool: Released pool cancellation fix requires an incompatible driver generation
 * **Update**: FRIC-3 logged: Verified authoritative current registry and release source; changing to the latest major release would not remove the cleanup limitation.
 * **Addition**: FRIC-3 records detour interface friction with mori://hasql/hasql/packages/hasql: Hasql interruption cleanup drains blocked results before cancellation
 * **Update**: FRIC-2 resolved: Select the released build fix verified against Hackage source and upstream history.

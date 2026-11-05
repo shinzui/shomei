@@ -1,6 +1,8 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Amendment**: Own cancellation-safe pool capacity over the supported connection API after repeated interruption failures; current upstream fix requires incompatible released driver dependencies.
+* **Decision**: Accept atomic active actor and subject budgets for machine and delegated session issuance.
 * **Decision**: Accept finite database-only transaction budgets and atomic winner-audited session revocation.
 * **Decision**: Accept finite new-write input budgets with explicit legacy authentication and snapshot compatibility.
 * **Update**: ADR-3 defines finite token lifetimes and a reader-first actor upgrade whose legacy mints fit the read cutoff.

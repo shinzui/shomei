@@ -25,8 +25,6 @@ import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
-import Hasql.Pool (Pool)
-import Hasql.Pool qualified as Pool
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
@@ -69,7 +67,8 @@ import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient (..), OAuthClien
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import Shomei.Persistence.Maintenance.Postgres (SweepReport (..))
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 
 -- qualified: 'Shomei.Admin.Keys' exports a same-named listPublishableSigningKeys
 

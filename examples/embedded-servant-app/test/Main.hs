@@ -14,7 +14,6 @@ import Data.Time (getCurrentTime)
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import Embedded.App (embeddedApplication)
-import Hasql.Pool (Pool)
 import Network.HTTP.Client
   ( Manager,
     defaultManagerSettings,
@@ -37,8 +36,8 @@ import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
-import Shomei.Persistence.Database.Postgres (runDatabasePool)
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy, runDatabasePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (HostBackgroundTasks (..), installHostBackgroundTasks)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), defaultSweepSettings)
@@ -77,7 +76,7 @@ tests =
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
           let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (embeddedApplication env (pure Healthy) (pure Healthy))) \port -> do
             mgr <- newManager defaultManagerSettings
 
@@ -111,7 +110,7 @@ tests =
           let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
               cfg = baseCfg {signingKeyConfig = baseCfg.signingKeyConfig {refreshIntervalSeconds = 0}}
               settings = testServerSettings connStr
-              env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+              env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
           testWithApplication (pure (embeddedApplication env (pure Healthy) (pure Healthy))) \port -> do
             mgr <- newManager defaultManagerSettings
             let rotateEmail = "rotate@example.com"
@@ -144,6 +143,8 @@ testServerSettings connStr =
       serverDbPoolSize = 4,
       serverDbPoolAcquisitionTimeoutMs = 1000,
       serverDbStatementTimeoutMs = 30000,
+      serverDbTransactionMaxAttempts = 3,
+      serverDbTransactionDeadlineMs = 5000,
       serverNotifierQueueSize = 64,
       serverWarnings = [],
       serverSweep = defaultSweepSettings {sweepEnabled = False},

@@ -24,10 +24,10 @@ import Effectful (Dispatch (..), DispatchOf, Eff, Effect, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpret_, send)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hasql.Errors qualified as Hasql
-import Hasql.Pool (Pool, UsageError)
-import Hasql.Pool qualified as Pool
 import Hasql.Session (Session)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable))
+import Shomei.Persistence.Pool.Postgres (Pool, UsageError)
+import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Persistence.Transaction.Postgres (Transaction)
 import Shomei.Persistence.Transaction.Postgres qualified as Bounded
 import System.Timeout (timeout)

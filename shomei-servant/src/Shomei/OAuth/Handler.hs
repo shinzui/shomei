@@ -454,6 +454,7 @@ resolveExchangeClient env mAuthHeader form =
 -- a stock caller learns nothing of Shōmei's impersonation policy internals.
 exchangeErrorFor :: AuthError -> ServerError
 exchangeErrorFor = \case
+  SessionLimitReached -> OAuth.oauthError status503 "temporarily_unavailable" "active session limit reached"
   OAuthClientInvalid -> OAuth.invalidClient
   OAuthScopeInvalid -> OAuth.oauthError status400 "invalid_scope" "the requested scope is empty, or exceeds what the account or subject may grant"
   OAuthRequestMalformed -> OAuth.oauthError status400 "invalid_request" "the token-exchange request is malformed"
@@ -678,6 +679,7 @@ activeAccess claims _s =
 -- problem-details envelope, which this endpoint must not emit.
 oauthErrorFor :: AuthError -> ServerError
 oauthErrorFor = \case
+  SessionLimitReached -> OAuth.oauthError status503 "temporarily_unavailable" "active session limit reached"
   OAuthClientInvalid -> OAuth.invalidClient
   -- One description for both refusals the workflow can raise: an explicitly empty `scope=`, and a
   -- scope outside the account's allow-list. Saying only "exceeds the allowed scopes" would be a

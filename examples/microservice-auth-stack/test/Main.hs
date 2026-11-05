@@ -48,7 +48,6 @@ import Downstream.Service
   )
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
-import Hasql.Pool (Pool)
 import Network.HTTP.Client
   ( Manager,
     defaultManagerSettings,
@@ -82,8 +81,8 @@ import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
-import Shomei.Persistence.Database.Postgres (runDatabasePool)
-import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy, runDatabasePool)
+import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
 import Shomei.Prelude ((&), (.~))
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
@@ -118,7 +117,7 @@ main =
     limiter <- newHashingLimiter 2
     notifierQueue <- newNotifierQueue 64
     let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
-        env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
+        env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = testKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = dummyTotpKey}
     testWithApplication (pure (application env (pure Healthy) (pure Healthy))) \authPort -> do
       mgr <- newManager defaultManagerSettings
       let jwksUrl = "http://127.0.0.1:" <> show authPort <> "/.well-known/jwks.json"

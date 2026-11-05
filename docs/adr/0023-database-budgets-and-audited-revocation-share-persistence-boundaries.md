@@ -5,7 +5,7 @@ description: Database-only transactions enforce shrinking finite deadlines and b
 docId: ADR-23
 status: Accepted
 date: 2026-11-05
-timestamp: 2026-11-05T15:20:57Z
+timestamp: 2026-11-05T16:19:50Z
 originatingPlan: docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md
 generated:
   by: codex-cli/gpt-6.1-sol
@@ -17,12 +17,15 @@ generated:
 ## Context
 
 Unbounded dependency retries and per-row administrative revocation allow work to grow with
-contention or account history. A client timeout alone is insufficient: Hasql interruption
+contention or account history. A client timeout alone is insufficient: [Hasql](mori://hasql/hasql/packages/hasql) interruption
 cleanup drains a running query before cancellation, observed as a 30-second lock wait under a
 100ms client deadline (FRIC-3). The authoritative registry reports Hasql 2.0.1.0 as latest;
 its release sdist retains the same drain-before-cancel order. Upstream tags verify supported
 1.10.3.7; no 2.0 tags are published. The wrapper supports the current 1.10 API line without
-requiring an unrelated major dependency migration.
+requiring an unrelated major dependency migration. Repeated caller-cancellation tests also
+exposed lost pool capacity on the supported external pool line. The latest pool release fixes
+interruption ownership, but requires Hasql 2, which the latest released [pg-migrate](mori://shinzui/pg-migrate/packages/pg-migrate) and
+[ephemeral-pg](mori://shinzui/ephemeral-pg/packages/ephemeral-pg) packages do not admit (FRIC-4).
 
 ## Decision
 
@@ -59,9 +62,17 @@ Session listing uses a stable (created_at, session_id) keyset, default 50 and ma
 HTTP returns a sessions array and nextCursor in a page object. The old unbounded library
 listing remains a documented compatibility operation; HTTP never calls it.
 
+The project therefore owns a small managed pool over the public Hasql connection API.
+Masked STM transfers one connection/slot owner; network and query work runs interruptibly;
+all failed or interrupted sessions dispose their connection and return its capacity before
+propagating the result. Only successful sessions reuse connections. Release retires a
+generation without increasing the total connection ceiling across in-flight work. Waiting
+for capacity is interruptible and bounded. This pool has no observer callbacks or background
+reaper; it retains at most the configured number of idle connections until release.
+
 ## Consequences
 
-The abstract transaction type, winning-ID revocation result and HTTP page shape are API
+The managed Pool/UsageError types, abstract transaction type, winning-ID revocation result and HTTP page shape are API
 changes. Each bounded statement pays one small budget-setting query in the same checkout.
 Deployments can narrow budgets to shed contention; exhaustion maps to the existing sanitized
 dependency-unavailable result. Deadline precision includes scheduler and driver cleanup overhead,

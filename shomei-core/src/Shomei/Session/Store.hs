@@ -6,6 +6,7 @@
 module Shomei.Session.Store
   ( SessionStore (..),
     createSession,
+    createSessionWithinLimit,
     findSessionById,
     revokeSession,
     revokeAllUserSessions,
@@ -20,12 +21,14 @@ where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
-import Shomei.Session.Domain (NewSession, Session)
+import Shomei.Session.Domain (NewSession (..), Session, SessionKind (InteractiveSession))
 
 data SessionStore :: Effect where
   CreateSession :: NewSession -> SessionStore m Session
+  CreateSessionWithinLimit :: Int -> NewSession -> SessionStore m (Either AuthError Session)
   FindSessionById :: SessionId -> SessionStore m (Maybe Session)
   RevokeSession :: SessionId -> UTCTime -> SessionStore m ()
   RevokeAllUserSessions :: UserId -> UTCTime -> SessionStore m [SessionId]
@@ -71,3 +74,10 @@ clampSessionLimit = max 1 . min 200
 
 listSessionPage :: (SessionStore :> es) => UserId -> SessionListQuery -> Eff es [Session]
 listSessionPage uid query = send (ListSessionPage uid query {queryLimit = clampSessionLimit query.queryLimit})
+
+-- | Each machine/delegated session spends its subject and (when distinct) actor's active
+-- budget. Lock both principals in stable order at persistence. Expired sessions spend none.
+createSessionWithinLimit :: (SessionStore :> es) => Int -> NewSession -> Eff es (Either AuthError Session)
+createSessionWithinLimit cap session
+  | cap < 1 || session.kind == InteractiveSession = pure (Left InvalidInput)
+  | otherwise = send (CreateSessionWithinLimit cap session)

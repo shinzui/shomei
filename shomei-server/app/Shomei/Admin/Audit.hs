@@ -34,7 +34,6 @@ import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
-import Hasql.Pool (Pool)
 import Options.Applicative
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Audit.Reader.Postgres (runAuthEventReaderPostgres)
@@ -48,6 +47,7 @@ import Shomei.Audit.Reader.Store
   )
 import Shomei.Error (AuthError)
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
+import Shomei.Persistence.Pool.Postgres (Pool)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 

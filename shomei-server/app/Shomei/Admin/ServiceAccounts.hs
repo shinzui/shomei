@@ -53,10 +53,10 @@ import Data.Text qualified as Text
 import Data.Time (UTCTime)
 import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
-import Hasql.Pool (Pool)
 import Options.Applicative
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
+import Shomei.Persistence.Pool.Postgres (Pool)
 
 -- 'ServiceAccount' shares the field names @userId@ / @createdAt@ / @displayName@ with
 -- 'Shomei.Account.User.Domain.User'. Both are imported with @(..)@ and read by /record pattern/ only,

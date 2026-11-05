@@ -23,7 +23,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Time (NominalDiffTime, addUTCTime)
 import Effectful (Eff, (:>))
-import Effectful.Error.Static (runErrorNoCallStack, throwError)
+import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
 import Shomei.Account.User.Domain (User (..), UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
@@ -34,7 +34,7 @@ import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId)
 import Shomei.Prelude
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (DelegatedSession))
-import Shomei.Session.Store (SessionStore, createSession, revokeSession)
+import Shomei.Session.Store (SessionStore, createSessionWithinLimit, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken)
 import Shomei.Session.Workflow (requireLiveSession)
 import Shomei.SigningKey.Signer (TokenSigner, signAccessToken)
@@ -138,7 +138,8 @@ data DelegatedMint = DelegatedMint
 -- different events.
 mintDelegatedToken ::
   ( SessionStore :> es,
-    TokenSigner :> es
+    TokenSigner :> es,
+    Error AuthError :> es
   ) =>
   ShomeiConfig ->
   UTCTime ->
@@ -147,18 +148,20 @@ mintDelegatedToken ::
 mintDelegatedToken cfg ts mint = do
   let expires = addUTCTime mint.ttl ts
   session <-
-    createSession
-      NewSession
-        { userId = mint.subjectUserId,
-          createdAt = ts,
-          expiresAt = expires,
-          actor = Just mint.actorUserId,
-          oauthClientId = Nothing,
-          kind = DelegatedSession,
-          grantedScopes = Set.empty,
-          authenticatedAt = ts,
-          remembered = False
-        }
+    either throwError pure
+      =<< createSessionWithinLimit
+        cfg.maxActiveNonInteractiveSessions
+        NewSession
+          { userId = mint.subjectUserId,
+            createdAt = ts,
+            expiresAt = expires,
+            actor = Just mint.actorUserId,
+            oauthClientId = Nothing,
+            kind = DelegatedSession,
+            grantedScopes = Set.empty,
+            authenticatedAt = ts,
+            remembered = False
+          }
   let claims =
         AuthClaims
           { subject = mint.subjectUserId,
