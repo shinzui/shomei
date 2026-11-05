@@ -444,6 +444,7 @@ data ShomeiConfig = ShomeiConfig
     --     and never outlive the session, so a remembered browser left unused for longer than
     --     'refreshTokenTTL' still has to sign in again.
     rememberedSessionTTL :: !NominalDiffTime,
+    maxPasskeysPerUser :: !Int,
     passwordPolicy :: !PasswordPolicy,
     tokenTransport :: !TokenTransport,
     signingKeyConfig :: !SigningKeyConfig,
@@ -517,6 +518,7 @@ defaultShomeiConfig iss aud =
       refreshTokenTTL = defaultRefreshTokenTTL,
       sessionTTL = defaultSessionTTL,
       rememberedSessionTTL = defaultRememberedSessionTTL,
+      maxPasskeysPerUser = 20,
       passwordPolicy = defaultPasswordPolicy,
       tokenTransport = BearerToken,
       signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30},

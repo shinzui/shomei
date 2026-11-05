@@ -93,6 +93,7 @@ seedUserWithPasskey ref = do
     runInMemory
       ref
       ( createPasskey
+          20
           NewPasskeyCredential
             { userId = uid,
               credentialId = seededCredId,

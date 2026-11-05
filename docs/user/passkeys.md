@@ -7,6 +7,13 @@ Windows Hello, a hardware key like a YubiKey, or a synced provider like iCloud K
 password you know, plus a device you have. After enrolling a passkey, a Shōmei account is
 protected by both — a stolen password alone no longer grants a session.
 
+Each account may enroll at most 20 passkeys by default. Set `SHOMEI_MAX_PASSKEYS_PER_USER`
+or the Dhall `maxPasskeysPerUser` field to a value from 1 through 100. PostgreSQL serializes
+enrollment per account and counts before inserting in the same transaction, including across
+replicas. A full account receives `409 passkey_limit_reached`. Lowering the ceiling preserves
+existing credentials: they remain usable and removable, while further enrollment is refused.
+Direct store callers pass the ceiling explicitly and handle `Either AuthError PasskeyCredential`.
+
 Shōmei uses passkeys two ways: as a **second factor** on top of the password (the default,
 "step-up"), and as a **passwordless** login on their own. Enrollment always happens while
 already logged in.

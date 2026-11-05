@@ -1416,7 +1416,7 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
         (r, e) <- freshAdminEnv
         testWithApplication (pure (app e)) (scenarioAdminPagination r),
       testCase "signup → verify/reset → login → me(±token) → refresh → jwks → RequireRole → passkey CRUD → MFA step-up → passwordless" $
-        testWithApplication (pure (app env)) (scenario ref adminToken),
+        testWithApplication (pure (app env {config = env.config {maxPasskeysPerUser = 1}})) (scenario ref adminToken),
       testCase "signup/login by loginId with no email (email == null)" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) scenarioNoEmail,
@@ -3231,6 +3231,11 @@ scenario ref adminToken port = do
   cresp <- must "complete body" compBody
   pkId <- must "passkeyId" (dig ["passkeyId"] cresp >>= asText)
   (dig ["label"] cresp >>= asText) @?= Just "YubiKey"
+
+  (fullStatus, fullBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/begin" (bearer access2) (object [])
+  fullStatus @?= 409
+  fullProblem <- must "quota problem" fullBody
+  (dig ["code"] fullProblem >>= asText) @?= Just "passkey_limit_reached"
 
   (listStatus, listBody) <- getJSON mgr port "/v1/auth/passkeys" (bearer access2)
   listStatus @?= 200

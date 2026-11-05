@@ -7,7 +7,7 @@ module Main (main) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (evaluate)
-import Control.Monad (forM_, replicateM, void, when)
+import Control.Monad (forM, forM_, replicateM, void, when, (<=<))
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AEAD, AEADMode (AEAD_GCM), AuthTag (..), aeadInit, aeadSimpleEncrypt, cipherInit)
 import Crypto.Error (CryptoFailable (..))
@@ -561,6 +561,7 @@ tests =
     testLockoutRecordAndCountIsAtomicUnderRace,
     testWorkflowLockout,
     testPasskeyCreateAndFind,
+    testPasskeyQuotaRace,
     testPasskeyUpdateCountDelete,
     testPasskeyCounterIsCompareAndSwap,
     testPasskeyCounterCasUnderRace,
@@ -2400,12 +2401,31 @@ testAuthorizationCodeConsumeIsAtomicUnderRace =
     consumedRows <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes WHERE consumed_at IS NOT NULL"
     consumedRows @?= 1
 
+testPasskeyQuotaRace :: TestTree
+testPasskeyQuotaRace = testCase "passkey quota: eight database racers spend one final slot" $ withDb \pool -> do
+  u <- expectApp =<< runApp pool (createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing}))
+  gate <- newEmptyMVar
+  workers <- forM [1 .. 8 :: Int] \i -> do
+    done <- newEmptyMVar
+    _ <- forkIO do
+      readMVar gate
+      result <- runApp pool do
+        t <- now
+        createPasskey 1 ((newPasskey u t) {credentialId = WebAuthnCredentialId (BS.pack [fromIntegral i])})
+      putMVar done result
+    pure done
+  putMVar gate ()
+  results <- mapM (expectApp <=< takeMVar) workers
+  length [() | Right _ <- results] @?= 1
+  length [() | Left Err.PasskeyLimitReached <- results] @?= 7
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials" >>= (@?= 1)
+
 testPasskeyCreateAndFind :: TestTree
 testPasskeyCreateAndFind = testCase "passkey store: create + find by user/credential-id/user-handle" $ withDb \pool -> do
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    created <- createPasskey (newPasskey u t)
+    created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
     byUser <- findPasskeysByUser u.userId
     byCred <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
     byHandle <- findPasskeysByUserHandle (UserHandle "uh-1")
@@ -2427,7 +2447,7 @@ testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + co
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    created <- createPasskey (newPasskey u t)
+    created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
     let pid = pkPasskeyId created
     counterAdvanced <- updatePasskeySignCounter pid (SignatureCounter 42) t
     afterUpdate <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
@@ -2452,7 +2472,7 @@ testPasskeyCounterIsCompareAndSwap =
     result <- runApp pool do
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       t <- now
-      created <- createPasskey (newPasskey u t)
+      created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
       let pid = pkPasskeyId created
       zeroToZero <- updatePasskeySignCounter pid (SignatureCounter 0) t
       first <- updatePasskeySignCounter pid (SignatureCounter 42) t
@@ -2473,7 +2493,7 @@ testPasskeyCounterCasUnderRace =
     seeded <- runApp pool do
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       t <- now
-      created <- createPasskey (newPasskey u t)
+      created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
       pure (pkPasskeyId created, t)
     (pid, t) <- expectApp seeded
     gate <- newEmptyMVar

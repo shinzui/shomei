@@ -45,17 +45,23 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 
 
 - [ ] M1: consistent field budgets reject invalid direct and HTTP input before expensive work.
-- [ ] M2: concurrent passkey enrollment obeys a persisted per-account ceiling.
+- [x] (2026-11-05) M2: account-row serialization and atomic fake storage enforce the explicit 1–100 ceiling (default 20). Eight database racers have one winner; two workflow completions produce one success audit. HTTP quota refusal returns 409 with the documented code; lowered limits preserve existing credential access/removal. Core/PostgreSQL/Servant/server gates pass with Tasty -j2.
 - [ ] M3: existing-account compatibility, configuration/schema, and API tests pass.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: The OpenAPI regression gate caught the new quota error missing its public anchor. The runtime catalog and problem-details guide now include `passkey_limit_reached`, and the focused HTTP/OpenAPI rerun passes.
 
 
 
 
 
 ## Decision Log
+
+2026-11-05: The plan simultaneously requires rejecting identifiers longer than 256 characters before any lookup and preserving password login for existing longer identifiers. A compatibility decision is pending with the owner. Implement the independent passkey quota while preserving all input/compatibility acceptance obligations.
+
+2026-11-05: Passkey creation now takes an explicit 1–100 ceiling and returns `Either AuthError PasskeyCredential`. PostgreSQL locks the persisted account row before counting and inserting; the in-memory interpreter makes one atomic world update. No unbounded compatibility operation is retained. ADR-21 records this contract.
 
 
 2026-10-28: Deliver the stated behavior with explicit upgrade and failure semantics; preserve established product policies unless an owner explicitly changes them. New risk acceptance is not a substitute for implementing a confirmed defect.

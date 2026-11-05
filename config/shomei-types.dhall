@@ -32,6 +32,7 @@ let ConfigType =
       , accessTokenTtlSeconds : Optional Natural
       , refreshTokenTtlSeconds : Optional Natural
       , sessionTtlSeconds : Optional Natural
+      , maxPasskeysPerUser : Optional Natural
       , rememberedSessionTtlSeconds : Optional Natural
       , publicBaseUrl : Optional Text
       , emailVerificationRequired : Optional Bool
@@ -114,6 +115,7 @@ let default =
       , accessTokenTtlSeconds = None Natural
       , refreshTokenTtlSeconds = None Natural
       , sessionTtlSeconds = None Natural
+      , maxPasskeysPerUser = None Natural
       , rememberedSessionTtlSeconds = None Natural
       , publicBaseUrl = None Text
       , emailVerificationRequired = None Bool

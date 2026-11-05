@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** passkey enrollment locks the account, counts, and inserts in one transaction;
+  callers pass a 1–100 ceiling and handle `PasskeyLimitReached`.
+
 - **Upgrade required:** TOTP envelopes bind both row identifiers; normal reads reject legacy
   ciphertext. Apply migration 0038 and run the offline converter before starting new hosts.
 - Add keyless envelope-version inspection and resumable conversion in batches of 100.

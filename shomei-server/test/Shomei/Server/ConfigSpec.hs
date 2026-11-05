@@ -406,6 +406,8 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   rateLimitAndCookieEdgeSettings
   notifierDefaults
   notifierSmtpDhallAndEnv
+  passkeyQuotaSettings
+
   notifierWebhookEnv
   notifierSmtpMissingHostFails
   notifierSmtpUsernameWithoutPasswordFails
@@ -413,6 +415,21 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierSecretsAreStrippedAndConfigIsSecretFree
   notifierInsecureTransportFlags
   kekIsRequired
+
+passkeyQuotaSettings :: Assertion
+passkeyQuotaSettings = do
+  unsetEnv "SHOMEI_CONFIG"
+  unsetEnv "SHOMEI_MAX_PASSKEYS_PER_USER"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  (defaults, _) <- loadConfigFromEnv
+  defaults.maxPasskeysPerUser @?= 20
+  setEnv "SHOMEI_MAX_PASSKEYS_PER_USER" "1"
+  (limited, _) <- loadConfigFromEnv
+  limited.maxPasskeysPerUser @?= 1
+  setEnv "SHOMEI_MAX_PASSKEYS_PER_USER" "101"
+  bad <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_MAX_PASSKEYS_PER_USER" bad
+  unsetEnv "SHOMEI_MAX_PASSKEYS_PER_USER"
 
 -- | Administrative workflows consume the deployment's core policy without pretending to be a
 -- listening server or requiring the server's PostgreSQL variable.

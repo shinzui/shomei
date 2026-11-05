@@ -90,6 +90,7 @@ data AuthError
   | -- | The per-IP failure throttle tripped; the HTTP layer maps it to 429.
     TooManyRequests
   | TokenInvalid TokenError
+  | PasskeyLimitReached
   | -- | A WebAuthn registration verification failed (bad attestation, origin/challenge
     -- mismatch, or malformed credential JSON). The HTTP layer maps this to 400.
     WebAuthnCeremonyError WebAuthnError

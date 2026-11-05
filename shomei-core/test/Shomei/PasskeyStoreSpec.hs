@@ -125,7 +125,7 @@ createAndFind = do
   ref <- newWorld
   uid <- genUserId
   (created, byUser, byCred, byHandle) <- runInMemory ref do
-    created <- createPasskey (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
     byUser <- findPasskeysByUser uid
     byCred <- findPasskeyByCredentialId (WebAuthnCredentialId cid1)
     byHandle <- findPasskeysByUserHandle (UserHandle uh1)
@@ -146,7 +146,7 @@ updateSignCounter = do
   ref <- newWorld
   uid <- genUserId
   (advanced, replayed, older, found) <- runInMemory ref do
-    created <- createPasskey (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
     advanced <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
     replayed <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
     older <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 6) t1
@@ -162,11 +162,11 @@ countByUser = do
   uid <- genUserId
   otherUid <- genUserId
   n <- runInMemory ref do
-    _ <- createPasskey (sampleNew uid)
+    _ <- createPasskey 20 (sampleNew uid)
     -- a second passkey for the same user (distinct credential id)
-    _ <- createPasskey (sampleNewWithCred uid "cred-2")
+    _ <- createPasskey 20 (sampleNewWithCred uid "cred-2")
     -- a third for a different user
-    _ <- createPasskey (sampleNewWithCred otherUid "cred-3")
+    _ <- createPasskey 20 (sampleNewWithCred otherUid "cred-3")
     countPasskeysByUser uid
   n @?= 2
 
@@ -176,7 +176,7 @@ userScopedDelete = do
   uid <- genUserId
   otherUid <- genUserId
   (afterWrongUser, afterOwner) <- runInMemory ref do
-    created <- createPasskey (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
     let pid = pkPasskeyId created
     deletePasskey otherUid pid -- wrong user: no-op
     afterWrongUser <- findPasskeyByCredentialId (WebAuthnCredentialId cid1)

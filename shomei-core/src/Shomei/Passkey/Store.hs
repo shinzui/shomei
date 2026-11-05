@@ -27,6 +27,7 @@ where
 
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError)
 import Shomei.Id (PasskeyId, UserId)
 import Shomei.Passkey.Domain
   ( NewPasskeyCredential,
@@ -38,7 +39,8 @@ import Shomei.Passkey.Domain
 import Shomei.Prelude
 
 data PasskeyStore :: Effect where
-  CreatePasskey :: NewPasskeyCredential -> PasskeyStore m PasskeyCredential
+  -- | Atomically count and insert within the requested 1–100 credential ceiling.
+  CreatePasskey :: Int -> NewPasskeyCredential -> PasskeyStore m (Either AuthError PasskeyCredential)
   FindPasskeysByUser :: UserId -> PasskeyStore m [PasskeyCredential]
   FindPasskeyByCredentialId :: WebAuthnCredentialId -> PasskeyStore m (Maybe PasskeyCredential)
   FindPasskeysByUserHandle :: UserHandle -> PasskeyStore m [PasskeyCredential]
@@ -51,8 +53,8 @@ data PasskeyStore :: Effect where
 
 type instance DispatchOf PasskeyStore = Dynamic
 
-createPasskey :: (PasskeyStore :> es) => NewPasskeyCredential -> Eff es PasskeyCredential
-createPasskey = send . CreatePasskey
+createPasskey :: (PasskeyStore :> es) => Int -> NewPasskeyCredential -> Eff es (Either AuthError PasskeyCredential)
+createPasskey limit credential = send (CreatePasskey limit credential)
 
 findPasskeysByUser :: (PasskeyStore :> es) => UserId -> Eff es [PasskeyCredential]
 findPasskeysByUser = send . FindPasskeysByUser

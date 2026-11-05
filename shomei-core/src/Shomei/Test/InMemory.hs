@@ -106,7 +106,7 @@ import Shomei.Audit.Reader.Store
 import Shomei.Authorization.Claims.Domain (AuthClaims, Issuer (..), Permission (..), Role (..))
 import Shomei.Authorization.Claims.Store (ClaimsDelta, ClaimsEnricher, emptyClaimsDelta, runClaimsEnricherNull, runClaimsEnricherPure)
 import Shomei.Authorization.Role.Store (RoleDefinition (..), RoleStore (..))
-import Shomei.Error (TokenError (..))
+import Shomei.Error (AuthError (PasskeyLimitReached), TokenError (..))
 import Shomei.Id
   ( CeremonyId,
     LoginAttemptId,
@@ -930,7 +930,7 @@ pcExpiresAt PendingCeremony {expiresAt} = expiresAt
 
 runPasskeyStore :: (IOE :> es) => IORef World -> Eff (PasskeyStore : es) a -> Eff es a
 runPasskeyStore ref = interpret_ \case
-  CreatePasskey NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
+  CreatePasskey limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
     pid <- genPasskeyId
     let pc =
           PasskeyCredential
@@ -945,8 +945,12 @@ runPasskeyStore ref = interpret_ \case
               createdAt,
               lastUsedAt = Nothing
             }
-    liftIO (modifyWorld ref (#passkeys %~ Map.insert pid pc))
-    pure pc
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          if limit < 1 || limit > 100 || length [p | p <- Map.elems w.passkeys, pkUserId p == userId] >= limit
+            then (w, Left PasskeyLimitReached)
+            else (w & #passkeys %~ Map.insert pid pc, Right pc)
+      )
   FindPasskeysByUser uid ->
     liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
   FindPasskeyByCredentialId cid ->

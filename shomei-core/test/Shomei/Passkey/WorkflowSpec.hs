@@ -11,18 +11,22 @@
 -- @shomei-servant@ end-to-end test.
 module Shomei.Passkey.WorkflowSpec (tests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Monad (forM, forM_)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson.Types (parseMaybe, withObject, (.:))
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, newIORef)
+import Data.Either (isRight)
+import Data.IORef (IORef, newIORef, readIORef)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Account.User.Domain (NewUser (..), User (..))
 import Shomei.Account.User.Store (createUser)
+import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
-import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (PasskeyId, UserId, genCeremonyId, genUserId)
 import Shomei.Passkey.Ceremony.Port (WebAuthnError (..))
@@ -38,7 +42,7 @@ import Shomei.Passkey.Workflow
     listPasskeys,
     removePasskey,
   )
-import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
+import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
@@ -50,7 +54,8 @@ tests =
       testCase "wrong-user complete is rejected" wrongUserComplete,
       testCase "absent ceremony is rejected" absentCeremony,
       testCase "an already-consumed ceremony is rejected on the second complete" consumedCeremony,
-      testCase "a credential the verifier rejects yields WebAuthnCeremonyError" rejectedCredential
+      testCase "a credential the verifier rejects yields WebAuthnCeremonyError" rejectedCredential,
+      testCase "two completions for the last passkey slot produce one credential and one audit" quotaRace
     ]
 
 cfg :: ShomeiConfig
@@ -153,3 +158,29 @@ rejectedCredential = do
   -- a credential whose challenge does not match the ceremony fails verification
   result <- runInMemory ref (completePasskeyRegistration cfg uid cid (credentialJson "not-the-challenge") Nothing)
   result @?= Left (WebAuthnCeremonyError WebAuthnChallengeMismatch)
+
+quotaRace :: IO ()
+quotaRace = do
+  ref <- newWorld
+  uid <- seedUser ref
+  let limited = cfg {maxPasskeysPerUser = 1}
+  ceremonies <- forM [1 .. 2 :: Int] \_ -> mustRight =<< runInMemory ref (beginPasskeyRegistration limited uid)
+  gate <- newEmptyMVar
+  results <- forM ceremonies \(cid, opts) -> do
+    done <- newEmptyMVar
+    _ <- forkIO do
+      readMVar gate
+      putMVar done =<< runInMemory ref (completePasskeyRegistration limited uid cid (credentialJson (challengeOf opts)) Nothing)
+    pure done
+  putMVar gate ()
+  outcomes <- mapM takeMVar results
+  length (filter isRight outcomes) @?= 1
+  length [() | Left PasskeyLimitReached <- outcomes] @?= 1
+  listed <- runInMemory ref (listPasskeys uid)
+  length listed @?= 1
+  world <- readIORef ref
+  length [() | Event.PasskeyRegistered _ <- world.publishedEvents] @?= 1
+  -- Lowering a ceiling never removes existing credentials; removal still works.
+  forM_ listed \pk -> do
+    _ <- mustRight =<< runInMemory ref (removePasskey uid (pkPasskeyId pk))
+    pure ()

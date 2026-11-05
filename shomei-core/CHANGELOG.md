@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** passkey creation requires an explicit enrollment ceiling and returns a typed
+  result; `ShomeiConfig.maxPasskeysPerUser` defaults to 20. In-memory enrollment enforces the
+  ceiling atomically and workflows publish success only for accepted enrollment.
+
 - **Breaking:** `IdToken` now redacts `Show` and has no generic JSON instances. OAuth wire
   responses explicitly unwrap it, consistent with access and refresh token diagnostics.
 

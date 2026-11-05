@@ -83,6 +83,7 @@ beginPasskeyRegistration cfg uid = runErrorNoCallStack do
   ts <- now
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById uid
   existing <- findPasskeysByUser uid
+  when (length existing >= cfg.maxPasskeysPerUser) (throwError PasskeyLimitReached)
   -- The human-readable label shown in the browser's passkey UI: prefer the email when
   -- present, otherwise fall back to the login identifier (the user handle itself is
   -- always derived from the user id, so it is unaffected by a missing email).
@@ -120,7 +121,7 @@ completePasskeyRegistration ::
   Value ->
   Maybe Text ->
   Eff es (Either AuthError PasskeyCredential)
-completePasskeyRegistration _cfg uid ceremonyId credentialJson mLabel = runErrorNoCallStack do
+completePasskeyRegistration cfg uid ceremonyId credentialJson mLabel = runErrorNoCallStack do
   ts <- now
   PendingCeremony {kind, userId = pendingUid, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
@@ -131,17 +132,19 @@ completePasskeyRegistration _cfg uid ceremonyId credentialJson mLabel = runError
     either (throwError . WebAuthnCeremonyError) pure
       =<< completeRegistrationCeremony optionsBlob credentialJson
   passkey <-
-    createPasskey
-      NewPasskeyCredential
-        { userId = uid,
-          credentialId,
-          userHandle,
-          publicKey,
-          signCounter,
-          transports,
-          label = normalizeLabel =<< mLabel,
-          createdAt = ts
-        }
+    either throwError pure
+      =<< createPasskey
+        cfg.maxPasskeysPerUser
+        NewPasskeyCredential
+          { userId = uid,
+            credentialId,
+            userHandle,
+            publicKey,
+            signCounter,
+            transports,
+            label = normalizeLabel =<< mLabel,
+            createdAt = ts
+          }
   let PasskeyCredential {passkeyId} = passkey
   publishAuthEvent (Event.PasskeyRegistered (Event.PasskeyRegisteredData uid passkeyId ts))
   pure passkey

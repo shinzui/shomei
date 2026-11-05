@@ -17,6 +17,7 @@ import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
+import Hasql.Transaction qualified as Tx
 import Shomei.Error (AuthError (..))
 import Shomei.Id
   ( genPasskeyId,
@@ -34,7 +35,7 @@ import Shomei.Passkey.Domain
     WebAuthnCredentialId (..),
   )
 import Shomei.Passkey.Store (PasskeyStore (..))
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Prelude
 
 -- | The stored-credential row, column order matching @shomei_webauthn_credentials@:
@@ -48,7 +49,7 @@ runPasskeyStorePostgres ::
   Eff (PasskeyStore : es) a ->
   Eff es a
 runPasskeyStorePostgres = interpret_ \case
-  CreatePasskey NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
+  CreatePasskey limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
     pid <- genPasskeyId
     let pc =
           PasskeyCredential
@@ -63,8 +64,13 @@ runPasskeyStorePostgres = interpret_ \case
               createdAt,
               lastUsedAt = Nothing
             }
-    res <- runSession (Session.statement (toRow pc) insertStmt)
-    either dbFail (const (pure pc)) res
+    res <- runTransaction do
+      Tx.statement (userIdToUUID userId) enrollmentLockStmt
+      count <- Tx.statement (userIdToUUID userId) countByUserStmt
+      if limit < 1 || limit > 100 || count >= fromIntegral limit
+        then pure (Left PasskeyLimitReached)
+        else Tx.statement (toRow pc) insertStmt >> pure (Right pc)
+    either dbFail pure res
   FindPasskeysByUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) findByUserStmt)
     rows <- either dbFail pure res
@@ -168,6 +174,14 @@ passkeyRowEncoder =
     (E.param (E.nullable E.timestamptz))
 
 -- | The SELECT column list (matches 'PasskeyRow' / 'passkeyRowDecoder' order).
+-- Lock the account before counting so concurrent inserts cannot both spend the last slot.
+enrollmentLockStmt :: Statement UUID ()
+enrollmentLockStmt =
+  preparable
+    "SELECT user_id FROM shomei.shomei_users WHERE user_id = $1 FOR UPDATE"
+    (E.param (E.nonNullable E.uuid))
+    D.noResult
+
 selectCols :: Text
 selectCols =
   "passkey_id, user_id, credential_id, user_handle, public_key, sign_counter, transports, label, created_at, last_used_at"

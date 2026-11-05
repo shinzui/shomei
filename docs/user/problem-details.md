@@ -29,6 +29,7 @@ or `code`, not on `title` or `detail`.
 | <a id="email_already_verified"></a>`email_already_verified` | Email is already verified | 409 | no | Refresh account state. | never |
 | <a id="email_not_verified"></a>`email_not_verified` | Email address is not verified | 403 | no | Complete email verification. | never |
 | <a id="passkey_not_found"></a>`passkey_not_found` | Passkey not found | 404 | no | Refresh the passkey list. | never |
+| <a id="passkey_limit_reached"></a>`passkey_limit_reached` | Passkey enrollment limit reached | 409 | no | Remove an unused passkey before enrolling another. | never |
 | <a id="ceremony_not_found"></a>`ceremony_not_found` | Registration ceremony not found or expired | 404 | no | Start a new ceremony. | never |
 | <a id="webauthn_verification_failed"></a>`webauthn_verification_failed` | Passkey registration could not be verified | 400 | no | Start a new ceremony and retry locally. | never |
 | <a id="mfa_failed"></a>`mfa_failed` | Multi-factor authentication failed | 401 | no | Present a fresh valid proof. | never |
