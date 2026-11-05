@@ -57,7 +57,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 | 2 | Bound Authentication Inputs and Passkey Enrollment | [docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md](../plans/63-bound-authentication-inputs-and-passkey-enrollment.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Complete |
 | 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | In Progress |
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Complete |
-| 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Not Started |
+| 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Complete |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Not Started |
 | 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | In Progress |
 
@@ -87,7 +87,7 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 2026-11-05: EP-2 is accepted at `c615215` with the owner’s legacy-login choice and all eight focused suites passing. EP-4 begins with bounded transaction retries. EP-3’s implemented milestones remain accepted at `2472483`; its aggregate parent row awaits EP-5/EP-7 leaves.
 
-Implementation started 2026-11-05. EP-7 M1 inventory is accepted: 108 parents and 240 owned rows. EP-1 and EP-2 are Complete with commit-pinned evidence. EP-3 implementation and wire acceptance pass; its aggregate REV-2.23 parent awaits EP-5/EP-7 leaves. EP-4 is Complete at `9c095e6`: bounded database work, pool lifecycle, quotas, bulk/paging, timestamps, persisted races and measured indexes pass; all owned ledger rows are terminal. EP-5 signed WebAuthn fixtures are next; EP-6 remains ready. EP-7 historical verification and final integration gates remain open.
+Implementation started 2026-11-05. EP-7 M1 inventory is accepted: 108 parents and 240 owned rows. EP-1 and EP-2 are Complete with commit-pinned evidence. EP-3 implementation and wire acceptance pass; its aggregate REV-2.23 parent awaits EP-5/EP-7 leaves. EP-4 is Complete at `9c095e6`: bounded database work, pool lifecycle, quotas, bulk/paging, timestamps, persisted races and measured indexes pass; all owned ledger rows are terminal. EP-5 is Complete at `522abcc` with real signed verifier/workflow tests and ADR-25 attestation guidance. EP-6 runtime, diagnostics and audit work is next. EP-7 historical verification and final integration gates remain open.
 
 ## Surprises & Discoveries
 

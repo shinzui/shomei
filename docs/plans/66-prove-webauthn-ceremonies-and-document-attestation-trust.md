@@ -44,9 +44,9 @@ Prove that actual signed WebAuthn ceremonies enforce origin, relying-party ident
 ## Progress
 
 
-- [ ] M1: deterministic signed registration and assertion fixtures succeed through the real interpreter.
-- [ ] M2: mutated origin/rpId/UV/signature/counter inputs fail with the intended domain outcomes.
-- [ ] M3: step-up/passwordless integration and explicit attestation documentation pass review.
+- [x] (2026-11-05, `522abcc`) M1: deterministic signed registration and assertion fixtures succeed through the real interpreter.
+- [x] (2026-11-05, `522abcc`) M2: mutated origin/rpId/UV/signature/counter inputs fail with the intended domain outcomes.
+- [x] (2026-11-05, `522abcc`) M3: step-up/passwordless integration and explicit attestation documentation pass review.
 
 
 ## Surprises & Discoveries
@@ -62,6 +62,8 @@ Prove that actual signed WebAuthn ceremonies enforce origin, relying-party ident
 
 
 ## Outcomes & Retrospective
+
+Accepted at `522abcc`. All three core/PostgreSQL/WebAuthn suites pass with bounded PostgreSQL test concurrency; strict ADR and inventory checks pass. The test-only authenticator emits independent CBOR/JSON and deterministic ES256 signatures using public fixture scalar/nonce, while all completions use the production verifier. Targeted, re-signed mutations reach each intended origin, RP ID, challenge, UP/UV, signature, counter, ceremony-type and user-binding policy. Hybrid workflow tests retain fake storage/Clock and use the real verifier to prove enrollment, step-up, passwordless, expiry, one-use, owner checks and audited/abuse-budget failures. No dependency fork update was needed. The unreachable clone-warning success field is removed as a documented API break. ADR-25 and the passkey guide hold the durable attestation boundary; all three owned ledger rows are terminal. No new friction entry was needed.
 
 
 
@@ -93,7 +95,7 @@ M3 makes the attestation contract explicit in `docs/user/passkeys.md` and the ce
 Run the focused gates after implementing the milestone assertions; expected result is passing suites and no new profile or migration errors. The previous full workspace pass is a baseline, not evidence for new changes.
 
 ```bash
-cabal test shomei-webauthn shomei-core shomei-postgres --test-show-details=failures -j1
+cabal test shomei-webauthn shomei-core shomei-postgres --test-show-details=failures --test-options=-j2 -j1
 just adr-validate
 ```
 
