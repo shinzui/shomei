@@ -25,10 +25,12 @@
 -- only) so the production library carries no test dependency.
 module Main (main) where
 
-import Control.Monad (filterM)
+import Control.Exception (evaluate)
+import Control.Monad (filterM, forM_)
 import Data.Aeson (Result (..), ToJSON (..), Value (..), decode, eitherDecode, encode, fromJSON)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Lazy qualified as LBS
 import Data.Char (isAsciiLower, isDigit)
 import Data.Either (isLeft)
 import Data.Foldable (toList)
@@ -41,8 +43,9 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
 import Data.Type.Equality ((:~:) (Refl))
+import GHC.Conc (getAllocationCounter)
 import GHC.TypeLits (Nat)
-import Servant.API (NamedRoutes, NoContent (..), Verb, type (:>))
+import Servant.API (JSON, NamedRoutes, NoContent (..), Verb, mimeRender, type (:>))
 import Servant.API.MultiVerb (MultiVerb, Respond, RespondAs, WithHeaders)
 import Servant.Health (ProbeResponses, ProbeStatus (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
@@ -60,14 +63,16 @@ import Shomei.OAuth.Api
 import Shomei.Passkey.Api
 import Shomei.Passkey.Dto
 import Shomei.Servant.Api (OpenApiRoute, ShomeiRoutes)
+import Shomei.Servant.CachedJson (CachedJson, cacheJson, cachedJsonBytes, cachedJsonValue)
 import Shomei.Servant.Error (ProblemDetails (..), ProblemSpec (..), detailOccurrence, noProblemOccurrence, problemBody, problemCatalog, problemDetails, problemTypeFor, toProblemError)
 import Shomei.Servant.OAuth (OAuthErrorResponse (..), TokenResponse (..))
-import Shomei.Servant.OpenApi (shomeiOpenApi)
+import Shomei.Servant.OpenApi (openApiDocument, openApiValue, shomeiOpenApi)
 import Shomei.Session.Admin.Api
 import Shomei.Session.Api
 import Shomei.Session.Dto
 import Shomei.SigningKey.Api
 import System.Directory (doesFileExist)
+import System.Mem (performGC)
 import Test.Hspec
 import Test.QuickCheck (Arbitrary (..), chooseInt, oneof)
 import Test.QuickCheck.Instances ()
@@ -232,6 +237,19 @@ spec = do
       (eitherDecode "{\"type\":\"totp\",\"code\":\"123456\",\"assertion\":{}}" :: Either String MfaProof)
         `shouldSatisfy` isLeft
 
+  describe "cached OpenAPI wire document" $ do
+    it "serves the same JSON object directly and reuses its serialized bytes" $ do
+      let bytes = mimeRender (Proxy @JSON) openApiDocument
+      eitherDecode bytes `shouldBe` Right openApiValue
+      bytes `shouldBe` encode openApiValue
+      cachedJsonValue openApiDocument `shouldBe` openApiValue
+      bytes `shouldBe` cachedJsonBytes openApiDocument
+    it "measures 1000 render allocations against the uncached Value renderer" $ do
+      _ <- evaluate (LBS.length (cachedJsonBytes openApiDocument))
+      old <- allocated (forM_ [1 .. 1000] (\i -> renderValue i openApiValue >>= evaluate . LBS.length))
+      cached <- allocated (forM_ [1 .. 1000] (\i -> renderCached i >>= evaluate . LBS.length))
+      writeFile "/tmp/shomei-openapi-allocations.txt" ("renders=1000 uncached_bytes=" <> show old <> " cached_bytes=" <> show cached <> "\n")
+      cached `shouldSatisfy` (< old `div` 10)
   describe "shomeiOpenApi document" $ do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
@@ -679,3 +697,23 @@ instance Arbitrary AuditEventResponse where
 
 instance Arbitrary AuditEventsPage where
   arbitrary = AuditEventsPage <$> arbitrary <*> arbitrary
+
+-- IO boundaries prevent the optimizer from sharing the deliberately uncached baseline.
+{-# NOINLINE renderValue #-}
+renderValue :: Int -> Value -> IO LBS.ByteString
+renderValue iteration value = evaluate iteration >> evaluate (mimeRender (Proxy @JSON) value)
+
+{-# NOINLINE renderCached #-}
+renderCached :: Int -> IO LBS.ByteString
+renderCached iteration = evaluate iteration >> evaluate (mimeRender (Proxy @JSON) openApiDocument)
+
+allocated :: IO a -> IO Integer
+allocated action = do
+  performGC
+  before <- getAllocationCounter
+  _ <- action
+  after <- getAllocationCounter
+  pure (fromIntegral before - fromIntegral after)
+
+instance Arbitrary CachedJson where
+  arbitrary = cacheJson <$> arbitrary

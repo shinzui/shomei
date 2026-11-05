@@ -26,6 +26,7 @@
 module Shomei.Servant.OpenApi
   ( shomeiOpenApi,
     openApiValue,
+    openApiDocument,
   )
 where
 
@@ -85,6 +86,7 @@ import Shomei.Passkey.Dto
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (Authenticated, OAuthAuthenticated)
 import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
+import Shomei.Servant.CachedJson (CachedJson, cacheJson)
 import Shomei.Servant.OAuth (TokenResponse)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
 import Shomei.Servant.Result
@@ -586,3 +588,10 @@ camel = T.pack . concatMap capitalize . dropVersion . words . map keepAlnum
     capitalize (c : cs) = toUpper c : cs
     dropVersion ("v1" : rest) = rest
     dropVersion segments = segments
+
+-- | One encoded document per program version; Servant renders its cached bytes directly.
+openApiDocument :: CachedJson
+openApiDocument = cacheJson openApiValue
+
+instance ToSchema CachedJson where
+  declareNamedSchema _ = declareNamedSchema (Proxy @Value)

@@ -106,6 +106,7 @@ import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.Error (ProblemDetails (..), problemTypeFor, shomeiErrorFormatters)
 import Shomei.Servant.Middleware (problemMiddleware)
+import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Result (ApplicationResult (ApplicationInternal, ApplicationUnavailable), ProblemWithRetryAfter (..), applicationError)
 import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Servant.Server (shomeiRoutes)
@@ -1387,7 +1388,17 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "OAuth machine quota returns a retryable OAuth error after its last slot" $ do
+    [ testCase "OpenAPI HTTP responses reuse the exact JSON document and media type" $ do
+        e <- freshEnv
+        testWithApplication (pure (app e)) $ \port -> do
+          manager <- newManager defaultManagerSettings
+          request <- parseRequest ("http://127.0.0.1:" <> show port <> "/openapi.json")
+          replicateM_ 16 do
+            response <- httpLbs request manager
+            statusCode (responseStatus response) @?= 200
+            lookup "Content-Type" (responseHeaders response) @?= Just "application/json;charset=utf-8"
+            responseBody response @?= encode openApiValue,
+      testCase "OAuth machine quota returns a retryable OAuth error after its last slot" $ do
         (clientId, e) <- freshOAuthEnv
         testWithApplication (pure (app e {config = e.config {maxActiveNonInteractiveSessions = 1}})) $ \port -> do
           mgr <- newManager defaultManagerSettings

@@ -15,7 +15,7 @@ import Shomei.Mfa.Handler (mfaServer)
 import Shomei.OAuth.Handler (oauthServer)
 import Shomei.Passkey.Handler (passkeyServer)
 import Shomei.Servant.Api (ApplicationApi (..), ShomeiRoutes (..))
-import Shomei.Servant.OpenApi (openApiValue)
+import Shomei.Servant.OpenApi (openApiDocument)
 import Shomei.Servant.Seam (Env)
 import Shomei.Session.Handler (adminSessionServer, sessionServer)
 import Shomei.SigningKey.Handler (wellKnownServer)
@@ -27,7 +27,7 @@ shomeiRoutes env liveness readiness =
       oauth = oauthServer env,
       wellKnown = wellKnownServer env,
       health = healthServer liveness readiness,
-      openapi = pure openApiValue
+      openapi = pure openApiDocument
     }
 
 applicationServer :: Env -> ApplicationApi (AsServerT Handler)

@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking (Haskell route type only):** OpenApiRoute returns `CachedJson`; use `cachedJsonValue` for its parsed document. The URL, application/json media type, JSON schema and bytes are preserved. Shared standalone/embedded assembly now renders one forced byte representation per document version.
+
 - **Breaking:** PostgreSQL assembly uses the managed `Shomei.Persistence.Pool.Postgres.Pool` and its `UsageError`, `use` and `release` operations. Interrupted/failed sessions discard their connection and restore capacity; the external pool dependency is removed.
 
 - Machine and delegated mints atomically enforce the configurable active principal ceiling (default 1000), preserving existing sessions after lowering the cap. Expiry frees capacity; finite sweeper retention bounds ordinary history by issuance rate and retention.

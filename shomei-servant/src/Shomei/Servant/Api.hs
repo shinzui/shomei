@@ -15,7 +15,6 @@ module Shomei.Servant.Api
   )
 where
 
-import Data.Aeson (Value)
 import Servant.API
 import Servant.Health (HealthApi)
 import Shomei.Account.Admin.Api (AdminAccountApi)
@@ -29,6 +28,7 @@ import Shomei.Passkey.Api (PasskeyApi)
 import Shomei.Prelude
 import Shomei.Servant.Auth (Authenticated)
 import Shomei.Servant.Authz (RequireRole)
+import Shomei.Servant.CachedJson (CachedJson)
 import Shomei.Servant.Throttle (ThrottledRoute, throttledRoutesOf)
 import Shomei.Session.Admin.Api (AdminSessionApi)
 import Shomei.Session.Api (SessionApi)
@@ -62,7 +62,7 @@ type WellKnownRoutes = ".well-known" :> NamedRoutes WellKnownApi
 
 type HealthRoutes = "health" :> NamedRoutes HealthApi
 
-type OpenApiRoute = "openapi.json" :> Get '[JSON] Value
+type OpenApiRoute = "openapi.json" :> Get '[JSON] CachedJson
 
 data ShomeiRoutes mode = ShomeiRoutes
   { application :: mode :- ApplicationRoutes,
