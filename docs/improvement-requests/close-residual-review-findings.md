@@ -2,13 +2,26 @@
 type: Improvement Request
 title: Close residual findings from the August security and performance reviews
 description: Give every residual review subitem a fix with evidence or an explicit documented disposition.
-timestamp: "2026-10-28T18:06:42Z"
+timestamp: "2026-11-05T18:27:04Z"
 generated:
   by: process:codex
-  at: "2026-10-28T18:06:42Z"
+  at: "2026-11-05T18:27:04Z"
 requestId: IR-3
-status: proposed
+status: completed
+completedAt: "2026-11-05T18:27:04Z"
+resolution: "Completed by MasterPlan 9 at tested candidate 1daf36ca2652e320c343754c84656688ab5af1d6; all 240 ledger rows are terminal with source/test/decision evidence. Closure: mori://shinzui/shomei/okf/reviews/concepts/REV-12."
 origin: mori://shinzui/shomei/okf/reviews/concepts/REV-11
+reviews:
+  - kind: model
+    reviewer: process:codex
+    reviewed_at: "2026-11-05T18:27:04Z"
+    document_timestamp: "2026-11-05T18:27:04Z"
+    scope: content-and-metadata
+    outcome: approved
+    context: "Implementation acceptance against REV-12, the 240-row closed ledger and final candidate gates; performed by the implementing model, not independent verification."
+    provider: openai
+    model: gpt-6.1-sol
+    effort: unspecified
 ---
 
 # Close residual review findings
@@ -19,7 +32,7 @@ reopening the already implemented major remediations.
 
 Implementation is planned in [MasterPlan 9](../masterplans/9-close-all-security-and-performance-review-findings.md),
 with seven child ExecPlans and a [finding ledger](../review-remediation/findings.md).
-The work remains open; plan creation does not satisfy acceptance.
+The work is complete. [REV-12](../reviews/masterplan-9-remediation-closure.md) records the exact tested candidate, every disposition, integration results and retained exposure; plan creation alone was not accepted as evidence.
 
 ## Required outcomes
 

@@ -33,8 +33,9 @@ HIBP diagnostic tests establish the configured workflow; no external HIBP query 
 The shipped Dhall example renders successfully, and the configuration suite checks its schema's
 completed default against every FileConfig key, strict enums, ranges and environment precedence.
 
-Strict improvement-request validation additionally reports missing *recommended* `reviews`
-provenance on IR-1 through IR-4. With --strict these warnings make exit status 1;
+Strict improvement-request validation initially reported missing *recommended* `reviews`
+provenance on IR-1 through IR-4. After IR-3 receives its actual implementation review entry,
+the remaining warnings concern IR-1, IR-2 and IR-4. With --strict these warnings make exit status 1;
 profile/log enforcement without --strict passes all four documents. No independent reviews were
 invented to suppress the warnings. ADR and review strict enforcement pass. The closure adds an
 actual implementation review reference to IR-3; unrelated request provenance remains unchanged.
@@ -137,3 +138,14 @@ NULL provenance, and an unassociated session without a refresh-token record afte
 only the human remains interactive, unknown/omitted writes default safely and invalid kinds fail.
 The core also refuses a stored actor even when the token omits act. That upgrade acceptance
 supersedes the former assumption that every pre-0029 row was interactive.
+
+## Final candidate receipt
+
+At `1daf36ca2652e320c343754c84656688ab5af1d6`, the complete build, all 14 suites, separate en build, 43-migration manifest/namespace,
+strict ADR/review/friction profiles, enforced improvement-request profile/log, closed inventory,
+format check and diff check passed again. Logs are `/tmp/shomei-ep7-candidate-*.log`.
+The candidate's isolated workload also passed; [aggregate result](load-candidate.json) records
+10,000 revoked/audited sessions, 1,000 exact OpenAPI bodies, 6,272 KiB RSS growth (32,768 limit)
+and 209 login attempts with zero unexpected HTTP errors in 18,016.481 ms.
+The final metadata commit adds this receipt, closure records and the upgrade-order clarification
+without changing tested code. [REV-12](../reviews/masterplan-9-remediation-closure.md) is the review of record.

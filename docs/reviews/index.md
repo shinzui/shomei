@@ -36,9 +36,10 @@ just reviews-validate
 
 ## Reviews
 
-Current follow-up: [REV-11 — remediation completeness audit](remediation-completeness-audit.md)
-finds that MasterPlan 8's completed scope does not close every original subitem.
-Remaining work is tracked in [IR-3](../improvement-requests/close-residual-review-findings.md).
+Current follow-up: [REV-12 — MasterPlan 9 finding closure](masterplan-9-remediation-closure.md)
+accepts all 240 ledger rows at the freshly tested candidate and completes
+[IR-3](../improvement-requests/close-residual-review-findings.md).
+[REV-11](remediation-completeness-audit.md) preserves the earlier completeness gaps.
 
 The first sweep, at `ee00382509c6cf4b3db2a3c87ff0bd029932c770` (2026-08-27), read every shipped
 package with a security and performance emphasis, because Shōmei is the authentication half of
@@ -56,3 +57,5 @@ review of one package starts from its own record.
 - [REV-8 — shomei-server runtime, middleware, key loading, notifiers, and the admin CLI](shomei-server-security-and-performance.md) — Key handling and logging hygiene hold; an SMTP DATA-stage rejection persists the raw reset token, per-IP defences collapse behind a proxy, and the embedding entry point ships no runtime stack; changes requested.
 - [REV-9 — shomei-client credential handling and admin wrappers](shomei-client-security.md) — Bearer-only, TLS by scheme, routes derived from the API; `Token` derives `Show`; commented.
 - [REV-10 — microservice-auth-stack downstream verification template](microservice-auth-stack-jwks-template.md) — The cache's documented properties hold; the manager cannot speak TLS, `max-age` is unclamped, unknown keys never trigger a refresh, and the en recipe sends no API key; changes requested.
+
+- [REV-12 — MasterPlan 9 security and performance finding closure](masterplan-9-remediation-closure.md) — 240 terminal rows, all 14 suites, isolated fixed load and upgrade fixtures pass; implementation acceptance by the authoring model.

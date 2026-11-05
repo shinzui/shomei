@@ -59,7 +59,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Complete |
 | 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Complete |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Complete |
-| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | In Progress |
+| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | Complete |
 
 Status values are Not Started, In Progress, Complete, Cancelled. Dependencies name milestones deliberately; a whole-child dependency requires the child to be Complete.
 
@@ -75,7 +75,7 @@ EP-1 owns TOTP envelope/version columns and the offline conversion command. EP-4
 
 EP-2 owns field limits and passkey quota operations. EP-4 owns session quota/paging and bulk-revocation operations. Both enforce quotas atomically in PostgreSQL and mirror them in the in-memory interpreter. A pre-read count is not enforcement. EP-5 owns signed WebAuthn fixtures and validates the production ceremony interpreter; EP-2 owns cap behavior even when those fixtures are not yet available.
 
-EP-3 owns PKCE, bearer parsing, actor wire shape, and verifier lifetime policy. EP-6 consumes decoded actor/subject identities for audit, never raw token claims. Their first integration check is issuer → downstream verification → persisted actor/subject audit, with old and new actor forms. No child may turn an invalid actor into an ordinary token. Today `claimsToAuth` in `shomei-jwt/src/Shomei/SigningKey/Verify/Jwt.hs` reads `act` through a helper that returns nothing for any non-string JSON value, so a present object, array, number, or null actor verifies as an ordinary token; EP-3 lands that fail-closed regression in its M1, before any object-form emission, and EP-6 audits only identities that passed it.
+EP-3 owns PKCE, bearer parsing, actor wire shape, and verifier lifetime policy. EP-6 consumes decoded actor/subject identities for audit, never raw token claims. Their first integration check is issuer → downstream verification → persisted actor/subject audit, with old and new actor forms. No child may turn an invalid actor into an ordinary token. At planning time, `claimsToAuth` in `shomei-jwt/src/Shomei/SigningKey/Verify/Jwt.hs` silently dropped non-string actors. EP-3 now rejects malformed present actors before emission or audit; EP-6 records only identities that passed strict verification.
 
 Each child adding configuration owns its named fields in `shomei-core/src/Shomei/Config.hs`, `shomei-server/src/Shomei/Server/Config.hs`, and `config/shomei-types.dhall`, together with default/example/documentation edits. EP-7 checks the combined schema. EP-6 owns shared Warp assembly so admission/bind settings reach both standalone and embedded hosts. Source changes in shared files must preserve other children's changes.
 
@@ -85,10 +85,15 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
-2026-11-05: EP-7 integration reopened EP-3 for a legacy provenance upgrade gap. Historical row mapping is complete; the populated-schema migration regression and core/PostgreSQL gates now pass, reaccepting EP-3. Final candidate integration and review remain.
+2026-11-05: All seven children are Complete. [REV-12](../reviews/masterplan-9-remediation-closure.md)
+records final candidate `1daf36ca2652e320c343754c84656688ab5af1d6`, with all 14 suites, the separate en build,
+43-migration/profile checks and fixed load passing. All 240 ledger rows are terminal and IR-3
+is completed. The owner's legacy-ID login choice is preserved.
 
-2026-11-05: All six behavior children are Complete. EP-1 binds/migrates TOTP; EP-2 enforces new-write/input and quota limits with the owner's legacy-login choice; EP-3's wire acceptance and aggregate interoperability leaves are terminal; EP-4 bounds database work and proves persisted races; EP-5 verifies actual signed ceremonies; EP-6 bounds runtime work and persists downstream audits. Implementations and acceptance commits are pinned in each child and the ledger. EP-7 historical verification, performance/upgrade integration and final closure remain open. Latest verification `1e3bbae` adds explicit nested/client credential redaction and HTTP role/scope boundary tests without changing runtime behavior.
-
+Inventory acceptance preceded behavior expansion. Historical verification then checked 156
+remaining clauses against source/tests and retained policies. It reopened EP-3 for a legacy
+provenance upgrade gap; 0043, stored-actor refusal and populated-schema regressions passed at
+195f114 and again in final integration. Final closure documents add no untested code.
 
 ## Surprises & Discoveries
 
@@ -119,6 +124,20 @@ The intention was created with `mina ci --json` as requested. Mina warned that i
 2026-11-03: The standalone verifier's maximum accepted token lifetime is a required finite setting with no unbounded option; the issuer-side default derives from the configured issuance TTLs. An optional ceiling defaulting to unbounded would leave downstream consumers with the original REV-3 §7 exposure.
 
 ## Outcomes & Retrospective
+
+2026-11-05: The complete remediation scope is delivered and accepted by REV-12, preserving all
+original review outcomes. The ledger distinguishes 223 fixes, 16 existing verified decisions and
+one inapplicable hard-delete index observation; none is deferred or silently waived. Clause-level
+verification exposed gaps beyond earlier plan completion, including the final legacy provenance
+repair. Source/test/decision evidence, fixed-load comparisons and upgrade contracts are durable
+review artifacts. ADR-20–26 capture new boundaries; existing ADRs hold the completed follow-ups.
+
+FRIC-1, FRIC-3 and FRIC-4 show that dependency and test-runtime lifecycle behavior must be proven
+with actual cancellation, lock and persisted race fixtures. They are accepted with explicit,
+tested workarounds; FRIC-2 is resolved with the released SMTP fix. No upstream fix is claimed for
+the accepted driver/pool limitations. No new risk exception or production deployment was part of
+closure. The final review is by the implementing model; independent assurance remains a separate
+activity, and unrelated strict improvement-request provenance warnings are reported honestly.
 
 
 ## Revision Notes

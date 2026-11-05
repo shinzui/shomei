@@ -46,8 +46,8 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 
 - [x] (2026-11-05) M1: all 108 original findings and the compound/performance clauses are assigned and explicitly named by their owner plans; `python3 scripts/check-review-inventory.py` verifies source-derived parent coverage, uniqueness, ownership, and child-plan coverage. Behavioral dispositions are recorded separately with commit-pinned evidence.
 - [x] (2026-11-05) M2: every historical row is independently mapped to inspected source/test assertions or an existing policy with residual exposure. The 156 remaining clauses have 54 exact evidence groups; all 240 ledger rows are terminal. Initial 14-suite gate passed at ea5d942; provenance follow-up 195f114 passed core/PostgreSQL/migration gates. No new risk exception was introduced.
-- [ ] M3: integrated tests, performance checks, upgrades, and documentation validate the completed child changes. Partial: isolated loopback driver passed three runs, including 10,000-session paging/revocation, 1,000 exact OpenAPI responses and bounded Argon2 load; signed future-nbf/skew regression and corrected logical database operation labels pass. Full candidate and separate en build remain.
-- [ ] M4: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
+- [x] (2026-11-05) M3: final candidate `1daf36ca2652e320c343754c84656688ab5af1d6` passes build/all 14 suites, independent en build, 43-migration/namespace checks, ADR/review/friction profiles, config/CLI examples and the isolated 10,000-session/1,000-OpenAPI/Argon2 workload. Upgrade fixtures cover TOTP, actors and repaired legacy session provenance. [Integration evidence](../review-remediation/integration-evidence.md) records commands, baselines, aggregate results and limits.
+- [x] (2026-11-05) M4: [REV-12](../reviews/masterplan-9-remediation-closure.md) pins the tested candidate; IR-3 is completed, all 240 rows remain terminal, original review outcomes are preserved, ADR distillation and friction triage are complete.
 
 
 ## Surprises & Discoveries
@@ -69,6 +69,19 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 
 
 ## Outcomes & Retrospective
+
+2026-11-05: Completed the full requested initiative at candidate `1daf36ca2652e320c343754c84656688ab5af1d6`.
+The source-derived inventory and closed gate accept 108 parents/240 rows. All 14 suites, the
+separate en build and finite load pass; three exploratory reports and the final candidate receipt
+are preserved with honest noise/measurement limits. Independent historical verification found
+ID-token diagnostics and legacy provenance gaps and fixed them rather than inheriting earlier
+completion claims. Durable boundaries live in ADR-1/3/4/7/8/13/17 and new ADR-20–26. Existing
+policies remain visible with tested mitigations and residual exposure. REV-12 is an implementation
+review by the authoring model, not independent certification. No new friction was logged under
+this child; initiative friction is triaged in the owning children (FRIC-1 accepted, FRIC-2 resolved,
+FRIC-3/4 accepted with tested local workarounds). Strict improvement-request warnings on unrelated
+missing review provenance are reported, not fabricated away. Final follow-up edits are closure
+metadata, the aggregate receipt and explicit state-before-format upgrade ordering.
 
 
 

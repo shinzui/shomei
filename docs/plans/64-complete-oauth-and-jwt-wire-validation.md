@@ -81,6 +81,8 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-core/src/Shomei/OAuth/TokenGrant/Workflow.hs` hashes verifiers without shape validation; `shomei-core/src/Shomei/OAuth/Authorize/Workflow.hs` already requires `code_challenge_method=S256` and checks that the challenge is 43 unpadded base64url characters (`isValidS256Challenge`), so only the verifier side is open. `shomei-jwt/src/Shomei/SigningKey/Sign/Jwt.hs` emits string `act`; `Verify/Jwt.hs` parses claims, and its `claimsToAuth` originally read `act` through `lookupString`, silently treating non-string JSON as absent. M1 now checks presence directly and rejects unsupported objects, arrays, numbers and null instead of discarding the actor. `VerifierSettings` now requires a finite lifetime ceiling and an optional finite legacy actor deadline; object emission and bounded legacy emission are coordinated through `SigningKeyConfig`. `shomei-servant/src/Shomei/Servant/Auth.hs`, `Servant/OAuth.hs`, and `Shomei/OAuth/Handler.hs` parse bearer/client credentials. `examples/microservice-auth-stack/src/Downstream/Service.hs` is an independent verifier consumer. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) preserve strict algorithm/key selection, configuration consistency, redaction, and bounded unknown-key refresh.
 

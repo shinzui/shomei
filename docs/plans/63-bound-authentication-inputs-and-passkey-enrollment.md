@@ -77,6 +77,8 @@ Accepted the owner’s legacy-login choice without truncating identities. `cabal
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-core/src/Shomei/Account/LoginId/Domain.hs` and `Account/Email/Domain.hs` normalize values but currently derive JSON decoding and impose no size ceiling. `shomei-core/src/Shomei/Account/Password/Domain.hs` defines the 256-code-point maximum, but `validatePassword` is applied only by `signup` in `shomei-core/src/Shomei/Session/Authentication/Workflow.hs` and by the change/reset paths in `Account/Lifecycle/Workflow.hs`; `login` and `shomei-servant/src/Shomei/Account/Handler.hs` build `PlainPassword` straight from the request. `Shomei.Passkey.Store` exposes `countPasskeysByUser`, but the authentication workflow uses it only to route login and no caller enforces a ceiling. `shomei-core/src/Shomei/Passkey/Workflow.hs` registers after ceremony verification; `shomei-core/src/Shomei/Passkey/Store.hs` and `shomei-postgres/src/Shomei/Passkey/Postgres.hs` own storage. `shomei-servant/src/Shomei/Account/Handler.hs` and the passkey/role handlers are HTTP entry points. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) require database-enforced races, synchronized strict configuration, and redacted diagnostics.
 

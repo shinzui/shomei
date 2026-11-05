@@ -75,6 +75,8 @@ Accepted implementation: `9c095e6` with M1/M2 evidence at `ab922c0`. All eight c
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-postgres/src/Shomei/Persistence/Database/Postgres.hs` uses automatic `Tx.transaction` retry. Mori source for `mori://hasql/hasql/packages/hasql-transaction` (corpus copy 1.2.2) exports `transactionNoRetry` from `Hasql.Transaction.Sessions`, and the resolved build plan uses 1.2.3.1; the bound `>=1.0 && <1.3` in `shomei-postgres/shomei-postgres.cabal` still admits releases that predate the symbol, so raise the lower bound to the first release exporting it after confirming against the upstream changelog and tags. `shomei-postgres/src/Shomei/Persistence/Pool/Postgres.hs` already sets `statement_timeout` and `idle_in_transaction_session_timeout` per connection. `Shomei.Session.Store` exposes `RevokeAllUserSessions`, a bulk conditional update that returns nothing; `shomei-core/src/Shomei/Account/Admin/Workflow.hs` does not use it and instead enumerates all sessions and revokes/audits separately. `shomei-core/src/Shomei/Session/UnitOfWork/Store.hs` and `shomei-postgres/src/Shomei/Session/UnitOfWork/Postgres.hs` supply atomic workflows. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-19](../adr/0019-migration-components-do-not-mutate-shared-namespace-state.md) require winner-returning operations, strict config, and additive schema-qualified migrations.
 

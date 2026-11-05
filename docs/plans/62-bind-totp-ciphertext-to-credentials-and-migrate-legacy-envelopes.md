@@ -79,6 +79,8 @@ Prevent a valid encrypted TOTP secret from being copied to another account while
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-postgres/src/Shomei/Mfa/Totp/Postgres.hs` owns `encryptSecret`, `decryptSecret`, `rebuildCredential`, and enrollment upsert. Its current blob is nonce + ciphertext + authentication tag with empty AAD. `shomei-postgres/test/Main.hs` has round-trip/encryption tests but no transplant case. `shomei-server/app/Admin.hs` and `shomei-server/app/Shomei/Admin/Env.hs` assemble operator commands. `shomei-core/src/Shomei/Mfa/Totp/Domain.hs` defines the typed credential/user identifiers. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-19](../adr/0019-migration-components-do-not-mutate-shared-namespace-state.md) require atomic persistence, secret-free diagnostics, and append-only schema-qualified migrations. No current ADR specifies TOTP envelope binding; add one when implementing it.
 

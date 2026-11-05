@@ -19,13 +19,20 @@ Shōmei accepts exactly that single-identity object and refuses chains and malfo
 A present invalid actor always invalidates the token. It can never become an ordinary token by
 discarding its delegation identity.
 
-To upgrade an existing deployment, coordinate every issuer and consumer, including embedded hosts:
+Apply the state-migration preconditions first. The [TOTP envelope upgrade](mfa.md#totp-parameters)
+requires all writers to stop for offline conversion, and [session provenance migration 0043](deployment.md#postgresql-version)
+requires old issuer binaries to stop before migration. Complete those steps before resuming
+upgraded issuers. The format sequence below permits compatibility with old downstream readers;
+it does not authorize pre-upgrade issuer binaries to keep writing the new database schema.
+
+To transition actor format, coordinate every issuer and consumer, including embedded hosts:
 
 1. Choose one Unix-second cutoff that covers the complete rollout, the longest outstanding token
    lifetime and the greatest verifier clock skew. Configure `SHOMEI_LEGACY_ACTOR_UNTIL_UNIX` (Dhall
    `legacyActorUntilUnix`) on new readers. During the first issuer rollout, also set
    `SHOMEI_EMIT_LEGACY_ACTOR=true` (Dhall `emitLegacyActor`). This lets upgraded replicas keep
-   emitting strings while old replicas and downstream readers are being replaced.
+   emitting strings while downstream readers are being replaced. All issuer replicas must already
+   satisfy the state-migration requirements above.
 2. Upgrade all readers to the dual reader and verify a canary path before allowing object emission.
    Then set `SHOMEI_EMIT_LEGACY_ACTOR=false` and roll the issuer configuration. Leave the finite
    read deadline installed while the last legitimate string tokens expire.

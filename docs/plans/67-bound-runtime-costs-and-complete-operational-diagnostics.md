@@ -74,6 +74,8 @@ Accepted implementations `2372a53`, `a05b4e6`, `9aa1972`, `0dcd5ba`. Nine combin
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-servant/src/Shomei/Servant/OpenApi.hs` caches a JSON Value; `Servant/Api.hs` and `Servant/Server.hs` serve it. `shomei-server/src/Shomei/Server/Boot.hs` owns Warp assembly (it sets port, proxy protocol, graceful shutdown, and exception handling, but no `Warp.setTimeout`, so the slow-client timeout is Warp's default), `Server/Observability/Logging.hs` emits info for all responses, and `Server/BreachChecker.hs` handles password breach lookups. `shomei-server/app/Shomei/Admin/Audit.hs` parses audit CLI identifiers. `examples/microservice-auth-stack/src/Downstream/Service.hs` currently returns actor identity only. [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-17](../adr/0017-embedded-hosts-install-the-complete-runtime-boundary.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) require synchronized settings, secret-free diagnostics, host parity, and bounded JWKS work.
 

@@ -71,6 +71,8 @@ Accepted at `522abcc`. All three core/PostgreSQL/WebAuthn suites pass with bound
 
 ## Context and Orientation
 
+The context below records the starting snapshot; Progress and Outcomes describe the completed implementation.
+
 
 `shomei-webauthn/src/Shomei/WebAuthn/Ceremony.hs` wraps the pinned library; `shomei-webauthn/test/Shomei/WebAuthn/CeremonySpec.hs` currently lacks successful completion fixtures. `shomei-core/src/Shomei/Mfa/Workflow.hs` and `shomei-core/src/Shomei/Passkey/Workflow.hs` consume results. `cabal.project` pins the compatible fork under `mori://tweag/webauthn/repos/webauthn-shomei-fork`. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) constrain counter atomicity and diagnostic hygiene. Consult the local passkey guidance; no existing ADR defines device attestation trust.
 

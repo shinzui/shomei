@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-11-05
+* **Addition**: REV-12 accepts MasterPlan 9 remediation at 1daf36ca2652e320c343754c84656688ab5af1d6 with 240 terminal rows, fresh integrated gates and explicit implementation-review limits.
+
 ## 2026-10-28
 * **Addition**: Add REV-11, auditing remediation completeness at `65d21a3433d0ea329390c6737d0af4e35fee53b9`; track residual findings in IR-3 without rewriting the historical reviews.
 
