@@ -66,6 +66,7 @@ import Servant.Server.Internal
   )
 import Shomei.Authorization.Claims.Domain (Permission (..), Role (..), Scope (..))
 import Shomei.Authorization.Scope.Domain (adminScope)
+
 -- 'Shomei.Prelude' re-exports lens, whose 'Context' collides with servant's.
 import Shomei.Prelude hiding (Context)
 import Shomei.Servant.Auth (AuthUser (..))

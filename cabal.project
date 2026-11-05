@@ -1,16 +1,15 @@
 with-compiler: ghc-9.12.4
-
 packages:
-    shomei-core
-    shomei-jwt
-    shomei-webauthn
-    shomei-postgres
-    shomei-migrations
-    shomei-servant
-    shomei-server
-    shomei-client
-    examples/embedded-servant-app
-    examples/microservice-auth-stack
+  shomei-core
+  shomei-jwt
+  shomei-webauthn
+  shomei-postgres
+  shomei-migrations
+  shomei-servant
+  shomei-server
+  shomei-client
+  examples/embedded-servant-app
+  examples/microservice-auth-stack
 
 -- webauthn 0.11 does not admit this project's crypton and jose versions. Use the
 -- compatible build fork recorded at:

@@ -56,6 +56,7 @@ import Options.Applicative
 import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Audit.Event.Domain qualified as Event
+
 -- Read by /record pattern/ only, never through @OverloadedRecordDot@: 'OAuthClient' shares
 -- @clientId@ / @displayName@ / @createdAt@ / @status@ with 'Shomei.ServiceAccount.Domain'.
 

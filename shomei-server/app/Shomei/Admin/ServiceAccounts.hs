@@ -57,6 +57,7 @@ import Hasql.Pool (Pool)
 import Options.Applicative
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (generateOpaqueToken)
+
 -- 'ServiceAccount' shares the field names @userId@ / @createdAt@ / @displayName@ with
 -- 'Shomei.Account.User.Domain.User'. Both are imported with @(..)@ and read by /record pattern/ only,
 -- never through @OverloadedRecordDot@: a record pattern names its constructor and so is

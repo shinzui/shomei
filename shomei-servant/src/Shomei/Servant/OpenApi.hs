@@ -32,6 +32,7 @@ where
 import Control.Lens
 import Data.Aeson (Value (String), toJSON)
 import Data.Char (isAlphaNum, toUpper)
+
 -- openapi-hs 5 vendors the insertion-ordered map it used to take from
 -- insert-ordered-containers; the OpenAPI record fields are keyed by this type.
 import Data.HashMap.Strict.InsOrd.Compat qualified as IOHM

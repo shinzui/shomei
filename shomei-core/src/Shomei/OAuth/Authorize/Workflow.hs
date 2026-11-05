@@ -33,6 +33,7 @@ import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
 import Shomei.Audit.Event.Domain qualified as Event
+
 -- Imported WITHOUT (..): 'OAuthClient' shares @clientId@ / @status@ / @createdAt@ with several
 -- other domain records, which would defeat @OverloadedRecordDot@. Every field is read through a
 -- generic-lens label, as 'Shomei.ServiceAccount.ClientCredentials.Workflow' does for 'ServiceAccount'.

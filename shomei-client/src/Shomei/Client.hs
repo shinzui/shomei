@@ -72,6 +72,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as TLS
+
 -- Explicitly, as a /type/: 'Shomei.Prelude' re-exports lens, whose @(:>)@ snoc pattern synonym
 -- would otherwise win.
 import Servant.API (type (:>))
