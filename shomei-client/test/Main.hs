@@ -52,7 +52,8 @@ tests :: TestTree
 tests =
   testGroup
     "shomei-client round-trip against a live server"
-    [ testCase "signup → login → me → refresh; then every admin wrapper reaches its route" $
+    [ testCase "client bearer diagnostics redact the credential" (show (C.Token "sensitive-bearer") @?= "Token <redacted>"),
+      testCase "signup → login → me → refresh; then every admin wrapper reaches its route" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 30000 connStr
           keysRef <- newIORef =<< bootstrapKeys testKek ES256 pool

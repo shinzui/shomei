@@ -1138,6 +1138,13 @@ scenarioAdminRoles ref port = do
   blank <- putRaw mgr port ("/v1/admin/users/" <> T.unpack targetId <> "/roles/%20") (bearer adminToken')
   assertProblem "a blank role name" 400 "bad_request" blank
 
+  let maximumRole = T.replicate 128 "界"
+  defineRoleIn ref (Role maximumRole)
+  (maximumRoleStatus, _) <- putAuth mgr port (roleUrl (urlEncodeText maximumRole)) (bearer adminToken')
+  maximumRoleStatus @?= 204
+  oversizedRole <- putRaw mgr port (roleUrl (urlEncodeText (T.replicate 129 "界"))) (bearer adminToken')
+  assertProblem "overlong role rejected before grant lookup" 400 "bad_request" oversizedRole
+
 -- | Two refusals that protect the deployment from its own administrators: an operator
 -- impersonating a customer cannot administer as that customer (privilege laundering), and an
 -- administrator cannot suspend or delete themselves (locking everyone out with one typo).
@@ -3863,6 +3870,20 @@ scenarioInputBounds ref port = do
   forM_ [legacyText, "unknown-bounded-account"] $ \ident -> do
     (status, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ident, "password" .= T.replicate 257 "🔐"])
     status @?= 400
+
+  let maximumScope = T.replicate 128 "s"
+  accountId <- runInMemory ref do
+    user <- createUser (NewUser (either (error . show) id (mkLoginId "scope-boundary-machine")) Nothing Nothing)
+    said <- genServiceAccountDbId
+    ts <- now
+    account <- createServiceAccount (NewServiceAccount said (idText said) user.userId (sha256Hex oauthClientSecret) "Scope boundary" (Set.singleton (Scope maximumScope)) ts)
+    pure (idText (account ^. #serviceAccountId))
+  maximumGrant <- postForm mgr port "/oauth/token" (Just (accountId, oauthClientSecret)) [("grant_type", "client_credentials"), ("scope", Text.encodeUtf8 maximumScope)]
+  statusOf maximumGrant @?= 200
+  maximumBody <- must "maximum scope response" (bodyOf maximumGrant)
+  dig ["scope"] maximumBody @?= Just (String maximumScope)
+  oversizedGrant <- postForm mgr port "/oauth/token" (Just (accountId, oauthClientSecret)) [("grant_type", "client_credentials"), ("scope", Text.encodeUtf8 (T.replicate 129 "s"))]
+  assertOAuthError "overlong scope rejected" 400 "invalid_scope" oversizedGrant
 
 scenarioSessionPaging :: IORef World -> Int -> IO ()
 scenarioSessionPaging ref port = do

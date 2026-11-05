@@ -44,8 +44,8 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 ## Progress
 
 
-- [x] (2026-11-05) M1: all 108 original findings and the compound/performance clauses are assigned and explicitly named by their owner plans; `python3 scripts/check-review-inventory.py` verifies source-derived parent coverage, uniqueness, ownership, and child-plan coverage. All rows remain open pending behavioral evidence.
-- [ ] M2: existing fix or risk evidence for every row this plan owns is independently checked against the current tree.
+- [x] (2026-11-05) M1: all 108 original findings and the compound/performance clauses are assigned and explicitly named by their owner plans; `python3 scripts/check-review-inventory.py` verifies source-derived parent coverage, uniqueness, ownership, and child-plan coverage. Behavioral dispositions are recorded separately with commit-pinned evidence.
+- [ ] M2: existing fix or risk evidence for every row this plan owns is independently checked against the current tree. Partial: refresh/access nested diagnostics and client bearer diagnostics have explicit passing tests; suspended-account library/HTTP distinction is confirmed against the timing test, error mapper and security guide. HTTP role/scope 128/129 boundaries pass. The remaining historical clauses are being audited.
 - [ ] M3: integrated tests, performance checks, upgrades, and documentation validate the completed child changes.
 - [ ] M4: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
 

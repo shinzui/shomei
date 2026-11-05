@@ -41,9 +41,9 @@ import Shomei.Session.Authentication.Workflow (LoginResult (..), Refreshed (..),
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (Session (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
-import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshTokenStatus (..))
+import Shomei.Session.RefreshToken.Domain (PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Session.RefreshToken.Store (markRefreshTokenUsed)
-import Shomei.Session.Token.Domain (TokenPair (..))
+import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Workflow (SessionOptions (..), issueSessionWith)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
@@ -118,7 +118,13 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Session.Authentication.Workflow"
-    [ testLegacyIdentity,
+    [ testCase "refresh token and nested token-pair diagnostics redact credentials" do
+        show (RefreshToken "refresh-secret-fixture") @?= "RefreshToken <redacted>"
+        let pair = TokenPair (AccessToken "access-secret-fixture") (RefreshToken "refresh-secret-fixture") 900 False
+            rendered = Text.pack (show pair)
+        assertBool "nested diagnostics omit the refresh credential" (not ("refresh-secret-fixture" `Text.isInfixOf` rendered))
+        assertBool "nested diagnostics omit the access credential" (not ("access-secret-fixture" `Text.isInfixOf` rendered)),
+      testLegacyIdentity,
       testInputBudgets,
       testSignupLogin,
       testSignupLoginByIdentifierNoEmail,
