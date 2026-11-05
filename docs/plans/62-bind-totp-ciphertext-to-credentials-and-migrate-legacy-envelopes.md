@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Added verified upsert behavior, pending-row coverage, nonce freshness, keyless --check"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes
@@ -95,6 +100,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-2.19. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 Two independently enrolled users must not accept each other's stored blob, whether the rows are confirmed or still pending. Changes to either authenticated identifier, version, nonce, ciphertext, or tag must fail closed. Conversion reruns change zero already-converted rows; failures never overwrite unreadable material. A partially converted database cannot serve authentication with a permanent legacy fallback. The existing factor flow and re-enrollment both continue to work.

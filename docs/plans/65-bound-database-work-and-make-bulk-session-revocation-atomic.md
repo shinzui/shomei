@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Side-effect-free retried bodies; extend RevokeAllUserSessions; hasql-transaction version/bound; owned rows enumerated"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Bound Database Work and Make Bulk Session Revocation Atomic
@@ -95,6 +100,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-2.20, REV-5.9, REV-5.10, REV-5.12, REV-2.20.1, REV-2.20.2, REV-2.20.3, REV-5.9.1, REV-5.9.2, REV-5.9.3, REV-5.9.4, REV-5.10.1, REV-5.10.2, REV-5.10.3, REV-5.10.4, REV-5.10.5, REV-5.12.1, REV-5.12.2, REV-5.12.3, REV-5.12.4, REV-5.12.5, REV-5.12.6, EXTRA-1, EXTRA-2, EXTRA-6. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 Repeated retryable failures return the existing unavailable result within the configured budget and leave a connection usable. Bulk revoke has one audit event per changed row, rolls back wholly on injected failure, and remains bounded in application memory at 10,000 sessions. Paginated listing has no duplicates/skips across stable ordering. Two mints competing for the last slot have one winner. Database concurrency tests reproduce the documented one-winner/rotation theft behavior, including live sweeper interaction.

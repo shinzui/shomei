@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Added login-path gap, request-shape semantics for oversized login input, unused passkey count port"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Bound Authentication Inputs and Passkey Enrollment
@@ -94,6 +99,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-7.8, REV-2.23.5. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 For each field, the exact boundary is accepted and one unit over is refused through both direct calls and HTTP. Oversized login passwords do not reach real or dummy Argon2 work; preserve existing constant-work behavior for normal-sized invalid credentials. Concurrent enrollment cannot exceed the configured limit. Existing oversized stored identifiers and existing passkeys are not rendered unreadable or deleted.

@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Split M1 into inventory gate and parallel historical verification; renumbered M3/M4; row-ownership rule; load result redaction"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Verify Every Review Finding and Publish Closure Evidence
@@ -39,7 +44,7 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 ## Progress
 
 
-- [ ] M1: every original finding/subitem is assigned to an owner whose plan names it, and the inventory is accepted.
+- [x] (2026-11-05) M1: all 108 original findings and the compound/performance clauses are assigned and explicitly named by their owner plans; `python3 scripts/check-review-inventory.py` verifies source-derived parent coverage, uniqueness, ownership, and child-plan coverage. All rows remain open pending behavioral evidence.
 - [ ] M2: existing fix or risk evidence for every row this plan owns is independently checked against the current tree.
 - [ ] M3: integrated tests, performance checks, upgrades, and documentation validate the completed child changes.
 - [ ] M4: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
@@ -104,6 +109,9 @@ git diff --check
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-1.1, REV-1.2, REV-1.3, REV-1.4, REV-1.5, REV-1.6, REV-1.7, REV-1.8, REV-1.9, REV-1.10, REV-1.11, REV-1.12, REV-2.1, REV-2.2, REV-2.3, REV-2.4, REV-2.5, REV-2.6, REV-2.7, REV-2.8, REV-2.9, REV-2.10, REV-2.11, REV-2.12, REV-2.13, REV-2.14, REV-2.15, REV-2.16, REV-2.17, REV-2.18, REV-2.21, REV-2.22, REV-3.1, REV-3.2, REV-3.3, REV-3.4, REV-3.5, REV-3.6, REV-3.8, REV-3.10, REV-4.1, REV-4.2, REV-4.4, REV-5.1, REV-5.2, REV-5.3, REV-5.4, REV-5.5, REV-5.6, REV-5.7, REV-5.8, REV-5.11, REV-6.1, REV-6.2, REV-6.3, REV-6.4, REV-7.1, REV-7.2, REV-7.3, REV-7.4, REV-7.5, REV-7.6, REV-7.7, REV-7.9, REV-7.10, REV-7.11, REV-7.12, REV-7.15, REV-8.1, REV-8.2, REV-8.3, REV-8.4, REV-8.5, REV-8.6, REV-8.7, REV-8.8, REV-8.9, REV-8.10, REV-8.11, REV-8.12, REV-8.13, REV-8.14, REV-8.15, REV-8.16, REV-9.1, REV-9.2, REV-10.1, REV-10.2, REV-10.3, REV-10.4, REV-10.5, REV-10.7, REV-2.23.3, REV-2.23.6, REV-3.10.1, REV-3.10.2, REV-3.10.3, REV-3.10.4, REV-3.10.5, REV-3.10.6, REV-3.10.7, REV-3.10.8, REV-3.10.9, REV-3.10.10, EXTRA-4, EXTRA-5, EXTRA-7, EXTRA-8, EXTRA-9, EXTRA-10, EXTRA-11, EXTRA-12, REV-1.10.1, REV-1.10.2, REV-1.10.3, REV-1.12.1, REV-1.12.2, REV-1.12.3, REV-1.12.4, REV-1.12.5, REV-2.22.1, REV-2.22.2, REV-2.22.3, REV-4.4.1, REV-4.4.2, REV-5.11.1, REV-5.11.2, REV-5.11.3, REV-5.11.4, REV-6.1.1, REV-6.1.2, REV-6.3.1, REV-6.3.2, REV-6.4.1, REV-6.4.2, REV-7.10.1, REV-7.10.2, REV-7.15.1, REV-7.15.2, REV-7.15.3, REV-7.15.4, REV-7.15.5, REV-8.9.1, REV-8.9.2, REV-8.9.3, REV-8.9.4, REV-8.10.1, REV-8.10.2, REV-8.11.1, REV-8.11.2, REV-8.12.1, REV-8.12.2, REV-8.12.3, REV-8.12.4, REV-8.15.1, REV-8.15.2, REV-8.16.1, REV-8.16.2, REV-8.16.3. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 A source-derived count finds exactly 108 original numbered handles and no missing or duplicate ledger parent. Every compound clause has a subrow or explicit evidence covering it. No pending/open/deferred row is allowed at final closure. The full tests and scoped performance/upgrade checks pass at the recorded candidate commit. The final report distinguishes fixed behavior from retained product/risk decisions and does not generalize model review into a security certification.

@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Added counter-regression, ceremony-type confusion, cross-user credential negatives"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Prove WebAuthn Ceremonies and Document Attestation Trust
@@ -94,6 +99,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-4.3, REV-4.5, REV-2.23.4. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 The suite contains at least one fully valid registration followed by assertion and targeted negatives that reach each named policy. A correct signature with forbidden origin or absent required UV must fail. Counterless authenticators continue working; nonzero replay and a counter that regresses to zero fail. A signed assertion for another user's credential, or with the wrong ceremony type, fails. Workflow lockout/audit semantics remain intact. No test claims device trust merely because registration succeeds.

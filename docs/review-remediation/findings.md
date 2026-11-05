@@ -223,3 +223,57 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | EXTRA-10 | REV-2.6 and REV-1.11: residual reset/verification work | EP-7 | Open | Pending verification |
 | EXTRA-11 | REV-5.8: PII retention default and controls | EP-7 | Open | Pending verification |
 | EXTRA-12 | REV-1 trust model: signup disclosure and trusted-client consent | EP-7 | Open | Pending verification |
+
+## Additional clause inventory (2026-11-05)
+
+These clauses were checked against all ten original reviews, including their performance and index appendices. Duplicate observations retain their original handles and require consistent evidence; a parent never closes ahead of its children.
+
+| Handle | Subitem | Owner | State | Evidence / decision / commit |
+|---|---|---|---|---|
+| REV-1.10.1 | atomic account lockout | EP-7 | Open | Pending verification |
+| REV-1.10.2 | atomic password reset/change tails | EP-7 | Open | Pending verification |
+| REV-1.10.3 | atomic TOTP/passkey replay counters | EP-7 | Open | Pending verification |
+| REV-1.12.1 | current password module and PHC documentation | EP-7 | Open | Pending verification |
+| REV-1.12.2 | hashed normalized login-id account key documentation | EP-7 | Open | Pending verification |
+| REV-1.12.3 | current en API-key integration | EP-7 | Open | Pending verification |
+| REV-1.12.4 | versioned quick-start routes | EP-7 | Open | Pending verification |
+| REV-1.12.5 | historical MasterPlan 6 hash and round-trip claims | EP-7 | Open | Pending verification |
+| REV-2.22.1 | notifier secret diagnostic redaction | EP-7 | Open | Pending verification |
+| REV-2.22.2 | invalid signing algorithm rejected | EP-7 | Open | Pending verification |
+| REV-2.22.3 | nbf and jti reserved | EP-7 | Open | Pending verification |
+| REV-4.4.1 | server-side origin enforcement documentation | EP-7 | Open | Pending verification |
+| REV-4.4.2 | counterless (0,0) documentation | EP-7 | Open | Pending verification |
+| REV-5.11.1 | password source and PHC documentation | EP-7 | Open | Pending verification |
+| REV-5.11.2 | MasterPlan 6 compatibility and query budgets | EP-7 | Open | Pending verification |
+| REV-5.11.3 | complete sweep log keys | EP-7 | Open | Pending verification |
+| REV-5.11.4 | lockout row semantics | EP-7 | Open | Pending verification |
+| REV-6.1.1 | unique password credential user index | EP-7 | Open | Pending verification |
+| REV-6.1.2 | noncritical foreign-key index disposition | EP-7 | Open | Pending verification |
+| REV-6.3.1 | status/kind/client-type/outcome checks | EP-7 | Open | Pending verification |
+| REV-6.3.2 | case-insensitive uniqueness and Unicode normalization boundary | EP-7 | Open | Pending verification |
+| REV-6.4.1 | index/backfill maintenance locks | EP-7 | Open | Pending verification |
+| REV-6.4.2 | supported PostgreSQL major versions | EP-7 | Open | Pending verification |
+| REV-7.10.1 | cookie localhost origin warning | EP-7 | Open | Pending verification |
+| REV-7.10.2 | origin normalization and trailing slash behavior | EP-7 | Open | Pending verification |
+| REV-7.15.1 | RequireAdmin audit documentation | EP-7 | Open | Pending verification |
+| REV-7.15.2 | admin-token issuance documentation | EP-7 | Open | Pending verification |
+| REV-7.15.3 | remove nonexistent service-token route | EP-7 | Open | Pending verification |
+| REV-7.15.4 | refresh cookie mount-prefix caveat | EP-7 | Open | Pending verification |
+| REV-7.15.5 | delegation-blocked route inventory | EP-7 | Open | Pending verification |
+| REV-8.9.1 | password stdin/file instead of argv | EP-7 | Open | Pending verification |
+| REV-8.9.2 | configured password policy | EP-7 | Open | Pending verification |
+| REV-8.9.3 | breach checker policy | EP-7 | Open | Pending verification |
+| REV-8.9.4 | verified administrative bootstrap | EP-7 | Open | Pending verification |
+| REV-8.10.1 | strict WebAuthn policy enum parsing | EP-7 | Open | Pending verification |
+| REV-8.10.2 | reject unknown Dhall fields | EP-7 | Open | Pending verification |
+| REV-8.11.1 | trim SMTP/webhook secret inputs | EP-7 | Open | Pending verification |
+| REV-8.11.2 | trim database connection input | EP-7 | Open | Pending verification |
+| REV-8.12.1 | non-loopback HTTP webhook warning | EP-7 | Open | Pending verification |
+| REV-8.12.2 | timestamp-bound webhook replay window | EP-7 | Open | Pending verification |
+| REV-8.12.3 | inherited HTTP proxy disclosure | EP-7 | Open | Pending verification |
+| REV-8.12.4 | SMTP plain-with-credentials warning | EP-7 | Open | Pending verification |
+| REV-8.15.1 | problem-shaped 413 | EP-7 | Open | Pending verification |
+| REV-8.15.2 | problem-shaped escaped exception 500 | EP-7 | Open | Pending verification |
+| REV-8.16.1 | Dhall type and FileConfig parity | EP-7 | Open | Pending verification |
+| REV-8.16.2 | rate-limit and lockout tuning environment/Dhall coverage | EP-7 | Open | Pending verification |
+| REV-8.16.3 | deployment configuration inventory | EP-7 | Open | Pending verification |

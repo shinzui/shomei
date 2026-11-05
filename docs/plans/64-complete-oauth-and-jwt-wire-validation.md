@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Actor fail-closed moved to M1; lifetime ceiling required finite; challenge-shape fact; REV-3/REV-10 rows enumerated"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Complete OAuth and JWT Wire Validation
@@ -95,6 +100,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-2.23, REV-3.7, REV-3.9, REV-7.13, REV-7.16, REV-2.23.1, REV-2.23.2, REV-3.7.1, REV-3.7.2, REV-3.7.3, REV-3.7.4, REV-3.9.1, REV-3.9.2, REV-3.9.3, REV-7.13.1, REV-7.13.2, REV-7.13.3, REV-7.13.4, REV-7.13.5, REV-7.13.6, REV-7.13.7, REV-7.16.1, REV-7.16.2, REV-7.16.3, REV-7.16.4, REV-7.16.5, REV-7.16.6, REV-7.16.7, REV-7.16.8, REV-7.16.9, REV-7.16.10, REV-7.16.11, REV-10.7.2, REV-10.7.3, REV-10.7.4. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 PKCE boundary values and all legal alphabet characters work; too-short/long/illegal but digest-matching inputs fail. Lowercase bearer succeeds where uppercase did. No malformed actor can lose its delegation identity: a present non-string or unparseable `act` is rejected by both the standalone verifier and the downstream example. A verifier cannot be constructed without a finite lifetime ceiling. Old/new actor forms verify during the documented window; unsupported shapes fail. Excess-lifetime tokens signed by a trusted key are rejected. Existing key-selection/algorithm/unknown-key protections remain intact.

@@ -23,6 +23,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Paired admission cap with slow-client timeout; HIBP prefix redaction; REV-8.17 and REV-10.7.1 rows enumerated"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Bound Runtime Costs and Complete Operational Diagnostics
@@ -95,6 +100,9 @@ just adr-validate
 
 
 ## Validation and Acceptance
+
+
+Inventory acceptance includes every assigned ledger row: REV-7.14, REV-8.17, REV-10.6, REV-8.17.1, REV-8.17.2, REV-8.17.3, REV-8.17.4, REV-8.17.5, REV-8.17.6, REV-8.17.7, REV-8.17.8, REV-8.17.9, REV-8.17.10, REV-10.7.1, EXTRA-3. Each row needs its own exact evidence or an explicit cross-reference to evidence covering the same clause; parent closure also requires all child rows.
 
 
 OpenAPI responses parse to the same document and repeated requests do not reserialize it. Filling the connection limit rejects the next connection, then disconnecting one admits another with no leaked permit. Standalone and embedding settings exercise the same implementation. HIBP outages are visible without sensitive input. Copying a role CLI user ID into audit filters works. A delegated action produces a persisted record with distinct actor and subject; sink failure cannot be reported as an audited success.

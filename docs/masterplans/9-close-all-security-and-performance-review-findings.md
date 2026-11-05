@@ -22,6 +22,11 @@ provenance:
       at: 2026-11-04T06:09:13Z
       mode: "update"
       note: "Split EP-7 into inventory gate, parallel verification, integration, closure; added row-ownership rule and verified actor behavior"
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T13:10:19Z
+      mode: "implement"
+      note: "Accept clause inventory and begin MasterPlan 9 implementation"
 ---
 
 # Close All Security and Performance Review Findings
@@ -36,7 +41,7 @@ The August reviews contain 108 numbered findings plus unnumbered performance obs
 
 Existing deliberate policies remain visible: ES256 timing risk with RS256 available, trusted OAuth clients without consent, signup existence disclosure, configurable audit retention, residual reset hit/miss cost, and migration lock windows. They require exact decision/documentation citations and a verification of their mitigations. This plan does not silently approve new risk exceptions. Any new acceptance of a confirmed defect requires an explicit owner decision and ADR; until then the item remains open and prevents completion. A new consent product, MDS device-trust service, replacement cryptographic library, and production deployment are outside this planning scope. Their absence may only close a finding when the original requirement was accurate documentation of that boundary.
 
-The current request creates plans; it does not implement or deploy them. All child statuses start Not Started. The prior 14-suite pass at the REV-11 audit is baseline evidence only.
+Implementation was authorized on 2026-11-05; production deployment remains outside scope. The prior 14-suite pass at the REV-11 audit is baseline evidence only.
 
 ## Decomposition Strategy
 
@@ -54,7 +59,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Not Started |
 | 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Not Started |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Not Started |
-| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | Not Started |
+| 7 | Verify Every Review Finding and Publish Closure Evidence | [docs/plans/68-verify-every-review-finding-and-publish-closure-evidence.md](../plans/68-verify-every-review-finding-and-publish-closure-evidence.md) | M1 and M2: none; M3/M4: EP-1–EP-6 complete | None | In Progress |
 
 Status values are Not Started, In Progress, Complete, Cancelled. Dependencies name milestones deliberately; a whole-child dependency requires the child to be Complete.
 
@@ -80,7 +85,7 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
-Planning is complete: seven child ExecPlans and the initial coverage ledger are authored, all implementation remains Not Started. A security-focused plan review on 2026-11-03 split EP-7 into an inventory gate (M1), parallel historical verification (M2), integration (M3), and closure (M4), and added verified code facts and the missing ledger rows to the behavior children. First executable milestone is EP-7 M1; EP-7 M2 and the behavior children's M1 regressions may then proceed together. Final acceptance still requires the new behavior, candidate-commit test/benchmark evidence, upgrade proof, and a commit-pinned closure review. No runtime changes were made while drafting or reviewing.
+Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 is next in the execution order; historical verification and all final integration gates remain open.
 
 ## Surprises & Discoveries
 
