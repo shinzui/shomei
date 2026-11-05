@@ -48,7 +48,7 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-2.16](../reviews/shomei-core-security-and-performance.md) | Low — the freshness gates measure from the access token's `iat` | EP-7 | Open | Pending verification |
 | [REV-2.17](../reviews/shomei-core-security-and-performance.md) | Low — replay of a consumed authorization code is not detected as such | EP-7 | Open | Pending verification |
 | [REV-2.18](../reviews/shomei-core-security-and-performance.md) | Low — `emailVerificationRequired` is not applied to the authorization-code exchange | EP-7 | Open | Pending verification |
-| [REV-2.19](../reviews/shomei-core-security-and-performance.md) | Low — TOTP secret ciphertexts have empty AEAD data | EP-1 | Open | Pending verification |
+| [REV-2.19](../reviews/shomei-core-security-and-performance.md) | Low — TOTP secret ciphertexts have empty AEAD data | EP-1 | Fixed | `7242c45`: PostgreSQL tests `totp envelopes bind pending/confirmed rows`, `totp converter CAS preserves enrollment changed after its snapshot`, `totp conversion resumes after 100 rows`, and real MFA completion; `cabal test shomei-postgres shomei-core shomei-server --test-show-details=failures --test-options=-j2 -j1` passed. ADR-20 and MFA upgrade guide document offline conversion and historical-transplant limitation. |
 | [REV-2.20](../reviews/shomei-core-security-and-performance.md) | Low — audit fidelity. | EP-4 | Open | Pending verification |
 | [REV-2.21](../reviews/shomei-core-security-and-performance.md) | Low — the in-memory fake mutates the `World` non-atomically in three handlers | EP-7 | Open | Pending verification |
 | [REV-2.22](../reviews/shomei-core-security-and-performance.md) | Low — configuration. | EP-7 | Open | Pending verification |
@@ -218,7 +218,7 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | EXTRA-5 | REV-1 Performance: indexed credential updates and exact kid verification | EP-7 | Open | Pending verification |
 | EXTRA-6 | REV-5 Index coverage: admin users/client list and per-user audit index evidence | EP-4 | Open | Pending verification |
 | EXTRA-7 | REV-6: migration locks/version floor and noncritical foreign-key index disposition | EP-7 | Open | Pending verification |
-| EXTRA-8 | ADR-13 follow-up: ID-token diagnostic instances | EP-7 | Open | Pending verification |
+| EXTRA-8 | ADR-13 follow-up: ID-token diagnostic instances | EP-7 | Fixed | `7242c45`: `ID token diagnostics redact the credential` passes in shomei-core; generic JSON instances removed and OAuth handler explicitly unwraps wire value. ADR-13 updated; no credential exposure through generic diagnostics. |
 | EXTRA-9 | REV-3.2: ES256 risk and RS256 mitigation | EP-7 | Open | Pending verification |
 | EXTRA-10 | REV-2.6 and REV-1.11: residual reset/verification work | EP-7 | Open | Pending verification |
 | EXTRA-11 | REV-5.8: PII retention default and controls | EP-7 | Open | Pending verification |

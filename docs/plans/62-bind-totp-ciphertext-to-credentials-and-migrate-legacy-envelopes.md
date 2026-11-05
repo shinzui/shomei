@@ -71,7 +71,7 @@ Prevent a valid encrypted TOTP secret from being copied to another account while
 
 ## Outcomes & Retrospective
 
-2026-11-05: Delivered row-bound TOTP encryption and a resumable offline upgrade with no runtime legacy fallback. `cabal test shomei-postgres shomei-core shomei-server --test-show-details=failures --test-options=-j2 -j1` passed, followed by a final core/PostgreSQL rerun after the last assertions. `cabal build shomei-admin -j1`, CLI help, `just migration-check`, and `just adr-validate` pass. ADR-20 holds the durable format/upgrade contract. Historical transplants cannot be detected retroactively, so trusted backup associations remain an explicit limitation. FRIC-1 is accepted with explicit Tasty concurrency; FRIC-2 is resolved by requiring released smtp-mail 0.5.0.2.
+2026-11-05: Implemented and verified at `7242c45` (82 PostgreSQL cases and 283 core cases in the final rerun). Delivered row-bound TOTP encryption and a resumable offline upgrade with no runtime legacy fallback. `cabal test shomei-postgres shomei-core shomei-server --test-show-details=failures --test-options=-j2 -j1` passed, followed by a final core/PostgreSQL rerun after the last assertions. `cabal build shomei-admin -j1`, CLI help, `just migration-check`, and `just adr-validate` pass. ADR-20 holds the durable format/upgrade contract. Historical transplants cannot be detected retroactively, so trusted backup associations remain an explicit limitation. FRIC-1 is accepted with explicit Tasty concurrency; FRIC-2 is resolved by requiring released smtp-mail 0.5.0.2.
 
 
 
