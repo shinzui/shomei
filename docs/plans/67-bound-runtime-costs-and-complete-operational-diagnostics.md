@@ -45,8 +45,9 @@ Remove recurring OpenAPI encoding work and make operational behavior observable 
 
 
 - [x] (2026-11-05) M1: shared CachedJson response forces encoding once, preserves exact HTTP bytes/media type/schema, and passes schema plus actual HTTP tests. 1000 renderer calls allocate 2,945,392,000 bytes for the uncached baseline versus 32,000 cached bytes; [measurement](../review-remediation/openapi-allocations.txt). Haskell route consumers use cachedJsonValue; wire contract stays stable. Implementation `2372a53`.
-- [ ] M2: shared host runtime exposes admission/bind policy and secret-free failure diagnostics. Partial: shared Warp policy, real socket lifecycle/timeout/shutdown tests, strict synchronized config and overrides, status severity, entrypoint de-duplication, server/embedded builds and embedded suite pass. HIBP diagnostic acceptance remains.
-- [ ] M3: audit CLI identities and downstream actor/subject audit records work end to end.
+- [x] (2026-11-05) M2: shared Warp policy, real socket lifecycle/timeout/shutdown tests, synchronized config/overrides, severity, entrypoint de-duplication, HIBP secret-free reasons/cancellation and transport warning/proxy cross-check pass. Implementations `a05b4e6`, `9aa1972`, `0dcd5ba`.
+- [x] (2026-11-05) M3: TypeID/UUID audit filters and canonical output, synchronous private downstream actor/subject audit, concurrent complete lines, injected and real sink failures, atomic key rollback/corruption fixtures and actual JWKS cache-control documentation pass at `9aa1972`/`0dcd5ba`. All 15 owned rows are terminal in [operational evidence](../review-remediation/operational-evidence.md).
+
 
 
 ## Surprises & Discoveries
@@ -64,6 +65,8 @@ Remove recurring OpenAPI encoding work and make operational behavior observable 
 
 
 ## Outcomes & Retrospective
+
+Accepted implementations `2372a53`, `a05b4e6`, `9aa1972`, `0dcd5ba`. Nine combined runtime/client/HTTP/example suites pass; updated server/downstream gates and final config warning gate pass. Strict ADR/inventory checks, entrypoint fixtures and server/embedded builds pass. [Operational evidence](../review-remediation/operational-evidence.md) maps all 15 owned rows to exact tests and contracts. Cached rendering preserves wire bytes/schema and removes repeated encoding allocation. Shared host settings enforce finite TCP admission and timeout with actual reject/release/shutdown proof. The runnable downstream persists verified actor/subject records and refuses success on storage failure; ADR-26 states the single-process file and cross-system atomicity limits. ADR-17 holds host parity, ADR-4 holds locked atomic activation/rewrap, and ADR-23's finite CLI policy is now implemented consistently. The posture cross-check found and fixed missing explicit-override warnings and public outbound-proxy disclosure. No new friction entry or owner risk exception was required.
 
 
 
@@ -95,7 +98,7 @@ M3 lets the audit CLI accept canonical TypeIDs as well as legacy UUID input and 
 Run the focused gates after implementing the milestone assertions; expected result is passing suites and no new profile or migration errors. The previous full workspace pass is a baseline, not evidence for new changes.
 
 ```bash
-cabal test shomei-servant shomei-client shomei-server microservice-auth-stack embedded-servant-app --test-show-details=failures -j1
+cabal test shomei-servant shomei-client shomei-server microservice-auth-stack embedded-servant-app --test-show-details=failures --test-options=-j2 -j1
 cabal run -v0 shomei-openapi > /tmp/shomei-mp9-openapi.json
 just adr-validate
 ```

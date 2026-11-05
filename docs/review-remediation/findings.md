@@ -116,7 +116,7 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-8.14](../reviews/shomei-server-security-and-performance.md) | Low — `/health/ready` runs an untimed, unthrottled pool checkout and query per unauthenticated GET | EP-7 | Open | Pending verification |
 | [REV-8.15](../reviews/shomei-server-security-and-performance.md) | Low — two error bodies escape the RFC 9457 envelope | EP-7 | Open | Pending verification |
 | [REV-8.16](../reviews/shomei-server-security-and-performance.md) | Info — configuration surface. | EP-7 | Open | Pending verification |
-| [REV-8.17](../reviews/shomei-server-security-and-performance.md) | Info — smaller observations. | EP-6 | Open | Pending verification |
+| [REV-8.17](../reviews/shomei-server-security-and-performance.md) | Info — smaller observations. | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
 | [REV-9.1](../reviews/shomei-client-security.md) | Low — `Token` derives `Show` | EP-7 | Open | Pending verification |
 | [REV-9.2](../reviews/shomei-client-security.md) | Info — `Client.hs:52`'s comment on admin access | EP-7 | Open | Pending verification |
 | [REV-10.1](../reviews/microservice-auth-stack-jwks-template.md) | High — the manager cannot speak TLS. | EP-7 | Open | Pending verification |
@@ -124,7 +124,7 @@ Closing a row requires a named test or exact documented decision, a tested commi
 | [REV-10.3](../reviews/microservice-auth-stack-jwks-template.md) | Medium — an unrecognized signing key never triggers a refresh. | EP-7 | Open | Pending verification |
 | [REV-10.4](../reviews/microservice-auth-stack-jwks-template.md) | Medium — the README's en recipe cannot work against any en-server since 2026-07-08. | EP-7 | Open | Pending verification |
 | [REV-10.5](../reviews/microservice-auth-stack-jwks-template.md) | Low — the runbook cannot boot as written. | EP-7 | Open | Pending verification |
-| [REV-10.6](../reviews/microservice-auth-stack-jwks-template.md) | Low — impersonation guidance is prose only. | EP-6 | Open | Pending verification |
+| [REV-10.6](../reviews/microservice-auth-stack-jwks-template.md) | Low — impersonation guidance is prose only. | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
 | [REV-10.7](../reviews/microservice-auth-stack-jwks-template.md) | Info. | EP-7 | Open | Pending verification |
 
 ## Explicit compound subitems
@@ -192,17 +192,17 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-7.16.9 | plain PKCE refusal | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.9. |
 | REV-7.16.10 | UserInfo scopes | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.10. |
 | REV-7.16.11 | freshness after refresh | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-7.16.11. |
-| REV-8.17.1 | atomic key activation | EP-6 | Open | Pending verification |
-| REV-8.17.2 | atomic key rewrap | EP-6 | Open | Pending verification |
-| REV-8.17.3 | multiple active keys fail closed | EP-6 | Open | Pending verification |
-| REV-8.17.4 | audit CLI TypeID consistency | EP-6 | Open | Pending verification |
-| REV-8.17.5 | request severity policy | EP-6 | Open | Pending verification |
-| REV-8.17.6 | HIBP failure visibility | EP-6 | Open | Pending verification |
-| REV-8.17.7 | sanitized admin database errors | EP-6 | Open | Pending verification |
-| REV-8.17.8 | redundant boot migrations | EP-6 | Open | Pending verification |
-| REV-8.17.9 | connection admission cap | EP-6 | Open | Pending verification |
-| REV-8.17.10 | explicit bind host | EP-6 | Open | Pending verification |
-| REV-10.7.1 | JWKS cache-control documentation | EP-6 | Open | Pending verification |
+| REV-8.17.1 | atomic key activation | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.2 | atomic key rewrap | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.3 | multiple active keys fail closed | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.4 | audit CLI TypeID consistency | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.5 | request severity policy | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.6 | HIBP failure visibility | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.7 | sanitized admin database errors | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.8 | redundant boot migrations | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.9 | connection admission cap | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-8.17.10 | explicit bind host | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
+| REV-10.7.1 | JWKS cache-control documentation | EP-6 | Fixed | `2372a53` / `a05b4e6` / `9aa1972` / `0dcd5ba`: [runtime and operational evidence](operational-evidence.md) maps this clause to exact passing tests, source contracts and gate commands, including retained exposure. |
 | REV-10.7.2 | safe Authorization decoding | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.2. |
 | REV-10.7.3 | 401 Bearer challenge | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.3. |
 | REV-10.7.4 | skew and algorithm policy | EP-3 | Fixed | `2472483` / `4fea508`: [exact clause evidence](oauth-jwt-evidence.md) names the tests or retained policy, passing commands and residual exposure for REV-10.7.4. |
