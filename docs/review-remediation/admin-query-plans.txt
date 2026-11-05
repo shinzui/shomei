@@ -1,0 +1,92 @@
+Users before:
+Limit  (cost=541.19..541.32 rows=50 width=126) (actual time=0.557..0.560 rows=50.00 loops=1)
+  Buffers: shared hit=109
+  ->  Sort  (cost=541.19..566.19 rows=10000 width=126) (actual time=0.557..0.558 rows=50.00 loops=1)
+        Sort Key: created_at DESC, user_id DESC
+        Sort Method: top-N heapsort  Memory: 31kB
+        Buffers: shared hit=109
+        ->  Seq Scan on shomei_users  (cost=0.00..209.00 rows=10000 width=126) (actual time=0.003..0.308 rows=10000.00 loops=1)
+              Buffers: shared hit=109
+Planning:
+  Buffers: shared hit=93
+Planning Time: 0.124 ms
+Execution Time: 0.567 ms
+Users after:
+Limit  (cost=0.29..1.84 rows=50 width=126) (actual time=0.003..0.006 rows=50.00 loops=1)
+  Buffers: shared hit=3
+  ->  Index Scan using shomei_users_created_id_idx on shomei_users  (cost=0.29..311.29 rows=10000 width=126) (actual time=0.002..0.005 rows=50.00 loops=1)
+        Index Searches: 1
+        Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=41
+Planning Time: 0.074 ms
+Execution Time: 0.010 ms
+Suspended users before:
+Limit  (cost=400.10..400.22 rows=50 width=126) (actual time=0.488..0.491 rows=50.00 loops=1)
+  Buffers: shared hit=109
+  ->  Sort  (cost=400.10..412.60 rows=5000 width=126) (actual time=0.488..0.489 rows=50.00 loops=1)
+        Sort Key: created_at DESC, user_id DESC
+        Sort Method: top-N heapsort  Memory: 31kB
+        Buffers: shared hit=109
+        ->  Seq Scan on shomei_users  (cost=0.00..234.00 rows=5000 width=126) (actual time=0.003..0.361 rows=5000.00 loops=1)
+              Filter: (status = 'suspended'::text)
+              Rows Removed by Filter: 5000
+              Buffers: shared hit=109
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.022 ms
+Execution Time: 0.495 ms
+Suspended users after:
+Limit  (cost=0.29..2.51 rows=50 width=126) (actual time=0.003..0.006 rows=50.00 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using shomei_users_status_created_id_idx on shomei_users  (cost=0.29..223.20 rows=5000 width=126) (actual time=0.002..0.005 rows=50.00 loops=1)
+        Index Cond: (status = 'suspended'::text)
+        Index Searches: 1
+        Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=2
+Planning Time: 0.017 ms
+Execution Time: 0.009 ms
+Per-user audit before:
+Limit  (cost=0.29..21.16 rows=50 width=77) (actual time=0.467..0.471 rows=50.00 loops=1)
+  Buffers: shared hit=205
+  ->  Index Scan using shomei_auth_events_created_event_idx on shomei_auth_events  (cost=0.29..417.79 rows=1000 width=77) (actual time=0.467..0.469 rows=50.00 loops=1)
+        Filter: (user_id = '10000000-0000-0000-0000-000000000001'::uuid)
+        Rows Removed by Filter: 10000
+        Index Searches: 1
+        Buffers: shared hit=205
+Planning:
+  Buffers: shared hit=58
+Planning Time: 0.130 ms
+Execution Time: 0.476 ms
+Per-user audit after:
+Limit  (cost=0.29..4.63 rows=50 width=77) (actual time=0.003..0.006 rows=50.00 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using shomei_auth_events_user_created_id_idx on shomei_auth_events  (cost=0.29..87.22 rows=1000 width=77) (actual time=0.002..0.005 rows=50.00 loops=1)
+        Index Cond: (user_id = '10000000-0000-0000-0000-000000000001'::uuid)
+        Index Searches: 1
+        Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=24
+Planning Time: 0.066 ms
+Execution Time: 0.009 ms
+40-client catalog (no new index) before:
+Sort  (cost=2.46..2.56 rows=40 width=110) (actual time=0.008..0.009 rows=40.00 loops=1)
+  Sort Key: created_at DESC, oauth_client_id DESC
+  Sort Method: quicksort  Memory: 28kB
+  Buffers: shared hit=1
+  ->  Seq Scan on shomei_oauth_clients  (cost=0.00..1.40 rows=40 width=110) (actual time=0.002..0.003 rows=40.00 loops=1)
+        Buffers: shared hit=1
+Planning:
+  Buffers: shared hit=48
+Planning Time: 0.071 ms
+Execution Time: 0.012 ms
+40-client catalog (no new index) after:
+Sort  (cost=2.46..2.56 rows=40 width=110) (actual time=0.007..0.008 rows=40.00 loops=1)
+  Sort Key: created_at DESC, oauth_client_id DESC
+  Sort Method: quicksort  Memory: 28kB
+  Buffers: shared hit=1
+  ->  Seq Scan on shomei_oauth_clients  (cost=0.00..1.40 rows=40 width=110) (actual time=0.002..0.002 rows=40.00 loops=1)
+        Buffers: shared hit=1
+Planning Time: 0.009 ms
+Execution Time: 0.010 ms

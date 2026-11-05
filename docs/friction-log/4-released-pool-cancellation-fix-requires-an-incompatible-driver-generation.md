@@ -6,7 +6,7 @@ generated:
   by: "codex-cli/gpt-6.1-sol"
   at: "2026-11-05T16:03:13Z"
 frictionId: FRIC-4
-status: logged
+status: "accepted"
 impact: detour
 kind: interface
 origin: "mori://shinzui/shomei"
@@ -14,6 +14,11 @@ affects: "mori://hasql/hasql/packages/hasql-pool"
 affectedVersion: "1.4.2.3"
 plan: "docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md"
 workaround: "Own a finite managed pool over public Hasql 1.10 connections with masked ownership transfer, interruptible query work, conservative failure disposal and generation-aware release."
+resolution: "Own masked connection and capacity lifecycle over the supported Hasql API; twelve interruption cycles, failed initialization and release-during-use tests preserve the pool ceiling without incompatible driver upgrades."
+amended:
+  - by: "codex-cli/gpt-6.1-sol"
+    at: "2026-11-05T16:43:58Z"
+    change: "Accept the managed local pool while released migration and harness packages require the older driver generation."
 ---
 # Released pool cancellation fix requires an incompatible driver generation
 

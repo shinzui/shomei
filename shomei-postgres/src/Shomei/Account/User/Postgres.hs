@@ -24,20 +24,21 @@ import Shomei.Id (UserId, genUserId, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Codec.Postgres (loginIdFromDb, maybeEmailFromDb, userStatusFromText, userStatusToText)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, postgresWriteError, runSession)
 import Shomei.Prelude
+import Shomei.Time.Store (Clock, now)
 
 type InsertUserRow = (UUID, Text, Maybe Text, Maybe Text, Text, UTCTime, UTCTime)
 
 type UserRow = (UUID, Text, Maybe Text, Maybe Text, Text, Maybe UTCTime, UTCTime, UTCTime)
 
 runUserStorePostgres ::
-  (Database :> es, IOE :> es, Error AuthError :> es) =>
+  (Database :> es, IOE :> es, Error AuthError :> es, Clock :> es) =>
   Eff (UserStore : es) a ->
   Eff es a
 runUserStorePostgres = interpret_ \case
   CreateUser nu -> do
     either throwError pure (validateNewUser nu)
     uid <- genUserId
-    ts <- liftIO getCurrentTime
+    ts <- now
     let row = (userIdToUUID uid, loginIdText nu.loginId, emailText <$> nu.email, nu.displayName, userStatusToText UserActive, ts, ts)
     res <- runSession (Session.statement row insertUserStmt)
     either (throwError . postgresWriteError identityConflict) (const (pure (mkUser uid nu ts))) res

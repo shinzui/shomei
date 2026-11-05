@@ -418,7 +418,7 @@ runCredentialStore ref = interpret_ \case
     liftIO
       ( modifyWorld
           ref
-          (#credsByLoginId %~ Map.map (\c -> if c.userId == uid then c & #passwordHash .~ h else c))
+          (\w -> w & #credsByLoginId %~ Map.map (\c -> if c.userId == uid then c & #passwordHash .~ h & #updatedAt .~ w.clock else c))
       )
 
 runSessionStore :: (IOE :> es) => IORef World -> Eff (SessionStore : es) a -> Eff es a
@@ -689,7 +689,7 @@ runAuthUnitOfWork ref = interpret_ \case
                                . Map.adjust (consumeReset ts) tid
                            )
                         & #credsByLoginId
-                        %~ Map.map (replaceUserHash uid newHash)
+                        %~ Map.map (replaceUserHash uid newHash ts)
                         & #sessions
                         %~ Map.map (revokeUserSession uid ts)
                         & #refreshTokens
@@ -705,7 +705,7 @@ runAuthUnitOfWork ref = interpret_ \case
           let userSessions = w.sessions
            in w
                 & #credsByLoginId
-                %~ Map.map (replaceUserHash uid newHash)
+                %~ Map.map (replaceUserHash uid newHash ts)
                 & #sessions
                 %~ Map.map (revokeUserSession uid ts)
                 & #refreshTokens
@@ -754,8 +754,8 @@ runAuthUnitOfWork ref = interpret_ \case
         tok.status == OneTimeTokenActive =
           tok & #status .~ OneTimeTokenRevoked & #revokedAt .~ Just t
       | otherwise = tok
-    replaceUserHash uid h credential
-      | credential.userId == uid = credential & #passwordHash .~ h
+    replaceUserHash uid h ts credential
+      | credential.userId == uid = credential & #passwordHash .~ h & #updatedAt .~ ts
       | otherwise = credential
     revokeUserSession uid t session
       | session.userId == uid,
@@ -1185,8 +1185,6 @@ runOAuthCodeStore ref = interpret_ \case
             acExpiresAt found > t ->
               Just found
         _ -> Nothing
-  DeleteExpiredAuthorizationCodes t ->
-    liftIO (modifyWorld ref (#oauthCodes %~ Map.filter (\c -> acExpiresAt c > t)))
 
 -- | Field accessors for the EP-7 TOTP records ('TotpCredential' shares @userId@ / @createdAt@ /
 -- @secret@ with other domain records; the 'DuplicateRecordFields' caution applies).

@@ -1,6 +1,8 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Update**: FRIC-4 accepted: Accept the managed local pool while released migration and harness packages require the older driver generation.
+* **Update**: FRIC-3 accepted: Accept the tested server deadline workaround; the upstream cleanup ordering remains.
 * **Addition**: FRIC-4 records detour interface friction with mori://hasql/hasql/packages/hasql-pool: Released pool cancellation fix requires an incompatible driver generation
 * **Update**: FRIC-3 logged: Verified authoritative current registry and release source; changing to the latest major release would not remove the cleanup limitation.
 * **Addition**: FRIC-3 records detour interface friction with mori://hasql/hasql/packages/hasql: Hasql interruption cleanup drains blocked results before cancellation

@@ -51,9 +51,6 @@ runOAuthCodeStorePostgres = interpret_ \case
     res <- runSession (Session.statement (h, t) findConsumedStmt)
     row <- either dbFail pure res
     traverse rebuild row
-  DeleteExpiredAuthorizationCodes t -> do
-    res <- runSession (Session.statement t deleteExpiredStmt)
-    either dbFail (const (pure ())) res
   where
     dbFail = throwError . postgresUnavailable
     rebuild r = either (throwError . InternalAuthError) pure (rebuildCode r)
@@ -181,10 +178,3 @@ findConsumedStmt =
     )
     (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
     (D.rowMaybe codeRowDecoder)
-
-deleteExpiredStmt :: Statement UTCTime ()
-deleteExpiredStmt =
-  preparable
-    "DELETE FROM shomei.shomei_oauth_authorization_codes WHERE expires_at <= $1"
-    (E.param (E.nonNullable E.timestamptz))
-    D.noResult

@@ -123,7 +123,7 @@ runAuthUnitOfWorkPostgres = interpret_ \case
       case won of
         Nothing -> pure False
         Just _ -> do
-          Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
+          Tx.statement (userIdToUUID uid, passwordHashText newHash, ts) updatePasswordHashStmt
           _ <- Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
           Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
           -- The consumed token is no longer active, so this revokes only its live siblings.
@@ -133,7 +133,7 @@ runAuthUnitOfWorkPostgres = interpret_ \case
   CompletePasswordChange uid newHash ts events -> do
     eventRows <- traverse toEventRow events
     res <- runTransaction do
-      Tx.statement (userIdToUUID uid, passwordHashText newHash) updatePasswordHashStmt
+      Tx.statement (userIdToUUID uid, passwordHashText newHash, ts) updatePasswordHashStmt
       _ <- Tx.statement (userIdToUUID uid, ts) revokeAllUserSessionsStmt
       Tx.statement (userIdToUUID uid, ts) RTP.revokeUserTokensStmt
       traverse_ (\row -> Tx.statement row insertAuthEventStmt) eventRows

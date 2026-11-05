@@ -29,7 +29,6 @@ import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthori
 import Shomei.OAuth.AuthorizationCode.Store
   ( bindAuthorizationCodeSession,
     consumeAuthorizationCode,
-    deleteExpiredAuthorizationCodes,
     findConsumedAuthorizationCode,
     putAuthorizationCode,
   )
@@ -58,8 +57,7 @@ tests =
         [ testCase "a stored code is consumable exactly once" consumeOnce,
           testCase "a consumed code can be bound to and recover its minted session" bindAndFindConsumed,
           testCase "an expired code never consumes" expiredNeverConsumes,
-          testCase "an unknown code hash consumes to Nothing" unknownConsumes,
-          testCase "deleteExpired removes only what is past its expiry" deleteExpired
+          testCase "an unknown code hash consumes to Nothing" unknownConsumes
         ],
       testGroup
         "authorize (workflow policy)"
@@ -200,18 +198,6 @@ unknownConsumes = do
   ref <- newWorld
   result <- runInMemory ref (consumeAuthorizationCode "no-such-hash" t0)
   assertBool "an unknown code hash consumes to Nothing" (isNothing result)
-
-deleteExpired :: IO ()
-deleteExpired = do
-  ref <- newWorld
-  remaining <- runInMemory ref do
-    uid <- genUserId
-    putAuthorizationCode (newCode uid (addUTCTime 10 t0) "expired")
-    putAuthorizationCode (newCode uid (addUTCTime 600 t0) "live")
-    deleteExpiredAuthorizationCodes (addUTCTime 60 t0)
-    (,) <$> consumeAuthorizationCode "expired" (addUTCTime 60 t0) <*> consumeAuthorizationCode "live" (addUTCTime 60 t0)
-  assertBool "the expired code is gone" (isNothing (fst remaining))
-  assertBool "the live code survives" (isJust (snd remaining))
 
 -- Workflow -------------------------------------------------------------------
 

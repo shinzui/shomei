@@ -10,7 +10,7 @@ module Shomei.Account.Credential.Postgres
   )
 where
 
-import Contravariant.Extras (contrazip2, contrazip7)
+import Contravariant.Extras (contrazip3, contrazip7)
 import Data.UUID (UUID)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -29,17 +29,18 @@ import Shomei.Id (CredentialId, UserId, credentialIdFromUUID, credentialIdToUUID
 import Shomei.Persistence.Codec.Postgres (loginIdFromDb, maybeEmailFromDb)
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, postgresWriteError, runSession)
 import Shomei.Prelude
+import Shomei.Time.Store (Clock, now)
 
 type CredRow = (UUID, UUID, Text, Maybe Text, Text, UTCTime, UTCTime)
 
 runCredentialStorePostgres ::
-  (Database :> es, IOE :> es, Error AuthError :> es) =>
+  (Database :> es, IOE :> es, Error AuthError :> es, Clock :> es) =>
   Eff (CredentialStore : es) a ->
   Eff es a
 runCredentialStorePostgres = interpret_ \case
   CreatePasswordCredential uid loginId mEmail pwHash -> do
     cid <- genCredentialId
-    ts <- liftIO getCurrentTime
+    ts <- now
     let row = (credentialIdToUUID cid, userIdToUUID uid, loginIdText loginId, emailText <$> mEmail, passwordHashText pwHash, ts, ts)
     res <- runSession (Session.statement row insertCredentialStmt)
     either (throwError . postgresWriteError identityConflict) (const (pure (mkCredential cid uid loginId mEmail pwHash ts))) res
@@ -52,7 +53,8 @@ runCredentialStorePostgres = interpret_ \case
     row <- either dbFail pure res
     traverse rebuild row
   UpdatePasswordHash uid pwHash -> do
-    res <- runSession (Session.statement (userIdToUUID uid, passwordHashText pwHash) updatePasswordHashStmt)
+    ts <- now
+    res <- runSession (Session.statement (userIdToUUID uid, passwordHashText pwHash, ts) updatePasswordHashStmt)
     either dbFail (const (pure ())) res
   where
     dbFail = throwError . postgresUnavailable
@@ -148,13 +150,13 @@ findCredByEmailStmt =
     (E.param (E.nonNullable E.text))
     (D.rowMaybe credRowDecoder)
 
-updatePasswordHashStmt :: Statement (UUID, Text) ()
+updatePasswordHashStmt :: Statement (UUID, Text, UTCTime) ()
 updatePasswordHashStmt =
   preparable
     """
     UPDATE shomei.shomei_password_credentials
-    SET password_hash = $2
+    SET password_hash = $2, updated_at = $3
     WHERE user_id = $1
     """
-    (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.text)))
+    (contrazip3 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
     D.noResult

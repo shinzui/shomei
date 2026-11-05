@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Migration 0042 adds measured ordered user/status and per-user audit indexes.
+
 - `0037-remembered-sessions` adds `shomei_sessions.remembered boolean NOT NULL DEFAULT true`.
 
 ## 0.2.0.0 — 2026-08-27

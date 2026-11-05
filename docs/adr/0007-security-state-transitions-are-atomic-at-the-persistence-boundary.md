@@ -5,7 +5,7 @@ description: Single-use and monotonic transitions use conditional writes, while 
 docId: ADR-7
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-27T20:08:25Z
+timestamp: 2026-11-05T16:41:30Z
 originatingPlan: docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md
 generated:
   by: openai-codex/gpt-5
@@ -42,6 +42,14 @@ Multi-row credential tails run through an explicit unit-of-work port. Token cons
 replacement, sibling-token and session revocation, and the corresponding audit event either commit
 together or roll back together. Password hashing and other expensive pure work remain outside the
 transaction.
+
+Creation timestamps come from the Clock port in both PostgreSQL and fake interpreters.
+A workflow chooses its transition timestamp once and passes it through every statement in its
+unit of work. Password replacement advances credential `updated_at` to that timestamp while
+preserving `created_at`. A repeated revocation cannot overwrite the original `revoked_at`.
+Expiry cleanup is a bounded, paced sweeper operation; the unused unbatched authorization-code
+expiry port is removed. Live rotation and sweeper interaction are verified with a real SQL lock
+barrier, alongside persisted single-winner reset, verification, recovery and ceremony races.
 
 ## Consequences
 

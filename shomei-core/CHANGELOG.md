@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** remove the unused unbatched authorization-code expiry port; cleanup uses the bounded sweeper. Password-hash updates now advance credential `updatedAt` in the fake interpreter as well.
+
 - **Breaking:** PostgreSQL assembly uses the managed `Shomei.Persistence.Pool.Postgres.Pool` and its `UsageError`, `use` and `release` operations. Interrupted/failed sessions discard their connection and restore capacity; the external pool dependency is removed.
 
 - Machine and delegated mints atomically enforce the configurable active principal ceiling (default 1000), preserving existing sessions after lowering the cap. Expiry frees capacity; finite sweeper retention bounds ordinary history by issuance rate and retention.

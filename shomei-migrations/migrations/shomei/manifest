@@ -39,3 +39,4 @@
 0039-enforce-new-field-budgets.sql
 0040-add-session-keyset-index.sql
 0041-add-active-session-principal-indexes.sql
+0042-add-admin-keyset-indexes.sql

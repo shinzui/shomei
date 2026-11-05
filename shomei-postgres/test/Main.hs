@@ -5,7 +5,7 @@
 -- PostgreSQL interpreters with database-state assertions.
 module Main (main) where
 
-import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Concurrent (MVar, forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, bracket, bracket_, evaluate, try)
 import Control.Monad (forM, forM_, replicateM, void, when, (<=<))
 import Crypto.Cipher.AES (AES256)
@@ -25,7 +25,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
-import Effectful.Dispatch.Dynamic (interpose, interpret_, send)
+import Effectful.Dispatch.Dynamic (interpose, interpret_, passthrough, send)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Conc (getNumCapabilities)
@@ -36,7 +36,7 @@ import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Shomei.Account.Credential.Domain (Credential (..))
 import Shomei.Account.Credential.Postgres (runCredentialStorePostgres)
-import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId)
+import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId, updatePasswordHash)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.Lifecycle.Workflow
   ( ConfirmEmailVerification (..),
@@ -82,7 +82,7 @@ import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Account.User.Store
   ( UserCursor (..),
     UserListQuery (..),
-    UserStore,
+    UserStore (..),
     createUser,
     emptyUserListQuery,
     findUserByEmail,
@@ -167,7 +167,6 @@ import Shomei.OAuth.AuthorizationCode.Store
   ( OAuthCodeStore,
     bindAuthorizationCodeSession,
     consumeAuthorizationCode,
-    deleteExpiredAuthorizationCodes,
     findConsumedAuthorizationCode,
     putAuthorizationCode,
   )
@@ -248,12 +247,12 @@ import Shomei.Session.LoginAttempt.Store
 import Shomei.Session.Postgres (runSessionStorePostgres)
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken (..), PersistedRefreshToken (..), RefreshToken (..), RefreshTokenStatus (..))
 import Shomei.Session.RefreshToken.Postgres (runRefreshTokenStorePostgres)
-import Shomei.Session.RefreshToken.Store (RefreshTokenStore, createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
+import Shomei.Session.RefreshToken.Store (RefreshTokenStore (..), createRefreshToken, findRefreshTokenByHash, markRefreshTokenUsed)
 import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore, createSession, createSessionWithinLimit, emptySessionListQuery, findSessionById, listSessionPage, listSessionsForUser, revokeSession)
 import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
-import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, revokeSessionWithTokens, revokeUserSessionsWithAudit)
+import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, completePasswordChange, completePasswordReset, revokeSessionWithTokens, revokeUserSessionsWithAudit)
 import Shomei.Session.Workflow (buildEnrichedClaims)
 import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
@@ -523,6 +522,12 @@ main = defaultMain (testGroup "shomei-postgres" tests)
 tests :: [TestTree]
 tests =
   [ testManagedPoolOwnership,
+    testPersistenceClock,
+    testAdminQueryPlans,
+    testRefreshRotationRace,
+    testResetAndVerificationRaces,
+    testRecoveryAndCeremonyRaces,
+    testSweepVersusLiveRotation,
     testRetryBudgets,
     testTransactionDeadline,
     testShrinkingStatementBudget,
@@ -1381,9 +1386,11 @@ testSessionRevoke = testCase "create session + revoke" $ withDb \pool -> do
     t <- now
     s <- createSession (NewSession {userId = u.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
     revokeSession s.sessionId t
+    revokeSession s.sessionId (addUTCTime 60 t)
     findSessionById s.sessionId
   found <- expectApp result
   fmap (.status) found @?= Just SessionRevoked
+  fmap (.revokedAt) found @?= fmap (Just . (.createdAt)) found
 
 testSessionActorRoundTrip :: TestTree
 testSessionActorRoundTrip = testCase "create delegated session persists actor" $ withDb \pool -> do
@@ -1913,7 +1920,7 @@ testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database 
 testLogoutRoundTripBudget :: TestTree
 testLogoutRoundTripBudget = testCase "logout costs exactly 2 database round-trips" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
-  (user, _) <- expectApp signupRes >>= expectRight
+  (user, pair) <- expectApp signupRes >>= expectRight
   sessionsRes <- runApp pool (listSessionsForUser user.userId)
   sessions <- expectApp sessionsRes
   sid <- case sessions of
@@ -1923,6 +1930,10 @@ testLogoutRoundTripBudget = testCase "logout costs exactly 2 database round-trip
   logoutRes <- runApp pool (countingDatabase counter (logout cfg (LogoutCommand sid)))
   _ <- expectApp logoutRes >>= expectRight
   readIORef counter >>= (@?= 2)
+  replay <- expectApp =<< runApp pool (refresh cfg (RefreshCommand pair.refreshToken))
+  replay @?= Left Err.SessionRevoked
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='session_revoked'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='refresh_token_reuse_detected'" >>= (@?= 0)
 
 -- | Password-reset confirmation costs three database round-trips: token lookup, user lookup,
 -- and one transaction for the consume/hash/revocation/event tail.
@@ -2346,9 +2357,8 @@ testAuthorizationCodeRoundTrip =
       unknown <- consumeAuthorizationCode "hash-nope" t
       -- One second past its expiry: the row is there, but it must not consume.
       expired <- consumeAuthorizationCode "hash-expired" (addUTCTime 61 t)
-      deleteExpiredAuthorizationCodes (addUTCTime 61 t)
-      pure (first', sid, bound, replay, unknown, expired, scopes)
-    (first', sid, bound, replay, unknown, expired, scopes) <- expectApp result
+      pure (first', sid, bound, replay, unknown, expired, scopes, t)
+    (first', sid, bound, replay, unknown, expired, scopes, writtenAt) <- expectApp result
     -- The consume returns every binding the exchange will re-check, and stamps consumed_at.
     case first' of
       Nothing -> assertFailure "the first consume must return the code"
@@ -2364,8 +2374,9 @@ testAuthorizationCodeRoundTrip =
     assertBool "a replay must miss" (isNothing replay)
     assertBool "an unknown hash must miss" (isNothing unknown)
     assertBool "an expired code must miss" (isNothing expired)
-    -- The consumed row survives the consume (only the sweeper deletes), and the sweep above
-    -- removed both rows because both were past their expiry by then.
+    -- Only the bounded maintenance path deletes expired codes, including consumed rows.
+    report <- expectSweep =<< sweepOnce pool defaultSweepConfig {batchSize = 1, ceremonyGraceMinutes = 0} (addUTCTime 61 writtenAt)
+    report.authorizationCodesDeleted @?= 2
     remaining <- scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes"
     remaining @?= 0
 
@@ -3264,3 +3275,218 @@ testManagedPoolOwnership = testCase "managed pool restores interrupted/failed sl
     putMVar finish ()
     timeout 1000000 (takeMVar completed) >>= (@?= Just (Right ()))
     timeout 1000000 (scalarInt pool "SELECT 1::bigint") >>= (@?= Just 1)
+
+testPersistenceClock :: TestTree
+testPersistenceClock = testCase "user and credential timestamps follow Clock; password tails share their transaction timestamp" $ withDb \pool -> do
+  (user, credential) <-
+    expectApp =<< runAppAtTime t0 pool do
+      user <- createUser (NewUser aliceLogin Nothing Nothing)
+      credential <- createPasswordCredential user.userId aliceLogin Nothing (PasswordHash "initial-hash")
+      pure (user, credential)
+  user.createdAt @?= t0
+  user.updatedAt @?= t0
+  credential.createdAt @?= t0
+  credential.updatedAt @?= t0
+  let changedAt = addUTCTime 60 t0
+  (updatedUser, updatedCredential) <-
+    expectApp =<< runAppAtTime changedAt pool do
+      _ <- updateUserStatus user.userId [UserActive] UserSuspended changedAt
+      updatePasswordHash user.userId (PasswordHash "second-hash")
+      (,) <$> findUserById user.userId <*> findPasswordCredentialByLoginId aliceLogin
+  fmap (.updatedAt) updatedUser @?= Just changedAt
+  fmap (.updatedAt) updatedCredential @?= Just changedAt
+  let tailTime = addUTCTime 120 t0
+  -- A different ambient Clock proves the tail uses the one timestamp already chosen by its workflow.
+  expectApp =<< runAppAtTime t0 pool (completePasswordChange user.userId (PasswordHash "third-hash") tailTime [])
+  afterTail <- expectApp =<< runAppAtTime t0 pool (findPasswordCredentialByLoginId aliceLogin)
+  fmap (.updatedAt) afterTail @?= Just tailTime
+  fmap (.createdAt) afterTail @?= Just t0
+  reset <- expectApp =<< runAppAtTime t0 pool (createPasswordResetToken (NewPasswordResetToken user.userId (OneTimeTokenHash "clock-reset") t0 (addUTCTime 3600 t0)))
+  let resetTime = addUTCTime 180 t0
+  won <- expectApp =<< runAppAtTime t0 pool (completePasswordReset reset.passwordResetTokenId user.userId (PasswordHash "fourth-hash") resetTime [])
+  won @?= True
+  afterReset <- expectApp =<< runAppAtTime t0 pool (findPasswordCredentialByLoginId aliceLogin)
+  fmap (.updatedAt) afterReset @?= Just resetTime
+  fmap (.createdAt) afterReset @?= Just t0
+
+-- Start every independent interpreter invocation together and never leave a failed worker
+-- silently blocking the acceptance suite.
+raceDatabase :: Int -> IO a -> IO [a]
+raceDatabase count action = do
+  start <- newEmptyMVar
+  completed <- replicateM count do
+    done <- newEmptyMVar
+    _ <- forkIO do
+      readMVar start
+      outcome <- try @SomeException action
+      putMVar done outcome
+    pure done
+  putMVar start ()
+  forM completed \done -> do
+    outcome <- timeout 10000000 (takeMVar done)
+    case outcome of
+      Just (Right value) -> pure value
+      Just (Left _) -> assertFailure "database racer raised an exception"
+      Nothing -> assertFailure "database race did not reach its completion barrier"
+
+readBarrier :: Int -> IORef Int -> MVar () -> IO ()
+readBarrier racers count allRead = do
+  lastReader <- atomicModifyIORef' count (\n -> let next = n + 1 in (next, next == racers))
+  when lastReader (putMVar allRead ())
+  readMVar allRead
+
+synchronizeUserRead :: (UserStore :> es, IOE :> es) => Int -> IORef Int -> MVar () -> Eff es a -> Eff es a
+synchronizeUserRead racers count allRead = interpose \env -> \case
+  op@(FindUserById _) -> do
+    value <- passthrough env op
+    liftIO (readBarrier racers count allRead)
+    pure value
+  op -> passthrough env op
+
+synchronizeRefreshRead :: (RefreshTokenStore :> es, IOE :> es) => Int -> IORef Int -> MVar () -> Eff es a -> Eff es a
+synchronizeRefreshRead racers count allRead = interpose \env -> \case
+  op@(FindRefreshTokenByHash _) -> do
+    value <- passthrough env op
+    liftIO (readBarrier racers count allRead)
+    pure value
+  op -> passthrough env op
+
+testRefreshRotationRace :: TestTree
+testRefreshRotationRace = testCase "real refresh workflow race rotates once and treats the losing proof as theft" $ withDb \pool -> do
+  (_, pair) <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing)) >>= expectApp >>= expectRight
+  readCount <- newIORef 0
+  allRead <- newEmptyMVar
+  results <- raceDatabase 2 (runApp pool (synchronizeRefreshRead 2 readCount allRead (refresh cfg (RefreshCommand pair.refreshToken)))) >>= traverse expectApp
+  length [() | Right _ <- results] @?= 1
+  length [() | Left RefreshTokenReuseDetected <- results] @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens" >>= (@?= 2)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status<>'revoked'" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='refresh_token_rotated'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='refresh_token_reuse_detected'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='session_revoked'" >>= (@?= 0)
+
+testResetAndVerificationRaces :: TestTree
+testResetAndVerificationRaces = testCase "real reset and verification workflows each consume once and audit one winner" $ withDb \pool -> do
+  _ <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing)) >>= expectApp >>= expectRight
+  notifications <- newIORef []
+  _ <- runAppWithNotifications notifications pool (requestPasswordReset cfg (RequestPasswordReset aliceEmail)) >>= expectApp >>= expectRight
+  sent <- readIORef notifications
+  resetToken <- case [raw | PasswordResetRequested {token = raw} <- sent] of
+    raw : _ -> pure raw
+    _ -> assertFailure "missing reset token fixture"
+  readCount <- newIORef 0
+  allRead <- newEmptyMVar
+  resets <-
+    raceDatabase
+      8
+      ( runApp
+          pool
+          ( synchronizeUserRead
+              8
+              readCount
+              allRead
+              (confirmPasswordReset cfg (ConfirmPasswordReset resetToken (PlainPassword "correct horse battery staple two")))
+          )
+      )
+      >>= traverse expectApp
+  length [() | Right () <- resets] @?= 1
+  length [() | Left PasswordResetTokenInvalid <- resets] @?= 7
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='password_reset_completed'" >>= (@?= 1)
+  _ <- runAppWithNotifications notifications pool (requestEmailVerification cfg (RequestEmailVerification aliceEmail)) >>= expectApp >>= expectRight
+  sentVerification <- readIORef notifications
+  verificationToken <- case [raw | EmailVerificationRequested {token = raw} <- sentVerification] of
+    raw : _ -> pure raw
+    _ -> assertFailure "missing verification token fixture"
+  verificationReads <- newIORef 0
+  allVerificationRead <- newEmptyMVar
+  verifications <-
+    raceDatabase
+      8
+      ( runApp
+          pool
+          ( synchronizeUserRead
+              8
+              verificationReads
+              allVerificationRead
+              (confirmEmailVerification cfg (ConfirmEmailVerification verificationToken))
+          )
+      )
+      >>= traverse expectApp
+  length [() | Right () <- verifications] @?= 1
+  length [() | Left Err.VerificationTokenInvalid <- verifications] @?= 7
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='email_verified'" >>= (@?= 1)
+
+testRecoveryAndCeremonyRaces :: TestTree
+testRecoveryAndCeremonyRaces = testCase "real recovery-code and pending-ceremony consume races have one persisted winner" $ withDb \pool -> do
+  (uid, cid, ts) <-
+    expectApp =<< runApp pool do
+      user <- createUser (NewUser aliceLogin Nothing Nothing)
+      ts <- now
+      rid <- genRecoveryCodeId
+      replaceRecoveryCodes user.userId [NewRecoveryCode rid "recovery-race" ts]
+      cid <- genCeremonyId
+      putPendingCeremony (PendingCeremony cid (Just user.userId) AuthenticationCeremony "signed-options-fixture" ts (addUTCTime 60 ts))
+      pure (user.userId, cid, ts)
+  recovery <- raceDatabase 8 (runApp pool (consumeRecoveryCode uid "recovery-race" ts)) >>= traverse expectApp
+  length (filter id recovery) @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_recovery_codes WHERE used_at IS NOT NULL" >>= (@?= 1)
+  ceremonies <- raceDatabase 8 (runApp pool (takePendingCeremony cid ts)) >>= traverse expectApp
+  length (filter isJust ceremonies) @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies" >>= (@?= 0)
+
+testSweepVersusLiveRotation :: TestTree
+testSweepVersusLiveRotation = testCase "paced sweeper races a live refresh without deleting the rotation family" $ withDb \pool -> do
+  (user, pair) <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing)) >>= expectApp >>= expectRight
+  let uid = "'" <> Text.pack (show (userIdToUUID user.userId)) <> "'"
+  execSql pool ("INSERT INTO shomei.shomei_sessions(session_id,user_id,status,created_at,expires_at) SELECT gen_random_uuid()," <> uid <> ",'active',now()-interval '32 days',now()-interval '31 days' FROM generate_series(1,10)")
+  cutoff <- getCurrentTime
+  -- Hold the sweep's first delete at a real SQL barrier while the live rotation commits.
+  execSql pool "CREATE FUNCTION shomei.test_sweep_barrier() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(1936224116,18); RETURN OLD; END $$; CREATE TRIGGER test_sweep_barrier BEFORE DELETE ON shomei.shomei_sessions FOR EACH ROW EXECUTE FUNCTION shomei.test_sweep_barrier()"
+  locked <- newEmptyMVar
+  unlock <- newEmptyMVar
+  holderDone <- newEmptyMVar
+  _ <- forkIO do
+    outcome <- Pool.use pool do
+      Session.script "SELECT pg_advisory_lock(1936224116,18)"
+      liftIO (putMVar locked () >> takeMVar unlock)
+      Session.script "SELECT pg_advisory_unlock(1936224116,18)"
+    putMVar holderDone outcome
+  takeMVar locked
+  swept <- newEmptyMVar
+  bracket_
+    (pure ())
+    (putMVar unlock () >> takeMVar holderDone >>= expectApp)
+    do
+      _ <- forkIO (sweepOnce pool defaultSweepConfig {batchSize = 1, deadSessionGraceDays = 0} cutoff >>= putMVar swept)
+      let awaitSweep = do
+            waiting <- scalarInt pool "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=1936224116 AND objid=18 AND NOT granted"
+            if waiting > 0 then pure () else threadDelay 1000 >> awaitSweep
+      timeout 2000000 awaitSweep >>= (@?= Just ())
+      rotated <- expectApp =<< runApp pool (refresh cfg (RefreshCommand pair.refreshToken))
+      _ <- expectRight rotated
+      pure ()
+  report <- expectSweep =<< takeMVar swept
+  report.sessionsDeleted @?= 10
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens" >>= (@?= 2)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 1)
+
+testAdminQueryPlans :: TestTree
+testAdminQueryPlans = testCase "admin user and per-user audit pages use measured ordered indexes; small client catalog stays unindexed" $ withDb \pool -> do
+  let explain query = expectApp =<< Pool.use pool (Session.statement () (preparable ("EXPLAIN (ANALYZE, BUFFERS) " <> query) E.noParams (D.rowList (D.column (D.nonNullable D.text)))))
+      users = "SELECT * FROM shomei.shomei_users ORDER BY created_at DESC,user_id DESC LIMIT 50"
+      suspended = "SELECT * FROM shomei.shomei_users WHERE status='suspended' ORDER BY created_at DESC,user_id DESC LIMIT 50"
+      audit = "SELECT * FROM shomei.shomei_auth_events WHERE user_id='10000000-0000-0000-0000-000000000001' ORDER BY created_at DESC,event_id DESC LIMIT 50"
+      clients = "SELECT * FROM shomei.shomei_oauth_clients ORDER BY created_at DESC,oauth_client_id DESC"
+  execSql pool "INSERT INTO shomei.shomei_users(user_id,login_id,status,created_at,updated_at) SELECT gen_random_uuid(),'plan-user-'||i,CASE WHEN i%2=0 THEN 'active' ELSE 'suspended' END,now()-i*interval '1 second',now() FROM generate_series(1,10000) i"
+  execSql pool "INSERT INTO shomei.shomei_auth_events(event_id,user_id,event_type,payload,created_at) SELECT gen_random_uuid(),CASE WHEN i<=1000 THEN '10000000-0000-0000-0000-000000000001'::uuid ELSE '10000000-0000-0000-0000-000000000002'::uuid END,'login_succeeded','{}',now()+i*interval '1 second' FROM generate_series(1,11000) i"
+  execSql pool "INSERT INTO shomei.shomei_oauth_clients(oauth_client_id,client_id,client_type,display_name,redirect_uris,allowed_scopes,status,created_at) SELECT gen_random_uuid(),'plan-client-'||i,'public','Fixture','[]','[]','active',now() FROM generate_series(1,40) i"
+  execSql pool "DROP INDEX IF EXISTS shomei.shomei_users_created_id_idx; DROP INDEX IF EXISTS shomei.shomei_users_status_created_id_idx; DROP INDEX IF EXISTS shomei.shomei_auth_events_user_created_id_idx; ANALYZE shomei.shomei_users; ANALYZE shomei.shomei_auth_events; ANALYZE shomei.shomei_oauth_clients"
+  before <- traverse explain [users, suspended, audit, clients]
+  execSql pool "CREATE INDEX shomei_users_created_id_idx ON shomei.shomei_users(created_at DESC,user_id DESC); CREATE INDEX shomei_users_status_created_id_idx ON shomei.shomei_users(status,created_at DESC,user_id DESC); CREATE INDEX shomei_auth_events_user_created_id_idx ON shomei.shomei_auth_events(user_id,created_at DESC,event_id DESC)"
+  after <- traverse explain [users, suspended, audit, clients]
+  forM_ (zip (take 3 after) ["shomei_users_created_id_idx", "shomei_users_status_created_id_idx", "shomei_auth_events_user_created_id_idx"]) \(plan, indexName) -> do
+    assertBool "bounded page uses the ordered index" (any (Text.isInfixOf indexName) plan)
+    assertBool "bounded page needs no sort" (not (any (Text.isInfixOf "Sort") plan))
+  writeFile "/tmp/shomei-admin-query-plans.txt" (Text.unpack (Text.unlines (concat (zipWith3 (\name b a -> [name <> " before:"] <> b <> [name <> " after:"] <> a) ["Users", "Suspended users", "Per-user audit", "40-client catalog (no new index)"] before after))))

@@ -16,7 +16,6 @@ module Shomei.OAuth.AuthorizationCode.Store
     consumeAuthorizationCode,
     bindAuthorizationCodeSession,
     findConsumedAuthorizationCode,
-    deleteExpiredAuthorizationCodes,
   )
 where
 
@@ -40,9 +39,6 @@ data OAuthCodeStore :: Effect where
   -- | Find a still-live consumed row. Keeping this distinct from consume preserves the atomic
   --     one-winner operation while letting a replay find the first exchange's result.
   FindConsumedAuthorizationCode :: Text -> UTCTime -> OAuthCodeStore m (Maybe AuthorizationCode)
-  -- | Delete codes that expired before the given time. Consumed rows are kept until they expire
-  -- too, so a replay within the code's lifetime still finds a consumed row rather than nothing.
-  DeleteExpiredAuthorizationCodes :: UTCTime -> OAuthCodeStore m ()
 
 type instance DispatchOf OAuthCodeStore = Dynamic
 
@@ -57,6 +53,3 @@ bindAuthorizationCodeSession h sid = send (BindAuthorizationCodeSession h sid)
 
 findConsumedAuthorizationCode :: (OAuthCodeStore :> es) => Text -> UTCTime -> Eff es (Maybe AuthorizationCode)
 findConsumedAuthorizationCode h t = send (FindConsumedAuthorizationCode h t)
-
-deleteExpiredAuthorizationCodes :: (OAuthCodeStore :> es) => UTCTime -> Eff es ()
-deleteExpiredAuthorizationCodes = send . DeleteExpiredAuthorizationCodes
