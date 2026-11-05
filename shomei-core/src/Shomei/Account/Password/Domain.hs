@@ -75,7 +75,7 @@ validatePassword ::
   PasswordPolicy -> PasswordContext -> PlainPassword -> Either PasswordPolicyViolation ()
 validatePassword policy context (PlainPassword pw)
   | Text.length pw < policy.minLength = Left (PasswordTooShort policy.minLength)
-  | Text.length pw > policy.maxLength = Left (PasswordTooLong policy.maxLength)
+  | Text.length pw > min 256 policy.maxLength = Left (PasswordTooLong (min 256 policy.maxLength))
   | policy.rejectCommonPasswords && isCommonPassword pw = Left PasswordTooCommon
   | policy.rejectContextualPasswords && resemblesIdentity context pw = Left PasswordResemblesIdentity
   | otherwise = Right ()

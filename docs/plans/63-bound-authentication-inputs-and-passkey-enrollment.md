@@ -44,9 +44,9 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 ## Progress
 
 
-- [ ] M1: consistent field budgets reject invalid direct and HTTP input before expensive work.
+- [x] (2026-11-05) M1: bounded constructors/JSON and signup/store validation enforce Unicode and UTF-8 budgets; oversized login passwords produce HTTP 400 with zero real/dummy hash calls, attempts, lockout changes or audit. Boundary and legacy HTTP tests pass.
 - [x] (2026-11-05) M2: account-row serialization and atomic fake storage enforce the explicit 1–100 ceiling (default 20). Eight database racers have one winner; two workflow completions produce one success audit. HTTP quota refusal returns 409 with the documented code; lowered limits preserve existing credential access/removal. Core/PostgreSQL/Servant/server gates pass with Tasty -j2.
-- [ ] M3: existing-account compatibility, configuration/schema, and API tests pass.
+- [x] (2026-11-05) M3: explicit persisted-user/credential/audit compatibility decoders and login/recovery parsing preserve legacy identities. Migration 0039 bounds only inserted/changed fields; real PostgreSQL tests preserve oversized rows through status updates. Read-only count report and rollout guide are published. All eight focused suites pass.
 
 
 ## Surprises & Discoveries
@@ -59,7 +59,7 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 
 ## Decision Log
 
-2026-11-05: The plan simultaneously requires rejecting identifiers longer than 256 characters before any lookup and preserving password login for existing longer identifiers. A compatibility decision is pending with the owner. Implement the independent passkey quota while preserving all input/compatibility acceptance obligations.
+2026-11-05: The owner chose to preserve password login for existing long login IDs while capping new identity writes at 256 characters. Login uses compatibility parsing; new writes use the bounded constructor. Oversized passwords remain request-shape failures before any proof work.
 
 2026-11-05: Passkey creation now takes an explicit 1–100 ceiling and returns `Either AuthError PasskeyCredential`. PostgreSQL locks the persisted account row before counting and inserting; the in-memory interpreter makes one atomic world update. No unbounded compatibility operation is retained. ADR-21 records this contract.
 
@@ -68,6 +68,8 @@ Bound attacker-controlled field sizes and passkey enrollment growth at the libra
 
 
 ## Outcomes & Retrospective
+
+Accepted the owner’s legacy-login choice without truncating identities. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites, including `new identity limits count Unicode code points and email UTF-8 bytes`, `legacy identity snapshots and password login survive new-write limits`, `oversized passwords reject known and unknown accounts without proof work or state changes`, `new-write field budgets preserve legacy rows and security updates`, and `input boundaries and legacy HTTP login`. ADR-22 and `docs/user/input-limits.md` distinguish compatibility parsers from new writes. No new friction under this milestone. Ledger closure awaits the implementation commit identifier.
 
 
 
@@ -86,7 +88,7 @@ Each milestone updates its rows in [the finding ledger](../review-remediation/fi
 ## Plan of Work
 
 
-M1 introduces shared validation functions for new writes: normalized login IDs at most 256 Unicode code points, email at most 254 UTF-8 bytes, display name at most 256 code points, passkey label at most 128 code points, and role/scope names at most 128 Unicode code points while preserving the current accepted character vocabulary. Preserve the current password policy maximum of 256 code points and enforce it for login as well as creation/change/reset. At login, an oversized password or identifier is a request-shape rejection made before user lookup and before any real or dummy Argon2 work: it uses the existing invalid-input error vocabulary, its status and timing do not vary with account existence, it records no login attempt and changes no lockout state because no credential proof was presented ([ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md) budgets proofs, not malformed requests), and it still passes through the edge request throttle. Validate before normalization copies or expensive hashing where possible; also validate the normalized result. Do not echo rejected values. Replace derived JSON decoders that bypass constructors; map errors to the established domain/HTTP vocabulary and update OpenAPI schemas. Check role captures and CLI inputs, not only JSON bodies.
+M1 introduces shared validation functions for new writes: normalized login IDs at most 256 Unicode code points, email at most 254 UTF-8 bytes, display name at most 256 code points, passkey label at most 128 code points, and role/scope names at most 128 Unicode code points while preserving the current accepted character vocabulary. Preserve the current password policy maximum of 256 code points and enforce it for login as well as creation/change/reset. At login, an oversized password is a request-shape rejection made before user lookup and before any real or dummy Argon2 work: it uses the existing invalid-input error vocabulary, its status and timing do not vary with account existence, it records no login attempt and changes no lockout state because no credential proof was presented ([ADR-5](../adr/0005-every-credential-proof-participates-in-one-abuse-budget.md) budgets proofs, not malformed requests), and it still passes through the edge request throttle. Validate before normalization copies or expensive hashing where possible; also validate the normalized result. Login identifiers above the new-write ceiling remain admissible for legacy authentication under the owner decision on 2026-11-05; do not rename or truncate them. Do not echo rejected values. Replace derived JSON decoders that bypass constructors; map errors to the established domain/HTTP vocabulary and update OpenAPI schemas. Check role captures and CLI inputs, not only JSON bodies.
 
 M2 adds a default maximum of 20 passkeys per account, configurable to 1–100 through the core config, environment loader, and Dhall schema. A begin-time check is only an optimization. The persistence operation must atomically lock the account enrollment namespace, count, and insert, returning a typed limit result; mirror this in the in-memory interpreter. Two completions racing for the last slot must yield exactly one stored credential and one success audit event. Do not delete a user's existing credentials to satisfy a lowered cap; existing credentials remain usable and removable while further enrollment is refused.
 

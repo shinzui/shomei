@@ -26,8 +26,8 @@ module Shomei.Persistence.Codec.Postgres
 where
 
 import Data.Text qualified as Text
-import Shomei.Account.Email.Domain (Email, mkEmail)
-import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.Email.Domain (Email, parseStoredEmail)
+import Shomei.Account.LoginId.Domain (LoginId, parseLoginIdForAuthentication)
 import Shomei.Account.OneTimeToken.Domain (OneTimeTokenStatus (..))
 import Shomei.Account.User.Domain (UserStatus (..))
 import Shomei.Prelude
@@ -146,7 +146,7 @@ attemptFactorToText = \case
 -- already normalized through 'mkEmail' on the way in, so this should never fail; a 'Left'
 -- here signals a corrupt row.
 emailFromDb :: Text -> Either Text Email
-emailFromDb t = case mkEmail t of
+emailFromDb t = case parseStoredEmail t of
   Right e -> Right e
   Left _ -> Left ("invalid email in database: " <> t)
 
@@ -159,6 +159,6 @@ maybeEmailFromDb = traverse emailFromDb
 -- were already normalized through 'mkLoginId' on the way in, so this should never fail; a
 -- 'Left' here signals a corrupt row.
 loginIdFromDb :: Text -> Either Text LoginId
-loginIdFromDb t = case mkLoginId t of
+loginIdFromDb t = case parseLoginIdForAuthentication t of
   Right l -> Right l
   Left _ -> Left ("invalid login id in database: " <> t)

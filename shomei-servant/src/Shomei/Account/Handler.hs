@@ -15,7 +15,7 @@ import Shomei.Account.Admin.Api (AdminAccountApi (..))
 import Shomei.Account.Admin.Workflow qualified as Admin
 import Shomei.Account.Api (AccountApi (..))
 import Shomei.Account.Dto
-import Shomei.Account.Email.Domain (mkEmail)
+import Shomei.Account.Email.Domain (mkEmail, parseStoredEmail)
 import Shomei.Account.Lifecycle.Workflow qualified as Account
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
@@ -92,7 +92,7 @@ signupH env request = runApplicationHandler do
 
 verifyEmailRequestH :: Env -> VerifyEmailRequest -> Handler VerifyEmailRequestResult
 verifyEmailRequestH env request = runApplicationHandler do
-  email <- either rejectAuth pure (mkEmail request.email)
+  email <- either rejectAuth pure (parseStoredEmail request.email)
   workflow env (Account.requestEmailVerification env.config (Account.RequestEmailVerification email))
 
 verifyEmailConfirmH :: Env -> ConfirmEmailVerificationRequest -> Handler VerifyEmailConfirmResult
@@ -101,7 +101,7 @@ verifyEmailConfirmH env request = runApplicationHandler do
 
 passwordResetRequestH :: Env -> PasswordResetRequest -> Handler PasswordResetRequestResult
 passwordResetRequestH env request = runApplicationHandler do
-  email <- either rejectAuth pure (mkEmail request.email)
+  email <- either rejectAuth pure (parseStoredEmail request.email)
   workflow env (Account.requestPasswordReset env.config (Account.RequestPasswordReset email))
 
 passwordResetConfirmH :: Env -> ConfirmPasswordResetRequest -> Handler PasswordResetConfirmResult

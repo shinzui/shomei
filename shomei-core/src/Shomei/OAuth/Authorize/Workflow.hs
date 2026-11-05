@@ -39,7 +39,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 -- generic-lens label, as 'Shomei.ServiceAccount.ClientCredentials.Workflow' does for 'ServiceAccount'.
 
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
-import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..))
+import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..), validScopeName)
 import Shomei.Authorization.Scope.Domain (privilegeScopes, privilegeScopesIn)
 import Shomei.Config (ShomeiConfig)
 import Shomei.OAuth.AuthorizationCode.Domain (NewAuthorizationCode (..))
@@ -220,7 +220,7 @@ authorize cfg client claims params = runErrorNoCallStack do
         when (Set.null granted) (throwError AuthorizeInvalidScope)
         pure granted
       Just requested -> do
-        when (Set.null requested) (throwError AuthorizeInvalidScope)
+        when (Set.null requested || not (all validScopeName requested)) (throwError AuthorizeInvalidScope)
         unless (requested `Set.isSubsetOf` (client ^. #allowedScopes)) (throwError AuthorizeInvalidScope)
         unless (Set.null (privilegeScopesIn cfg requested)) (throwError AuthorizeInvalidScope)
         pure requested

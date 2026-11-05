@@ -5,6 +5,8 @@ module Shomei.Authorization.Claims.Domain
     Audience (..),
     Scope (..),
     Role (..),
+    validRoleName,
+    validScopeName,
     Permission (..),
     AuthClaims (..),
     reservedClaimKeys,
@@ -13,10 +15,12 @@ module Shomei.Authorization.Claims.Domain
   )
 where
 
-import Data.Aeson (Object)
+import Data.Aeson (Object, withText)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Char (isSpace)
 import Data.Set (Set)
+import Data.Text qualified as Text
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
@@ -30,11 +34,26 @@ newtype Audience = Audience Text
 
 newtype Scope = Scope Text
   deriving stock (Generic)
-  deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
+  deriving newtype (Eq, Ord, Show, ToJSON)
+
+validScopeName :: Scope -> Bool
+validScopeName (Scope t) = not (Text.null t) && Text.length t <= 128 && not (Text.any isSpace t)
+
+instance FromJSON Scope where
+  parseJSON = withText "Scope" \t ->
+    if validScopeName (Scope t) then pure (Scope t) else fail "invalid scope name"
 
 newtype Role = Role Text
   deriving stock (Generic)
-  deriving newtype (Eq, Ord, Show, FromJSON, ToJSON)
+  deriving newtype (Eq, Ord, Show, ToJSON)
+
+-- Preserve the established vocabulary, including internal whitespace in role names.
+validRoleName :: Role -> Bool
+validRoleName (Role t) = not (Text.null (Text.strip t)) && Text.length t <= 128
+
+instance FromJSON Role where
+  parseJSON = withText "Role" \t ->
+    if validRoleName (Role t) then pure (Role (Text.strip t)) else fail "invalid role name"
 
 -- | A capability string carried in the @permissions@ claim, resolved at mint time from the
 -- subject's roles (the @shomei_role_permissions@ table). Convention: @resource:verb@, e.g.

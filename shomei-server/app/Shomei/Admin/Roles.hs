@@ -302,8 +302,8 @@ parseUserRef raw =
 parseRole :: Text -> IO Role
 parseRole raw =
   let trimmed = Text.strip raw
-   in if Text.null trimmed
-        then die "role name must not be blank"
+   in if Text.length raw > 128 || Text.null trimmed
+        then die "role name must be non-blank and at most 128 characters"
         else pure (Role trimmed)
 
 -- | Permission strings are trimmed and must be non-blank and contain no internal whitespace. The

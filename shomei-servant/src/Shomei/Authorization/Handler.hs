@@ -38,7 +38,7 @@ revokeRoleH env actor target roleText = runApplicationHandler do
 
 parseRole :: Text -> ApplicationHandler Role
 parseRole value
-  | Text.null trimmed = rejectProblem pcBadRequest (detailOccurrence "role must not be blank")
+  | Text.length value > 128 || Text.null trimmed = rejectProblem pcBadRequest (detailOccurrence "role must be non-blank and at most 128 characters")
   | otherwise = pure (Role trimmed)
   where
     trimmed = Text.strip value

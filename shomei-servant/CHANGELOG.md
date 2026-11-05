@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Enforce finite new-write identity, display-name, passkey-label and role/scope budgets; preserve legacy identity authentication and snapshots. Login passwords over 256 code points fail before credential proof accounting. PostgreSQL adds migration 0039; see `docs/user/input-limits.md`.
+
 - Bearer scheme matching is case-insensitive and accepts multiple ASCII separator spaces.
   Invalid or duplicate Authorization credentials fail closed; a present malformed header
   cannot fall back to a session cookie. Missing and invalid credentials retain distinct challenges.

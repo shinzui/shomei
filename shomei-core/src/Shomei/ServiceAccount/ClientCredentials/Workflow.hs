@@ -29,7 +29,7 @@ import Shomei.Account.User.Domain (UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
-import Shomei.Authorization.Claims.Domain (Scope)
+import Shomei.Authorization.Claims.Domain (Scope, validScopeName)
 import Shomei.Config (MachineTokenConfig (..), ServiceAccountId (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId)
@@ -80,6 +80,7 @@ grantClientCredentials ::
   ClientCredentialsGrant ->
   Eff es (Either AuthError GrantedToken)
 grantClientCredentials cfg cmd = runErrorNoCallStack do
+  unless (maybe True (all validScopeName) cmd.requestedScopes) (throwError OAuthScopeInvalid)
   account <- maybe (throwError OAuthClientInvalid) pure =<< findServiceAccountByClientId (cmd ^. #clientId)
   -- Verify the secret before checking status, so a revoked account and an active one with a
   -- wrong secret cost the same work.

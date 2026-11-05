@@ -19,6 +19,7 @@ import Data.ByteString (ByteString)
 import Data.Either (isRight)
 import Data.IORef (IORef, newIORef, readIORef)
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time (UTCTime (..), fromGregorian)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
@@ -50,7 +51,8 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Passkey.Workflow"
-    [ testCase "begin then complete stores a passkey; list returns it; remove deletes it" enrollListRemove,
+    [ testCase "label boundary rejects before consuming the pending ceremony" labelBoundary,
+      testCase "begin then complete stores a passkey; list returns it; remove deletes it" enrollListRemove,
       testCase "wrong-user complete is rejected" wrongUserComplete,
       testCase "absent ceremony is rejected" absentCeremony,
       testCase "an already-consumed ceremony is rejected on the second complete" consumedCeremony,
@@ -184,3 +186,14 @@ quotaRace = do
   forM_ listed \pk -> do
     _ <- mustRight =<< runInMemory ref (removePasskey uid (pkPasskeyId pk))
     pure ()
+
+labelBoundary :: IO ()
+labelBoundary = do
+  ref <- newWorld
+  uid <- seedUser ref
+  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  let credential = credentialJson (challengeOf opts)
+  bad <- runInMemory ref (completePasskeyRegistration cfg uid cid credential (Just (Text.replicate 129 "🔑")))
+  bad @?= Left InvalidInput
+  good <- mustRight =<< runInMemory ref (completePasskeyRegistration cfg uid cid credential (Just (Text.replicate 128 "🔑")))
+  pkLabel good @?= Just (Text.replicate 128 "🔑")

@@ -50,7 +50,7 @@ import Shomei.Account.User.Domain (User, UserStatus (UserActive))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
-import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..))
+import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope (..), validScopeName)
 import Shomei.Authorization.Scope.Domain (tokenExchangeSubjectScope)
 import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), SessionCheckMode (VerifyTokenAndSession), ShomeiConfig (..))
 import Shomei.Delegation.Workflow
@@ -255,6 +255,7 @@ narrowScopes ::
   Set Scope ->
   Eff es (Set Scope)
 narrowScopes mRequested allowed subjectScopes = do
+  unless (maybe True (all validScopeName) mRequested) (throwError OAuthScopeInvalid)
   let ceiling_ = Set.delete tokenExchangeSubjectScope allowed
       requested = fromMaybe ceiling_ mRequested
       granted = Set.intersection requested ceiling_

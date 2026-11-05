@@ -53,7 +53,8 @@ data AuthDependency
   deriving anyclass (FromJSON, ToJSON)
 
 data AuthError
-  = InvalidEmail
+  = InvalidInput
+  | InvalidEmail
   | -- | The supplied login identifier was empty or contained internal whitespace.
     InvalidLoginId
   | WeakPassword PasswordPolicyViolation

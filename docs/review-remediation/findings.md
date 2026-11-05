@@ -140,7 +140,7 @@ These initial subrows are not an exhaustive substitute for reading all original 
 | REV-2.23.2 | PKCE verifier shape | EP-3 | Open | Pending verification |
 | REV-2.23.3 | refresh token diagnostic redaction | EP-7 | Open | Pending verification |
 | REV-2.23.4 | dead clone-warning branch | EP-5 | Open | Pending verification |
-| REV-2.23.5 | passkey count ceiling | EP-2 | Open | Pending verification |
+| REV-2.23.5 | passkey count ceiling | EP-2 | Fixed | `3cf27a0`: PostgreSQL `passkey quota: eight database racers spend one final slot`, core workflow winner-only audit race, HTTP 409 assertion and config schema tests pass. `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1`; ADR-21 preserves existing credentials under lowered limits. |
 | REV-2.23.6 | library suspended-account error distinction | EP-7 | Open | Pending verification |
 | REV-3.7.1 | strict list claims | EP-3 | Open | Pending verification |
 | REV-3.7.2 | single audience semantics | EP-3 | Open | Pending verification |

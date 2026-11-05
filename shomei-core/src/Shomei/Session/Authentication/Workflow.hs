@@ -30,6 +30,7 @@ where
 import Data.Aeson (Value)
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Time (addUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Error.Static (Error, runErrorNoCallStack, throwError)
@@ -38,9 +39,9 @@ import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredentia
 import Shomei.Account.Email.Domain (emailText)
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Breach.Workflow (enforceBreachPolicy)
-import Shomei.Account.Password.Domain (PasswordContext (..), validatePassword)
+import Shomei.Account.Password.Domain (PasswordContext (..), PlainPassword (..), validatePassword)
 import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
-import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive))
+import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive), validateNewUser)
 import Shomei.Account.User.Store (UserStore, createUser, findUserByEmail, findUserById, findUserByLoginId)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
@@ -49,7 +50,7 @@ import Shomei.Authorization.Claims.Store (ClaimsEnricher)
 import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Authorization.Role.Workflow (applyDefaultRoles)
 import Shomei.Config (MfaConfig (..), NotifierConfig (..), RateLimitConfig (..), SessionCheckMode (..), ShomeiConfig (..))
-import Shomei.Error (AuthError (..))
+import Shomei.Error (AuthError (..), PasswordPolicyViolation (..))
 import Shomei.Id (CeremonyId, UserId)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
 import Shomei.Mfa.Totp.Domain (isTotpConfirmed)
@@ -130,6 +131,7 @@ signup ::
   SignupCommand ->
   Eff es (Either AuthError (User, TokenPair))
 signup cfg cmd = runErrorNoCallStack do
+  either throwError pure (validateNewUser NewUser {loginId = cmd.loginId, email = cmd.email, displayName = cmd.displayName})
   let pwContext =
         PasswordContext
           { contextEmail = emailText <$> cmd.email,
@@ -217,6 +219,8 @@ login ::
   LoginCommand ->
   Eff es (Either AuthError LoginResult)
 login cfg ctx cmd = runErrorNoCallStack do
+  let PlainPassword submittedPassword = cmd.password
+  when (Text.length submittedPassword > 256) (throwError (WeakPassword (PasswordTooLong 256)))
   ts <- now
   let rl = cfg.rateLimitConfig
   guardIpBudget rl ctx ts

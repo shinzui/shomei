@@ -17,7 +17,7 @@ import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
 import Shomei.Account.Email.Domain (emailText)
 import Shomei.Account.LoginId.Domain (loginIdText)
-import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive))
+import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive), validateNewUser)
 import Shomei.Account.User.Store (UserCursor (..), UserListQuery (..), UserStore (..), clampUserLimit)
 import Shomei.Error (AuthError (..))
 import Shomei.Id (UserId, genUserId, userIdFromUUID, userIdToUUID)
@@ -35,6 +35,7 @@ runUserStorePostgres ::
   Eff es a
 runUserStorePostgres = interpret_ \case
   CreateUser nu -> do
+    either throwError pure (validateNewUser nu)
     uid <- genUserId
     ts <- liftIO getCurrentTime
     let row = (userIdToUUID uid, loginIdText nu.loginId, emailText <$> nu.email, nu.displayName, userStatusToText UserActive, ts, ts)

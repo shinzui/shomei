@@ -25,12 +25,13 @@ module Shomei.Passkey.Store
   )
 where
 
+import Data.Text qualified as Text
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
-import Shomei.Error (AuthError)
+import Shomei.Error (AuthError (..))
 import Shomei.Id (PasskeyId, UserId)
 import Shomei.Passkey.Domain
-  ( NewPasskeyCredential,
+  ( NewPasskeyCredential (..),
     PasskeyCredential,
     SignatureCounter,
     UserHandle,
@@ -54,7 +55,9 @@ data PasskeyStore :: Effect where
 type instance DispatchOf PasskeyStore = Dynamic
 
 createPasskey :: (PasskeyStore :> es) => Int -> NewPasskeyCredential -> Eff es (Either AuthError PasskeyCredential)
-createPasskey limit credential = send (CreatePasskey limit credential)
+createPasskey limit credential
+  | maybe False ((> 128) . Text.length) credential.label = pure (Left InvalidInput)
+  | otherwise = send (CreatePasskey limit credential)
 
 findPasskeysByUser :: (PasskeyStore :> es) => UserId -> Eff es [PasskeyCredential]
 findPasskeysByUser = send . FindPasskeysByUser

@@ -547,6 +547,7 @@ problemCatalog =
 -- Returned handler results and thrown pre-handler errors deliberately share this function.
 authErrorProblem :: AuthError -> (ProblemSpec, ProblemOccurrence)
 authErrorProblem = \case
+  InvalidInput -> plain pcBadRequest
   InvalidEmail -> plain pcInvalidEmail
   InvalidLoginId -> plain pcInvalidLoginId
   WeakPassword _ -> plain pcWeakPassword

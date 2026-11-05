@@ -13,6 +13,7 @@ module Shomei.Account.Lifecycle.Workflow
   )
 where
 
+import Data.Text qualified as Text
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
@@ -25,7 +26,7 @@ import Shomei.Account.Notification.Store (Notifier, sendNotification)
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..), OneTimeTokenHash (..), OneTimeTokenStatus (..))
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Breach.Workflow (enforceBreachPolicy)
-import Shomei.Account.Password.Domain (PasswordContext (..), PlainPassword, validatePassword)
+import Shomei.Account.Password.Domain (PasswordContext (..), PlainPassword (..), validatePassword)
 import Shomei.Account.Password.Hash.Store (PasswordHasher, hashPassword, verifyPassword, verifyPasswordDummy)
 import Shomei.Account.PasswordReset.Domain (NewPasswordResetToken (..), PersistedPasswordResetToken (..))
 import Shomei.Account.PasswordReset.Store
@@ -46,7 +47,7 @@ import Shomei.Account.Verification.Store
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
-import Shomei.Error (AuthError (..))
+import Shomei.Error (AuthError (..), PasswordPolicyViolation (..))
 import Shomei.Id (UserId)
 import Shomei.Prelude
 import Shomei.Session.Command (ProofContext, proofContextFor)
@@ -225,6 +226,8 @@ changePassword ::
   ChangePassword ->
   Eff es (Either AuthError ())
 changePassword cfg pctx cmd = runErrorNoCallStack do
+  let PlainPassword current = cmd.currentPassword
+  when (Text.length current > 256) (throwError (WeakPassword (PasswordTooLong 256)))
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById cmd.userId
   ts <- now
   let ctx = proofContextFor pctx (loginIdText user.loginId)

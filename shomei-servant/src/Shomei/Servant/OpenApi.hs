@@ -118,11 +118,25 @@ instance (ToResponseHeader header) => ToResponseHeader (OptHeader header) where
 -- wire JSON. The M4 conformance test ('validateEveryToJSON') enforces this.
 -- ---------------------------------------------------------------------------
 
-instance ToSchema SignupRequest
+instance ToSchema SignupRequest where
+  declareNamedSchema proxy = do
+    named <- O.genericDeclareNamedSchema O.defaultSchemaOptions proxy
+    pure $
+      named
+        & O.schema . O.description ?~ "New email addresses are limited to 254 UTF-8 bytes; limits apply before and after normalization."
+        & O.schema . O.properties . ix "loginId" . O._Inline . O.maxLength ?~ 256
+        & O.schema . O.properties . ix "password" . O._Inline . O.maxLength ?~ 256
+        & O.schema . O.properties . ix "displayName" . O._Inline . O.maxLength ?~ 256
 
 instance ToSchema SignupResponse
 
-instance ToSchema LoginRequest
+instance ToSchema LoginRequest where
+  declareNamedSchema proxy = do
+    named <- O.genericDeclareNamedSchema O.defaultSchemaOptions proxy
+    pure $
+      named
+        & O.schema . O.description ?~ "Legacy login identifiers may exceed the new-write limit. Oversized passwords are rejected before credential lookup or proof accounting."
+        & O.schema . O.properties . ix "password" . O._Inline . O.maxLength ?~ 256
 
 instance ToSchema RefreshRequest
 
@@ -132,9 +146,22 @@ instance ToSchema ConfirmEmailVerificationRequest
 
 instance ToSchema PasswordResetRequest
 
-instance ToSchema ConfirmPasswordResetRequest
+instance ToSchema ConfirmPasswordResetRequest where
+  declareNamedSchema proxy = do
+    named <- O.genericDeclareNamedSchema O.defaultSchemaOptions proxy
+    pure $
+      named
+        & O.schema . O.description ?~ "New password policy has a hard maximum of 256 Unicode code points."
+        & O.schema . O.properties . ix "newPassword" . O._Inline . O.maxLength ?~ 256
 
-instance ToSchema ChangePasswordRequest
+instance ToSchema ChangePasswordRequest where
+  declareNamedSchema proxy = do
+    named <- O.genericDeclareNamedSchema O.defaultSchemaOptions proxy
+    pure $
+      named
+        & O.schema . O.description ?~ "Password values have a hard maximum of 256 Unicode code points."
+        & O.schema . O.properties . ix "currentPassword" . O._Inline . O.maxLength ?~ 256
+        & O.schema . O.properties . ix "newPassword" . O._Inline . O.maxLength ?~ 256
 
 instance ToSchema TokenPairResponse
 
@@ -156,7 +183,13 @@ instance ToSchema RecoveryCodesCountResponse
 
 instance ToSchema PasskeyRegisterBeginResponse
 
-instance ToSchema PasskeyRegisterCompleteRequest
+instance ToSchema PasskeyRegisterCompleteRequest where
+  declareNamedSchema proxy = do
+    named <- O.genericDeclareNamedSchema O.defaultSchemaOptions proxy
+    pure $
+      named
+        & O.schema . O.description ?~ "Passkey labels are limited to 128 Unicode code points."
+        & O.schema . O.properties . ix "label" . O._Inline . O.maxLength ?~ 128
 
 instance ToSchema PasskeyResponse
 

@@ -43,7 +43,7 @@ module Shomei.Admin.OAuthClients
   )
 where
 
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, unless, when)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -154,6 +154,7 @@ ocCreatedAt OAuthClient {createdAt} = createdAt
 createAction :: AdminEnv -> Text -> ClientType -> [Text] -> [Text] -> IO (OAuthClient, Maybe Text)
 createAction env displayName clientType rawUris rawScopes = do
   redirectUris <- parseRedirectUris rawUris
+  when (Text.length displayName > 256) (die "display name exceeds 256 characters")
   scopes <- parseScopes rawScopes
   -- A public client is issued no secret at all, rather than one that is ignored: a credential
   -- that exists but is never checked is worse than none, because an operator will store it.
@@ -297,7 +298,7 @@ parseScopes raws = Set.fromList <$> traverse one raws
     one raw =
       let trimmed = Text.strip raw
        in if Text.null trimmed || Text.any (== ' ') trimmed
-            then die ("invalid scope: " <> show raw <> " (must be non-blank and contain no spaces)")
+            then die "invalid scope (must be non-blank, contain no spaces, and have at most 128 characters)"
             else pure (Scope trimmed)
 
 -- | At least one redirect URI, each absolute and fragment-free.

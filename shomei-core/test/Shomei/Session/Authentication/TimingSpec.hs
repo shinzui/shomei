@@ -21,6 +21,7 @@ import Control.Monad (replicateM_, void)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
@@ -40,7 +41,7 @@ import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Authorization.Claims.Store (ClaimsEnricher)
 import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
-import Shomei.Error (AuthError (InvalidCredentials, UserNotActive))
+import Shomei.Error (AuthError (InvalidCredentials, UserNotActive, WeakPassword), PasswordPolicyViolation (PasswordTooLong))
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore)
 import Shomei.Mfa.Totp.Store (TotpCredentialStore)
 import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
@@ -92,7 +93,24 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Session.Authentication.Workflow login timing"
-    [ testCase "unknown login id still verifies a password (dummy hash)" do
+    [ testCase "oversized passwords reject known and unknown accounts without proof work or state changes" do
+        mapM_
+          ( \email -> do
+              (_, hashCalls) <- withWorld \ref counter -> do
+                _ <- runCounting ref counter (signup cfg (SignupCommand (either (error . show) id (mkLoginId (emailText aliceEmail))) (Just aliceEmail) strongPw Nothing))
+                writeIORef counter 0
+                before <- readIORef ref
+                result <- runCounting ref counter (login cfg (ctxFor email) (loginEmail email (PlainPassword (Text.replicate 257 "🔐"))))
+                expectLeft (WeakPassword (PasswordTooLong 256)) result
+                after <- readIORef ref
+                after.loginAttempts @?= before.loginAttempts
+                after.accountLockouts @?= before.accountLockouts
+                after.publishedEvents @?= before.publishedEvents
+                pure result
+              hashCalls @?= 0
+          )
+          [aliceEmail, unknownEmail],
+      testCase "unknown login id still verifies a password (dummy hash)" do
         (result, hashCalls) <- withWorld \ref counter -> do
           runCounting ref counter (login cfg (ctxFor unknownEmail) (loginEmail unknownEmail strongPw))
         expectLeft InvalidCredentials result

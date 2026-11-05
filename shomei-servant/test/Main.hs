@@ -75,14 +75,16 @@ import Servant.Health (ProbeVerdict (Healthy))
 import Servant.Server.Experimental.Auth (AuthHandler, unAuthHandler)
 import Servant.Server.Generic (genericServe)
 import Servant.Server.Internal (runHandler)
+import Shomei.Account.Credential.Store (createPasswordCredential)
 import Shomei.Account.Email.Domain (emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.LoginId.Domain (mkLoginId, parseLoginIdForAuthentication)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
 import Shomei.Account.Password.Domain (PlainPassword (..))
-import Shomei.Account.User.Domain (User (..), UserStatus (UserActive, UserSuspended))
+import Shomei.Account.Password.Hash.Store (hashPassword)
+import Shomei.Account.User.Domain (NewUser (..), User (..), UserStatus (UserActive, UserSuspended))
 import Shomei.Account.User.Dto (UserResponse)
-import Shomei.Account.User.Store (updateUserStatus)
+import Shomei.Account.User.Store (createUser, updateUserStatus)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Permission (..), Role (..), Scope (..))
 import Shomei.Authorization.Role.Store (allowPermission, defineRole, disallowPermission)
@@ -1383,7 +1385,10 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
+    [ testCase "input boundaries and legacy HTTP login" $ do
+        (r, e) <- freshPermissionEnv
+        testWithApplication (pure (app e)) (scenarioInputBounds r),
+      testCase "dependency unavailability remains distinct from internal failure before serialization" $ do
         case applicationError (DependencyUnavailable PostgreSQL) :: ApplicationResult () of
           ApplicationUnavailable response -> do
             response.retryProblem.status @?= 503
@@ -3256,12 +3261,14 @@ scenario ref adminToken port = do
             "userHandle" .= UserHandle "passkey-uh-1",
             "publicKey" .= PublicKeyBytes "passkey-pk-1"
           ]
-      completeBody = object ["ceremonyId" .= cid, "credential" .= cred, "label" .= ("YubiKey" :: Text)]
+      completeBody = object ["ceremonyId" .= cid, "credential" .= cred, "label" .= T.replicate 128 "🔑"]
+  (badLabelStatus, _) <- postJSONAuth mgr port "/v1/auth/passkeys/register/complete" (bearer access2) (object ["ceremonyId" .= cid, "credential" .= cred, "label" .= T.replicate 129 "🔑"])
+  badLabelStatus @?= 400
   (compStatus, compBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/complete" (bearer access2) completeBody
   compStatus @?= 200
   cresp <- must "complete body" compBody
   pkId <- must "passkeyId" (dig ["passkeyId"] cresp >>= asText)
-  (dig ["label"] cresp >>= asText) @?= Just "YubiKey"
+  (dig ["label"] cresp >>= asText) @?= Just (T.replicate 128 "🔑")
 
   (fullStatus, fullBody) <- postJSONAuth mgr port "/v1/auth/passkeys/register/begin" (bearer access2) (object [])
   fullStatus @?= 409
@@ -3803,3 +3810,32 @@ hasKeyDeep k = go
     go (Object o) = any (\(kk, vv) -> K.toText kk == k || go vv) (KM.toList o)
     go (Array xs) = any go (toList xs)
     go _ = False
+
+scenarioInputBounds :: IORef World -> Int -> IO ()
+scenarioInputBounds ref port = do
+  mgr <- newManager defaultManagerSettings
+  let pw = "correct horse battery staple" :: Text
+      signupBody ident email name = object ["loginId" .= (ident :: Text), "email" .= (email :: Maybe Text), "password" .= pw, "displayName" .= (name :: Text)]
+  forM_
+    [ ("login", signupBody (T.replicate 257 "🔑") Nothing ""),
+      ("email", signupBody "bad-email" (Just (T.replicate 126 "é" <> "@a.b")) ""),
+      ("name", signupBody "bad-name" Nothing (T.replicate 257 "🔑"))
+    ]
+    $ \(field, body) -> do
+      (status, _) <- postJSON mgr port "/v1/auth/signup" body
+      assertEqual (T.unpack field) 400 status
+  (accepted, _) <- postJSON mgr port "/v1/auth/signup" (signupBody (T.replicate 256 "🔑") (Just (T.replicate 125 "é" <> "@a.b")) (T.replicate 256 "🔑"))
+  accepted @?= 201
+  let legacyText = T.replicate 257 "界"
+      legacy = either (error . show) id (parseLoginIdForAuthentication legacyText)
+  _ <- runInMemory ref do
+    user <- createUser (NewUser legacy Nothing Nothing)
+    hash <- hashPassword (PlainPassword pw)
+    createPasswordCredential user.userId legacy Nothing hash
+  (loggedIn, body) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= legacyText, "password" .= pw])
+  loggedIn @?= 200
+  doc <- must "legacy login snapshot" body
+  dig ["user", "loginId"] doc @?= Just (String legacyText)
+  forM_ [legacyText, "unknown-bounded-account"] $ \ident -> do
+    (status, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ident, "password" .= T.replicate 257 "🔐"])
+    status @?= 400

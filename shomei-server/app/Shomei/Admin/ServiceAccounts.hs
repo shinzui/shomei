@@ -45,7 +45,7 @@ module Shomei.Admin.ServiceAccounts
   )
 where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -146,6 +146,7 @@ saRotatedAt ServiceAccount {rotatedAt} = rotatedAt
 -- The secret is returned, never re-read: only its digest is persisted.
 createAction :: AdminEnv -> Text -> [Text] -> IO (ServiceAccount, Text)
 createAction env displayName rawScopes = do
+  when (Text.length displayName > 256) (die "display name exceeds 256 characters")
   scopes <- parseScopes rawScopes
   forM_ (Set.toList (privilegeScopesIn env.config scopes)) \(Scope scope) ->
     hPutStrLn
@@ -282,7 +283,7 @@ parseScopes raws = Set.fromList <$> traverse one raws
     one raw =
       let trimmed = Text.strip raw
        in if Text.null trimmed || Text.any (== ' ') trimmed
-            then die ("invalid scope: " <> show raw <> " (must be non-blank and contain no spaces)")
+            then die "invalid scope (must be non-blank, contain no spaces, and have at most 128 characters)"
             else pure (Scope trimmed)
 
 -- | The minimal chain these commands need, mirroring @Shomei.Admin.Roles.runRolesEff@.

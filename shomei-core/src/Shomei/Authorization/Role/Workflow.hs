@@ -7,9 +7,8 @@
 -- PostgreSQL foreign key on @shomei_role_grants.role@ enforces the same invariant one layer
 -- down, for code that bypasses this workflow.
 --
--- These functions treat a 'Role' as opaque text and do NOT validate its /shape/. Trimming and
--- rejecting blank role names belongs to the boundary layers — the CLI parser and the HTTP
--- handlers — exactly as @mkEmail@ / @mkLoginId@ validate before a workflow ever runs.
+-- Grants validate the finite role-name budget before lookup. Revocation retains compatibility
+-- with stored roles; boundaries normalize submitted role text without changing its vocabulary.
 module Shomei.Authorization.Role.Workflow
   ( grantRoleTo,
     revokeRoleFrom,
@@ -25,7 +24,7 @@ import Effectful (Eff, (:>))
 import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
-import Shomei.Authorization.Claims.Domain (Role)
+import Shomei.Authorization.Claims.Domain (Role, validRoleName)
 import Shomei.Authorization.Role.Store
   ( RoleDefinition (..),
     RoleStore,
@@ -62,7 +61,12 @@ grantRoleTo ::
   UserId ->
   Role ->
   Eff es (Either AuthError Bool)
-grantRoleTo actor expiry subject role = do
+grantRoleTo actor expiry subject role
+  | not (validRoleName role) = pure (Left InvalidInput)
+  | otherwise = grantValidRoleTo actor expiry subject role
+
+grantValidRoleTo :: (UserStore :> es, RoleStore :> es, AuthEventPublisher :> es, Clock :> es) => Maybe UserId -> Maybe UTCTime -> UserId -> Role -> Eff es (Either AuthError Bool)
+grantValidRoleTo actor expiry subject role = do
   mUser <- findUserById subject
   case mUser of
     Nothing -> pure (Left UserNotFound)

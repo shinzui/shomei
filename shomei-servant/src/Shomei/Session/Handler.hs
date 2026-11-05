@@ -11,7 +11,7 @@ import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Admin.Workflow qualified as Admin
 import Shomei.Account.Handler (requireExistingUser)
-import Shomei.Account.LoginId.Domain (loginIdText, mkLoginId)
+import Shomei.Account.LoginId.Domain (loginIdText, parseLoginIdForAuthentication)
 import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Config (CookieConfig (..), ShomeiConfig (..), transportUsesCookies)
 import Shomei.Delegation.Handler (denyUnderDelegation)
@@ -69,7 +69,7 @@ adminSessionServer env =
 
 loginH :: Env -> SockAddr -> LoginRequest -> Handler LoginResult
 loginH env peer request = runApplicationHandler do
-  loginId <- either rejectAuth pure (mkLoginId request.loginId)
+  loginId <- either rejectAuth pure (parseLoginIdForAuthentication request.loginId)
   let command = LoginCommand {loginId, password = PlainPassword request.password, remember = request.remember == Just True}
       context =
         ClientContext

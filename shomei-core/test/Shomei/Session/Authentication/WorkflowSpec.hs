@@ -7,7 +7,7 @@
 -- 'Either' and, for state-changing cases, on the 'World' read back from the 'IORef'.
 module Shomei.Session.Authentication.WorkflowSpec (tests) where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM_)
 import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
@@ -16,14 +16,18 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (NominalDiffTime, UTCTime (..), addUTCTime, fromGregorian)
-import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
-import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId)
+import Shomei.Account.Credential.Store (createPasswordCredential)
+import Shomei.Account.Email.Domain (Email, emailText, mkEmail, parseStoredEmail)
+import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId, parseLoginIdForAuthentication)
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
-import Shomei.Account.User.Domain (User (..))
+import Shomei.Account.Password.Hash.Store (hashPassword)
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Store (createUser)
 import Shomei.Audit.Event.Domain qualified as Event
-import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config (SessionCheckMode (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error
   ( AuthError (InvalidCredentials, RefreshTokenReuseDetected, WeakPassword),
@@ -114,7 +118,9 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Session.Authentication.Workflow"
-    [ testSignupLogin,
+    [ testLegacyIdentity,
+      testInputBudgets,
+      testSignupLogin,
       testSignupLoginByIdentifierNoEmail,
       testRefreshRotates,
       testBespokeRefreshRejectsOAuthSession,
@@ -459,3 +465,53 @@ testNoAccountLeak = testCase "unknown email yields the same generic error as a w
         "the unknown submitted identifier is absent from the encoded audit event"
         (not (TE.encodeUtf8 (emailText unknownEmail) `BS.isInfixOf` BSL.toStrict (Aeson.encode (Event.LoginFailed d))))
     ds -> assertFailure ("expected one unknown-login audit event, got " <> show (length ds))
+
+-- Seed through the migration/testing store seam to model data written by an older release.
+testLegacyIdentity :: TestTree
+testLegacyIdentity = testCase "legacy identity snapshots and password login survive new-write limits" do
+  ref <- newIORef (emptyWorld fixedTime)
+  let legacyText = Text.replicate 257 "界"
+      legacyLogin = either (error . show) id (parseLoginIdForAuthentication legacyText)
+      legacyEmail = either (error . show) id (parseStoredEmail (legacyText <> "@example.com"))
+      new = NewUser legacyLogin (Just legacyEmail) (Just legacyText)
+  user <- runInMemory ref do
+    user <- createUser new
+    hash <- hashPassword strongPw
+    _ <- createPasswordCredential user.userId legacyLogin (Just legacyEmail) hash
+    pure user
+  Aeson.eitherDecode (Aeson.encode user) @?= Right user
+  assertBool "new-value JSON refuses legacy login" (case Aeson.fromJSON (Aeson.toJSON legacyText) :: Aeson.Result LoginId of Aeson.Error _ -> True; _ -> False)
+  assertBool "new-user JSON refuses legacy sizes" (case Aeson.eitherDecode (Aeson.encode new) :: Either String NewUser of Left _ -> True; _ -> False)
+  result <- expectRight =<< runInMemory ref (login cfg (ctxForLogin legacyLogin) (LoginCommand legacyLogin strongPw False))
+  case result of
+    LoginComplete loggedIn _ -> loggedIn.userId @?= user.userId
+    _ -> assertFailure "legacy account unexpectedly required MFA"
+  rejected <- runInMemory ref (signup cfg (SignupCommand legacyLogin (Just legacyEmail) strongPw Nothing))
+  rejected @?= Left Err.InvalidLoginId
+
+testInputBudgets :: TestTree
+testInputBudgets = testCase "new identity limits count Unicode code points and email UTF-8 bytes" do
+  let loginAt = Text.replicate 256 "🔑"
+      emailAt = Text.replicate 122 "界" -- oversized in bytes, short in characters
+  assertBool "256 code points accepted" (case mkLoginId loginAt of Right _ -> True; _ -> False)
+  mkLoginId (loginAt <> "a") @?= Left Err.InvalidLoginId
+  mkEmail (emailAt <> "@a.b") @?= Left Err.InvalidEmail
+  let exactEmail = Text.replicate 125 "é" <> "@a.b"
+  assertBool "254 bytes accepted" (case mkEmail exactEmail of Right _ -> True; _ -> False)
+  mkEmail ("a" <> exactEmail) @?= Left Err.InvalidEmail
+  forM_ [128, 129] \n -> do
+    let scope = Scope (Text.replicate n "界")
+        role = Role (Text.replicate n "界")
+        succeeds value = case value of Aeson.Success _ -> True; Aeson.Error _ -> False
+    succeeds (Aeson.fromJSON (Aeson.toJSON scope) :: Aeson.Result Scope) @?= (n == 128)
+    succeeds (Aeson.fromJSON (Aeson.toJSON role) :: Aeson.Result Role) @?= (n == 128)
+  forM_ [256, 257] \n -> do
+    ref <- newIORef (emptyWorld fixedTime)
+    result <- runInMemory ref (signup cfg (signupEmail aliceEmail strongPw (Just (Text.replicate n "🔑"))))
+    if n == 256
+      then assertBool "display boundary accepted" (case result of Right _ -> True; _ -> False)
+      else do
+        result @?= Left Err.InvalidInput
+        world <- readIORef ref
+        Map.null world.users @?= True
+        world.publishedEvents @?= []

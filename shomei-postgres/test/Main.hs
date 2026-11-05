@@ -522,6 +522,7 @@ tests :: [TestTree]
 tests =
   [ testUserRoundTrip,
     testUserNoEmailAndUniqueLoginId,
+    testFieldBudgets,
     testSchemaRejectsInvalidUserStatusAndCaseVariantIdentities,
     testListUsersOrderFilterAndPaging,
     testUserStatusIsCompareAndSwap,
@@ -2958,3 +2959,29 @@ latestResetToken :: [Notification] -> IO OneTimeToken
 latestResetToken = \case
   PasswordResetRequested {token = raw} : _ -> pure raw
   _ -> assertFailure "expected password-reset notification"
+
+testFieldBudgets :: TestTree
+testFieldBudgets = testCase "new-write field budgets preserve legacy rows and security updates" $ withDb \pool -> do
+  -- Model an installed pre-budget row; trigger bypass exists only in this throwaway fixture.
+  execSql
+    pool
+    """
+    BEGIN;
+    ALTER TABLE shomei.shomei_users DISABLE TRIGGER enforce_field_budgets;
+    INSERT INTO shomei.shomei_users(user_id, login_id, email, display_name, status, created_at, updated_at)
+      VALUES ('11111111-1111-1111-1111-111111111111', repeat('界',257), repeat('界',100)||'@a.b', repeat('界',257), 'active', now(), now());
+    ALTER TABLE shomei.shomei_users ENABLE TRIGGER enforce_field_budgets;
+    COMMIT;
+    """
+  rows <- expectApp =<< runApp pool (listUsers emptyUserListQuery)
+  length rows @?= 1
+  let user = head rows
+  Text.length (loginIdText user.loginId) @?= 257
+  changed <- expectApp =<< runApp pool (updateUserStatus user.userId [UserActive] UserSuspended t0)
+  changed @?= True
+  execSqlExpectState pool "22001" "UPDATE shomei.shomei_users SET login_id = repeat('a',258)"
+  execSqlExpectState pool "22001" "UPDATE shomei.shomei_users SET email = repeat('é',126)||'@a.b'"
+  execSqlExpectState pool "22001" "UPDATE shomei.shomei_users SET display_name = repeat('界',258)"
+  execSql pool "UPDATE shomei.shomei_users SET login_id = repeat('🔑',256), email = repeat('é',125)||'@a.b', display_name = repeat('🔑',256)"
+  execSqlExpectState pool "22001" "INSERT INTO shomei.shomei_roles(role, created_at) VALUES (repeat('a',129),now())"
+  execSql pool "INSERT INTO shomei.shomei_roles(role, created_at) VALUES (repeat('界',128),now())"

@@ -122,6 +122,7 @@ completePasskeyRegistration ::
   Maybe Text ->
   Eff es (Either AuthError PasskeyCredential)
 completePasskeyRegistration cfg uid ceremonyId credentialJson mLabel = runErrorNoCallStack do
+  when (maybe False ((> 128) . Text.length) mLabel) (throwError InvalidInput)
   ts <- now
   PendingCeremony {kind, userId = pendingUid, optionsBlob} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts

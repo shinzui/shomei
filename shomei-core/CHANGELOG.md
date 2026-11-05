@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Enforce finite new-write identity, display-name, passkey-label and role/scope budgets; preserve legacy identity authentication and snapshots. Login passwords over 256 code points fail before credential proof accounting. PostgreSQL adds migration 0039; see `docs/user/input-limits.md`.
+
 - **Breaking:** `SigningKeyConfig` gains `legacyActorUntilUnix` and `emitLegacyActor` for the
   finite actor-format upgrade window; both default to strict object-form behavior.
 

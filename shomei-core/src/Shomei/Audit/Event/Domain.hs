@@ -55,9 +55,10 @@ module Shomei.Audit.Event.Domain
   )
 where
 
+import Data.Aeson (withObject, (.:), (.:?))
 import Data.Set (Set)
-import Shomei.Account.Email.Domain (Email)
-import Shomei.Account.LoginId.Domain (LoginId)
+import Shomei.Account.Email.Domain (Email, parseStoredEmail)
+import Shomei.Account.LoginId.Domain (LoginId, parseLoginIdForAuthentication)
 import Shomei.Authorization.Claims.Domain (Role, Scope)
 import Shomei.Config (ServiceAccountId)
 import Shomei.Id (CeremonyId, PasskeyId, RefreshTokenId, SessionId, UserId)
@@ -71,7 +72,7 @@ data UserRegisteredData = UserRegisteredData
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving anyclass (ToJSON)
 
 data LoginSucceededData = LoginSucceededData
   { userId :: !UserId,
@@ -131,7 +132,7 @@ data EmailVerificationRequestedData = EmailVerificationRequestedData
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving anyclass (ToJSON)
 
 data EmailVerifiedData = EmailVerifiedData
   { userId :: !UserId,
@@ -139,7 +140,7 @@ data EmailVerifiedData = EmailVerifiedData
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving anyclass (ToJSON)
 
 data PasswordResetRequestedData = PasswordResetRequestedData
   { userId :: !UserId,
@@ -147,7 +148,7 @@ data PasswordResetRequestedData = PasswordResetRequestedData
     occurredAt :: !UTCTime
   }
   deriving stock (Generic, Eq, Show)
-  deriving anyclass (FromJSON, ToJSON)
+  deriving anyclass (ToJSON)
 
 data PasswordResetCompletedData = PasswordResetCompletedData
   { userId :: !UserId,
@@ -550,3 +551,24 @@ data AuthEvent
   | NotificationDeliveryFailed NotificationDeliveryFailedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON UserRegisteredData where
+  parseJSON = withObject "UserRegisteredData" \o -> do
+    loginId <- o .: "loginId" >>= either (const (fail "invalid stored login identifier")) pure . parseLoginIdForAuthentication
+    email <- o .:? "email" >>= traverse (either (const (fail "invalid stored email")) pure . parseStoredEmail)
+    UserRegisteredData <$> o .: "userId" <*> pure loginId <*> pure email <*> o .: "occurredAt"
+
+instance FromJSON EmailVerificationRequestedData where
+  parseJSON = withObject "EmailVerificationRequestedData" \o -> do
+    email <- o .: "email" >>= either (const (fail "invalid stored email")) pure . parseStoredEmail
+    EmailVerificationRequestedData <$> o .: "userId" <*> pure email <*> o .: "occurredAt"
+
+instance FromJSON EmailVerifiedData where
+  parseJSON = withObject "EmailVerifiedData" \o -> do
+    email <- o .: "email" >>= either (const (fail "invalid stored email")) pure . parseStoredEmail
+    EmailVerifiedData <$> o .: "userId" <*> pure email <*> o .: "occurredAt"
+
+instance FromJSON PasswordResetRequestedData where
+  parseJSON = withObject "PasswordResetRequestedData" \o -> do
+    email <- o .: "email" >>= either (const (fail "invalid stored email")) pure . parseStoredEmail
+    PasswordResetRequestedData <$> o .: "userId" <*> pure email <*> o .: "occurredAt"
