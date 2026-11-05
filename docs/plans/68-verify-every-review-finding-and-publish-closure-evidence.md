@@ -45,14 +45,18 @@ Make “all findings addressed” a verifiable statement. Every one of the 108 n
 
 
 - [x] (2026-11-05) M1: all 108 original findings and the compound/performance clauses are assigned and explicitly named by their owner plans; `python3 scripts/check-review-inventory.py` verifies source-derived parent coverage, uniqueness, ownership, and child-plan coverage. Behavioral dispositions are recorded separately with commit-pinned evidence.
-- [ ] M2: existing fix or risk evidence for every row this plan owns is independently checked against the current tree. Partial: refresh/access nested diagnostics and client bearer diagnostics have explicit passing tests; suspended-account library/HTTP distinction is confirmed against the timing test, error mapper and security guide. HTTP role/scope 128/129 boundaries pass. The remaining historical clauses are being audited.
+- [x] (2026-11-05) M2: every historical row is independently mapped to inspected source/test assertions or an existing policy with residual exposure. The 156 remaining clauses have 54 exact evidence groups; all 240 ledger rows are terminal. Initial 14-suite gate passed at ea5d942; provenance follow-up 195f114 passed core/PostgreSQL/migration gates. No new risk exception was introduced.
 - [ ] M3: integrated tests, performance checks, upgrades, and documentation validate the completed child changes. Partial: isolated loopback driver passed three runs, including 10,000-session paging/revocation, 1,000 exact OpenAPI responses and bounded Argon2 load; signed future-nbf/skew regression and corrected logical database operation labels pass. Full candidate and separate en build remain.
 - [ ] M4: commit-pinned closure review and IR-3/plan status accurately reflect zero unexplained residuals.
 
 
 ## Surprises & Discoveries
 
-2026-11-05: Independent historical verification found the ID-token exception in ADR-13 still present. `IdToken` now redacts diagnostics and no longer has generic JSON instances; the OAuth handler explicitly unwraps it. The core regression passes, and ADR-13 documents the completed follow-up. Remaining historical rows still require their own evidence.
+2026-11-05: Full historical verification exposed a legacy provenance default that could classify a pre-provenance machine session as interactive. EP-3 was reopened; additive 0043 and the stored-actor guard now pass populated upgrade, schema-corruption and core regressions (195f114).
+
+2026-11-05: Database budget counters measure interpreter operations, not physical wire trips. Tests, guides and MasterPlan 6 now explicitly qualify this; allocation/query-shape baselines and fixed workload results support performance acceptance without uncontrolled latency claims.
+
+2026-11-05: Independent historical verification found the ID-token exception in ADR-13 still present. `IdToken` now redacts diagnostics and no longer has generic JSON instances; the OAuth handler explicitly unwraps it. The core regression passes, and ADR-13 documents the completed follow-up. The completed historical map now records evidence for all remaining rows.
 
 
 

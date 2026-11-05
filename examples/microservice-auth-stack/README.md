@@ -85,7 +85,7 @@ Shōmei signs into `sub`. The downstream already holds the claims, so no lookup 
 
 ```haskell
 import En.Tuple (ObjectRef (..), Subject (..))
-import En.Schema (ObjectType (..))
+import En.Schema (ObjectType (..), RelationName (..))
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Id (idText)
 

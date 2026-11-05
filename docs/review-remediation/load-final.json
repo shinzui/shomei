@@ -1,0 +1,61 @@
+{
+  "argon2": {
+    "error_count": 0,
+    "expected_preflight_401s": 70,
+    "idle_p50_ms": 1.28,
+    "idle_p95_ms": 1.41,
+    "idle_p99_ms": 1.43,
+    "load_seconds": 10,
+    "loaded_p50_ms": 53.28,
+    "loaded_p95_ms": 124.49,
+    "loaded_p99_ms": 188.32,
+    "login_attempts": 201,
+    "login_workers": 4,
+    "peak_rss_kib": 205936,
+    "probe_count": 100,
+    "signup_attempts": 0,
+    "signup_workers": 0
+  },
+  "configuration": {
+    "argon2_iterations": 3,
+    "argon2_memory_kib": 65536,
+    "argon2_parallelism": 1,
+    "hashing_limit": 2,
+    "http_workers": 4,
+    "max_connections": 1024,
+    "rate_limit_enabled": false,
+    "rts_requested_capabilities": 2,
+    "total_deadline_seconds": 180
+  },
+  "error_count": 0,
+  "openapi": {
+    "batch_rss_kib": [
+      137968,
+      137968,
+      137984,
+      137984
+    ],
+    "error_count": 0,
+    "memory_growth_allowance_kib": 32768,
+    "observer_shares_process": true,
+    "requests": 1000,
+    "wall_ms": 74.378,
+    "warm_rss_kib": 132752,
+    "wire_bytes_per_response": 104380,
+    "workers": 4
+  },
+  "scenario": "all",
+  "sessions": {
+    "audit_events": 10000,
+    "bulk_unit_of_work_contract_calls": 1,
+    "current_max_page_rows": 200,
+    "fixture_sessions": 10000,
+    "old_unbounded_page_rows": 10000,
+    "page_size": 200,
+    "pages": 51,
+    "revoked": 10000,
+    "wall_ms": 413.388
+  },
+  "target": "isolated_loopback",
+  "wall_ms": 19043.395
+}
