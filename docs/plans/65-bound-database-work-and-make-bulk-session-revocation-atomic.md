@@ -47,7 +47,7 @@ Bound database work across retries and bulk operations while preserving exactly-
 - [x] (2026-11-05) M1: managed-pool cancellation/rollback/reuse and 12 repeated interruptions, failed initialization, release during use and capacity ceiling pass. All eight behavior suites and three client/consumer suites pass. Retry behavior: three-attempt/five-second defaults, strict policy/configuration, rollback-safe SQLSTATE classification and abstract database-only statement wrapper. Forced retry states stop at three attempts; real lock timeout rolls back and returns a usable sole connection. Successive slow statements share a shrinking server budget.
 - [x] (2026-11-05) M2: 10,000-session atomic bulk revocation, audit rollback, eight revokers, keyset/HTTP paging, active actor+subject quota races, winner-only audit, HTTP OAuth refusal, finite retention/live-row protection and paced batches pass. Query-plan evidence justifies migrations 0040/0041. All behavior/client/consumer gates pass.
 
-- [ ] M3: timestamp/clock/expiry consistency and real PostgreSQL race tests pass.
+- [x] (2026-11-05) M3: timestamp/clock/expiry consistency, persisted workflow and consume races, deterministic SQL-barrier sweep/rotation, logout audit distinction and measured user/audit indexes pass at `9c095e6`. All owned ledger rows are terminal; [database acceptance evidence](../review-remediation/database-evidence.md) names the exact tests and gates.
 
 
 ## Surprises & Discoveries
@@ -70,10 +70,7 @@ Bound database work across retries and bulk operations while preserving exactly-
 
 ## Outcomes & Retrospective
 
-Checkpoint: `cabal test shomei-core shomei-postgres shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1` passes all eight suites. M1 and bulk/paging parts of M2 pass, including actual caller cancellation, shrinking per-statement budgets and settings reset. FRIC-3 remains logged with the tested workaround; registry/tag/released-source verification confirms that upgrading to current Hasql 2.0.1.0 would retain the cleanup limitation. M2 now also passes actor/subject issuance quotas, retention/live-row protection, paced batches, query plans and actual OAuth refusals. M3 clock, expiry-port and remaining concurrency/index evidence are still required.
-
-
-
+Accepted implementation: `9c095e6` with M1/M2 evidence at `ab922c0`. All eight core/PostgreSQL/HTTP/server suites pass; final PostgreSQL rerun covers the strengthened SQL barrier. Migration, strict ADR and inventory checks pass. All 25 owned ledger rows are terminal with exact clause evidence in [database acceptance evidence](../review-remediation/database-evidence.md). ADR-7 holds the clock/timestamp contract; ADR-23 holds bounded database/pool semantics; ADR-24 holds quota and retention policy. FRIC-3 is accepted with tested shrinking server deadlines because upstream still drains before cancellation. FRIC-4 is accepted with the tested managed pool because current migration/harness releases require the older driver generation. Neither entry claims an upstream fix. Indexes were added only after representative plans; the tiny client catalog remains unindexed.
 
 
 ## Context and Orientation
@@ -102,7 +99,7 @@ M3 routes user and credential creation timestamps through the Clock port and sta
 Run the focused gates after implementing the milestone assertions; expected result is passing suites and no new profile or migration errors. The previous full workspace pass is a baseline, not evidence for new changes.
 
 ```bash
-cabal test shomei-postgres shomei-core shomei-servant shomei-server --test-show-details=failures -j1
+cabal test shomei-postgres shomei-core shomei-servant shomei-server --test-show-details=failures --test-options=-j2 -j1
 just migration-check
 just adr-validate
 ```
