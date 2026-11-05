@@ -43,9 +43,8 @@ curl -i localhost:8090/projects -H "Authorization: Bearer ${TOKEN%?}X" # 401 (ta
 The downstream service (`src/Downstream/Service.hs`) is the recommended template for a
 resource server: a lock-free, refresh-ahead, stale-on-error, fail-closed JWKS cache, and a
 local `AuthProtect` handler that verifies each Bearer token with `shomei-jwt`'s `verifyToken`.
-It already reads the verified `AuthClaims` — `sub` (the user the request acts for) and `act`
-(the acting party on a delegated token). Today it does nothing authorization-specific with
-them. **That is the perfect "before" state for the recipe below.**
+The runnable service persists verified `sub` and `act` identities through its audit sink before
+returning a protected read. Resource-specific authorization can be added with the recipe below.
 
 ## Adding en for fine-grained authorization
 
@@ -91,8 +90,8 @@ import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Id (idText)
 
 -- | THE convention: user:<TypeID text>, the string in the JWT `sub` claim. NEVER the bare
--- UUID (Shōmei's audit output renders bare UUIDs — en compares object ids by string
--- equality, so a mismatched form silently denies).
+-- UUID. Shōmei audit user/session output is canonical TypeID text too; the authorization
+-- engine compares object ids by string equality, so a mismatched form silently denies.
 subjectFromClaims :: AuthClaims -> Subject
 subjectFromClaims claims =
   SubjectId (ObjectRef {objectType = ObjectType "user", objectId = idText claims.subject})
@@ -192,3 +191,32 @@ decision. See the [en project](mori://shinzui/en),
 `docs/user/biscuit-decision-tokens.md` (the artifact-level URI is pending). The full two-tier guide, identity
 conventions, consistency rules, and database topology live in
 [`docs/user/authorization.md`](../../docs/user/authorization.md).
+
+
+## Persisted actor and subject audit
+
+The runnable `example-project-service` uses `downstreamApplicationWithAuditSink` and a synchronous
+file sink. Set `DOWNSTREAM_AUDIT_FILE` to a path in an existing private directory (default:
+`downstream-audit.ndjson` in the process working directory). The sink appends one JSON object per
+action, forces owner-only mode 0600, flushes, and fsyncs before the protected read reports success.
+The directory must be writable only by its owner. Keep one sink instance/process per file.
+
+Each line carries `occurredAt`, verified `subject` and optional verified `actor`, `action`
+(`projects.read`), `resource` (`/projects`), `result` (`AuditSucceeded`, `AuditRejected`, or
+`AuditUnavailable`), and `requestId`. Rejected tokens have null identities. Request correlation
+accepts at most 64 safe ASCII characters from `X-Request-Id`, otherwise generates a process-local
+identifier; use a unique proxy request ID for cross-process traces. Passwords, bearer tokens,
+unverified claims, query strings and raw exceptions are absent. Both strict object actors and
+legacy actors within the configured finite transition window preserve attribution.
+
+A failed append/flush/fsync returns 503 before success. Rotate by renaming the file within its
+private directory and let the next append create the configured path; forward complete NDJSON
+lines to your collector and monitor storage failures/capacity. Set retention and filesystem access
+policy for your deployment. The old verification-only application builders remain compatibility
+adapters without durable audit. This example is not general compliance storage, multi-process
+append coordination, or an atomic business-write/audit transaction; a real mutation needs its own
+transactional/outbox design. See [ADR-26](../../docs/adr/0026-downstream-actions-persist-verified-identity-before-reporting-success.md).
+
+Shōmei's JWKS endpoint publishes `Cache-Control: public, max-age=300`. The downstream honors the
+publisher lifetime up to its configured hard staleness bound; without a usable publisher max-age,
+it uses `DOWNSTREAM_JWKS_TTL_SECONDS`. This is separate from the maximum accepted token lifetime.

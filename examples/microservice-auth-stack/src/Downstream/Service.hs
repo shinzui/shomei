@@ -48,6 +48,7 @@ module Downstream.Service
     JwksUnavailable (..),
     downstreamApplication,
     downstreamApplicationWithVerifier,
+    downstreamApplicationWithAuditSink,
     Project (..),
     DownstreamAPI,
   )
@@ -55,15 +56,18 @@ where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar, withMVar)
-import Control.Exception (Exception, finally, throwIO, try)
+import Control.Exception (Exception, SomeAsyncException, SomeException, finally, fromException, throwIO, try)
 import Crypto.JOSE.JWK (JWKSet)
 import Data.Aeson (eitherDecode)
+import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.Char (toLower)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, newIORef, readIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (NominalDiffTime, addUTCTime, diffUTCTime)
+import Data.Unique (hashUnique, newUnique)
+import Downstream.Audit (AuditOutcome (..), AuditRecord (..), AuditSink (..))
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Header (ResponseHeaders, hCacheControl)
@@ -74,6 +78,7 @@ import Servant
     Get,
     Handler,
     JSON,
+    ServerError,
     err401,
     err503,
     errBody,
@@ -343,9 +348,9 @@ describeHttpError = \case
 -- | When the key publisher states a freshness lifetime, obey it — that is the JWKS-over-HTTPS
 -- convention, and it makes this template correct against non-Shōmei issuers.
 --
--- Shōmei's own server does __not__ currently send @Cache-Control@ on
--- @\/.well-known\/jwks.json@; adding it server-side is a possible follow-up. This branch
--- therefore lies dormant against a Shōmei auth service and the configured TTL applies.
+-- Shōmei publishes @Cache-Control: public, max-age=300@ on its JWKS document. The
+-- publisher lifetime is honored up to the local hard staleness ceiling. Other publishers
+-- without a usable max-age use the configured TTL.
 --
 -- The scan is lenient: @Cache-Control@ is a comma-separated directive list, directive names
 -- are case-insensitive, and anything unparsable means "use the configured TTL".
@@ -382,7 +387,9 @@ data Project = Project
 type DownstreamAPI =
   AuthProtect "downstream-jwt" :> "projects" :> Get '[JSON] [Project]
 
-type instance AuthServerData (AuthProtect "downstream-jwt") = AuthClaims
+data DownstreamPrincipal = DownstreamPrincipal !AuthClaims !Text
+
+type instance AuthServerData (AuthProtect "downstream-jwt") = DownstreamPrincipal
 
 -- | The downstream WAI app: serve @\/projects@ behind the local-verification guard, using
 -- the supplied JWKS cache and the 'ShomeiConfig' carrying the issuer/audience the auth
@@ -391,8 +398,12 @@ downstreamApplication :: JwksCache -> ShomeiConfig -> Application
 downstreamApplication cache cfg = downstreamApplicationWithVerifier cache (verifierSettingsFromConfig cfg)
 
 downstreamApplicationWithVerifier :: JwksCache -> VerifierSettings -> Application
-downstreamApplicationWithVerifier cache settings =
-  serveWithContext (Proxy @DownstreamAPI) (localAuthHandler cache settings :. EmptyContext) projectsHandler
+-- Compatibility verification-only assembly. The runnable service uses the explicit durable sink.
+downstreamApplicationWithVerifier cache settings = downstreamApplicationWithAuditSink cache settings (AuditSink (const (pure ())))
+
+downstreamApplicationWithAuditSink :: JwksCache -> VerifierSettings -> AuditSink -> Application
+downstreamApplicationWithAuditSink cache settings sink =
+  serveWithContext (Proxy @DownstreamAPI) (localAuthHandler cache settings sink :. EmptyContext) (projectsHandler sink)
 
 -- | The local guard: pull @Authorization: Bearer <jwt>@ and verify with the cached JWKS —
 -- no call back to the auth service.
@@ -400,18 +411,26 @@ downstreamApplicationWithVerifier cache settings =
 -- The two failure modes are distinct on the wire. A token we can judge and reject is @401@.
 -- A token we cannot judge — no sufficiently fresh key material — is @503@: answering @401@
 -- there would make clients discard perfectly good sessions during an auth-service outage.
-localAuthHandler :: JwksCache -> VerifierSettings -> AuthHandler Request AuthClaims
-localAuthHandler cache settings = mkAuthHandler \req -> do
+localAuthHandler :: JwksCache -> VerifierSettings -> AuditSink -> AuthHandler Request DownstreamPrincipal
+localAuthHandler cache settings sink = mkAuthHandler \req -> do
+  correlation <- liftIO (requestCorrelation req)
+  let rejected :: ServerError -> Handler a
+      rejected err = persistAudit sink Nothing correlation AuditRejected >> throwError err
+      unavailable :: Handler a
+      unavailable = persistAudit sink Nothing correlation AuditUnavailable >> throwError err503 {errBody = "verification keys unavailable"}
+      invalid :: Handler a
+      invalid = rejected bearer401 {errBody = "invalid token (local verification failed)"}
   jwt <- case [value | (name, value) <- requestHeaders req, name == "Authorization"] of
     [v] | Just b <- parseBearer (Text.decodeUtf8Lenient v) -> pure b
-    _ -> throwError bearer401 {errBody = "missing bearer token"}
+    _ -> rejected bearer401 {errBody = "missing bearer token"}
   jwks <- liftIO (try @JwksUnavailable (currentJwks cache))
   case jwks of
-    Left _ -> throwError err503 {errBody = "verification keys unavailable"}
+    Left _ -> unavailable
     Right keys -> do
-      verifyWithUnknownKeyRetry keys jwt
+      claims <- verifyWithUnknownKeyRetry unavailable invalid keys jwt
+      pure (DownstreamPrincipal claims correlation)
   where
-    verifyWithUnknownKeyRetry keys jwt = do
+    verifyWithUnknownKeyRetry unavailable invalidToken keys jwt = do
       res <- liftIO (verifyTokenWith settings keys jwt)
       case res of
         Right claims -> pure claims
@@ -421,21 +440,21 @@ localAuthHandler cache settings = mkAuthHandler \req -> do
             then do
               fresh <- liftIO (try @JwksUnavailable (currentJwks cache))
               case fresh of
-                Left _ -> throwError err503 {errBody = "verification keys unavailable"}
+                Left _ -> unavailable
                 Right freshKeys -> do
                   retried <- liftIO (verifyTokenWith settings freshKeys jwt)
                   either (const invalidToken) pure retried
             else invalidToken
         Left _ -> invalidToken
-    invalidToken = throwError bearer401 {errBody = "invalid token (local verification failed)"}
     bearer401 = err401 {errHeaders = [("WWW-Authenticate", "Bearer")]}
 
 -- | Reads the verified claims rather than ignoring them: @sub@ is the user this request acts for,
 -- and @act@ (present only on a delegated token — RFC 8693 on-behalf-of or impersonation) is the
 -- acting party. This is the downstream half of the token-exchange contract: a resource server that
 -- verified the JWT against the JWKS reads both out of the claims it already holds.
-projectsHandler :: AuthClaims -> Handler [Project]
-projectsHandler claims =
+projectsHandler :: AuditSink -> DownstreamPrincipal -> Handler [Project]
+projectsHandler sink (DownstreamPrincipal claims correlation) = do
+  persistAudit sink (Just claims) correlation AuditSucceeded
   pure
     [ Project
         { projectId = "proj_ms_1",
@@ -449,3 +468,25 @@ projectsHandler claims =
     subject = claims.subject
     actor :: Maybe UserId
     actor = claims.actor
+
+-- Only verified identity fields cross this boundary. Rejected tokens have no attributed
+-- subject or actor, even if their untrusted payload happened to contain those keys.
+persistAudit :: AuditSink -> Maybe AuthClaims -> Text -> AuditOutcome -> Handler ()
+persistAudit sink principal correlation outcome = do
+  time <- liftIO getCurrentTime
+  let record = AuditRecord time (principal >>= fmap idText . (.actor)) (idText . (.subject) <$> principal) "projects.read" "/projects" outcome correlation
+  written <- liftIO (try @SomeException (appendAudit sink record))
+  case written of
+    Right () -> pure ()
+    Left err -> case fromException err :: Maybe SomeAsyncException of
+      Just _ -> liftIO (throwIO err)
+      Nothing -> throwError err503 {errBody = "audit storage unavailable"}
+
+requestCorrelation :: Request -> IO Text
+requestCorrelation request = case lookup "X-Request-Id" (requestHeaders request) of
+  Just raw | not (BS.null (clean raw)) -> pure (Text.decodeUtf8 (clean raw))
+  _ -> do
+    unique <- newUnique
+    pure ("req_" <> Text.pack (show (hashUnique unique)))
+  where
+    clean = BS.take 64 . BS8.filter (\c -> c `elem` ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-" :: String))

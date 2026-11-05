@@ -36,7 +36,10 @@ common shared
 library
   import: warnings, shared
   hs-source-dirs: src
-  exposed-modules: Downstream.Service
+  exposed-modules:
+    Downstream.Audit
+    Downstream.Service
+
   -- NOTE: deliberately NO dependency on shomei-postgres. This service has no database;
   -- it verifies tokens offline using a JWKS it fetches from the auth service.
   build-depends:
@@ -53,6 +56,7 @@ library
     shomei-jwt,
     text,
     time,
+    unix >=2.8 && <2.9,
     wai,
 
 executable example-project-service
@@ -87,6 +91,7 @@ test-suite microservice-auth-stack-test
     aeson,
     base,
     bytestring,
+    directory,
     effectful,
     effectful-core,
     http-client,
@@ -105,5 +110,6 @@ test-suite microservice-auth-stack-test
     tasty-hunit,
     text,
     time,
+    unix >=2.8 && <2.9,
     wai,
     warp,

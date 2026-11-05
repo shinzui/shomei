@@ -326,7 +326,7 @@ shomei-admin keys revoke <kid>                    # → revoked (removed from JW
 shomei-admin keys list                            # kid / status / timestamps
 shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
 shomei-admin users create --email … [--password-file PATH] [--display-name …] [--email-verified]
-shomei-admin audit events|user|session|count …     # read the security audit trail
+shomei-admin audit events|user|session|count …     # user/session TypeIDs or legacy UUIDs; canonical TypeID output
 shomei-admin sweep [flags]                        # delete expired/dead rows once, then exit
 ```
 
@@ -654,3 +654,10 @@ rejections, and reserve proxy headroom. Lowering a cap affects a newly assembled
 
 Request logs use error for 5xx, warn for 429 and info for ordinary responses including 401/403.
 Authentication failures are attacker-triggerable; logging each at warning would create alert floods.
+
+
+HIBP dependency failures emit `[shomei:breach-check] unavailable reason=<code>` using a bounded
+reason vocabulary. They include no password, full hash, k-anonymity prefix, query, URL or raw
+exception. The configured breach-check fail-open/closed policy still decides the request outcome.
+Audit CLI user/session filters accept canonical TypeIDs and legacy UUIDs; tabular and NDJSON
+user/session IDs use canonical TypeIDs, so role-command output can be copied into audit queries.

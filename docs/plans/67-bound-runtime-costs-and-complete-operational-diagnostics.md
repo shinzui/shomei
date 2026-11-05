@@ -44,12 +44,14 @@ Remove recurring OpenAPI encoding work and make operational behavior observable 
 ## Progress
 
 
-- [x] (2026-11-05) M1: shared CachedJson response forces encoding once, preserves exact HTTP bytes/media type/schema, and passes schema plus actual HTTP tests. 1000 renderer calls allocate 2,945,392,000 bytes for the uncached baseline versus 32,000 cached bytes; [measurement](../review-remediation/openapi-allocations.txt). Haskell route consumers use cachedJsonValue; wire contract stays stable.
+- [x] (2026-11-05) M1: shared CachedJson response forces encoding once, preserves exact HTTP bytes/media type/schema, and passes schema plus actual HTTP tests. 1000 renderer calls allocate 2,945,392,000 bytes for the uncached baseline versus 32,000 cached bytes; [measurement](../review-remediation/openapi-allocations.txt). Haskell route consumers use cachedJsonValue; wire contract stays stable. Implementation `2372a53`.
 - [ ] M2: shared host runtime exposes admission/bind policy and secret-free failure diagnostics. Partial: shared Warp policy, real socket lifecycle/timeout/shutdown tests, strict synchronized config and overrides, status severity, entrypoint de-duplication, server/embedded builds and embedded suite pass. HIBP diagnostic acceptance remains.
 - [ ] M3: audit CLI identities and downstream actor/subject audit records work end to end.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: The signing-key CLI retained the dependency's automatic transaction retry helper despite ADR-23's finite CLI default contract. It now uses the shared bounded database-only wrapper. Activation also locks/revalidates its pending source inside the transaction. New injected later-write failures prove whole activation/rewrap rollback, and an index-bypass fixture proves multiple-active loads fail closed; the stale newest-active-wins comment is corrected.
 
 
 

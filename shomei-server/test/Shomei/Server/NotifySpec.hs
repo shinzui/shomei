@@ -5,8 +5,8 @@ module Shomei.Server.NotifySpec (tests) where
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (SomeException, bracket, catch, finally, toException)
-import Control.Monad (forever)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, catch, finally, throwIO, toException, try)
+import Control.Monad (forM_, forever)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (decode)
 import Data.ByteString qualified as BS
@@ -29,6 +29,8 @@ import Shomei.Account.Email.Domain (Email, mkEmail)
 import Shomei.Account.Notification.Domain (Notification (..))
 import Shomei.Account.Notification.Store (sendNotification)
 import Shomei.Account.OneTimeToken.Domain (OneTimeToken (..))
+import Shomei.Account.Password.Breach.Store (BreachResult (..), checkPasswordBreached, sha1PrefixSuffix)
+import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (sha256Hex)
 import Shomei.Audit.Event.Domain (AuthEvent (NotificationDeliveryFailed), NotificationDeliveryFailedData (..))
 import Shomei.Audit.Publisher.Store (AuthEventPublisher (..))
@@ -46,6 +48,7 @@ import Shomei.Notify
     webhookSignature,
   )
 import Shomei.Notify.Queue qualified as Queue
+import Shomei.Server.BreachChecker (runPasswordBreachCheckerWith)
 import Shomei.Time.Postgres (runClockIO)
 import System.IO (BufferMode (LineBuffering), Handle, IOMode (ReadWriteMode), hClose, hFlush, hGetLine, hIsEOF, hPutStr, hSetBuffering)
 import Test.Tasty (TestTree, testGroup)
@@ -59,7 +62,28 @@ tests :: TestTree
 tests =
   testGroup
     "Notify"
-    [ testCase "redacts the one-time token by default" do
+    [ testCase "HIBP cancellation propagates instead of becoming an unavailable lookup" do
+        reports <- newIORef []
+        let query _ = throwIO ThreadKilled
+            report line = modifyIORef' reports (line :)
+        result <- try @AsyncException (runEff . runPasswordBreachCheckerWith query report $ checkPasswordBreached (PlainPassword "cancel-fixture"))
+        result @?= Left ThreadKilled
+        readIORef reports >>= (@?= []),
+      testCase "HIBP dependency failures expose only a bounded reason code" do
+        reports <- newIORef []
+        let plain = PlainPassword "do-not-log-password"
+            (prefix, suffix) = sha1PrefixSuffix plain
+            query sent = do
+              sent @?= prefix
+              throwIO (userError ("https://api.pwnedpasswords.com/range/" <> Text.unpack prefix <> "?secret=hidden " <> Text.unpack suffix <> " do-not-log-password"))
+            report line = modifyIORef' reports (line :)
+        result <- runEff . runPasswordBreachCheckerWith query report $ checkPasswordBreached plain
+        result @?= BreachCheckUnavailable
+        lines' <- readIORef reports
+        lines' @?= ["[shomei:breach-check] unavailable reason=transport_error"]
+        forM_ [prefix, suffix, "do-not-log-password", "hidden", "https://"] \secret ->
+          assertBool "no sensitive dependency context in diagnostic" (not (any (Text.isInfixOf secret) lines')),
+      testCase "redacts the one-time token by default" do
         email <- testEmail
         let out = render False (PasswordResetRequested email (OneTimeToken rawToken) expires)
         assertBool

@@ -106,10 +106,9 @@ loadKeyMaterial kek pool = do
       $ listPublishableSigningKeys
   pure (either (Left . Text.pack . show) (assembleKeys kek) result)
 
--- | Assemble the loaded rows. The signer is the active key with the greatest
--- @activatedAt@ ('Nothing' sorting lowest) — several simultaneously-active keys are
--- reachable only by hand-editing the table, and "newest activation wins" matches operator
--- intent. Every publishable key is published and trusted, the signer included.
+-- | Assemble the loaded rows. Exactly one active key must exist; multiple active rows
+-- fail closed even if an external writer bypassed the database invariant. Every
+-- publishable key is published and trusted, the signer included.
 --
 -- Public material comes from @public_key_jwk@ and needs no key-encryption key; only the
 -- signer's @private_key_jwk@ is decrypted.

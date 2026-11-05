@@ -27,18 +27,19 @@ import Control.Monad (forM, forM_, unless)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime, getCurrentTime)
+import Effectful (runEff)
 import Hasql.Decoders qualified as D
 import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
 import Hasql.Session (Session)
 import Hasql.Session qualified as Session
 import Hasql.Statement (Statement, preparable)
-import Hasql.Transaction (Transaction)
-import Hasql.Transaction qualified as Tx
-import Hasql.Transaction.Sessions qualified as TxSession
 import Shomei.Persistence.Codec.Postgres (signingKeyStatusFromText, signingKeyStatusToText)
+import Shomei.Persistence.Database.Postgres (runDatabasePool, runTransaction)
 import Shomei.Persistence.Pool.Postgres (Pool)
 import Shomei.Persistence.Pool.Postgres qualified as Pool
+import Shomei.Persistence.Transaction.Postgres (Transaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Server.DatabaseError (summarizeUsageError)
 import Shomei.SigningKey.Domain (SigningAlgorithm, SigningKeyStatus (..), StoredSigningKey (..), signingAlgorithmToText)
 import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
@@ -81,10 +82,15 @@ keysActivate pool kid = do
   key <- requireKey kid mk
   unless (key.status == KeyPending) (die ("key " <> Text.unpack kid <> " is " <> show key.status <> ", expected pending"))
   now <- getCurrentTime
-  retired <- runTx pool do
-    oldKids <- Tx.statement now retireActiveStmt
-    Tx.statement (kid, now) setActiveStmt
-    pure oldKids
+  outcome <- runTx pool do
+    pending <- Tx.statement kid lockPendingStmt
+    case pending of
+      Nothing -> pure Nothing
+      Just _ -> do
+        oldKids <- Tx.statement now retireActiveStmt
+        Tx.statement (kid, now) setActiveStmt
+        pure (Just oldKids)
+  retired <- maybe (die "key is no longer pending; no activation was applied") pure outcome
   putStrLn ("activated " <> Text.unpack kid)
   forM_ retired \oldKid -> putStrLn ("retired (auto) " <> Text.unpack oldKid)
 
@@ -180,7 +186,7 @@ runSess pool s = do
 
 runTx :: Pool -> Transaction a -> IO a
 runTx pool transaction = do
-  res <- Pool.use pool (TxSession.transaction TxSession.ReadCommitted TxSession.Write transaction)
+  res <- runEff . runDatabasePool pool $ runTransaction transaction
   case res of
     Right value -> pure value
     Left err
@@ -333,3 +339,11 @@ setRevokedStmt =
     "UPDATE shomei.shomei_signing_keys SET status = 'revoked', revoked_at = $2 WHERE key_id = $1"
     (contrazip2 (E.param (E.nonNullable E.text)) (E.param (E.nonNullable E.timestamptz)))
     D.noResult
+
+-- Revalidate and lock the source state inside the same transaction as retirement.
+lockPendingStmt :: Statement Text (Maybe Text)
+lockPendingStmt =
+  preparable
+    "SELECT key_id FROM shomei.shomei_signing_keys WHERE key_id=$1 AND status='pending' FOR UPDATE"
+    (E.param (E.nonNullable E.text))
+    (D.rowMaybe (D.column (D.nonNullable D.text)))

@@ -6,6 +6,10 @@ Shōmei packages.
 
 ## Unreleased
 
+- Signing-key CLI transactions use finite database retry/deadline defaults. Activation revalidates and locks the pending source row before retiring the old key; injected activation/rewrap write failures roll back wholly. Key assembly fails closed on multiple active rows even after index bypass.
+
+- Audit CLI accepts canonical user/session TypeIDs and legacy UUID filters and emits canonical user/session IDs. HIBP failures have an injectable query/report boundary and a tested bounded, secret-free diagnostic.
+
 - **Breaking:** ServerSettings gains bind host, finite connection limit (1024) and slow-client timeout (30 seconds). Standalone and embedded Warp hosts use shared `hostWarpSettings`; excess connections close immediately and all close paths restore capacity. Dhall/environment settings are synchronized.
 - Container entrypoint delegates migration and active-key bootstrap to shared server boot. Request severity is error for 5xx, warn for 429 and info otherwise.
 

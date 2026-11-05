@@ -7,9 +7,9 @@
 --
 -- Any transport error or timeout is caught and reported as 'BreachCheckUnavailable', leaving the
 -- fail-open / fail-closed decision to 'Shomei.Account.Password.Breach.Workflow.enforceBreachPolicy'.
-module Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp) where
+module Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp, runPasswordBreachCheckerWith) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -38,13 +38,20 @@ import System.IO (hPutStrLn, stderr)
 -- @cfg.passwordPolicy.breachCheckTimeoutMs@ at assembly time).
 runPasswordBreachCheckerHibp ::
   (IOE :> es) => Manager -> Int -> Eff (PasswordBreachChecker : es) a -> Eff es a
-runPasswordBreachCheckerHibp mgr timeoutMs = interpret_ \case
+runPasswordBreachCheckerHibp mgr timeoutMs = runPasswordBreachCheckerWith (queryRange mgr timeoutMs) (hPutStrLn stderr . Text.unpack)
+
+-- | Injectable dependency/report boundary. Only the k-anonymity prefix reaches the query;
+-- reports carry a closed reason code and never contain the prefix or exception text.
+runPasswordBreachCheckerWith ::
+  (IOE :> es) => (Text -> IO Text) -> (Text -> IO ()) -> Eff (PasswordBreachChecker : es) a -> Eff es a
+runPasswordBreachCheckerWith query report = interpret_ \case
   CheckPasswordBreached plain -> liftIO do
     let (prefix, suffix) = sha1PrefixSuffix plain
-    result <- try (queryRange mgr timeoutMs prefix) :: IO (Either SomeException Text)
+    result <- try (query prefix) :: IO (Either SomeException Text)
     case result of
+      Left err | Just _ <- (fromException err :: Maybe SomeAsyncException) -> throwIO err
       Left err -> do
-        hPutStrLn stderr ("[shomei:breach-check] unavailable reason=" <> Text.unpack (reasonText (classifyWebhookFailure err)))
+        report ("[shomei:breach-check] unavailable reason=" <> reasonText (classifyWebhookFailure err))
         pure BreachCheckUnavailable
       Right body -> pure (if parseHibpResponse body suffix then Breached else NotBreached)
 

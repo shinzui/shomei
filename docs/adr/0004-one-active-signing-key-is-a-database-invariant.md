@@ -5,7 +5,7 @@ description: PostgreSQL enforces one active signing key, and every replacement r
 docId: ADR-4
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-27T17:02:48Z
+timestamp: 2026-11-05T17:19:52Z
 originatingPlan: docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md
 generated:
   by: openai-codex/gpt-5
@@ -35,8 +35,12 @@ creation time, and key ID, and retires every other active row.
 `SigningKeyStore.ReplaceActiveSigningKey` retires every active key with one timestamp, then inserts
 or promotes the replacement with that same activation timestamp. The PostgreSQL interpreter runs
 both statements in one transaction; the in-memory interpreter performs one strict world update.
-The admin CLI uses an equivalent transaction for `keys activate`, and rewrap writes every
-pre-encrypted row in one transaction.
+The admin CLI uses the bounded database transaction policy for `keys activate` and rewrap.
+Activation revalidates and locks the pending source row inside its transaction before retiring
+anything, so an earlier pre-read cannot authorize promotion after a concurrent state change.
+Rewrap writes every pre-encrypted row in one transaction. Injected activation and second-row
+rewrap failures verify whole rollback, and an index-bypass fixture verifies ambiguous loaders
+still fail closed.
 
 Every lifecycle transition stamps its corresponding nullable column: `activated_at`, `retired_at`,
 or `revoked_at`. Retired keys remain published and trusted for the overlap window; revoked and

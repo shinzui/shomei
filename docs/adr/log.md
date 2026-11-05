@@ -1,6 +1,8 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Amendment**: ADR-4 requires bounded CLI transactions and an in-transaction locked pending-state check; injected failures verify atomic rollback.
+* **Addition**: ADR-26 requires the runnable downstream read to persist verified actor/subject audit and fail closed on sink errors.
 * **Amendment**: ADR-17 requires shared Warp bind, finite connection admission and timeout lifecycle; shared boot owns the single migration/key sequence.
 * **Addition**: ADR-25 defines attestation conveyance as evidence request without device trust enforcement and preserves fail-closed counter policy.
 * **amended**: ADR-7 requires Clock-derived creation and one timestamp across credential tails; bounded expiry cleanup.

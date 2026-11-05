@@ -5,8 +5,10 @@
 module Main (main) where
 
 import Control.Exception (try)
-import Control.Monad (void)
+import Control.Monad (forM_, void)
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteArray.Encoding (Base (Base64), convertToBase)
 import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (newIORef, readIORef)
@@ -19,6 +21,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Time (addUTCTime, getCurrentTime)
+import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff)
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
@@ -31,7 +34,7 @@ import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, inf
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
-import Shomei.Admin.Audit (runAuditReader)
+import Shomei.Admin.Audit (AuditFilters (..), runAuditReader, toJsonObject, toQuery)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
   ( keysActivate,
@@ -61,7 +64,7 @@ import Shomei.Audit.Reader.Store
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError (OAuthClientInvalid))
-import Shomei.Id (genSessionId, genUserId)
+import Shomei.Id (genSessionId, genUserId, idText, sessionIdToUUID, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
@@ -170,6 +173,8 @@ main =
           testJwksNeedsNoKek,
           testRewrapRotatesTheKek,
           testRewrapWithWrongOldKekModifiesNothing,
+          testKeyWriteRollback,
+          testMultipleActiveFailClosed,
           testUsageErrorSummary,
           testUserCreate,
           testUserCreateEmailVerified,
@@ -661,9 +666,17 @@ testRolesGrantBothExpiryFlagsFailsToParse =
 
 testAuditQuery :: TestTree
 testAuditQuery = testCase "audit reader returns published events; type filter + count work" $ withDb \pool _ -> do
-  t <- getCurrentTime
   uid <- genUserId
   sid <- genSessionId
+  let filters = AuditFilters Nothing Nothing [] Nothing Nothing 50 True
+  typed <- toQuery filters {fUser = Just (idText uid), fSession = Just (idText sid)}
+  legacy <- toQuery filters {fUser = Just (UUID.toText (userIdToUUID uid)), fSession = Just (UUID.toText (sessionIdToUUID sid))}
+  typed.queryUserId @?= legacy.queryUserId
+  typed.querySessionId @?= legacy.querySessionId
+  typed.queryUserId @?= Just (userIdToUUID uid)
+  typed.querySessionId @?= Just (sessionIdToUUID sid)
+
+  t <- getCurrentTime
   -- Seed two events through the real PostgreSQL publisher.
   okR
     =<< runPublish
@@ -675,6 +688,13 @@ testAuditQuery = testCase "audit reader returns published events; type filter + 
   -- Read them back through the CLI's reader stack (newest-first).
   allEvents <- okR =<< runAuditReader pool (queryAuthEvents emptyAuditQuery)
   map (.storedEventType) allEvents @?= ["login_succeeded", "login_failed"]
+  filtered <- okR =<< runAuditReader pool (queryAuthEvents typed)
+  length filtered @?= 1
+  case map toJsonObject filtered of
+    [Aeson.Object row] -> do
+      KeyMap.lookup "userId" row @?= Just (Aeson.String (idText uid))
+      KeyMap.lookup "sessionId" row @?= Just (Aeson.String (idText sid))
+    _ -> assertFailure "expected one canonical audit object"
   -- Type filter narrows to the failed login only.
   failed <- okR =<< runAuditReader pool (queryAuthEvents emptyAuditQuery {queryEventTypes = ["login_failed"]})
   map (.storedEventType) failed @?= ["login_failed"]
@@ -1016,3 +1036,42 @@ testOAuthClientsRevokeUnknownFails =
     expectExitFailure "revoke unknown" (void (OAuthClients.revokeAction env "oauthclient_does_not_exist"))
     events <- scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'oauth_client_revoked'"
     events @?= 0
+
+testKeyWriteRollback :: TestTree
+testKeyWriteRollback = testCase "key activation and rewrap roll back every write on an injected later failure" $ withDb \pool _ -> do
+  oldKek <- testKek 'a'
+  newKek <- testKek 'b'
+  keysGenerate oldKek ES256 pool
+  first <- onlyPendingKid pool
+  keysActivate pool first
+  keysGenerate oldKek ES256 pool
+  second <- onlyPendingKid pool
+  before <- listAllKeys pool
+  execSql pool "CREATE FUNCTION shomei.reject_activation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.status='active' THEN RAISE EXCEPTION 'injected activation failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_activation BEFORE UPDATE ON shomei.shomei_signing_keys FOR EACH ROW EXECUTE FUNCTION shomei.reject_activation()"
+  expectExitFailure "activation write rollback" (keysActivate pool second)
+  statusOf pool first >>= (@?= KeyActive)
+  statusOf pool second >>= (@?= KeyPending)
+  afterActivation <- listAllKeys pool
+  map (\key -> (key.keyId, key.status, key.activatedAt, key.retiredAt)) afterActivation @?= map (\key -> (key.keyId, key.status, key.activatedAt, key.retiredAt)) before
+  execSql pool "DROP TRIGGER reject_activation ON shomei.shomei_signing_keys; CREATE SEQUENCE shomei.rewrap_writes; CREATE FUNCTION shomei.reject_second_rewrap() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('shomei.rewrap_writes')=2 THEN RAISE EXCEPTION 'injected rewrap failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_second_rewrap BEFORE UPDATE OF private_key_jwk ON shomei.shomei_signing_keys FOR EACH ROW EXECUTE FUNCTION shomei.reject_second_rewrap()"
+  expectExitFailure "second rewrap write rollback" (keysRewrap oldKek newKek pool)
+  scalarInt pool "SELECT last_value FROM shomei.rewrap_writes" >>= (@?= 2)
+  after <- listAllKeys pool
+  map (.privateKeyJwk) after @?= map (.privateKeyJwk) before
+  forM_ after \key -> do
+    assertBool "old KEK still decrypts every original row" (isRight (decryptStoredSigningKey oldKek key))
+    assertBool "new KEK cannot decrypt a partially committed row" (not (isRight (decryptStoredSigningKey newKek key)))
+
+testMultipleActiveFailClosed :: TestTree
+testMultipleActiveFailClosed = testCase "key material loader rejects multiple active keys even after index bypass" $ withDb \pool _ -> do
+  kek <- testKek 'a'
+  keysGenerate kek ES256 pool
+  first <- onlyPendingKid pool
+  keysActivate pool first
+  keysGenerate kek ES256 pool
+  second <- onlyPendingKid pool
+  execSql pool ("DROP INDEX shomei.shomei_signing_keys_one_active; UPDATE shomei.shomei_signing_keys SET status='active',activated_at=now() WHERE key_id='" <> second <> "'")
+  loaded <- Keys.loadKeyMaterial kek pool
+  case loaded of
+    Left reason -> assertBool "diagnostic names the invariant" ("multiple active signing keys" `Text.isInfixOf` reason)
+    Right _ -> assertFailure "ambiguous signer was accepted"

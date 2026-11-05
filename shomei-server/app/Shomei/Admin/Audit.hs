@@ -4,9 +4,9 @@
 -- endpoint uses), run through the PostgreSQL interpreter over the admin pool:
 --
 -- @
--- shomei-admin audit events  [--user UUID] [--session UUID] [--type T ...] [--since TS] [--until TS] [--limit N] [--json]
--- shomei-admin audit user    \<UUID\> [filters]   -- shortcut for --user
--- shomei-admin audit session \<UUID\> [filters]   -- shortcut for --session
+-- shomei-admin audit events  [--user USER_ID] [--session SESSION_ID] [--type T ...] [--since TS] [--until TS] [--limit N] [--json]
+-- shomei-admin audit user    \<TYPEID-or-UUID\> [filters]   -- shortcut for --user
+-- shomei-admin audit session \<TYPEID-or-UUID\> [filters]   -- shortcut for --session
 -- shomei-admin audit count   [filters]           -- how many events match
 -- @
 --
@@ -19,6 +19,8 @@ module Shomei.Admin.Audit
     auditParser,
     runAudit,
     runAuditReader,
+    toQuery,
+    toJsonObject,
   )
 where
 
@@ -46,6 +48,7 @@ import Shomei.Audit.Reader.Store
     queryAuthEvents,
   )
 import Shomei.Error (AuthError)
+import Shomei.Id (idText, parseId, sessionIdFromUUID, sessionIdToUUID, userIdFromUUID, userIdToUUID)
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (Pool)
 import System.Exit (exitFailure)
@@ -84,8 +87,8 @@ auditParser =
 filtersParser :: Parser AuditFilters
 filtersParser =
   AuditFilters
-    <$> optional (txt (long "user" <> metavar "UUID" <> help "Filter by user id"))
-    <*> optional (txt (long "session" <> metavar "UUID" <> help "Filter by session id"))
+    <$> optional (txt (long "user" <> metavar "USER_ID" <> help "Canonical user TypeID or legacy UUID"))
+    <*> optional (txt (long "session" <> metavar "SESSION_ID" <> help "Canonical session TypeID or legacy UUID"))
     <*> many (txt (long "type" <> metavar "EVENT_TYPE" <> help "Filter by event type (repeatable)"))
     <*> optional (txt (long "since" <> metavar "ISO8601" <> help "Only events at or after this time (inclusive)"))
     <*> optional (txt (long "until" <> metavar "ISO8601" <> help "Only events strictly before this time"))
@@ -124,8 +127,8 @@ tabLine s =
     "\t"
     [ iso8601Show s.storedCreatedAt,
       Text.unpack s.storedEventType,
-      maybe "-" UUID.toString s.storedUserId,
-      maybe "-" UUID.toString s.storedSessionId,
+      maybe "-" (Text.unpack . idText . userIdFromUUID) s.storedUserId,
+      maybe "-" (Text.unpack . idText . sessionIdFromUUID) s.storedSessionId,
       UUID.toString s.storedEventId
     ]
 
@@ -134,17 +137,17 @@ toJsonObject s =
   object
     [ "eventId" .= UUID.toText s.storedEventId,
       "eventType" .= s.storedEventType,
-      "userId" .= fmap UUID.toText s.storedUserId,
-      "sessionId" .= fmap UUID.toText s.storedSessionId,
+      "userId" .= fmap (idText . userIdFromUUID) s.storedUserId,
+      "sessionId" .= fmap (idText . sessionIdFromUUID) s.storedSessionId,
       "createdAt" .= iso8601Show s.storedCreatedAt,
       "payload" .= s.storedPayload
     ]
 
--- | Validate the textual filters into an 'AuditEventQuery' (a bad UUID/timestamp aborts).
+-- | Validate the textual filters into an 'AuditEventQuery' (a bad typed ID/UUID/timestamp aborts).
 toQuery :: AuditFilters -> IO AuditEventQuery
 toQuery f = do
-  user <- parseUuidOpt "--user" f.fUser
-  session <- parseUuidOpt "--session" f.fSession
+  user <- parseIdentityOpt (fmap userIdToUUID . parseId) "--user" f.fUser
+  session <- parseIdentityOpt (fmap sessionIdToUUID . parseId) "--session" f.fSession
   since <- parseTimeOpt "--since" f.fSince
   until_ <- parseTimeOpt "--until" f.fUntil
   pure
@@ -157,10 +160,11 @@ toQuery f = do
         queryLimit = f.fLimit
       }
 
-parseUuidOpt :: String -> Maybe Text -> IO (Maybe UUID)
-parseUuidOpt _ Nothing = pure Nothing
-parseUuidOpt nm (Just t) =
-  maybe (die (nm <> ": invalid UUID: " <> Text.unpack t)) (pure . Just) (UUID.fromText t)
+parseIdentityOpt :: (Text -> Either Text UUID) -> String -> Maybe Text -> IO (Maybe UUID)
+parseIdentityOpt _ _ Nothing = pure Nothing
+parseIdentityOpt typed nm (Just raw) = case typed raw of
+  Right uuid -> pure (Just uuid)
+  Left _ -> maybe (die (nm <> ": expected a canonical typed id or legacy UUID")) (pure . Just) (UUID.fromText raw)
 
 parseTimeOpt :: String -> Maybe Text -> IO (Maybe UTCTime)
 parseTimeOpt _ Nothing = pure Nothing

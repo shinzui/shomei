@@ -14,7 +14,7 @@ module Main (main) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, throwIO, try)
+import Control.Exception (SomeException, bracket, throwIO, try)
 import Control.Monad (forM, forM_, replicateM, replicateM_)
 import Crypto.JOSE.Compact (decodeCompact, encodeCompact)
 import Crypto.JOSE.Error (runJOSE)
@@ -24,6 +24,7 @@ import Crypto.JOSE.JWS qualified as JWS
 import Crypto.JWT (JWTError, SignedJWT, addClaim, signClaims, unsafeGetJWTClaimsSet)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bits ((.&.))
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
@@ -34,6 +35,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, diffUTCTime, getCurrentTime)
+import Downstream.Audit qualified as Audit
 import Downstream.Service
   ( JwksCache,
     JwksCacheSettings (..),
@@ -41,6 +43,7 @@ import Downstream.Service
     currentJwks,
     defaultJwksCacheSettings,
     downstreamApplication,
+    downstreamApplicationWithAuditSink,
     downstreamApplicationWithVerifier,
     newJwksCache,
     newJwksCacheWith,
@@ -94,6 +97,9 @@ import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64, protectStoredSigningKey)
 import Shomei.SigningKey.Store (replaceActiveSigningKey)
 import Shomei.SigningKey.Verify.Jwt (VerifierSettings (..), verifierSettingsFromConfig)
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (hClose, openBinaryTempFile)
+import System.Posix.Files (fileMode, getFileStatus)
 import Test.Tasty (DependencyType (AllFinish), TestTree, defaultMain, dependentTestGroup, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -139,7 +145,8 @@ tests :: Pool -> IORef LoadedKeys -> C.ClientEnv -> Manager -> ShomeiConfig -> S
 tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token =
   testGroup
     "microservice demo: downstream local JWT verification"
-    [ testCase "valid token → 200 (offline), tampered → 401, none → 401" do
+    [ testCase "durable downstream audit preserves verified identities and fails closed on storage errors" (auditScenario mgr cfg jwksUrl token keysRef),
+      testCase "valid token → 200 (offline), tampered → 401, none → 401" do
         cache <- newJwksCache mgr jwksUrl 900 86400
         testWithApplication (pure (downstreamApplication cache cfg)) \downPort -> do
           valid <- getProjects mgr downPort (Just token)
@@ -479,3 +486,84 @@ expectApplicationSuccess label = \case
 -- here; only that hashing round-trips.
 testArgon2Params :: Argon2Params
 testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}
+
+withAuditFile :: (FilePath -> IO a) -> IO a
+withAuditFile = bracket create removeFile
+  where
+    create = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "shomei-downstream-audit.ndjson"
+      hClose handle
+      pure path
+
+auditScenario :: Manager -> ShomeiConfig -> String -> Text -> IORef LoadedKeys -> IO ()
+auditScenario manager cfg jwksUrl token keysRef = withAuditFile \path -> do
+  sink <- Audit.newFileAuditSink path
+  cache <- newJwksCache manager jwksUrl 900 86400
+  _ <- currentJwks cache
+  loaded <- readIORef keysRef
+  now <- getCurrentTime
+  operator <- idText <$> genUserId
+  let settings = (verifierSettingsFromConfig cfg) {legacyActorDeadline = Just (addUTCTime 7200 now)}
+      request port proof correlation = do
+        req <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
+        let authorization = maybe [] (\wire -> [("Authorization", "Bearer " <> Text.encodeUtf8 wire)]) proof
+        response <- httpLbs req {requestHeaders = ("X-Request-Id", correlation) : authorization} manager
+        pure (statusCode (responseStatus response))
+  delegated <- forM [Aeson.String operator, Aeson.object ["sub" Aeson..= operator]] (fixtureActorToken loaded token)
+  testWithApplication (pure (downstreamApplicationWithAuditSink cache settings sink)) \port -> do
+    request port (Just token) " request:ordinary " >>= (@?= 200)
+    forM_ delegated \wire -> request port (Just wire) "request:delegated" >>= (@?= 200)
+    request port Nothing "request:rejected" >>= (@?= 401)
+    done <- forM [1 .. 32 :: Int] \i -> do
+      completion <- newEmptyMVar
+      _ <- forkIO do
+        outcome <- try @SomeException (request port (Just token) (BS8.pack ("racer-" <> show i)))
+        putMVar completion outcome
+      pure completion
+    forM_ done \completion -> takeMVar completion >>= either (assertFailure . show) (@?= 200)
+  bytes <- BS8.readFile path
+  records <- forM (BS8.lines bytes) \line -> case Aeson.eitherDecodeStrict' line of
+    Right (Aeson.Object row) -> pure row
+    _ -> assertFailure "concurrent audit write was not one complete JSON object"
+  length records @?= 36
+  let matches key value = filter ((== Just value) . KeyMap.lookup key) records
+      ordinary = matches "requestId" (Aeson.String "request:ordinary")
+      acting = matches "requestId" (Aeson.String "request:delegated")
+      denied = matches "requestId" (Aeson.String "request:rejected")
+  case ordinary of
+    [row] -> do
+      KeyMap.lookup "actor" row @?= Just Aeson.Null
+      KeyMap.lookup "result" row @?= Just (Aeson.String "AuditSucceeded")
+      assertBool "verified subject exists" (KeyMap.lookup "subject" row /= Just Aeson.Null)
+      forM_ acting \delegatedRow -> do
+        KeyMap.lookup "actor" delegatedRow @?= Just (Aeson.String operator)
+        KeyMap.lookup "subject" delegatedRow @?= KeyMap.lookup "subject" row
+        assertBool "acting party is distinct from subject" (KeyMap.lookup "actor" delegatedRow /= KeyMap.lookup "subject" delegatedRow)
+    _ -> assertFailure "missing ordinary audit record"
+  length acting @?= 2
+  case denied of
+    [row] -> do
+      KeyMap.lookup "actor" row @?= Just Aeson.Null
+      KeyMap.lookup "subject" row @?= Just Aeson.Null
+      KeyMap.lookup "result" row @?= Just (Aeson.String "AuditRejected")
+    _ -> assertFailure "missing rejection audit record"
+  forM_ records \row -> do
+    KeyMap.lookup "action" row @?= Just (Aeson.String "projects.read")
+    KeyMap.lookup "resource" row @?= Just (Aeson.String "/projects")
+    assertBool "audit timestamp is present" (KeyMap.member "occurredAt" row)
+  mode <- fileMode <$> getFileStatus path
+  mode .&. 0o777 @?= 0o600
+  forM_ (token : delegated <> [testPassword, "Authorization", "Bearer "]) \secret ->
+    assertBool "audit excludes credentials" (not (Text.encodeUtf8 secret `BS8.isInfixOf` bytes))
+  let broken = Audit.AuditSink (\_ -> throwIO (userError "secret storage path"))
+  testWithApplication (pure (downstreamApplicationWithAuditSink cache settings broken)) \port -> do
+    request port (Just token) "failure" >>= (@?= 503)
+    request port Nothing "failure" >>= (@?= 503)
+
+  storageFailure <- Audit.newFileAuditSink (path <> "/private-location")
+  testWithApplication (pure (downstreamApplicationWithAuditSink cache settings storageFailure)) \port -> do
+    req <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
+    response <- httpLbs req {requestHeaders = [("Authorization", "Bearer " <> Text.encodeUtf8 token)]} manager
+    statusCode (responseStatus response) @?= 503
+    responseBody response @?= "audit storage unavailable"

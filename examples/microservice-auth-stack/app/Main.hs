@@ -15,7 +15,8 @@
 module Main (main) where
 
 import Data.Text qualified as Text
-import Downstream.Service (downstreamApplicationWithVerifier, newJwksCache, newJwksManager)
+import Downstream.Audit (newFileAuditSink)
+import Downstream.Service (downstreamApplicationWithAuditSink, newJwksCache, newJwksManager)
 import Network.Wai.Handler.Warp qualified as Warp
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..), defaultShomeiConfig)
@@ -39,8 +40,10 @@ main = do
       cfg = base {signingKeyConfig = base.signingKeyConfig {legacyActorUntilUnix = legacyUntil}}
       verifier = (verifierSettingsFromConfig cfg) {maxTokenLifetime = fromIntegral maximumLifetime}
   either (ioError . userError . Text.unpack) pure (validateVerifierSettings verifier)
+  auditPath <- maybe "downstream-audit.ndjson" id <$> lookupEnv "DOWNSTREAM_AUDIT_FILE"
+  sink <- newFileAuditSink auditPath
   putStrLn ("[example-project-service] listening on :" <> show port)
-  Warp.run port (downstreamApplicationWithVerifier cache verifier)
+  Warp.run port (downstreamApplicationWithAuditSink cache verifier sink)
 
 positiveEnv :: String -> Int -> IO Int
 positiveEnv name fallback = maybe fallback id <$> optionalPositiveEnv name
