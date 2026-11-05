@@ -4,6 +4,11 @@ All notable changes to `shomei-jwt` are documented here. This package adheres to
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- A present unsupported or malformed actor claim fails verification instead of losing its
+  delegation identity. Object-form compatibility is implemented only in the coordinated upgrade.
+
 ## 0.2.0.0 — 2026-08-27
 
 - **Breaking:** requires `shomei-core ^>=0.2.0.0`.

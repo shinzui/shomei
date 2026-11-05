@@ -44,7 +44,7 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 ## Progress
 
 
-- [ ] M1: PKCE and HTTP credential parsing reject malformed values and accept valid interoperability cases.
+- [x] (2026-11-05) M1: digest-matching invalid PKCE inputs fail, bearer syntax is shared by server/downstream, malformed Basic percent escapes fail, and present malformed actors are rejected by both verifier and downstream HTTP tests. Core/JWT/Servant/downstream gates pass with Tasty -j2.
 - [ ] M2: actor claims, token lifetime policy, and correlation behavior have upgrade-safe producer/consumer tests.
 - [ ] M3: every original HTTP interoperability and negative-test subitem has evidence.
 
@@ -56,6 +56,8 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 
 ## Decision Log
+
+2026-11-05: Actor fail-closed validation is committed before any object emission or compatibility change. Shared bearer syntax follows RFC 6750 section 2.1: case-insensitive scheme, ASCII space separators, token alphabet and terminal padding. Explicit malformed/duplicate Authorization is invalid credentials and never falls back to a cookie. Basic form components are decoded once after splitting the separator; malformed percent escapes fail before credential comparison.
 
 
 2026-10-28: Deliver the stated behavior with explicit upgrade and failure semantics; preserve established product policies unless an owner explicitly changes them. New risk acceptance is not a substitute for implementing a confirmed defect.
@@ -70,7 +72,7 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 ## Context and Orientation
 
 
-`shomei-core/src/Shomei/OAuth/TokenGrant/Workflow.hs` hashes verifiers without shape validation; `shomei-core/src/Shomei/OAuth/Authorize/Workflow.hs` already requires `code_challenge_method=S256` and checks that the challenge is 43 unpadded base64url characters (`isValidS256Challenge`), so only the verifier side is open. `shomei-jwt/src/Shomei/SigningKey/Sign/Jwt.hs` emits string `act`; `Verify/Jwt.hs` parses claims, and its `claimsToAuth` reads `act` through `lookupString`, which returns `Nothing` for any non-string JSON value, so a present object, array, number, or null actor is treated as absent and the token verifies as an ordinary non-delegated token. `VerifierSettings` carries clock skew and token-type policy but no lifetime ceiling. `shomei-servant/src/Shomei/Servant/Auth.hs`, `Servant/OAuth.hs`, and `Shomei/OAuth/Handler.hs` parse bearer/client credentials. `examples/microservice-auth-stack/src/Downstream/Service.hs` is an independent verifier consumer. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) preserve strict algorithm/key selection, configuration consistency, redaction, and bounded unknown-key refresh.
+`shomei-core/src/Shomei/OAuth/TokenGrant/Workflow.hs` hashes verifiers without shape validation; `shomei-core/src/Shomei/OAuth/Authorize/Workflow.hs` already requires `code_challenge_method=S256` and checks that the challenge is 43 unpadded base64url characters (`isValidS256Challenge`), so only the verifier side is open. `shomei-jwt/src/Shomei/SigningKey/Sign/Jwt.hs` emits string `act`; `Verify/Jwt.hs` parses claims, and its `claimsToAuth` originally read `act` through `lookupString`, silently treating non-string JSON as absent. M1 now checks presence directly and rejects unsupported objects, arrays, numbers and null instead of discarding the actor. `VerifierSettings` carries clock skew and token-type policy but no lifetime ceiling. `shomei-servant/src/Shomei/Servant/Auth.hs`, `Servant/OAuth.hs`, and `Shomei/OAuth/Handler.hs` parse bearer/client credentials. `examples/microservice-auth-stack/src/Downstream/Service.hs` is an independent verifier consumer. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) preserve strict algorithm/key selection, configuration consistency, redaction, and bounded unknown-key refresh.
 
 All commands run from the repository root, `/Users/shinzui/Keikaku/bokuno/shomei`. Use the existing development shell when tools are absent (`nix develop`), without searching or reading `/nix/store`. Tests use the existing ephemeral PostgreSQL harness; never aim destructive fixtures at a deployment database. Locate dependency APIs with `mori registry search`, `mori registry show --full`, and `mori registry docs`; read source before coding. Before changing dependency bounds or choosing a compatibility workaround, verify the current released version against the authoritative registry and upstream tags. Preserve concurrent workspace edits and the current branch.
 

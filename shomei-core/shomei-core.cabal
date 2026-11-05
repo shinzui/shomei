@@ -126,6 +126,7 @@ library
     Shomei.Session.RefreshToken.Domain
     Shomei.Session.RefreshToken.Store
     Shomei.Session.Store
+    Shomei.Session.Token.Bearer
     Shomei.Session.Token.Domain
     Shomei.Session.Token.Generator
     Shomei.Session.UnitOfWork.Store

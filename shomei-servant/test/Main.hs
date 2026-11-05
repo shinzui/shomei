@@ -582,7 +582,7 @@ seedOAuthAccount ref jwk jwkset cfg createdAt = do
     pure (account ^. #clientId)
 
 oauthClientSecret :: Text
-oauthClientSecret = "oauth+test:secret"
+oauthClientSecret = "oauth+test:secret%GG"
 
 -- | EP-6: sign up a uniquely-named backing user (so several service accounts can coexist in one
 -- world without colliding on the fixed 'seedServiceUser' identity).
@@ -640,6 +640,18 @@ scenarioOAuthToken clientId port = do
       [("grant_type", "client_credentials"), ("scope", "kawa:ingest")]
   let (basicStatus, basicHdrs, basicBody) = basic
   basicStatus @?= 200
+  -- A malformed percent escape must fail even when a lenient decoder would produce
+  -- the exact stored secret. Correct form encoding above uses %25GG instead.
+  rawBasic <- parseRequest ("http://127.0.0.1:" <> show port <> "/oauth/token")
+  malformedReply <-
+    httpLbs
+      ( applyBasicAuth
+          (urlEncode True (Text.encodeUtf8 clientId))
+          "oauth%2Btest%3Asecret%GG"
+          (urlEncodedBody [("grant_type", "client_credentials")] rawBasic)
+      )
+      mgr
+  statusCode (responseStatus malformedReply) @?= 401
   -- RFC 6749 §5.1 requires the token response to be uncacheable.
   headerValue "Cache-Control" basicHdrs @?= Just "no-store"
   headerValue "Pragma" basicHdrs @?= Just "no-cache"
@@ -3123,6 +3135,10 @@ scenario ref adminToken port = do
   -- (c) me with Bearer
   (meStatus, meBody) <- getJSON mgr port "/v1/auth/me" (bearer access)
   meStatus @?= 200
+  (lowerStatus, _) <- getJSON mgr port "/v1/auth/me" [("Authorization", "bEaReR   " <> Text.encodeUtf8 access)]
+  lowerStatus @?= 200
+  (duplicateStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access <> bearer access)
+  duplicateStatus @?= 401
   meresp <- must "me body" meBody
   (dig ["email"] meresp >>= asText) @?= Just email
 

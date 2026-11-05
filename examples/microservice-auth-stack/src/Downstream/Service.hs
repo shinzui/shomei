@@ -92,6 +92,7 @@ import Shomei.Config (ShomeiConfig)
 import Shomei.Error (TokenError (TokenKeyNotFound))
 import Shomei.Id (UserId, idText)
 import Shomei.Prelude hiding (Context)
+import Shomei.Session.Token.Bearer (parseBearer)
 import Shomei.SigningKey.Verify.Jwt (verifyToken)
 import System.IO (stderr)
 
@@ -397,8 +398,8 @@ downstreamApplication cache cfg =
 -- there would make clients discard perfectly good sessions during an auth-service outage.
 localAuthHandler :: JwksCache -> ShomeiConfig -> AuthHandler Request AuthClaims
 localAuthHandler cache cfg = mkAuthHandler \req -> do
-  jwt <- case lookup "Authorization" (requestHeaders req) of
-    Just v | Just b <- Text.stripPrefix "Bearer " (Text.decodeUtf8Lenient v) -> pure b
+  jwt <- case [value | (name, value) <- requestHeaders req, name == "Authorization"] of
+    [v] | Just b <- parseBearer (Text.decodeUtf8Lenient v) -> pure b
     _ -> throwError bearer401 {errBody = "missing bearer token"}
   jwks <- liftIO (try @JwksUnavailable (currentJwks cache))
   case jwks of

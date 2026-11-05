@@ -16,6 +16,13 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (forM, forM_, replicateM, replicateM_)
+import Crypto.JOSE.Compact (decodeCompact, encodeCompact)
+import Crypto.JOSE.Error (runJOSE)
+import Crypto.JOSE.Header (newHeaderParamProtected)
+import Crypto.JOSE.JWA.JWS qualified as JWA
+import Crypto.JOSE.JWS qualified as JWS
+import Crypto.JWT (JWTError, SignedJWT, addClaim, signClaims, unsafeGetJWTClaimsSet)
+import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
@@ -73,12 +80,13 @@ import Shomei.Notify (noNotifierSecrets)
 import Shomei.Notify.Queue (newNotifierQueue)
 import Shomei.Persistence.Database.Postgres (runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (acquirePool)
+import Shomei.Prelude ((&), (.~))
 import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (application)
-import Shomei.Server.Keys (LoadedKeys, bootstrapKeys, reloadKeys)
+import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, reloadKeys)
 import Shomei.Session.Dto (LoginRequest (..), LoginResponse (..), TokenPairResponse (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
-import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, toStoredSigningKeyFor)
+import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, keyKid, toStoredSigningKeyFor)
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64, protectStoredSigningKey)
 import Shomei.SigningKey.Store (replaceActiveSigningKey)
@@ -132,6 +140,21 @@ tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token =
         testWithApplication (pure (downstreamApplication cache cfg)) \downPort -> do
           valid <- getProjects mgr downPort (Just token)
           valid @?= 200
+          lower <- getProjectsRaw mgr downPort ("bEaReR   " <> Text.encodeUtf8 token)
+          lower @?= 200
+          forM_ ["Bearer ", "Bearer a b", "Bearer a,b", "Bearer a\tb"] \badHeader ->
+            getProjectsRaw mgr downPort badHeader >>= (@?= 401)
+          loaded <- readIORef keysRef
+          forM_ [Aeson.object ["sub" Aeson..= ("invalid" :: Text)], Aeson.toJSON (["actor"] :: [Text]), Aeson.Number 1, Aeson.Null, Aeson.String ""] \actorValue -> do
+            forged <- runJOSE @JWTError do
+              signed <- decodeCompact (LBS.fromStrict (Text.encodeUtf8 token))
+              -- Test-only mutation of an issued token, re-signed with the trusted fixture key.
+              claims <- unsafeGetJWTClaimsSet (signed :: SignedJWT)
+              let hdr = JWS.newJWSHeaderProtected JWA.ES256 & JWS.kid .~ Just (newHeaderParamProtected (keyKid loaded.signingKey))
+              modified <- signClaims loaded.signingKey hdr (addClaim "act" actorValue claims)
+              pure (encodeCompact (modified :: SignedJWT))
+            wire <- either (assertFailure . show) pure forged
+            getProjects mgr downPort (Just (Text.decodeUtf8 (LBS.toStrict wire))) >>= (@?= 401)
 
           tampered <- getProjects mgr downPort (Just (Text.dropEnd 1 token <> "X"))
           tampered @?= 401

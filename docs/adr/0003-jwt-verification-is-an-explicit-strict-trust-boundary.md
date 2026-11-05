@@ -5,7 +5,7 @@ description: Shōmei pins algorithms, selects one key by kid, validates token ty
 docId: ADR-3
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-27T17:02:48Z
+timestamp: 2026-11-05T13:59:37Z
 originatingPlan: docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md
 generated:
   by: openai-codex/gpt-5
@@ -36,7 +36,8 @@ case-insensitively. Shōmei emits `typ: at+jwt` now; absence remains temporarily
 
 Issuer and audience must equal the configured values, and `aud` must contain exactly one value.
 The `roles`, `scopes`, and `permissions` claims must be arrays when present; malformed values are
-not treated as empty. Registered and Shōmei-owned claims, including `nbf` and `jti`, cannot enter
+not treated as empty. A present malformed or unsupported actor claim is rejected; it must never
+turn a delegated token into an ordinary token by silently dropping its actor. Registered and Shōmei-owned claims, including `nbf` and `jti`, cannot enter
 through `extraClaims`.
 
 Numeric dates are emitted at whole-second precision. Verification applies one bounded

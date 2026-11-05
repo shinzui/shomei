@@ -55,7 +55,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 |---|---|---|---|---|---|
 | 1 | Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes | [docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md](../plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Complete |
 | 2 | Bound Authentication Inputs and Passkey Enrollment | [docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md](../plans/63-bound-authentication-inputs-and-passkey-enrollment.md) | EP-7 M1 before M2 | EP-4 transaction helpers | In Progress |
-| 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | Not Started |
+| 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | In Progress |
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Not Started |
 | 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Not Started |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Not Started |
@@ -98,6 +98,8 @@ The intention was created with `mina ci --json` as requested. Mina warned that i
 2026-11-03: Code inspection found two defects the plans had treated as wire-shape observations. The verifier treats any non-string `act` claim as absent, so a token carrying an RFC 8693 object actor verifies as an ordinary non-delegated token; exploitation needs a trusted signing key, but it is exactly the failure this MasterPlan forbids, so EP-3 M1 now fixes it before the compatibility window opens. The login workflow never applies the password policy's 256-code-point maximum, which only `signup`, change, and reset enforce, so EP-2 bounds login input before any Argon2 work. Separately, `Shomei.Session.Store` already exposes a bulk `RevokeAllUserSessions` statement without a winner result that the admin workflow does not use; EP-4 extends it rather than adding a parallel operation.
 
 ## Decision Log
+
+2026-11-05: EP-2 input compatibility awaits the owner decision on mutually exclusive login requirements; its independent quota milestone is accepted. Continue EP-3 wire validation while that question is pending. The behavior children have no hard inter-child dependencies, and inventory acceptance remains satisfied.
 
 2026-10-28: Separate historical verification from behavior implementation and require inventory acceptance before expanding fixes. The previous completion claim omitted compound subitems; a final-only document sweep is insufficient.
 

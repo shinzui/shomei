@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- OAuth code exchange validates the RFC 7636 verifier length and ASCII alphabet before hashing.
+- Add the shared RFC 6750 bearer parser for server and downstream consumers.
+
 - **Breaking:** passkey creation requires an explicit enrollment ceiling and returns a typed
   result; `ShomeiConfig.maxPasskeysPerUser` defaults to 20. In-memory enrollment enforces the
   ceiling atomically and workflows publish success only for accepted enrollment.

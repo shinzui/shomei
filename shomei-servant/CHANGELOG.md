@@ -6,6 +6,11 @@ Shōmei packages.
 
 ## Unreleased
 
+- Bearer scheme matching is case-insensitive and accepts multiple ASCII separator spaces.
+  Invalid or duplicate Authorization credentials fail closed; a present malformed header
+  cannot fall back to a session cookie. Missing and invalid credentials retain distinct challenges.
+- Basic client authentication rejects malformed percent escapes before form decoding.
+
 - **Breaking:** `LoginRequest`, `MfaCompleteRequest` and `PasskeyLoginCompleteRequest` gain an
   optional `remember`, and `TokenPairResponse` gains `remembered`, present in every token pair.
 

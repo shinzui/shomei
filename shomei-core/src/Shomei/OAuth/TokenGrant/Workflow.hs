@@ -211,9 +211,23 @@ exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
       Nothing -> pure ()
       Just expected -> do
         verifier <- maybe (throwError (GrantInvalidGrant "code_verifier is required")) pure (cmd ^. #codeVerifier)
+        unless (validVerifier verifier) $
+          throwError (GrantInvalidGrant "code_verifier has invalid length or alphabet")
         let actual = pkceChallengeFor verifier
         unless (TE.encodeUtf8 expected `BA.constEq` TE.encodeUtf8 actual) $
           throwError (GrantInvalidGrant "code_verifier does not match the stored code_challenge")
+
+-- RFC 7636 section 4.1 requires ASCII unreserved characters, independently of
+-- whether an invalid input happens to hash to the stored challenge.
+validVerifier :: Text -> Bool
+validVerifier verifier =
+  Text.length verifier >= 43 && Text.length verifier <= 128 && Text.all unreserved verifier
+  where
+    unreserved c =
+      (c >= 'A' && c <= 'Z')
+        || (c >= 'a' && c <= 'z')
+        || (c >= '0' && c <= '9')
+        || c `elem` ("-._~" :: String)
 
 -- | The ID token (OIDC Core §2) for a freshly exchanged code.
 --

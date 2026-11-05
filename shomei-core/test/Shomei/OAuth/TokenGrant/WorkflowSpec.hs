@@ -3,10 +3,12 @@
 -- | Regression coverage for policy shared by the authorization-code grant and ordinary login.
 module Shomei.OAuth.TokenGrant.WorkflowSpec (tests) where
 
+import Control.Monad (forM_)
 import Data.Either (isRight)
 import Data.IORef (newIORef)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Shomei.Account.Email.Domain (Email, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId)
@@ -25,10 +27,12 @@ import Shomei.OAuth.TokenGrant.Workflow
   ( ExchangeAuthorizationCode (..),
     TokenGrantError (..),
     exchangeAuthorizationCode,
+    pkceChallengeFor,
   )
 import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
+import Shomei.Session.Token.Bearer (parseBearer)
 import Shomei.Test.InMemory (emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -37,7 +41,9 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.OAuth.TokenGrant.Workflow"
-    [ testCase "ID token diagnostics redact the credential" (show (IdToken "sensitive-jwt") @?= "IdToken <redacted>"),
+    [ testCase "PKCE validates the verifier even when its digest matches" testVerifierShape,
+      testCase "Bearer syntax accepts scheme case and ASCII spaces, refusing ambiguous credentials" testBearerShape,
+      testCase "ID token diagnostics redact the credential" (show (IdToken "sensitive-jwt") @?= "IdToken <redacted>"),
       testCase "authorization-code exchange refuses an unverified email when the gate is enabled" testUnverifiedEmail,
       testCase "authorization-code exchange accepts an unverified email when the gate is disabled" testUngatedEmail,
       testCase "authorization-code exchange accepts a verified email when the gate is enabled" testVerifiedEmail,
@@ -71,7 +77,10 @@ mkEmail' = either (error . show) id . mkEmail
 data PrincipalShape = UnverifiedEmail | VerifiedEmail | NoEmail
 
 exchangeFor :: ShomeiConfig -> PrincipalShape -> IO (Either TokenGrantError ())
-exchangeFor exchangeCfg shape = do
+exchangeFor exchangeCfg shape = exchangeForVerifier exchangeCfg shape Nothing
+
+exchangeForVerifier :: ShomeiConfig -> PrincipalShape -> Maybe Text -> IO (Either TokenGrantError ())
+exchangeForVerifier exchangeCfg shape verifier = do
   ref <- newIORef (emptyWorld fixedTime)
   clientId <- runInMemory ref do
     let email = case shape of
@@ -107,7 +116,7 @@ exchangeFor exchangeCfg shape = do
           userId = user.userId,
           scopes = Set.empty,
           nonce = Nothing,
-          codeChallenge = Nothing,
+          codeChallenge = pkceChallengeFor <$> verifier,
           authTime = fixedTime,
           createdAt = fixedTime,
           expiresAt = addUTCTime 60 fixedTime
@@ -122,7 +131,7 @@ exchangeFor exchangeCfg shape = do
             clientSecret = Just testClientSecret,
             code = rawCode,
             redirectUri = callback,
-            codeVerifier = Nothing
+            codeVerifier = verifier
           }
   pure (() <$ result)
 
@@ -147,3 +156,18 @@ testNoEmail = do
   case result of
     Left err -> assertFailure ("login-id-only account was refused: " <> show err)
     Right () -> pure ()
+
+testVerifierShape :: IO ()
+testVerifierShape = do
+  forM_ [Text.replicate 42 "a", Text.replicate 129 "a", Text.replicate 43 "é", Text.replicate 42 "a" <> "+", Text.replicate 42 "a" <> "="] \verifier -> do
+    result <- exchangeForVerifier baseCfg NoEmail (Just verifier)
+    result @?= Left (GrantInvalidGrant "code_verifier has invalid length or alphabet")
+  forM_ [Text.replicate 43 "a", Text.replicate 128 "Z", Text.replicate 40 "a" <> "-._~", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"] \verifier -> do
+    result <- exchangeForVerifier baseCfg NoEmail (Just verifier)
+    assertBool "legal verifier succeeds" (isRight result)
+
+testBearerShape :: IO ()
+testBearerShape = do
+  parseBearer "bEaReR   abc.def-_/+~==" @?= Just "abc.def-_/+~=="
+  forM_ ["Bearer", "Bearer ", "Bearer a b", "Bearer a,b", "Bearer a\tb", "Bearer\tabc", " Bearer abc", "Bearer abc ", "Bearer a=b", "Bearer é"] \header ->
+    parseBearer header @?= Nothing

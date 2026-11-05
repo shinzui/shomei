@@ -223,9 +223,10 @@ claimsToAuth cs = do
           ]
   -- The @act@ claim is present only on delegated (impersonation) tokens. Absent
   -- → 'Nothing'; present but unparseable → a malformed token.
-  actor' <- case lookupString "act" of
+  actor' <- case Map.lookup "act" claims of
     Nothing -> Right Nothing
-    Just actTxt -> Just <$> mapLeft (const TokenMalformed) (parseId actTxt)
+    Just (Aeson.String actTxt) -> Just <$> mapLeft (const TokenMalformed) (parseId actTxt)
+    Just _ -> Left TokenMalformed
   pure
     AuthClaims
       { subject = subj,

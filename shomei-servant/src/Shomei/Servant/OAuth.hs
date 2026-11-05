@@ -198,9 +198,22 @@ extractClientAuth mAuthHeader form =
       if BS.null rest
         then Left invalidClient
         else do
-          cid <- orInvalidClient (TE.decodeUtf8' (urlDecode True encodedCid))
-          secret <- orInvalidClient (TE.decodeUtf8' (urlDecode True (BS.drop 1 rest)))
+          cidBytes <- decodeFormComponent encodedCid
+          secretBytes <- decodeFormComponent (BS.drop 1 rest)
+          cid <- orInvalidClient (TE.decodeUtf8' cidBytes)
+          secret <- orInvalidClient (TE.decodeUtf8' secretBytes)
           pure ClientAuth {clientId = cid, clientSecret = secret}
+
+    -- http-types preserves malformed percent escapes; reject those rather than treating
+    -- them as literal secret bytes. Decode exactly once, after splitting the Basic pair.
+    decodeFormComponent bytes
+      | validEscapes (BS.unpack bytes) = Right (urlDecode True bytes)
+      | otherwise = Left invalidClient
+    validEscapes [] = True
+    validEscapes (37 : a : b : rest) = hex a && hex b && validEscapes rest
+    validEscapes (37 : _) = False
+    validEscapes (_ : rest) = validEscapes rest
+    hex c = (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
 
     fromBody = case (lookupParam "client_id" form, lookupParam "client_secret" form) of
       (Just cid, Just secret) -> pure ClientAuth {clientId = cid, clientSecret = secret}

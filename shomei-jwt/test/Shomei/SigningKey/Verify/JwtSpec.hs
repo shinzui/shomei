@@ -4,6 +4,7 @@
 module Shomei.SigningKey.Verify.JwtSpec (tests) where
 
 import Control.Lens ((%~), (&), (.~), (?~), (^.))
+import Control.Monad (forM_)
 import Crypto.JOSE.Compact (encodeCompact)
 import Crypto.JOSE.Error (runJOSE)
 import Crypto.JOSE.Header (newHeaderParamProtected)
@@ -50,7 +51,15 @@ tests :: TestTree
 tests =
   testGroup
     "Verify"
-    [ testCase "accepts an iat within the configured 30-second skew" $ do
+    [ testCase "a present malformed actor never verifies as an ordinary token" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        claims <- mkClaims testConfig now
+        forM_ [Aeson.object ["sub" Aeson..= String "invalid"], Aeson.toJSON (["actor"] :: [Text]), Number 1, Aeson.Null, String ""] \actorValue -> do
+          wire <- signClaimsOrFail jwk (addClaim "act" actorValue (claimsFromAuth claims))
+          result <- verifyToken (publicJwks jwk []) testConfig wire
+          result @?= Left TokenMalformed,
+      testCase "accepts an iat within the configured 30-second skew" $ do
         jwk <- generateSigningKey
         now <- getCurrentTime
         claims <- mkClaimsWith testConfig (addUTCTime 10 now) (addUTCTime 3600 now)

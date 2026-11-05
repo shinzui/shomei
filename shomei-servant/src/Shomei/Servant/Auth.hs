@@ -74,6 +74,7 @@ import Shomei.Servant.Cookie (sessionCookieName)
 import Shomei.Servant.Error (bearerOccurrence, noProblemOccurrence, pcCsrfRejected, pcMissingToken, pcSessionExpired, pcSessionRevoked, pcTokenInvalidAuth, toProblemError)
 import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.Seam (Env (..), verifyRequestToken)
+import Shomei.Session.Token.Bearer (parseBearer)
 import Web.Cookie (parseCookies)
 
 -- | Shōmei's principal: the value the 'AuthHandler' hands to every authenticated
@@ -134,7 +135,7 @@ instance
     where
       authenticate req = do
         case extractToken bearerOnlyPolicy req of
-          Nothing -> delayedFailFatal OAuth.missingToken
+          Nothing -> delayedFailFatal (if hasAuthorization req then OAuth.invalidToken else OAuth.missingToken)
           Just _ -> do
             outcome <- liftIO (runHandler (unAuthHandler (getContextEntry ctx) req))
             either (const (delayedFailFatal OAuth.invalidToken)) pure outcome
@@ -191,7 +192,7 @@ authHandler env = mkAuthHandler handle
     handle :: Request -> Handler AuthUser
     handle req = do
       (source, tok) <-
-        maybe (throwError (toProblemError pcMissingToken bearerOccurrence)) pure (extractToken policy req)
+        maybe (throwError (toProblemError (if hasAuthorization req then pcTokenInvalidAuth else pcMissingToken) bearerOccurrence)) pure (extractToken policy req)
       when (source == FromCookie && not (isSafeMethod req) && not (originAllowed policy.allowedOrigins req)) $
         throwError csrfRejected
       res <- liftIO (verifyRequestToken env tok)
@@ -200,6 +201,9 @@ authHandler env = mkAuthHandler handle
         Right claims -> pure (authUserFromClaims claims)
 
 -- | How an authentication failure becomes an HTTP response.
+hasAuthorization :: Request -> Bool
+hasAuthorization = any ((== "Authorization") . fst) . requestHeaders
+
 --
 -- Deliberately not 'Shomei.Servant.Error.authErrorToServerError': that handler-layer mapping
 -- turns 'SessionNotFound' into a 404, which would make a protected route look nonexistent.
@@ -215,11 +219,13 @@ authFailure = \case
 --
 -- 'BearerToken' reads the @Authorization@ header only — the cookie is __not__ a fallback,
 -- because a deployment that never sets cookies must not accept them either. The cookie modes
--- try bearer first (non-browser callers and service tokens keep working) and fall back to the
--- configured session cookie.
+-- accept an explicit bearer header (non-browser callers and service tokens keep working),
+-- and read the configured cookie only when Authorization is absent.
 extractToken :: CookiePolicy -> Request -> Maybe (TokenSource, Text)
-extractToken policy req =
-  extractTokenFromHeaders policy (header "Authorization") (header "Cookie")
+extractToken policy req = case [value | (name, value) <- requestHeaders req, name == "Authorization"] of
+  [] -> extractTokenFromHeaders policy Nothing (header "Cookie")
+  [value] -> extractTokenFromHeaders policy (Just (Text.decodeUtf8Lenient value)) (header "Cookie")
+  _ -> Nothing
   where
     header name = Text.decodeUtf8Lenient <$> lookup name (requestHeaders req)
 
@@ -232,11 +238,12 @@ extractToken policy req =
 -- today, anything later) reach that endpoint without a second implementation. Compare
 -- 'originHeaderAllowed', which exists for the same reason.
 extractTokenFromHeaders :: CookiePolicy -> Maybe Text -> Maybe Text -> Maybe (TokenSource, Text)
-extractTokenFromHeaders policy mAuthorization mCookie =
-  ((FromBearer,) <$> bearer) <|> guard (transportUsesCookies policy.transport) *> ((FromCookie,) <$> cookieToken)
+extractTokenFromHeaders policy mAuthorization mCookie = case mAuthorization of
+  Just _ -> (FromBearer,) <$> bearer
+  Nothing -> guard (transportUsesCookies policy.transport) *> ((FromCookie,) <$> cookieToken)
   where
     bearer :: Maybe Text
-    bearer = mAuthorization >>= Text.stripPrefix "Bearer "
+    bearer = mAuthorization >>= parseBearer
 
     cookieToken :: Maybe Text
     cookieToken = do

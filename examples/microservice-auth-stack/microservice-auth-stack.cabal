@@ -83,6 +83,7 @@ test-suite microservice-auth-stack-test
     -with-rtsopts=-N
 
   build-depends:
+    aeson,
     base,
     bytestring,
     effectful,
@@ -90,6 +91,7 @@ test-suite microservice-auth-stack-test
     hasql-pool,
     http-client,
     http-types,
+    jose,
     microservice-auth-stack,
     servant-health,
     shomei-client,
