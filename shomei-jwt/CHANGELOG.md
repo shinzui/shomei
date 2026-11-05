@@ -6,8 +6,13 @@ Shōmei packages.
 
 ## Unreleased
 
-- A present unsupported or malformed actor claim fails verification instead of losing its
-  delegation identity. Object-form compatibility is implemented only in the coordinated upgrade.
+- **Breaking:** `VerifierSettings` requires a finite positive `maxTokenLifetime` and an explicit
+  optional legacy actor deadline. Verification rejects nonpositive/excess lifetimes independently
+  of clock skew. The core-config adapter derives its ceiling from issuance TTLs.
+- Actor claims default to single-subject objects. Finite legacy reading/emission settings support
+  a coordinated rollout; a legacy mint's expiry plus skew must fit before the reader cutoff.
+- A present malformed actor fails verification instead of losing its delegation identity.
+  Direct extension bags cannot inject reserved claims. `sid` remains the correlation identifier.
 
 ## 0.2.0.0 — 2026-08-27
 

@@ -32,6 +32,9 @@ logs. The minimum-length / policy check runs before hashing.
   selects exactly one published verification key. An unknown or missing `kid` is refused; the
   verifier never tries the signature against every key. Expiry, not-before, and issued-at checks
   allow `allowedClockSkewSeconds` of clock skew (default 30 seconds).
+  Verification also requires a finite maximum `exp - iat`, derived from configured issuance
+  TTLs. Delegated JWTs use object actors; existing deployments must follow the coordinated
+  [actor-format and lifetime-policy upgrade](token-compatibility.md).
 - **Algorithm choice and timing.** The ES256 default signs through
   [crypton's generic ECDSA path](mori://kazu-yamamoto/crypton/packages/crypton), whose own
   documentation warns that its scalar operations are vulnerable to timing attacks and

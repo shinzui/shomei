@@ -290,6 +290,8 @@ data FileConfig = FileConfig
     oauthIdTokenTtlSeconds :: !(Maybe Int),
     -- | seconds of verifier tolerance for exp/nbf/iat; must be non-negative
     allowedClockSkewSeconds :: !(Maybe Int),
+    legacyActorUntilUnix :: !(Maybe Int),
+    emitLegacyActor :: !(Maybe Bool),
     -- | @ES256@ | @RS256@; the JWT signing algorithm for keys generated on first boot
     signingAlgorithm :: !(Maybe Text),
     -- | seconds between background reloads of signing-key material; 0 disables them
@@ -444,7 +446,9 @@ baseFromFile (Just fc) = do
                   refreshIntervalSeconds =
                     fromMaybe cfg0.signingKeyConfig.refreshIntervalSeconds fc.keyRefreshIntervalSeconds,
                   allowedClockSkewSeconds =
-                    fromMaybe cfg0.signingKeyConfig.allowedClockSkewSeconds fc.allowedClockSkewSeconds
+                    fromMaybe cfg0.signingKeyConfig.allowedClockSkewSeconds fc.allowedClockSkewSeconds,
+                  legacyActorUntilUnix = fc.legacyActorUntilUnix,
+                  emitLegacyActor = fromMaybe False fc.emitLegacyActor
                 },
             tokenTransport = fromMaybe cfg0.tokenTransport transportFile,
             cookieConfig =
@@ -707,6 +711,12 @@ overlayCoreFromEnv base = do
   alg <- signingAlgEnv
   keyRefresh <- keyRefreshIntervalEnv
   clockSkew <- clockSkewEnv
+  actorUntil <- intEnvMaybe "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
+  legacyEmission <- boolEnv "SHOMEI_EMIT_LEGACY_ACTOR"
+  let deadline = actorUntil <|> base.signingKeyConfig.legacyActorUntilUnix
+      emitLegacy = fromMaybe base.signingKeyConfig.emitLegacyActor legacyEmission
+  for_ deadline \value -> when (value <= 0) (ioError (userError "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX (Dhall field legacyActorUntilUnix) must be a positive finite Unix timestamp"))
+  when (emitLegacy && isNothing deadline) (ioError (userError "SHOMEI_EMIT_LEGACY_ACTOR requires SHOMEI_LEGACY_ACTOR_UNTIL_UNIX or legacyActorUntilUnix"))
   -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
@@ -741,7 +751,9 @@ overlayCoreFromEnv base = do
           base.signingKeyConfig
             { algorithm = fromMaybe base.signingKeyConfig.algorithm alg,
               refreshIntervalSeconds = fromMaybe base.signingKeyConfig.refreshIntervalSeconds keyRefresh,
-              allowedClockSkewSeconds = fromMaybe base.signingKeyConfig.allowedClockSkewSeconds clockSkew
+              allowedClockSkewSeconds = fromMaybe base.signingKeyConfig.allowedClockSkewSeconds clockSkew,
+              legacyActorUntilUnix = deadline,
+              emitLegacyActor = emitLegacy
             },
         refreshTokenTTL = fromMaybe base.refreshTokenTTL ref,
         sessionTTL = fromMaybe base.sessionTTL ses,

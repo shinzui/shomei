@@ -13,6 +13,7 @@
 module Shomei.SigningKey.Verify.Jwt
   ( VerifierSettings (..),
     verifierSettingsFromConfig,
+    validateVerifierSettings,
     KidSelectingKeys (..),
     checkStringOrUri,
     verifyTokenWith,
@@ -58,12 +59,13 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Data.Time (NominalDiffTime)
+import Data.Time (NominalDiffTime, diffUTCTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Authorization.Claims.Domain qualified as Domain
-import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..))
+import Shomei.Config (ImpersonationConfig (..), MachineTokenConfig (..), ShomeiConfig (..), SigningKeyConfig (..))
 import Shomei.Error (TokenError (..))
 import Shomei.Id (parseId)
 import Shomei.Prelude
@@ -82,7 +84,9 @@ data VerifierSettings = VerifierSettings
   { issuer :: !Domain.Issuer,
     audience :: !Domain.Audience,
     allowedClockSkew :: !NominalDiffTime,
-    requireTokenType :: !Bool
+    requireTokenType :: !Bool,
+    maxTokenLifetime :: !NominalDiffTime,
+    legacyActorDeadline :: !(Maybe UTCTime)
   }
   deriving stock (Eq, Show)
 
@@ -92,12 +96,22 @@ verifierSettingsFromConfig cfg =
     { issuer = cfg.issuer,
       audience = cfg.audience,
       allowedClockSkew = fromIntegral cfg.signingKeyConfig.allowedClockSkewSeconds,
-      requireTokenType = False
+      requireTokenType = False,
+      maxTokenLifetime = maximum [cfg.accessTokenTTL, cfg.machineTokenConfig.machineTokenTTL, cfg.impersonationConfig.impersonationSessionTTL],
+      legacyActorDeadline = posixSecondsToUTCTime . fromIntegral <$> cfg.signingKeyConfig.legacyActorUntilUnix
     }
 
 -- | A verification key store that returns only the key named by the protected
 -- @kid@ header. Missing and unknown identifiers deliberately return no keys.
 newtype KidSelectingKeys = KidSelectingKeys JWKSet
+
+-- | Validate once before serving requests in standalone consumers.
+validateVerifierSettings :: VerifierSettings -> Either Text ()
+validateVerifierSettings settings = do
+  checkStringOrUri (issuerText settings.issuer)
+  checkStringOrUri (audienceText settings.audience)
+  when (settings.maxTokenLifetime <= 0) (Left "maxTokenLifetime must be positive and finite")
+  when (settings.allowedClockSkew < 0) (Left "allowedClockSkew must be nonnegative")
 
 instance (Applicative m, HasKid h) => VerificationKeyStore m (h p) payload KidSelectingKeys where
   getVerificationKeys hdr _payload (KidSelectingKeys (JWKSet keys)) =
@@ -115,7 +129,9 @@ checkStringOrUri value = case preview stringOrUri value of
 -- | Verify with explicit policy. The protected @kid@ chooses exactly one public
 -- key and the accepted JWS algorithms are pinned to Shōmei's ES256/RS256 set.
 verifyTokenWith :: VerifierSettings -> JWKSet -> Text -> IO (Either TokenError AuthClaims)
+verifyTokenWith settings _ _ | Left _ <- validateVerifierSettings settings = pure (Left TokenMalformed)
 verifyTokenWith verifierSettings jwks raw = do
+  verificationTime <- getCurrentTime
   let bytes = BSL.fromStrict (Text.encodeUtf8 raw)
       matches wanted = maybe (const False) (==) (preview stringOrUri wanted)
       settings =
@@ -138,7 +154,7 @@ verifyTokenWith verifierSettings jwks raw = do
       pure case result of
         Left (JWSError NoUsableKeys) -> Left (TokenKeyNotFound headerKid)
         Left err -> Left (jwtErrorToTokenError err)
-        Right claims -> checkTokenType verifierSettings headerType *> claimsToAuth claims
+        Right claims -> checkTokenType verifierSettings headerType *> claimsToAuth verifierSettings verificationTime claims
 
 -- | THE core/Servant contract. Existing callers receive the hardened verifier
 -- through the unchanged public function.
@@ -190,8 +206,8 @@ checkTokenType settings = \case
     | otherwise -> Left (TokenOtherError ("typ " <> tokenType <> " is not at+jwt"))
 
 -- | Decode a verified jose 'ClaimsSet' back into Shōmei's 'AuthClaims'.
-claimsToAuth :: ClaimsSet -> Either TokenError AuthClaims
-claimsToAuth cs = do
+claimsToAuth :: VerifierSettings -> UTCTime -> ClaimsSet -> Either TokenError AuthClaims
+claimsToAuth settings verificationTime cs = do
   subTxt <- note "missing sub" (cs ^. claimSub >>= soText)
   subj <- mapLeft (const TokenMalformed) (parseId subTxt)
   sidTxt <- note "missing sid" (lookupString "sid")
@@ -200,6 +216,7 @@ claimsToAuth cs = do
   audTxt <- exactAudience (cs ^. claimAud)
   issuedAt' <- note "missing iat" (dateOf (cs ^. claimIat))
   expiresAt' <- note "missing exp" (dateOf (cs ^. claimExp))
+  when (expiresAt' <= issuedAt' || diffUTCTime expiresAt' issuedAt' > settings.maxTokenLifetime) (Left TokenMalformed)
   authTime' <- case Map.lookup "auth_time" claims of
     Nothing -> Right issuedAt'
     Just value -> case parseEither Aeson.parseJSON value of
@@ -225,7 +242,12 @@ claimsToAuth cs = do
   -- → 'Nothing'; present but unparseable → a malformed token.
   actor' <- case Map.lookup "act" claims of
     Nothing -> Right Nothing
-    Just (Aeson.String actTxt) -> Just <$> mapLeft (const TokenMalformed) (parseId actTxt)
+    Just (Aeson.String actTxt)
+      | maybe False (verificationTime <) settings.legacyActorDeadline -> parseActor actTxt
+    Just (Aeson.Object actorObject)
+      | KeyMap.size actorObject == 1,
+        Just (Aeson.String actTxt) <- KeyMap.lookup "sub" actorObject ->
+          parseActor actTxt
     Just _ -> Left TokenMalformed
   pure
     AuthClaims
@@ -243,6 +265,7 @@ claimsToAuth cs = do
         extraClaims = extra
       }
   where
+    parseActor actTxt = Just <$> mapLeft (const TokenMalformed) (parseId actTxt)
     note msg = maybe (Left (TokenOtherError msg)) Right
     mapLeft f = either (Left . f) Right
     -- jose serialises a StringOrURI (whether arbitrary string or URI) as a JSON

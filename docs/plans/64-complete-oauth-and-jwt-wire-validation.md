@@ -45,11 +45,15 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 
 - [x] (2026-11-05) M1: digest-matching invalid PKCE inputs fail, bearer syntax is shared by server/downstream, malformed Basic percent escapes fail, and present malformed actors are rejected by both verifier and downstream HTTP tests. Core/JWT/Servant/downstream gates pass with Tasty -j2.
-- [ ] M2: actor claims, token lifetime policy, and correlation behavior have upgrade-safe producer/consumer tests.
-- [ ] M3: every original HTTP interoperability and negative-test subitem has evidence.
+- [x] (2026-11-05) M2: object actors and finite legacy read/emission windows pass real issuer → standalone verifier → introspection and independent downstream HTTP tests. Legacy emission fits expiry plus skew before cutoff. Required finite lifetime policy, cutoff/default/config negatives, and direct extension-bag protection pass. The downstream CLI builds and refuses a zero ceiling at startup.
+- [x] (2026-11-05) M3: HTTP/CSRF/protocol cases and strict JWT/JWKS cases pass. Newly added tests cover Origin-null, Origin-over-Referer precedence, native HEAD/OPTIONS auth, malformed percent escapes, lowercase/multi-space bearer and duplicate headers. Existing refresh/revoke/UserInfo/freshness/chunked-body cases were checked against source and rerun.
 
 
 ## Surprises & Discoveries
+
+2026-11-05: Using the same instant for the last legacy emission and last legacy read would strand still-valid tokens minted just before cutoff. Legacy issuance now requires the token expiry plus issuer skew to fit inside the read window; otherwise it automatically emits an object. ADR-3 and the upgrade guide preserve this constraint.
+
+2026-11-05: Existing HTTP coverage lacked Origin-null, foreign-Origin/allowed-Referer precedence, and native HEAD/OPTIONS auth-handler checks. They are now explicit. Duplicate Authorization headers are rejected before Servant collapses them to one Header value, retaining OAuth error bodies on OAuth paths.
 
 
 
@@ -65,6 +69,8 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 ## Outcomes & Retrospective
 
+2026-11-05: All wire implementation milestones are accepted. Core/JWT/Servant/server/downstream suites pass with explicit Tasty -j2; the last validation reran JWT, Servant, server and downstream after the additional HTTP cases. `example-project-service` builds, and a zero `DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` fails startup with the named configuration error. ADR-3 and the token-compatibility guide define the format transition, finite lifetime policy and session correlation contract. Whole-child registry completion awaits the compound REV-2.23 parent: its dead clone-warning subrow belongs to plan 66, and historical redaction/suspended-account subrows belong to plan 68. Preserve those aggregate gates while returning to other ready work. No implementation friction was recorded under this child.
+
 
 
 
@@ -72,7 +78,7 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 ## Context and Orientation
 
 
-`shomei-core/src/Shomei/OAuth/TokenGrant/Workflow.hs` hashes verifiers without shape validation; `shomei-core/src/Shomei/OAuth/Authorize/Workflow.hs` already requires `code_challenge_method=S256` and checks that the challenge is 43 unpadded base64url characters (`isValidS256Challenge`), so only the verifier side is open. `shomei-jwt/src/Shomei/SigningKey/Sign/Jwt.hs` emits string `act`; `Verify/Jwt.hs` parses claims, and its `claimsToAuth` originally read `act` through `lookupString`, silently treating non-string JSON as absent. M1 now checks presence directly and rejects unsupported objects, arrays, numbers and null instead of discarding the actor. `VerifierSettings` carries clock skew and token-type policy but no lifetime ceiling. `shomei-servant/src/Shomei/Servant/Auth.hs`, `Servant/OAuth.hs`, and `Shomei/OAuth/Handler.hs` parse bearer/client credentials. `examples/microservice-auth-stack/src/Downstream/Service.hs` is an independent verifier consumer. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) preserve strict algorithm/key selection, configuration consistency, redaction, and bounded unknown-key refresh.
+`shomei-core/src/Shomei/OAuth/TokenGrant/Workflow.hs` hashes verifiers without shape validation; `shomei-core/src/Shomei/OAuth/Authorize/Workflow.hs` already requires `code_challenge_method=S256` and checks that the challenge is 43 unpadded base64url characters (`isValidS256Challenge`), so only the verifier side is open. `shomei-jwt/src/Shomei/SigningKey/Sign/Jwt.hs` emits string `act`; `Verify/Jwt.hs` parses claims, and its `claimsToAuth` originally read `act` through `lookupString`, silently treating non-string JSON as absent. M1 now checks presence directly and rejects unsupported objects, arrays, numbers and null instead of discarding the actor. `VerifierSettings` now requires a finite lifetime ceiling and an optional finite legacy actor deadline; object emission and bounded legacy emission are coordinated through `SigningKeyConfig`. `shomei-servant/src/Shomei/Servant/Auth.hs`, `Servant/OAuth.hs`, and `Shomei/OAuth/Handler.hs` parse bearer/client credentials. `examples/microservice-auth-stack/src/Downstream/Service.hs` is an independent verifier consumer. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) [ADR-8](../adr/0008-runtime-configuration-is-open-strict-and-synchronized.md) [ADR-13](../adr/0013-credential-values-and-submitted-identifiers-do-not-cross-diagnostic-boundaries.md) [ADR-18](../adr/0018-downstream-jwks-refresh-is-bounded-by-local-policy.md) preserve strict algorithm/key selection, configuration consistency, redaction, and bounded unknown-key refresh.
 
 All commands run from the repository root, `/Users/shinzui/Keikaku/bokuno/shomei`. Use the existing development shell when tools are absent (`nix develop`), without searching or reading `/nix/store`. Tests use the existing ephemeral PostgreSQL harness; never aim destructive fixtures at a deployment database. Locate dependency APIs with `mori registry search`, `mori registry show --full`, and `mori registry docs`; read source before coding. Before changing dependency bounds or choosing a compatibility workaround, verify the current released version against the authoritative registry and upstream tags. Preserve concurrent workspace edits and the current branch.
 

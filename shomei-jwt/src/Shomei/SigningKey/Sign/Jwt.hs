@@ -16,6 +16,7 @@ module Shomei.SigningKey.Sign.Jwt
     claimsFromIdToken,
     wholeSeconds,
     signAccessToken,
+    signAccessTokenWith,
     signIdToken,
     runTokenSignerJwt,
   )
@@ -59,7 +60,7 @@ import Effectful (Eff, IOE, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Authorization.Claims.Domain qualified as Domain
-import Shomei.Config (ShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..))
 import Shomei.Id (idText)
 import Shomei.OAuth.IdToken.Domain (IdToken (IdToken), IdTokenClaims (..))
 import Shomei.Prelude
@@ -83,7 +84,10 @@ sou = fromString . Text.unpack
 -- directly; session id, scopes, roles, and permissions travel as the custom claims
 -- @sid@, @scopes@, @roles@, @permissions@.
 claimsFromAuth :: AuthClaims -> ClaimsSet
-claimsFromAuth ac =
+claimsFromAuth = claimsFromAuthWithActorFormat False
+
+claimsFromAuthWithActorFormat :: Bool -> AuthClaims -> ClaimsSet
+claimsFromAuthWithActorFormat legacy ac =
   withActor $
     -- 'addExtra' seeds the custom claims into the base FIRST, then every claim in
     -- 'Domain.reservedClaimKeys' is written through a registered slot or a managed
@@ -108,11 +112,11 @@ claimsFromAuth ac =
       & addClaim "permissions" (Aeson.toJSON (Set.toList ac.permissions))
       & addClaim "auth_time" (Aeson.toJSON (NumericDate (wholeSeconds ac.authTime)))
   where
-    addExtra obj cs = KeyMap.foldrWithKey (\k v -> addClaim (Key.toText k) v) cs obj
+    addExtra obj cs = KeyMap.foldrWithKey (\k v -> if Key.toText k `elem` Domain.reservedClaimKeys then id else addClaim (Key.toText k) v) cs obj
     -- Add the @act@ claim only for delegated tokens, leaving ordinary tokens
     -- byte-identical to before this field existed.
     withActor cs = case ac.actor of
-      Just uid -> cs & addClaim "act" (Aeson.String (idText uid))
+      Just uid -> cs & addClaim "act" (if legacy then Aeson.String (idText uid) else Aeson.object ["sub" Aeson..= idText uid])
       Nothing -> cs
 
 -- | The JWS algorithm to sign with for a given key, chosen directly from the key
@@ -131,7 +135,22 @@ algForKey jwk = case view jwkMaterial jwk of
 -- for EC) rather than negotiated by @makeJWSHeader@, and the key's @kid@ is copied
 -- into the header by hand so a verifier can select the right key.
 signAccessToken :: JWK -> AuthClaims -> IO (Either JWTError AccessToken)
-signAccessToken jwk ac = do
+signAccessToken = signAccessTokenWithActorFormat False
+
+-- | During a rolling upgrade the explicit legacy emitter expires at the same finite
+-- deadline as legacy reading. A legacy token's expiry plus skew must fit inside
+-- that window; later mints automatically use objects so no fresh legacy token
+-- outlives the reader's cutoff.
+signAccessTokenWith :: ShomeiConfig -> JWK -> AuthClaims -> IO (Either JWTError AccessToken)
+signAccessTokenWith cfg jwk ac = do
+  now <- getCurrentTime
+  let lastValid = utcTimeToPOSIXSeconds ac.expiresAt + fromIntegral cfg.signingKeyConfig.allowedClockSkewSeconds
+      fits deadline = utcTimeToPOSIXSeconds now < deadline && lastValid < deadline
+      legacy = cfg.signingKeyConfig.emitLegacyActor && maybe False fits (fromIntegral <$> cfg.signingKeyConfig.legacyActorUntilUnix)
+  signAccessTokenWithActorFormat legacy jwk ac
+
+signAccessTokenWithActorFormat :: Bool -> JWK -> AuthClaims -> IO (Either JWTError AccessToken)
+signAccessTokenWithActorFormat legacy jwk ac = do
   let hdr =
         newJWSHeaderProtected (algForKey jwk)
           & JWS.kid
@@ -139,7 +158,7 @@ signAccessToken jwk ac = do
           & JWS.typ
           ?~ newHeaderParamProtected "at+jwt"
   result <- runJOSE @JWTError $ do
-    signed <- signClaims jwk hdr (claimsFromAuth ac)
+    signed <- signClaims jwk hdr (claimsFromAuthWithActorFormat legacy ac)
     pure (encodeCompact (signed :: SignedJWT))
   pure $ case result of
     Left e -> Left e
@@ -203,9 +222,9 @@ runTokenSignerJwt ::
   ShomeiConfig ->
   Eff (TokenSigner : es) a ->
   Eff es a
-runTokenSignerJwt jwk _cfg = interpret_ \case
+runTokenSignerJwt jwk cfg = interpret_ \case
   SignAccessToken ac -> do
-    r <- liftIO (signAccessToken jwk ac)
+    r <- liftIO (signAccessTokenWith cfg jwk ac)
     case r of
       Right tok -> pure tok
       Left e -> liftIO (throwIO (userError ("token signing failed: " <> show e)))

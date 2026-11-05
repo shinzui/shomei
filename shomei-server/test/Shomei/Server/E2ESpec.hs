@@ -9,6 +9,7 @@ module Shomei.Server.E2ESpec (tests) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Monad (forM_)
 import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
@@ -25,6 +26,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import GHC.Clock (getMonotonicTime)
@@ -61,7 +63,7 @@ import Shomei.Account.User.Domain (NewUser (..), User (..))
 import Shomei.Account.User.Postgres (runUserStorePostgres)
 import Shomei.Account.User.Store (createUser)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
-import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), ShomeiConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
+import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError)
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, idText)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
@@ -90,6 +92,7 @@ import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
 import Shomei.SigningKey.Sign.Jwt (signAccessToken)
+import Shomei.SigningKey.Verify.Jwt (verifyToken)
 import Shomei.Time.Postgres (runClockIO)
 import Shomei.Time.Store (now)
 import Test.Tasty (TestTree, testGroup)
@@ -139,14 +142,16 @@ tests =
           clientId <- seedOAuthClient pool
           testWithApplication (pure (application env healthyProbe healthyProbe)) (oidcScenario clientId),
       testCase "EP-6: token-exchange (on-behalf-of + impersonation) → verified vs JWKS → audited" $
-        withShomeiMigratedDatabase \connStr -> do
+        forM_ [False, True] \legacy -> withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keys <- bootstrapKeys e2eKek ES256 pool
           keysRef <- newIORef keys
           envMgr <- newManager defaultManagerSettings
           limiter <- newHashingLimiter 2
           notifierQueue <- newNotifierQueue 64
-          let cfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+          windowNow <- getCurrentTime
+          let baseCfg = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+              cfg = baseCfg {signingKeyConfig = baseCfg.signingKeyConfig {emitLegacyActor = legacy, legacyActorUntilUnix = Just (ceiling (utcTimeToPOSIXSeconds (addUTCTime 7200 windowNow)))}}
               env = Env {envPool = pool, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = notifierQueue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
           clientId <- seedExchangeServiceAccount pool
           -- The operator token must verify against the server's own key material, so it is signed
@@ -171,7 +176,7 @@ tests =
                     extraClaims = mempty
                   }
           AccessToken opTok <- either (assertFailure . ("could not sign the operator token: " <>) . show) pure =<< signAccessToken keys.signingKey opClaims
-          testWithApplication (pure (application env healthyProbe healthyProbe)) (exchangeScenario pool clientId opTok),
+          testWithApplication (pure (application env healthyProbe healthyProbe)) (exchangeScenario cfg pool clientId opTok),
       testCase "EP-7: enroll TOTP → verify → login(mfa) → complete → recovery codes → audited" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
@@ -602,8 +607,8 @@ seedExchangeServiceAccount pool = do
 
 -- | The RFC 8693 token-exchange promise against the real stack: both modes mint a delegated token
 -- the server's own verifier and JWKS accept, and both write their audit event with subject + actor.
-exchangeScenario :: Pool -> Text -> Text -> Int -> IO ()
-exchangeScenario pool clientId opTok port = do
+exchangeScenario :: ShomeiConfig -> Pool -> Text -> Text -> Int -> IO ()
+exchangeScenario cfg pool clientId opTok port = do
   mgr <- newManager defaultManagerSettings
   let teGrant = ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
       userIdType = "urn:shomei:params:oauth:token-type:user-id"
@@ -638,6 +643,13 @@ exchangeScenario pool clientId opTok port = do
   jwks <- must "jwks body" jBody
   assertBool "the on-behalf token's kid is published" (maybe False (`elem` jwksKids jwks) (jwtHeaderKid obAccess))
 
+  publicKeys <- case Aeson.fromJSON jwks of
+    Aeson.Success value -> pure value
+    Aeson.Error err -> assertFailure err
+  verified <- either (assertFailure . show) pure =<< verifyToken publicKeys cfg obAccess
+  idText verified.subject @?= subjectId
+  assertBool "standalone verifier preserves the delegated actor" (isJust verified.actor)
+
   -- Introspection verifies the JWT server-side and reports sub (the user), the scope, and act (the
   -- service) — sub/act/scopes asserted against a real verify, not a hand decode.
   (iStatus, _, iBody) <- postForm mgr port "/oauth/introspect" (Just (clientId, exchangeSecret)) [("token", enc obAccess)]
@@ -647,6 +659,15 @@ exchangeScenario pool clientId opTok port = do
   (dig ["sub"] intro >>= asText) @?= Just subjectId
   (dig ["scope"] intro >>= asText) @?= Just "kawa:ingest"
   assertBool "on-behalf token carries an act member" (isJust (dig ["act", "sub"] intro >>= asText))
+
+  actorId <- must "introspected actor" (dig ["act", "sub"] intro >>= asText)
+  payload <- must "delegated JWT payload" (jwtPayload obAccess)
+  dig ["act"] payload
+    @?= Just
+      ( if cfg.signingKeyConfig.emitLegacyActor
+          then String actorId
+          else object ["sub" .= actorId]
+      )
 
   -- ===== Impersonation =====
   (impStatus, _, impBody) <-

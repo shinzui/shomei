@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- Expose finite actor migration settings through `SHOMEI_LEGACY_ACTOR_UNTIL_UNIX` and
+  `SHOMEI_EMIT_LEGACY_ACTOR` with matching Dhall fields. Follow the coordinated token upgrade guide.
+
 - Expose the passkey enrollment ceiling through `SHOMEI_MAX_PASSKEYS_PER_USER` and Dhall
   `maxPasskeysPerUser` (default 20, accepted range 1–100).
 

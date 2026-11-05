@@ -85,9 +85,11 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
-Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 is Complete with commit-pinned evidence at `7242c45`. EP-2 M2 is accepted: atomic passkey quotas, configuration, winner-only audit and HTTP refusal pass. Its input/legacy compatibility milestones remain open, including the pending oversized-login policy question. Other behavior children remain eligible after the accepted inventory gate. EP-7 historical verification includes the completed ID-token diagnostic follow-up; final integration gates remain open.
+Implementation started 2026-11-05. EP-7 M1 inventory is accepted: all 108 parent findings, compound clauses, and unnumbered costs have owners explicitly named in the corresponding plans. The executable inventory check passes; no finding is yet closed. EP-1 is Complete with commit-pinned evidence at `7242c45`. EP-2 M2 is accepted: atomic passkey quotas, configuration, winner-only audit and HTTP refusal pass. Its input/legacy compatibility milestones remain open; the owner chose to preserve legacy-length login while bounding new identity writes at 256 characters. EP-3 implementation milestones now pass; its compound REV-2.23 parent remains open for EP-5/EP-7 subrows. Resume EP-2 input bounds under the owner decision; EP-4 through EP-6 remain ready after inventory acceptance. EP-7 historical verification includes the completed ID-token diagnostic follow-up; final integration gates remain open.
 
 ## Surprises & Discoveries
+
+2026-11-05: A parent finding can aggregate leaves owned by several children. EP-3 has accepted its wire milestones but must remain In Progress until REV-2.23.4 (EP-5) and the historical EP-7 leaves close. This is an integration gate, not a reason to close an incomplete parent or stop ready behavior work.
 
 REV-11 showed that all 108 parent findings can appear covered by historical plans while individual clauses remain open. Therefore completeness is checked at clause level, including informational observations and index/performance appendices. ADR-13 additionally names ID-token diagnostics as a deferred related item; EP-7 must explicitly reconcile that boundary rather than infer all token wrappers are redacted.
 
@@ -99,7 +101,7 @@ The intention was created with `mina ci --json` as requested. Mina warned that i
 
 ## Decision Log
 
-2026-11-05: EP-2 input compatibility awaits the owner decision on mutually exclusive login requirements; its independent quota milestone is accepted. Continue EP-3 wire validation while that question is pending. The behavior children have no hard inter-child dependencies, and inventory acceptance remains satisfied.
+2026-11-05: EP-2 input compatibility originally awaited a choice between mutually exclusive login requirements, so EP-3 wire validation proceeded after the independent quota milestone. The owner has now chosen compatibility login with bounded new identity writes; return to EP-2 after the current wire checkpoint. The behavior children have no hard inter-child dependencies, and inventory acceptance remains satisfied.
 
 2026-10-28: Separate historical verification from behavior implementation and require inventory acceptance before expanding fixes. The previous completion claim omitted compound subitems; a final-only document sweep is insufficient.
 

@@ -5,7 +5,7 @@ description: Shōmei pins algorithms, selects one key by kid, validates token ty
 docId: ADR-3
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-11-05T13:59:37Z
+timestamp: 2026-11-05T14:24:38Z
 originatingPlan: docs/plans/53-harden-jwt-verification-and-make-the-signing-key-state-machine-atomic.md
 generated:
   by: openai-codex/gpt-5
@@ -44,6 +44,18 @@ Numeric dates are emitted at whole-second precision. Verification applies one bo
 `allowedClockSkewSeconds` value, default 30 seconds, to `exp`, `nbf`, and `iat`. Issuer and audience
 are validated as RFC 7519 StringOrURI values at process boot so the signer never reaches `jose`'s
 partial string conversion with malformed input.
+
+The maximum accepted `exp - iat` is required, positive and finite. The issuer adapter derives it
+from the greatest configured human, machine and impersonation TTL; standalone consumers configure
+it explicitly and validate policy before startup. Skew does not enlarge that budget. `sid` remains
+the session correlation/revocation handle; no minted `jti` or per-access-token revocation is promised.
+
+Actor claims default to a single-subject object. Legacy strings require an explicit finite reader
+deadline; absent/expired configuration refuses them. A temporary legacy-emission flag supports
+reader-first rolling upgrades, and only emits a string if the token expiry plus issuer skew fits
+inside the reader window. Otherwise it automatically emits an object. The entire rollout and the
+last old token's valid lifetime must fit before the cutoff. Retain dual readers during rollback;
+object-unaware readers that discard actor identity are unsafe once objects have been emitted.
 
 ## Consequences
 

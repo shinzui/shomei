@@ -152,7 +152,9 @@ data SigningKeyConfig = SigningKeyConfig
     refreshIntervalSeconds :: !Int,
     -- | Seconds of tolerance granted to @exp@, @nbf@, and @iat@ by the JWT
     -- verifier. Zero requires exact agreement between issuer and verifier clocks.
-    allowedClockSkewSeconds :: !Int
+    allowedClockSkewSeconds :: !Int,
+    legacyActorUntilUnix :: !(Maybe Int),
+    emitLegacyActor :: !Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
@@ -521,7 +523,7 @@ defaultShomeiConfig iss aud =
       maxPasskeysPerUser = 20,
       passwordPolicy = defaultPasswordPolicy,
       tokenTransport = BearerToken,
-      signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30},
+      signingKeyConfig = SigningKeyConfig {algorithm = "ES256", refreshIntervalSeconds = 60, allowedClockSkewSeconds = 30, legacyActorUntilUnix = Nothing, emitLegacyActor = False},
       sessionCheckMode = VerifyTokenOnly,
       notifierConfig =
         NotifierConfig

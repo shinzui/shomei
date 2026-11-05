@@ -15,10 +15,11 @@
 module Main (main) where
 
 import Data.Text qualified as Text
-import Downstream.Service (downstreamApplication, newJwksCache, newJwksManager)
+import Downstream.Service (downstreamApplicationWithVerifier, newJwksCache, newJwksManager)
 import Network.Wai.Handler.Warp qualified as Warp
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
-import Shomei.Config (defaultShomeiConfig)
+import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..), defaultShomeiConfig)
+import Shomei.SigningKey.Verify.Jwt (VerifierSettings (..), validateVerifierSettings, verifierSettingsFromConfig)
 import System.Environment (getEnv, lookupEnv)
 import Text.Read (readMaybe)
 
@@ -28,10 +29,26 @@ main = do
   port <- maybe 8090 id . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_PORT"
   iss <- maybe "shomei" id <$> lookupEnv "SHOMEI_ISSUER"
   aud <- maybe "shomei-clients" id <$> lookupEnv "SHOMEI_AUDIENCE"
+  maximumLifetime <- positiveEnv "DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS" 1800
+  legacyUntil <- optionalPositiveEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
   ttl <- maybe 900 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_TTL_SECONDS"
   maxStale <- maybe 86400 fromInteger . (>>= readMaybe) <$> lookupEnv "DOWNSTREAM_JWKS_MAX_STALENESS_SECONDS"
   mgr <- newJwksManager jwksUrl
   cache <- newJwksCache mgr jwksUrl ttl maxStale
-  let cfg = defaultShomeiConfig (Issuer (Text.pack iss)) (Audience (Text.pack aud))
+  let base = defaultShomeiConfig (Issuer (Text.pack iss)) (Audience (Text.pack aud))
+      cfg = base {signingKeyConfig = base.signingKeyConfig {legacyActorUntilUnix = legacyUntil}}
+      verifier = (verifierSettingsFromConfig cfg) {maxTokenLifetime = fromIntegral maximumLifetime}
+  either (ioError . userError . Text.unpack) pure (validateVerifierSettings verifier)
   putStrLn ("[example-project-service] listening on :" <> show port)
-  Warp.run port (downstreamApplication cache cfg)
+  Warp.run port (downstreamApplicationWithVerifier cache verifier)
+
+positiveEnv :: String -> Int -> IO Int
+positiveEnv name fallback = maybe fallback id <$> optionalPositiveEnv name
+
+optionalPositiveEnv :: String -> IO (Maybe Int)
+optionalPositiveEnv name =
+  lookupEnv name >>= \case
+    Nothing -> pure Nothing
+    Just raw -> case readMaybe raw of
+      Just value | value > 0 -> pure (Just value)
+      _ -> ioError (userError (name <> " must be a positive finite integer"))

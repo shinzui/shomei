@@ -36,14 +36,17 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), mkExtraClaims)
+import Shomei.Config (ShomeiConfig (..), SigningKeyConfig (..))
 import Shomei.Error (TokenError (..))
+import Shomei.Id (genUserId, idText)
 import Shomei.Session.Token.Domain (AccessToken (AccessToken))
 import Shomei.SigningKey.Domain qualified as Domain
 import Shomei.SigningKey.Key.Jwt (generateSigningKey, generateSigningKeyFor, keyKid)
-import Shomei.SigningKey.Sign.Jwt (claimsFromAuth, signAccessToken)
+import Shomei.SigningKey.Sign.Jwt (claimsFromAuth, signAccessToken, signAccessTokenWith)
 import Shomei.SigningKey.TestSupport (mkClaims, mkClaimsWith, publicJwks, testConfig)
-import Shomei.SigningKey.Verify.Jwt (verifyToken)
+import Shomei.SigningKey.Verify.Jwt (VerifierSettings (..), verifierSettingsFromConfig, verifyToken, verifyTokenWith)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -51,7 +54,64 @@ tests :: TestTree
 tests =
   testGroup
     "Verify"
-    [ testCase "a present malformed actor never verifies as an ordinary token" $ do
+    [ testCase "actor object emission and bounded legacy compatibility preserve delegation" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        base <- mkClaims testConfig now
+        uid <- genUserId
+        let claims = base {actor = Just uid}
+            deadline = ceiling (utcTimeToPOSIXSeconds (addUTCTime 7200 now))
+            legacyCfg = testConfig {signingKeyConfig = testConfig.signingKeyConfig {legacyActorUntilUnix = Just deadline, emitLegacyActor = True}}
+            expiredCfg = legacyCfg {signingKeyConfig = legacyCfg.signingKeyConfig {legacyActorUntilUnix = Just (deadline - 7300)}}
+            actorObject = Aeson.object ["sub" Aeson..= idText uid]
+        objectWire <- signAccessOrFail jwk claims
+        payload <- decodeSegment 1 objectWire
+        KeyMap.lookup "act" payload @?= Just actorObject
+        legacyToken <- either (assertFailure . show) pure =<< signAccessTokenWith legacyCfg jwk claims
+        let AccessToken legacyWire = legacyToken
+        legacyPayload <- decodeSegment 1 legacyWire
+        KeyMap.lookup "act" legacyPayload @?= Just (String (idText uid))
+        forM_ [objectWire, legacyWire] \wire -> do
+          verified <- verifyToken (publicJwks jwk []) legacyCfg wire
+          case verified of
+            Right ac -> ac.actor @?= Just uid
+            Left err -> assertFailure (show err)
+        verifyToken (publicJwks jwk []) testConfig legacyWire >>= (@?= Left TokenMalformed)
+        verifyToken (publicJwks jwk []) expiredCfg legacyWire >>= (@?= Left TokenMalformed)
+        AccessToken automatic <- either (assertFailure . show) pure =<< signAccessTokenWith expiredCfg jwk claims
+        automaticPayload <- decodeSegment 1 automatic
+        KeyMap.lookup "act" automaticPayload @?= Just actorObject
+        let tooShort = legacyCfg {signingKeyConfig = legacyCfg.signingKeyConfig {legacyActorUntilUnix = Just (deadline - 7140)}}
+        AccessToken bounded <- either (assertFailure . show) pure =<< signAccessTokenWith tooShort jwk claims
+        boundedPayload <- decodeSegment 1 bounded
+        KeyMap.lookup "act" boundedPayload @?= Just actorObject,
+      testCase "accepted lifetime is positive and finite independently of clock skew" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        let settings = (verifierSettingsFromConfig testConfig) {maxTokenLifetime = 60, allowedClockSkew = 3600}
+        forM_ [0, -1, 61] \ttl -> do
+          claims <- mkClaimsWith testConfig now (addUTCTime ttl now)
+          wire <- signAccessOrFail jwk claims
+          verifyTokenWith settings (publicJwks jwk []) wire >>= (@?= Left TokenMalformed)
+        claims <- mkClaimsWith testConfig now (addUTCTime 60 now)
+        wire <- signAccessOrFail jwk claims
+        result <- verifyTokenWith settings (publicJwks jwk []) wire
+        case result of
+          Right _ -> pure ()
+          Left err -> assertFailure (show err)
+        verifyTokenWith settings {maxTokenLifetime = 0} (publicJwks jwk []) wire >>= (@?= Left TokenMalformed),
+      testCase "a direct extension bag cannot inject actor or jti" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        base <- mkClaims testConfig now
+        uid <- genUserId
+        let claims = base {extraClaims = KeyMap.fromList [("act", Aeson.object ["sub" Aeson..= idText uid]), ("jti", String "forged")]}
+        wire <- signAccessOrFail jwk claims
+        payload <- decodeSegment 1 wire
+        KeyMap.lookup "act" payload @?= Nothing
+        KeyMap.lookup "jti" payload @?= Nothing
+        assertBool "sid remains the correlation identifier" (KeyMap.member "sid" payload),
+      testCase "a present malformed actor never verifies as an ordinary token" $ do
         jwk <- generateSigningKey
         now <- getCurrentTime
         claims <- mkClaims testConfig now

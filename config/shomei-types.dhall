@@ -80,6 +80,8 @@ let ConfigType =
       , oauthLoginUrl : Optional Text
       , oauthAuthorizationCodeTtlSeconds : Optional Natural
       , oauthIdTokenTtlSeconds : Optional Natural
+      , legacyActorUntilUnix : Optional Natural
+      , emitLegacyActor : Optional Bool
       , allowedClockSkewSeconds : Optional Natural
       , signingAlgorithm : Optional Text
       , keyRefreshIntervalSeconds : Optional Natural
@@ -163,6 +165,8 @@ let default =
       , oauthLoginUrl = None Text
       , oauthAuthorizationCodeTtlSeconds = None Natural
       , oauthIdTokenTtlSeconds = None Natural
+      , legacyActorUntilUnix = None Natural
+      , emitLegacyActor = None Bool
       , allowedClockSkewSeconds = None Natural
       , signingAlgorithm = None Text
       , keyRefreshIntervalSeconds = None Natural

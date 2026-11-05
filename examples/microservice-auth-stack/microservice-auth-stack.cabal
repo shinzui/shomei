@@ -69,6 +69,7 @@ executable example-project-service
     microservice-auth-stack,
     servant-health,
     shomei-core,
+    shomei-jwt,
     text,
     warp,
 

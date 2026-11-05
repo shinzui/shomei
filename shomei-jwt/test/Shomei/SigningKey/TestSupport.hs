@@ -28,7 +28,7 @@ testAudience :: Audience
 testAudience = Audience "shomei-clients"
 
 testConfig :: ShomeiConfig
-testConfig = defaultShomeiConfig testIssuer testAudience
+testConfig = (defaultShomeiConfig testIssuer testAudience) {accessTokenTTL = 3600}
 
 -- | Build claims valid from @t@ for one hour, with two scopes and one role.
 mkClaims :: ShomeiConfig -> UTCTime -> IO AuthClaims

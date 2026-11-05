@@ -23,15 +23,17 @@ import Crypto.JOSE.JWA.JWS qualified as JWA
 import Crypto.JOSE.JWS qualified as JWS
 import Crypto.JWT (JWTError, SignedJWT, addClaim, signClaims, unsafeGetJWTClaimsSet)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
+import Data.Foldable (toList)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Data.Time (diffUTCTime, getCurrentTime)
+import Data.Time (addUTCTime, diffUTCTime, getCurrentTime)
 import Downstream.Service
   ( JwksCache,
     JwksCacheSettings (..),
@@ -39,6 +41,7 @@ import Downstream.Service
     currentJwks,
     defaultJwksCacheSettings,
     downstreamApplication,
+    downstreamApplicationWithVerifier,
     newJwksCache,
     newJwksCacheWith,
     newJwksManager,
@@ -74,6 +77,7 @@ import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Client qualified as C
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Error (AuthError)
+import Shomei.Id (genUserId, idText)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
@@ -90,6 +94,7 @@ import Shomei.SigningKey.Key.Jwt (generateSigningKeyFor, keyKid, toStoredSigning
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64, protectStoredSigningKey)
 import Shomei.SigningKey.Store (replaceActiveSigningKey)
+import Shomei.SigningKey.Verify.Jwt (VerifierSettings (..), verifierSettingsFromConfig)
 import Test.Tasty (DependencyType (AllFinish), TestTree, defaultMain, dependentTestGroup, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -146,15 +151,8 @@ tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token =
             getProjectsRaw mgr downPort badHeader >>= (@?= 401)
           loaded <- readIORef keysRef
           forM_ [Aeson.object ["sub" Aeson..= ("invalid" :: Text)], Aeson.toJSON (["actor"] :: [Text]), Aeson.Number 1, Aeson.Null, Aeson.String ""] \actorValue -> do
-            forged <- runJOSE @JWTError do
-              signed <- decodeCompact (LBS.fromStrict (Text.encodeUtf8 token))
-              -- Test-only mutation of an issued token, re-signed with the trusted fixture key.
-              claims <- unsafeGetJWTClaimsSet (signed :: SignedJWT)
-              let hdr = JWS.newJWSHeaderProtected JWA.ES256 & JWS.kid .~ Just (newHeaderParamProtected (keyKid loaded.signingKey))
-              modified <- signClaims loaded.signingKey hdr (addClaim "act" actorValue claims)
-              pure (encodeCompact (modified :: SignedJWT))
-            wire <- either (assertFailure . show) pure forged
-            getProjects mgr downPort (Just (Text.decodeUtf8 (LBS.toStrict wire))) >>= (@?= 401)
+            wire <- fixtureActorToken loaded token actorValue
+            getProjects mgr downPort (Just wire) >>= (@?= 401)
 
           tampered <- getProjects mgr downPort (Just (Text.dropEnd 1 token <> "X"))
           tampered @?= 401
@@ -165,8 +163,43 @@ tests pool keysRef cenv mgr cfg jwksUrl jwksBytes token =
 
           invalidUtf8 <- getProjectsRaw mgr downPort "Bearer \255"
           invalidUtf8 @?= 401,
+      testCase "object and legacy actors preserve identity under a finite downstream policy" do
+        cache <- newJwksCache mgr jwksUrl 900 86400
+        loaded <- readIORef keysRef
+        now <- getCurrentTime
+        operator <- genUserId
+        let actorId = idText operator
+            settings = (verifierSettingsFromConfig cfg) {legacyActorDeadline = Just (addUTCTime 7200 now)}
+        forM_ [Aeson.String actorId, Aeson.object ["sub" Aeson..= actorId]] \actorValue -> do
+          wire <- fixtureActorToken loaded token actorValue
+          testWithApplication (pure (downstreamApplicationWithVerifier cache settings)) \port -> do
+            req <- parseRequest ("http://127.0.0.1:" <> show port <> "/projects")
+            response <- httpLbs req {requestHeaders = [("Authorization", "Bearer " <> Text.encodeUtf8 wire)]} mgr
+            statusCode (responseStatus response) @?= 200
+            case Aeson.decode (responseBody response) of
+              Just (Aeson.Array rows) -> case toList rows of
+                Aeson.Object row : _ -> KeyMap.lookup "onBehalfOf" row @?= Just (Aeson.String actorId)
+                _ -> assertFailure "expected a project"
+              _ -> assertFailure "expected project response JSON"
+        legacy <- fixtureActorToken loaded token (Aeson.String actorId)
+        testWithApplication (pure (downstreamApplicationWithVerifier cache settings {legacyActorDeadline = Just (addUTCTime (-1) now)})) \port ->
+          getProjects mgr port (Just legacy) >>= (@?= 401)
+        testWithApplication (pure (downstreamApplicationWithVerifier cache settings {maxTokenLifetime = 1})) \port ->
+          getProjects mgr port (Just token) >>= (@?= 401),
       cacheTests pool keysRef cenv mgr cfg jwksUrl jwksBytes token
     ]
+
+-- Test-only mutation of an issued token, re-signed with the ephemeral trusted fixture key.
+fixtureActorToken :: LoadedKeys -> Text -> Aeson.Value -> IO Text
+fixtureActorToken loaded token actorValue = do
+  result <- runJOSE @JWTError do
+    signed <- decodeCompact (LBS.fromStrict (Text.encodeUtf8 token))
+    claims <- unsafeGetJWTClaimsSet (signed :: SignedJWT)
+    let hdr = JWS.newJWSHeaderProtected JWA.ES256 & JWS.kid .~ Just (newHeaderParamProtected (keyKid loaded.signingKey))
+    modified <- signClaims loaded.signingKey hdr (addClaim "act" actorValue claims)
+    pure (encodeCompact (modified :: SignedJWT))
+  wire <- either (assertFailure . show) pure result
+  pure (Text.decodeUtf8 (LBS.toStrict wire))
 
 -- ---------------------------------------------------------------------------
 -- JWKS cache resilience

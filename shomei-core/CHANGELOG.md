@@ -6,6 +6,9 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** `SigningKeyConfig` gains `legacyActorUntilUnix` and `emitLegacyActor` for the
+  finite actor-format upgrade window; both default to strict object-form behavior.
+
 - OAuth code exchange validates the RFC 7636 verifier length and ASCII alphabet before hashing.
 - Add the shared RFC 6750 bearer parser for server and downstream consumers.
 

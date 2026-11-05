@@ -407,6 +407,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierDefaults
   notifierSmtpDhallAndEnv
   passkeyQuotaSettings
+  actorCompatibilitySettings
 
   notifierWebhookEnv
   notifierSmtpMissingHostFails
@@ -782,3 +783,25 @@ notifierInsecureTransportFlags = do
     ("smtpTlsMode=plain sends mail in the clear; lab sinks only" `elem` warningSettings.serverWarnings)
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
+
+actorCompatibilitySettings :: Assertion
+actorCompatibilitySettings = do
+  unsetEnv "SHOMEI_CONFIG"
+  unsetEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
+  unsetEnv "SHOMEI_EMIT_LEGACY_ACTOR"
+  setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
+  (defaults, _) <- loadConfigFromEnv
+  defaults.signingKeyConfig.legacyActorUntilUnix @?= Nothing
+  defaults.signingKeyConfig.emitLegacyActor @?= False
+  setEnv "SHOMEI_EMIT_LEGACY_ACTOR" "true"
+  missing <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" missing
+  setEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" "2000000000"
+  (compatible, _) <- loadConfigFromEnv
+  compatible.signingKeyConfig.legacyActorUntilUnix @?= Just 2000000000
+  compatible.signingKeyConfig.emitLegacyActor @?= True
+  setEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" "0"
+  invalid <- try loadConfigFromEnv
+  expectUserErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" invalid
+  unsetEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
+  unsetEnv "SHOMEI_EMIT_LEGACY_ACTOR"

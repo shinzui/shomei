@@ -47,6 +47,7 @@ module Downstream.Service
     refreshForUnknownKey,
     JwksUnavailable (..),
     downstreamApplication,
+    downstreamApplicationWithVerifier,
     Project (..),
     DownstreamAPI,
   )
@@ -93,7 +94,7 @@ import Shomei.Error (TokenError (TokenKeyNotFound))
 import Shomei.Id (UserId, idText)
 import Shomei.Prelude hiding (Context)
 import Shomei.Session.Token.Bearer (parseBearer)
-import Shomei.SigningKey.Verify.Jwt (verifyToken)
+import Shomei.SigningKey.Verify.Jwt (VerifierSettings, verifierSettingsFromConfig, verifyTokenWith)
 import System.IO (stderr)
 
 -- | One cached fetch result. 'effectiveTtl' is the configured TTL unless the JWKS response
@@ -387,8 +388,11 @@ type instance AuthServerData (AuthProtect "downstream-jwt") = AuthClaims
 -- the supplied JWKS cache and the 'ShomeiConfig' carrying the issuer/audience the auth
 -- service signs with (so local verification matches).
 downstreamApplication :: JwksCache -> ShomeiConfig -> Application
-downstreamApplication cache cfg =
-  serveWithContext (Proxy @DownstreamAPI) (localAuthHandler cache cfg :. EmptyContext) projectsHandler
+downstreamApplication cache cfg = downstreamApplicationWithVerifier cache (verifierSettingsFromConfig cfg)
+
+downstreamApplicationWithVerifier :: JwksCache -> VerifierSettings -> Application
+downstreamApplicationWithVerifier cache settings =
+  serveWithContext (Proxy @DownstreamAPI) (localAuthHandler cache settings :. EmptyContext) projectsHandler
 
 -- | The local guard: pull @Authorization: Bearer <jwt>@ and verify with the cached JWKS —
 -- no call back to the auth service.
@@ -396,8 +400,8 @@ downstreamApplication cache cfg =
 -- The two failure modes are distinct on the wire. A token we can judge and reject is @401@.
 -- A token we cannot judge — no sufficiently fresh key material — is @503@: answering @401@
 -- there would make clients discard perfectly good sessions during an auth-service outage.
-localAuthHandler :: JwksCache -> ShomeiConfig -> AuthHandler Request AuthClaims
-localAuthHandler cache cfg = mkAuthHandler \req -> do
+localAuthHandler :: JwksCache -> VerifierSettings -> AuthHandler Request AuthClaims
+localAuthHandler cache settings = mkAuthHandler \req -> do
   jwt <- case [value | (name, value) <- requestHeaders req, name == "Authorization"] of
     [v] | Just b <- parseBearer (Text.decodeUtf8Lenient v) -> pure b
     _ -> throwError bearer401 {errBody = "missing bearer token"}
@@ -408,7 +412,7 @@ localAuthHandler cache cfg = mkAuthHandler \req -> do
       verifyWithUnknownKeyRetry keys jwt
   where
     verifyWithUnknownKeyRetry keys jwt = do
-      res <- liftIO (verifyToken keys cfg jwt)
+      res <- liftIO (verifyTokenWith settings keys jwt)
       case res of
         Right claims -> pure claims
         Left (TokenKeyNotFound _) -> do
@@ -419,7 +423,7 @@ localAuthHandler cache cfg = mkAuthHandler \req -> do
               case fresh of
                 Left _ -> throwError err503 {errBody = "verification keys unavailable"}
                 Right freshKeys -> do
-                  retried <- liftIO (verifyToken freshKeys cfg jwt)
+                  retried <- liftIO (verifyTokenWith settings freshKeys jwt)
                   either (const invalidToken) pure retried
             else invalidToken
         Left _ -> invalidToken

@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Update**: ADR-3 defines finite token lifetimes and a reader-first actor upgrade whose legacy mints fit the read cutoff.
 * **Update**: ADR-3 requires present malformed actor claims to fail verification instead of losing identity.
 * **Addition**: ADR-21 requires an atomic per-account quota for passkey enrollment.
 * **Update**: ADR-13 extends diagnostic redaction and explicit wire-only serialization to ID tokens.

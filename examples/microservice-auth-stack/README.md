@@ -1,5 +1,11 @@
 # microservice-auth-stack — offline JWT verification, and adding en authorization
 
+The downstream requires a finite token lifetime policy. Set
+`DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` to the issuer's longest legitimate access-token TTL
+(default 1800); nonpositive values fail startup. Existing deployments must follow the
+[actor-format upgrade](../../docs/user/token-compatibility.md), including a finite
+`SHOMEI_LEGACY_ACTOR_UNTIL_UNIX` on readers while legacy string actors remain valid.
+
 The **microservice deployment model**: a standalone `shomei-server` mints JWTs, and a
 downstream business service verifies them **offline** against Shōmei's published JWKS — it
 never calls the auth service per request. This directory ships that two-service stack; the

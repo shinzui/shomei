@@ -55,6 +55,7 @@ import Network.HTTP.Client
 import Network.HTTP.Types (Header, statusCode)
 import Network.HTTP.Types.URI (parseSimpleQuery, urlEncode)
 import Network.Wai (Application, Request)
+import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant
   ( Context (EmptyContext, (:.)),
@@ -71,8 +72,9 @@ import Servant
   )
 import Servant.API.Generic (type (:-))
 import Servant.Health (ProbeVerdict (Healthy))
-import Servant.Server.Experimental.Auth (AuthHandler)
+import Servant.Server.Experimental.Auth (AuthHandler, unAuthHandler)
 import Servant.Server.Generic (genericServe)
+import Servant.Server.Internal (runHandler)
 import Shomei.Account.Email.Domain (emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Notification.Domain (Notification (..))
@@ -1507,7 +1509,7 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
         testWithApplication (pure (app e)) scenarioCookieTransport,
       testCase "cookie transport: CSRF gate on mutating requests (Origin / Referer / none / foreign)" $ do
         e <- freshCookieEnv
-        testWithApplication (pure (app e)) scenarioCsrfMatrix,
+        testWithApplication (pure (app e)) (scenarioCsrfMatrix e),
       testCase "cookie transport: refresh reads the secure refresh cookie, rotates, and is CSRF-gated" $ do
         e <- freshCookieEnv
         testWithApplication (pure (app e)) scenarioCookieRefresh,
@@ -2969,10 +2971,17 @@ scenarioCookieTransport port = do
   assertBool ("refresh cleared: " <> show cleared) (any (\c -> (secureRefreshCookieName <> "=;") `T.isPrefixOf` c && "Max-Age=0" `T.isInfixOf` c) cleared)
 
 -- | The CSRF matrix on a cookie-authenticated mutating route.
-scenarioCsrfMatrix :: Int -> IO ()
-scenarioCsrfMatrix port = do
+scenarioCsrfMatrix :: Env -> Int -> IO ()
+scenarioCsrfMatrix env port = do
   mgr <- newManager defaultManagerSettings
   (sess, _, _) <- cookieSignup mgr port
+
+  forM_ ["HEAD", "OPTIONS"] \safeMethod -> do
+    let request = Wai.defaultRequest {Wai.requestMethod = safeMethod, Wai.requestHeaders = [sessionCookieHeader sess]}
+    outcome <- runHandler (unAuthHandler (authHandler env) request)
+    case outcome of
+      Right _ -> pure ()
+      Left err -> assertFailure ("safe method was CSRF rejected: " <> show err)
 
   -- No Origin, no Referer: fail closed. This is the attack shape.
   (noneStatus, _, noneBody) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess] Null
@@ -2983,6 +2992,10 @@ scenarioCsrfMatrix port = do
   -- A foreign origin: refused.
   (evilStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, foreignOrigin] Null
   evilStatus @?= 403
+  (nullStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, ("Origin", "null")] Null
+  nullStatus @?= 403
+  (precedenceStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, foreignOrigin, ("Referer", "http://localhost:8080/settings")] Null
+  precedenceStatus @?= 403
 
   -- Referer fallback, for agents that omit Origin.
   (refStatus, _, _) <- postRaw mgr port "/v1/auth/logout" [sessionCookieHeader sess, ("Referer", "http://localhost:8080/app/settings")] Null
@@ -3139,6 +3152,8 @@ scenario ref adminToken port = do
   lowerStatus @?= 200
   (duplicateStatus, _) <- getJSON mgr port "/v1/auth/me" (bearer access <> bearer access)
   duplicateStatus @?= 401
+  duplicateAuthorize <- getRaw mgr port "/oauth/authorize" (bearer access <> bearer access)
+  assertOAuthError "duplicate Authorization at authorize" 400 "invalid_request" duplicateAuthorize
   meresp <- must "me body" meBody
   (dig ["email"] meresp >>= asText) @?= Just email
 
