@@ -55,7 +55,7 @@ Relevant decisions inspected were [ADR-3](../adr/0003-jwt-verification-is-an-exp
 |---|---|---|---|---|---|
 | 1 | Bind TOTP Ciphertext to Credentials and Migrate Legacy Envelopes | [docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md](../plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Complete |
 | 2 | Bound Authentication Inputs and Passkey Enrollment | [docs/plans/63-bound-authentication-inputs-and-passkey-enrollment.md](../plans/63-bound-authentication-inputs-and-passkey-enrollment.md) | EP-7 M1 before M2 | EP-4 transaction helpers | Complete |
-| 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | In Progress |
+| 3 | Complete OAuth and JWT Wire Validation | [docs/plans/64-complete-oauth-and-jwt-wire-validation.md](../plans/64-complete-oauth-and-jwt-wire-validation.md) | EP-7 M1 before M2 | EP-2 validation | Complete |
 | 4 | Bound Database Work and Make Bulk Session Revocation Atomic | [docs/plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md](../plans/65-bound-database-work-and-make-bulk-session-revocation-atomic.md) | EP-7 M1 before M2 | None | Complete |
 | 5 | Prove WebAuthn Ceremonies and Document Attestation Trust | [docs/plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md](../plans/66-prove-webauthn-ceremonies-and-document-attestation-trust.md) | EP-7 M1 before M2 | EP-2 enrollment | Complete |
 | 6 | Bound Runtime Costs and Complete Operational Diagnostics | [docs/plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md](../plans/67-bound-runtime-costs-and-complete-operational-diagnostics.md) | EP-7 M1 before M2 | EP-3 actor decoding; EP-4 limits | Complete |
@@ -85,9 +85,8 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
-2026-11-05: EP-2 is accepted at `c615215` with the owner’s legacy-login choice and all eight focused suites passing. EP-4 begins with bounded transaction retries. EP-3’s implemented milestones remain accepted at `2472483`; its aggregate parent row awaits EP-5/EP-7 leaves.
+2026-11-05: All six behavior children are Complete. EP-1 binds/migrates TOTP; EP-2 enforces new-write/input and quota limits with the owner's legacy-login choice; EP-3's wire acceptance and aggregate interoperability leaves are terminal; EP-4 bounds database work and proves persisted races; EP-5 verifies actual signed ceremonies; EP-6 bounds runtime work and persists downstream audits. Implementations and acceptance commits are pinned in each child and the ledger. EP-7 historical verification, performance/upgrade integration and final closure remain open. Latest verification `1e3bbae` adds explicit nested/client credential redaction and HTTP role/scope boundary tests without changing runtime behavior.
 
-Implementation started 2026-11-05. EP-7 M1 inventory is accepted: 108 parents and 240 owned rows. EP-1 and EP-2 are Complete with commit-pinned evidence. EP-3 implementation and wire acceptance pass; its aggregate REV-2.23 parent awaits EP-5/EP-7 leaves. EP-4 is Complete at `9c095e6`: bounded database work, pool lifecycle, quotas, bulk/paging, timestamps, persisted races and measured indexes pass; all owned ledger rows are terminal. EP-5 is Complete at `522abcc` with real signed verifier/workflow tests and ADR-25 attestation guidance. EP-6 is Complete through `0dcd5ba`: cached OpenAPI, shared finite host runtime, diagnostics and persisted downstream audits pass. EP-7 historical verification and final integration/closure remain. EP-7 historical verification and final integration gates remain open.
 
 ## Surprises & Discoveries
 

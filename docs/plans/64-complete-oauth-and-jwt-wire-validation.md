@@ -69,7 +69,7 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 ## Outcomes & Retrospective
 
-2026-11-05: All wire implementation milestones are accepted. Core/JWT/Servant/server/downstream suites pass with explicit Tasty -j2; the last validation reran JWT, Servant, server and downstream after the additional HTTP cases. `example-project-service` builds, and a zero `DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` fails startup with the named configuration error. ADR-3 and the token-compatibility guide define the format transition, finite lifetime policy and session correlation contract. Whole-child registry completion awaits the compound REV-2.23 parent: its dead clone-warning subrow belongs to plan 66, and historical redaction/suspended-account subrows belong to plan 68. Preserve those aggregate gates while returning to other ready work. No implementation friction was recorded under this child.
+2026-11-05: All wire implementation milestones are accepted. Core/JWT/Servant/server/downstream suites pass with explicit Tasty -j2; the last validation reran JWT, Servant, server and downstream after the additional HTTP cases. `example-project-service` builds, and a zero `DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` fails startup with the named configuration error. ADR-3 and the token-compatibility guide define the format transition, finite lifetime policy and session correlation contract. The compound REV-2.23 parent is now terminal: plan 66 removed the dead clone branch at `522abcc`, and plan 68 verified redaction plus the documented direct-library suspended-account distinction at `1e3bbae`. All owned ledger rows are terminal. No implementation friction was recorded under this child.
 
 
 
