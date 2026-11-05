@@ -16,10 +16,12 @@ import Crypto.JWT
   ( Audience (Audience),
     ClaimsSet,
     JWTError,
+    NumericDate (..),
     SignedJWT,
     StringOrURI,
     addClaim,
     claimAud,
+    claimNbf,
     signClaims,
     unregisteredClaims,
   )
@@ -169,6 +171,18 @@ tests =
         case result of
           Right verified -> verified.authTime @?= verified.issuedAt
           Left err -> assertFailure ("expected the legacy token to verify, got " <> show err),
+      testCase "signed future nbf is rejected while the configured skew is honored" $ do
+        jwk <- generateSigningKey
+        now <- getCurrentTime
+        claims <- mkClaims testConfig now
+        let wireAt offset = signClaimsWithHeaderOrFail jwk ES256 (Just (keyKid jwk)) (Just "at+jwt") (claimsFromAuth claims & claimNbf ?~ NumericDate (addUTCTime offset now))
+        future <- wireAt 120
+        verifyToken (publicJwks jwk []) testConfig future >>= (@?= Left (TokenOtherError "token not yet valid"))
+        withinSkew <- wireAt 10
+        accepted <- verifyToken (publicJwks jwk []) testConfig withinSkew
+        case accepted of
+          Right _ -> pure ()
+          Left _ -> assertFailure "nbf inside configured skew was rejected",
       testCase "drops nbf and jti from the extension claim bag" $ do
         let extras = mkExtraClaims (KeyMap.fromList [("nbf", Number 1), ("jti", String "forged")])
         assertBool "nbf must be reserved" (not (KeyMap.member "nbf" extras))

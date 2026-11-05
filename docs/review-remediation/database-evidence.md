@@ -13,7 +13,7 @@ python3 scripts/check-review-inventory.py
 
 | Clauses | Exact PostgreSQL test / accepted evidence |
 |---|---|
-| REV-2.20.1 | `logout costs exactly 2 database round-trips`: logout then refresh returns SessionRevoked, one session-revoked event and zero reuse-detection events. `real refresh workflow race rotates once and treats the losing proof as theft`: two readers observe active proof before racing, one rotation, one reuse detection, entire family revoked, zero generic session-revoked events. |
+| REV-2.20.1 | `logout costs exactly 2 database operations`: logout then refresh returns SessionRevoked, one session-revoked event and zero reuse-detection events. `real refresh workflow race rotates once and treats the losing proof as theft`: two readers observe active proof before racing, one rotation, one reuse detection, entire family revoked, zero generic session-revoked events. |
 | REV-5.10.1 | `create session + revoke`: a second revoke at a later timestamp preserves the first revoked_at. |
 | REV-5.10.2, REV-5.10.3, REV-5.10.4 | `user and credential timestamps follow Clock; password tails share their transaction timestamp`: frozen creation times, user update, direct hash update, change and reset tails use their selected timestamp despite a different ambient Clock. ADR-7 defines the contract. |
 | REV-5.10.5 | `authorization codes: consume once, replay misses, expiry misses` runs the bounded sweeper with batch size 1 and asserts two expired codes removed. The unused unbatched expiry operation and both interpreters are removed. |
@@ -29,3 +29,9 @@ quota, retention and bulk/paging evidence remains pinned to `ab922c0` in the led
 exception is used. Index creation takes migration locks; schedule it using the existing migration
 maintenance guidance. Password hashing remains outside database transactions. Cleanup retention
 still depends on issuance rate, configured finite retention, and sweep lag (ADR-24).
+
+
+The operation-count test labels were clarified during EP-7: they count `Database.RunSession` or
+`RunTransaction` calls, not physical network round trips. A transaction contains several SQL
+statements and each bounded statement adds its server-budget query (ADR-23). The recorded
+`9c095e6` test used the older “round-trips” wording with the same logical counter.

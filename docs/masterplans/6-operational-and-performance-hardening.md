@@ -5,9 +5,25 @@ title: "Operational and Performance Hardening"
 kind: master-plan
 created_at: 2026-07-07T17:22:07Z
 intention: intention_01kx2hqr6beeashgwvg5zwxtgc
+provenance:
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-05T17:49:23Z
+      mode: "update"
+      note: "Mark historical measurements superseded and distinguish logical operation budgets from wire round trips under MasterPlan 9."
 ---
 
 # Operational and Performance Hardening
+
+> Historical July 2026 plan. Its Progress, measurements and paths describe that implementation,
+> not the current release. The 2026-08-27 addendum below superseded its legacy-hash and checkout
+> claims; MasterPlan 9 now pins login 10, failed login 4, refresh 5, logout 2 and reset 3 **logical
+> Database operations**. Those counters do not measure wire round trips: bounded transactions
+> also execute server-budget queries. Historical latency/RSS numbers used different hosts and
+> RTS settings and are not current SLOs. Current evidence lives in
+> [MasterPlan 9](9-close-all-security-and-performance-review-findings.md) and
+> [the remediation evidence](../review-remediation/). Original outcomes are retained as history.
 
 This MasterPlan is a living document. The sections Progress, Surprises & Discoveries,
 Decision Log, and Outcomes & Retrospective must be kept up to date as work proceeds.

@@ -661,3 +661,31 @@ reason vocabulary. They include no password, full hash, k-anonymity prefix, quer
 exception. The configured breach-check fail-open/closed policy still decides the request outcome.
 Audit CLI user/session filters accept canonical TypeIDs and legacy UUIDs; tabular and NDJSON
 user/session IDs use canonical TypeIDs, so role-command output can be copied into audit queries.
+
+
+### Reproducing the isolated review workload
+
+Run `scripts/review-remediation-load.sh --scenario all --output /tmp/shomei-review-load.json`.
+The driver enables the manual `review-load` Cabal flag; its helper binary is excluded from
+production builds by default. It provisions a disposable PostgreSQL database and internal loopback
+listener; it accepts no
+external database or HTTP target. The fixed session fixture is 10,000 interactive rows, walked
+in pages of at most 200 (50 data pages plus one empty terminal probe), then atomically revoked
+with exactly 10,000 audit events. The OpenAPI scenario sends 1,000 exact-body requests with four
+workers and samples RSS after each 250-request batch; growth after warmup must stay below a
+32 MiB noise allowance. The observer shares the server process, so RSS is a workload measurement.
+
+The Argon2 scenario runs the existing script at production-default 64 MiB/3/1 cost, two hashing
+permits, four login loops for 10 seconds, and 100 idle/loaded hot-path probes. The driver uses
+`-N2 --nonmoving-gc`. It records unexpected workload HTTP errors and fails if any occur; the 70 deliberate 401
+authentication preflight responses are reported separately. The old script now
+refuses external origins/URL credentials, caps all workload inputs and per-request time, bypasses
+inherited proxies, and can write aggregate JSON with `LOAD_JSON_OUTPUT`. Rate limiting is
+disabled only inside this isolated workload. Latency ratios on a co-hosted process/curl generator
+are measurements, especially noisy in the tail; they are not release SLOs or proof of a deployment
+improvement. Compare the recorded configuration before comparing runs.
+
+The query-budget tests count logical Database port operations: login 10, wrong password 4,
+refresh 5, logout 2, reset confirmation 3. They do not count physical network round trips;
+transactions include multiple statements and the shrinking budget query per statement. Retained
+historical MasterPlan 6 checkout/PHC measurements are explicitly marked as historical.

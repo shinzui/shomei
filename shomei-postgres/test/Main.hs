@@ -1830,7 +1830,9 @@ testWorkflowSignup = testCase "workflow: signup persists user + session + token"
 -- not back into this one, so the workflow still talks to PostgreSQL and there is no recursion.
 -- Both constructors are counted: a @RunSession@ is one pool checkout for one
 -- statement, and a @RunTransaction@ is one pool checkout for the whole transaction. That is
--- exactly the quantity these tests pin — network round-trips, not statements.
+-- exactly the quantity these tests pin — logical Database port operations. A transaction
+-- is one operation even when it contains several SQL statements and budget-setting queries;
+-- these counters are not a wire-level network round-trip measurement.
 countingDatabase :: (Database :> es, IOE :> es) => IORef Int -> Eff es a -> Eff es a
 countingDatabase counter = interpose \_env op -> do
   liftIO (atomicModifyIORef' counter \n -> (n + 1, ()))
@@ -1838,7 +1840,7 @@ countingDatabase counter = interpose \_env op -> do
     RunSession sess -> send (RunSession sess)
     RunTransaction t -> send (RunTransaction t)
 
--- | A successful password login costs exactly ten database round-trips:
+-- | A successful password login costs exactly ten database operations:
 --
 --   1. @countRecentFailuresByIp@   (per-IP throttle)
 --   2. @recordLoginFailure@        (ONE transaction: advisory lock + provisional insert + count)
@@ -1853,7 +1855,7 @@ countingDatabase counter = interpose \_env op -> do
 --
 -- There is deliberately no @clearAccountLockout@: the record transaction found no standing row
 -- and did not reach the account threshold.
--- Password verification and access-token signing are CPU-only and cost no round-trip.
+-- Password verification and access-token signing are CPU-only and cost no database operation.
 --
 -- Step 7 was added by EP-7's generalized MFA gate: login now challenges for /any/ enrolled
 -- second factor, so it reads the TOTP credential alongside the passkey count. It is one
@@ -1868,10 +1870,10 @@ countingDatabase counter = interpose \_env op -> do
 -- role set to its permission union with a single @role = ANY(...)@ query. It runs once per mint,
 -- on the same principle as step 9 (resolve at mint, never at verification).
 --
--- If this number drifts, something added a round-trip to the login path. Find it before
+-- If this number drifts, something added a database operation to the login path. Find it before
 -- changing the constant.
 testLoginRoundTripBudget :: TestTree
-testLoginRoundTripBudget = testCase "a successful login costs exactly 10 database round-trips" $ withDb \pool -> do
+testLoginRoundTripBudget = testCase "a successful login costs exactly 10 database operations" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
@@ -1880,11 +1882,11 @@ testLoginRoundTripBudget = testCase "a successful login costs exactly 10 databas
   _ <- expectApp loginRes >>= expectRight
   readIORef counter >>= (@?= 10)
 
--- | A wrong password costs four checkouts: per-IP count, atomic record-and-count transaction,
+-- | A wrong password costs four database operations: per-IP count, atomic record-and-count transaction,
 -- credential lookup, and the @LoginFailed@ audit insert. The user row is only needed after the
 -- password succeeds, and hashing itself is CPU-only.
 testFailedLoginRoundTripBudget :: TestTree
-testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 database round-trips" $ withDb \pool -> do
+testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 database operations" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
@@ -1893,7 +1895,7 @@ testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 data
   expectApp loginRes >>= (@?= Left InvalidCredentials)
   readIORef counter >>= (@?= 4)
 
--- | A token refresh costs exactly five database round-trips:
+-- | A token refresh costs exactly five database operations:
 --
 --   1. @findRefreshTokenByHash@
 --   2. @findSessionById@
@@ -1902,12 +1904,12 @@ testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 data
 --   5. @permissionsForRoles@    (the permissions claim, via @buildEnrichedClaims@ — EP-9)
 --
 -- The user row is not read because @emailVerificationRequired@ is off in 'cfg'; turning it on
--- adds a further round-trip by design.
+-- adds a further database operation by design.
 --
 -- Step 4 is what makes a role change take effect on refresh rather than only at the next login;
 -- step 5 (EP-9) does the same for a permission re-wiring or a grant expiry.
 testRefreshRoundTripBudget :: TestTree
-testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database round-trips" $ withDb \pool -> do
+testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database operations" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   (_, pair) <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
@@ -1915,10 +1917,10 @@ testRefreshRoundTripBudget = testCase "a token refresh costs exactly 5 database 
   _ <- expectApp refreshRes >>= expectRight
   readIORef counter >>= (@?= 5)
 
--- | Logout costs two database round-trips: one session lookup and one transaction that CASes
+-- | Logout costs two database operations: one session lookup and one transaction that CASes
 -- the session, revokes its refresh tokens, and inserts the audit event.
 testLogoutRoundTripBudget :: TestTree
-testLogoutRoundTripBudget = testCase "logout costs exactly 2 database round-trips" $ withDb \pool -> do
+testLogoutRoundTripBudget = testCase "logout costs exactly 2 database operations" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   (user, pair) <- expectApp signupRes >>= expectRight
   sessionsRes <- runApp pool (listSessionsForUser user.userId)
@@ -1935,10 +1937,10 @@ testLogoutRoundTripBudget = testCase "logout costs exactly 2 database round-trip
   scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='session_revoked'" >>= (@?= 1)
   scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='refresh_token_reuse_detected'" >>= (@?= 0)
 
--- | Password-reset confirmation costs three database round-trips: token lookup, user lookup,
+-- | Password-reset confirmation costs three database operations: token lookup, user lookup,
 -- and one transaction for the consume/hash/revocation/event tail.
 testPasswordResetRoundTripBudget :: TestTree
-testPasswordResetRoundTripBudget = testCase "password reset confirmation costs exactly 3 database round-trips" $ withDb \pool -> do
+testPasswordResetRoundTripBudget = testCase "password reset confirmation costs exactly 3 database operations" $ withDb \pool -> do
   notifications <- newIORef []
   signupRes <- runAppWithNotifications notifications pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight

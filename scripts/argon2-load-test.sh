@@ -8,9 +8,9 @@
 #   garbage-collection safepoint. GHC's stop-the-world collector must synchronize every
 #   capability, so a hash can stall requests that have nothing to do with passwords.
 #
-#   So: measure `GET /v1/auth/me` latency while idle, then again while N clients hammer
-#   `POST /v1/auth/login`, and report the ratio. The ratio is the acceptance criterion, not the
-#   absolute milliseconds -- those vary wildly by machine.
+#   Measure `GET /v1/auth/me` while idle and under N login loops, and report the ratio.
+#   Ratios/latencies are measurements, not a fixed SLO gate. Workload bounds and zero HTTP
+#   errors are stable gates; the PostgreSQL hashing tests prove permit ownership and ceilings.
 #
 # WHAT THIS CANNOT MEASURE
 #   The load generator runs on the same host as the server and forks a curl process per request.
@@ -22,14 +22,15 @@
 # NEVER POINT THIS AT PRODUCTION. It creates throwaway users and floods the login endpoint.
 # `just create-database` re-creates a clean dev database at any time.
 #
-# THE SERVER MUST HAVE RATE LIMITING DISABLED, or the per-IP limiter (60 req/min by default)
-# throttles the load generator and the numbers are meaningless. There is no environment variable
-# for this, so use a Dhall file:
+# THE SERVER MUST HAVE RATE LIMITING DISABLED, or the per-IP limiter throttles this workload.
+# Current configuration accepts SHOMEI_RATE_LIMIT_ENABLED=false, or a completed Dhall file
+# placed in the repository root:
 #
-#     printf '{ rateLimitEnabled = False }\n' > /tmp/loadtest.dhall
-#     SHOMEI_CONFIG=/tmp/loadtest.dhall \
-#     PG_CONNECTION_STRING="host=$PGHOST dbname=$PGDATABASE user=$(id -un)" \
-#       cabal run shomei-server:exe:shomei-server
+#     let Shomei = ./config/shomei-types.dhall
+#     in Shomei::{ rateLimitEnabled = Some False }
+#
+# Use an isolated database/server. The MasterPlan 9 driver provisions both automatically:
+#     scripts/review-remediation-load.sh --scenario all --output /tmp/shomei-review-load.json
 #
 #   This script refuses to run if it detects throttling.
 #
@@ -42,6 +43,7 @@
 #     LOAD_SECONDS=20    duration of the load phase
 #     SIGNUP_LOOPS=0     when positive, run this many concurrent signup loops instead of logins
 #     SERVER_PID=        if set, peak RSS of that process is sampled once a second
+#     LOAD_JSON_OUTPUT=  optional redacted aggregate JSON report path
 set -eu
 
 BASE="${1:-http://localhost:8080}"
@@ -50,6 +52,26 @@ PROBE_COUNT="${PROBE_COUNT:-200}"
 LOAD_SECONDS="${LOAD_SECONDS:-20}"
 SIGNUP_LOOPS="${SIGNUP_LOOPS:-0}"
 SERVER_PID="${SERVER_PID:-}"
+LOAD_JSON_OUTPUT="${LOAD_JSON_OUTPUT:-}"
+
+# Refuse external targets, URL credentials and paths before making any request.
+python3 - "$BASE" "$LOAD_USERS" "$PROBE_COUNT" "$LOAD_SECONDS" "$SIGNUP_LOOPS" <<'PYGUARD'
+import sys
+from urllib.parse import urlsplit
+try:
+    u=urlsplit(sys.argv[1])
+    assert u.scheme in {"http","https"} and u.hostname in {"127.0.0.1","localhost","::1"}
+    assert u.username is None and u.password is None and u.path in {"","/"} and not u.query and not u.fragment
+    assert u.port is None or 0 < u.port <= 65535
+    for raw,lo,hi in zip(sys.argv[2:],[1,1,1,0],[32,2000,60,16]):
+        assert raw.isdecimal() and lo <= int(raw) <= hi
+except (AssertionError,ValueError):
+    sys.exit("load test requires a loopback origin and finite bounded workload settings")
+PYGUARD
+BASE="${BASE%/}"
+# No inherited outbound proxy, redirect following, or indefinitely blocked curl.
+curl() { command curl --noproxy '*' --connect-timeout 2 --max-time 5 "$@"; }
+
 
 # Long, unique, and not in the common-password dictionary; signup rejects weak passwords.
 PASSWORD='Tr0ub4dor-Zx9-Quibble-Vex'
@@ -77,6 +99,7 @@ while [ "$i" -lt 70 ]; do
     -H 'Content-Type: application/json' \
     -d '{"loginId":"argon2-rate-limit-probe","password":"invalid-password"}')"
   [ "$code" = "429" ] && throttled=1 && break
+  [ "$code" = "401" ] || { say "error: unexpected preflight authentication response"; exit 1; }
   i=$((i + 1))
 done
 if [ "$throttled" -eq 1 ]; then
@@ -105,12 +128,18 @@ login_token() {
 probe() {
   out="$1"
   : >"$out"
+  errors=0
   n=0
   while [ "$n" -lt "$PROBE_COUNT" ]; do
-    curl -s -o /dev/null -w '%{time_total}\n' \
-      -H "Authorization: Bearer $TOKEN" "$BASE/v1/auth/me" >>"$out"
+    measurement="$(curl -s -o /dev/null -w '%{http_code} %{time_total}' \
+      -H "Authorization: Bearer $TOKEN" "$BASE/v1/auth/me" || true)"
+    code="${measurement%% *}"
+    elapsed="${measurement#* }"
+    [ "$code" = "200" ] || errors=$((errors + 1))
+    printf '%s\n' "$elapsed" >>"$out"
     n=$((n + 1))
   done
+  printf '%s\n' "$errors" >"$out.errors"
 }
 
 # pctile <file> <percentile> -> milliseconds, 2dp
@@ -162,15 +191,18 @@ if [ "$SIGNUP_LOOPS" -gt 0 ]; then
     (
       count=0
       unavailable=0
+      errors=0
       while [ "$(date +%s)" -lt "$deadline" ]; do
         code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/auth/signup" \
           -H 'Content-Type: application/json' \
           -d "{\"loginId\":\"signup-$u-$count-$RUN@example.test\",\"email\":\"signup-$u-$count-$RUN@example.test\",\"password\":\"$PASSWORD\",\"displayName\":\"loadtest\"}" || true)"
         [ "$code" = "503" ] && unavailable=$((unavailable + 1))
+        [ "$code" = "201" ] || errors=$((errors + 1))
         count=$((count + 1))
       done
       printf '%s\n' "$count" >"$work/signups.$u"
       printf '%s\n' "$unavailable" >"$work/signup-503s.$u"
+      printf '%s\n' "$errors" >"$work/signup-errors.$u"
     ) &
     children="$children $!"
     u=$((u + 1))
@@ -181,13 +213,16 @@ else
   while [ "$u" -lt "$LOAD_USERS" ]; do
     (
       count=0
+      errors=0
       while [ "$(date +%s)" -lt "$deadline" ]; do
-        curl -s -o /dev/null -X POST "$BASE/v1/auth/login" \
+        code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/auth/login" \
           -H 'Content-Type: application/json' \
-          -d "{\"loginId\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true
+          -d "{\"loginId\":\"load-$u-$RUN@example.test\",\"password\":\"$PASSWORD\"}" || true)"
+        [ "$code" = "200" ] || errors=$((errors + 1))
         count=$((count + 1))
       done
       printf '%s\n' "$count" >"$work/logins.$u"
+      printf '%s\n' "$errors" >"$work/login-errors.$u"
     ) &
     children="$children $!"
     u=$((u + 1))
@@ -242,3 +277,17 @@ printf 'loaded  p50=%sms  p95=%sms  p99=%sms\n' "$l50" "$l95" "$l99"
 printf 'degradation p50=%s p95=%s p99=%s   logins/s=%s   signups/s=%s   signup_503s=%s   peak_rss=%s\n' \
   "$(ratio "$l50" "$i50")" "$(ratio "$l95" "$i95")" "$(ratio "$l99" "$i99")" \
   "$login_throughput" "$signup_throughput" "$signup_503s" "$peak_rss"
+
+
+errors=$(($(cat "$work/idle.errors") + $(cat "$work/loaded.errors")))
+for f in "$work"/login-errors.* "$work"/signup-errors.*; do
+  [ -f "$f" ] && errors=$((errors + $(cat "$f")))
+done
+printf 'error_count=%s\n' "$errors"
+if [ -n "$LOAD_JSON_OUTPUT" ]; then
+  rss_kib=null
+  [ ! -f "$work/rss" ] || rss_kib="$(cat "$work/rss")"
+  printf '{"expected_preflight_401s":70,"probe_count":%s,"login_workers":%s,"signup_workers":%s,"load_seconds":%s,"login_attempts":%s,"signup_attempts":%s,"error_count":%s,"peak_rss_kib":%s,"idle_p50_ms":%s,"idle_p95_ms":%s,"idle_p99_ms":%s,"loaded_p50_ms":%s,"loaded_p95_ms":%s,"loaded_p99_ms":%s}\n' \
+    "$PROBE_COUNT" "$LOAD_USERS" "$SIGNUP_LOOPS" "$LOAD_SECONDS" "$logins" "$signups" "$errors" "$rss_kib" "$i50" "$i95" "$i99" "$l50" "$l95" "$l99" >"$LOAD_JSON_OUTPUT"
+fi
+[ "$errors" -eq 0 ]

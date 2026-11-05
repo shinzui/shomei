@@ -26,6 +26,11 @@ source-repository head
   type: git
   location: https://github.com/shinzui/shomei.git
 
+flag review-load
+  description: Build the isolated remediation workload tool (excluded from production builds).
+  default: False
+  manual: True
+
 common warnings
   ghc-options:
     -Wall
@@ -311,3 +316,38 @@ test-suite shomei-health-test
     shomei-server ^>=0.2.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
+
+-- Isolated acceptance driver; never accepts a deployment database or external HTTP target.
+executable shomei-review-load
+  import: warnings, shared
+  hs-source-dirs: review-load
+  main-is: Main.hs
+
+  if !flag(review-load)
+    buildable: False
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N2
+
+  build-depends:
+    aeson >=2.1 && <2.3,
+    base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
+    containers >=0.6 && <0.9,
+    directory >=1.3 && <1.4,
+    hasql >=1.10 && <1.11,
+    http-client >=0.7 && <0.8,
+    http-types >=0.12 && <0.13,
+    process >=1.6 && <1.7,
+    servant-health >=0.1 && <0.2,
+    shomei-core ^>=0.2.0.0,
+    shomei-jwt ^>=0.2.0.0,
+    shomei-migrations:test-support ^>=0.2.0.0,
+    shomei-postgres ^>=0.2.0.0,
+    shomei-servant ^>=0.2.0.0,
+    shomei-server,
+    text >=2.0 && <2.2,
+    unix >=2.8 && <2.9,
+    uuid >=1.3 && <1.4,
+    warp >=3.3 && <3.5,
