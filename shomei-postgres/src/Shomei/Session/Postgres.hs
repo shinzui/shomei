@@ -35,7 +35,7 @@ import Shomei.Persistence.Codec.Postgres (sessionKindFromText, sessionKindToText
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionStatus (SessionActive))
 import Shomei.Session.Store (SessionCursor (..), SessionListQuery (..), SessionStore (..), clampSessionLimit)
 
 type SessionRow = (UUID, UUID, Text, UTCTime, UTCTime, Maybe UTCTime, Maybe UUID, Maybe Text, Maybe Text, [Text], Maybe UTCTime, Bool)
@@ -109,7 +109,7 @@ mkSession sid ns =
 rebuildSession :: SessionRow -> Either Text Session
 rebuildSession (sid, uid, st, c, e, r, act, oauthClientId, mKind, scopeTexts, mAuthenticatedAt, remembered) = do
   status <- sessionStatusFromText st
-  kind <- maybe (Right InteractiveSession) sessionKindFromText mKind
+  kind <- maybe (Left "session kind is missing") sessionKindFromText mKind
   pure
     Session
       { sessionId = sessionIdFromUUID sid,

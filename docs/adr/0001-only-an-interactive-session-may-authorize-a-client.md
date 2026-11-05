@@ -5,6 +5,7 @@ description: Every session records whether a human established it, and OAuth aut
 docId: ADR-1
 status: Accepted
 date: 2026-08-27
+timestamp: 2026-11-05T18:15:01Z
 originatingPlan: docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md
 generated:
   by: openai-codex/gpt-5
@@ -50,7 +51,13 @@ statelessly.
 
 The interactive/non-interactive boundary is persisted as a column. Every future session-minting
 path must choose a kind, and the required record field makes forgetting a compile-time error.
-Existing rows remain interactive through the migration's nullable default and read fallback.
+Migration 0043 repairs the earlier 0029 compatibility default: actor-bearing rows become
+delegated, service-account-backed rows or rows without a persisted refresh-token record become machine, and explicit NULL provenance becomes
+machine. Unknown writers default to machine; kind is non-null and checked against the three
+values. Normal reads never infer interactive from missing provenance. Authorize also refuses
+a stored actor when a token omits act. Stop old issuers before upgrade; all current mint paths
+supply kind explicitly. A service-account-backed user misclassified by the old default must
+perform a new interactive credential proof to authorize as a human.
 
 Authorize, token exchange, and impersonation each pay a session-store read. These are deliberate
 reads at privilege-minting boundaries, independent of the performance choice made for ordinary

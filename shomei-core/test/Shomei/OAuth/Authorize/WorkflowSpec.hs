@@ -31,6 +31,7 @@ tests =
   testGroup
     "Shomei.OAuth.Authorize.Workflow"
     [ testCase "interactive session is accepted" testInteractive,
+      testCase "a stored actor is refused even when the token omits act" testStoredActor,
       testCase "impersonation/delegated session is refused" (testKind DelegatedSession),
       testCase "on-behalf-of/delegated session is refused" (testKind DelegatedSession),
       testCase "client_credentials/machine session is refused" (testKind MachineSession),
@@ -81,11 +82,14 @@ claimsFor uid sid actor =
 data SessionState = Live | Revoked | Expired | Missing
 
 runAuthorize :: SessionKind -> SessionState -> Bool -> IO (Either AuthorizeError IssuedCode, World)
-runAuthorize kind state carriesActor = do
+runAuthorize kind state carriesActor = runAuthorizeWithActor kind state carriesActor carriesActor
+
+runAuthorizeWithActor :: SessionKind -> SessionState -> Bool -> Bool -> IO (Either AuthorizeError IssuedCode, World)
+runAuthorizeWithActor kind state storedActor claimActor = do
   ref <- newIORef (emptyWorld fixedTime)
   result <- runInMemory ref do
     uid <- genUserId
-    actor <- if carriesActor then Just <$> genUserId else pure Nothing
+    actor <- if storedActor then Just <$> genUserId else pure Nothing
     session <-
       createSession
         NewSession
@@ -120,7 +124,7 @@ runAuthorize kind state carriesActor = do
             allowedScopes = Set.singleton (Scope "openid"),
             createdAt = fixedTime
           }
-    authorize cfg client (claimsFor uid sid actor) params
+    authorize cfg client (claimsFor uid sid (if claimActor then actor else Nothing)) params
   world <- readIORef ref
   pure (result, world)
 
@@ -151,3 +155,6 @@ testExpired = runAuthorize InteractiveSession Expired False >>= expectRefusal Se
 
 testUnknown :: IO ()
 testUnknown = runAuthorize InteractiveSession Missing False >>= expectRefusal SessionNotLive
+
+testStoredActor :: IO ()
+testStoredActor = runAuthorizeWithActor InteractiveSession Live True False >>= expectRefusal NonInteractiveCredential

@@ -553,7 +553,7 @@ tests =
     testSessionKindRoundTrip,
     testSessionGrantedScopesRoundTrip,
     testSessionRememberedRoundTrip,
-    testSessionKindNullReadsInteractive,
+    testSessionKindNullFailsClosed,
     testRefreshTokenMarkUsed,
     testVerificationTokenRoundTrip,
     testPasswordResetTokenRoundTrip,
@@ -1527,16 +1527,19 @@ testSessionRememberedRoundTrip = testCase "a session's remembered flag round-tri
   defaulted <- scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE remembered"
   defaulted @?= 2
 
-testSessionKindNullReadsInteractive :: TestTree
-testSessionKindNullReadsInteractive = testCase "a session row whose kind is NULL reads as interactive" $ withDb \pool -> do
+testSessionKindNullFailsClosed :: TestTree
+testSessionKindNullFailsClosed = testCase "NULL session provenance is rejected by the schema and fails closed after constraint bypass" $ withDb \pool -> do
   created <- runApp pool do
     user <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
     createSession (NewSession {userId = user.userId, createdAt = t, expiresAt = addUTCTime 3600 t, actor = Nothing, oauthClientId = Nothing, kind = InteractiveSession, grantedScopes = Set.empty, authenticatedAt = t, remembered = False})
   session <- expectApp created
-  execSql pool "UPDATE shomei.shomei_sessions SET kind = NULL"
-  found <- expectApp =<< runApp pool (findSessionById session.sessionId)
-  fmap (.kind) found @?= Just InteractiveSession
+  execSqlExpectState pool "23502" "UPDATE shomei.shomei_sessions SET kind = NULL"
+  execSql pool "ALTER TABLE shomei.shomei_sessions ALTER COLUMN kind DROP NOT NULL; UPDATE shomei.shomei_sessions SET kind = NULL"
+  found <- runApp pool (findSessionById session.sessionId)
+  case found of
+    Left (Err.InternalAuthError _) -> pure ()
+    _ -> assertFailure "missing provenance must never decode as interactive"
 
 -- | Pins the compare-and-swap semantics of the @UPDATE … AND status = 'active' RETURNING@
 -- statement: the first mark wins and stamps @used_at@, a second mark of the same token loses

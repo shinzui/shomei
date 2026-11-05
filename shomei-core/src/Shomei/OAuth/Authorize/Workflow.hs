@@ -162,7 +162,7 @@ authorize cfg client claims params = runErrorNoCallStack do
   session <-
     either (const (throwError (AuthorizeLoginRequired SessionNotLive))) pure
       =<< requireLiveSession ts claims.sessionId
-  unless ((session ^. #kind) == InteractiveSession) $
+  unless ((session ^. #kind) == InteractiveSession && not (isJust (session ^. #actor))) $
     throwError (AuthorizeLoginRequired NonInteractiveCredential)
   unless (params.responseType == Just "code") (throwError UnsupportedResponseType)
   challenge <- resolvePkce

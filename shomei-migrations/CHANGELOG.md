@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Upgrade:** migration 0043 repairs legacy machine/delegated provenance and makes omitted SQL provenance default to machine. Missing kinds fail closed on read; authorize also refuses a stored actor. Stop old issuers before migration; affected backing-account humans can establish a new interactive session by logging in. See deployment.md.
+
 - Migration 0042 adds measured ordered user/status and per-user audit indexes.
 
 - `0037-remembered-sessions` adds `shomei_sessions.remembered boolean NOT NULL DEFAULT true`.

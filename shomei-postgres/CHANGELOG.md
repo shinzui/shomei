@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Upgrade:** migration 0043 repairs legacy machine/delegated provenance and makes omitted SQL provenance default to machine. Missing kinds fail closed on read; authorize also refuses a stored actor. Stop old issuers before migration; affected backing-account humans can establish a new interactive session by logging in. See deployment.md.
+
 - **Breaking:** user and credential interpreters require `Clock`; password change/reset stamp credential `updated_at` with the workflow transaction timestamp. Repeated session revocation preserves its original timestamp. Migration 0042 adds measured user-list and per-user audit indexes.
 
 - **Breaking:** PostgreSQL assembly uses the managed `Shomei.Persistence.Pool.Postgres.Pool` and its `UsageError`, `use` and `release` operations. Interrupted/failed sessions discard their connection and restore capacity; the external pool dependency is removed.

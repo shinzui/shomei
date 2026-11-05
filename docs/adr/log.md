@@ -1,6 +1,8 @@
 # Bundle Update Log
 
 ## 2026-11-05
+* **Amendment**: ADR-1 repairs legacy session provenance during upgrade and makes missing provenance fail closed rather than assuming interactive.
+* **Amendment**: ADR-7 distills verified persisted vocabularies, Unicode normalization limits, maintenance locks and the soft-delete foreign-key index boundary.
 * **Amendment**: ADR-4 requires bounded CLI transactions and an in-transaction locked pending-state check; injected failures verify atomic rollback.
 * **Addition**: ADR-26 requires the runnable downstream read to persist verified actor/subject audit and fail closed on sink errors.
 * **Amendment**: ADR-17 requires shared Warp bind, finite connection admission and timeout lifecycle; shared boot owns the single migration/key sequence.

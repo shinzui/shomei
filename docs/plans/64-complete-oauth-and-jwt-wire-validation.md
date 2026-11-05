@@ -49,7 +49,11 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 - [x] (2026-11-05) M3: HTTP/CSRF/protocol cases and strict JWT/JWKS cases pass. Newly added tests cover Origin-null, Origin-over-Referer precedence, native HEAD/OPTIONS auth, malformed percent escapes, lowercase/multi-space bearer and duplicate headers. Existing refresh/revoke/UserInfo/freshness/chunked-body cases were checked against source and rerun.
 
 
+- [x] (2026-11-05) M4: additive migration 0043 repairs populated legacy actor, machine and missing-refresh provenance, defaults omitted writes to machine and rejects NULL/unknown kinds. The core refuses a stored actor even if act is omitted. Core, PostgreSQL and migration suites pass, including per-row upgrade assertions and a corrupt-schema read negative. Historical clause ownership remains EP-7.
+
 ## Surprises & Discoveries
+
+2026-11-05: Migration 0029 defaulted existing machine rows to interactive. Integration adds additive 0043 to recover actor/service-account provenance and give unknown writers a conservative default, plus a populated old-schema upgrade regression.
 
 2026-11-05: Using the same instant for the last legacy emission and last legacy read would strand still-valid tokens minted just before cutoff. Legacy issuance now requires the token expiry plus issuer skew to fit inside the read window; otherwise it automatically emits an object. ADR-3 and the upgrade guide preserve this constraint.
 
@@ -69,7 +73,7 @@ Make OAuth/JWT wire behavior explicit and bounded: standards-shaped PKCE and act
 
 ## Outcomes & Retrospective
 
-2026-11-05: All wire implementation milestones are accepted. Core/JWT/Servant/server/downstream suites pass with explicit Tasty -j2; the last validation reran JWT, Servant, server and downstream after the additional HTTP cases. `example-project-service` builds, and a zero `DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` fails startup with the named configuration error. ADR-3 and the token-compatibility guide define the format transition, finite lifetime policy and session correlation contract. The compound REV-2.23 parent is now terminal: plan 66 removed the dead clone branch at `522abcc`, and plan 68 verified redaction plus the documented direct-library suspended-account distinction at `1e3bbae`. All owned ledger rows are terminal. No implementation friction was recorded under this child.
+2026-11-05: All wire implementation milestones are accepted. Core/JWT/Servant/server/downstream suites pass with explicit Tasty -j2; the last validation reran JWT, Servant, server and downstream after the additional HTTP cases. `example-project-service` builds, and a zero `DOWNSTREAM_MAX_TOKEN_LIFETIME_SECONDS` fails startup with the named configuration error. ADR-3 and the token-compatibility guide define the format transition, finite lifetime policy and session correlation contract. The compound REV-2.23 parent is now terminal: plan 66 removed the dead clone branch at `522abcc`, and plan 68 verified redaction plus the documented direct-library suspended-account distinction at `1e3bbae`. All owned ledger rows are terminal. EP-7 later reopened this child for the legacy default gap; M4 now passes and ADR-1 plus deployment.md describe the stricter upgrade. No implementation friction was recorded under this child.
 
 
 

@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Upgrade:** migration 0043 repairs legacy machine/delegated provenance and makes omitted SQL provenance default to machine. Missing kinds fail closed on read; authorize also refuses a stored actor. Stop old issuers before migration; affected backing-account humans can establish a new interactive session by logging in. See deployment.md.
+
 - **Breaking:** remove the unreachable `VerifiedAuthentication.cloneWarning` field. Cloned/regressed counters return typed `WebAuthnCounterCloned` and follow the shared MFA failure/audit path. Signed software-authenticator fixtures now exercise the production verifier and workflows.
 
 - **Breaking:** remove the unused unbatched authorization-code expiry port; cleanup uses the bounded sweeper. Password-hash updates now advance credential `updatedAt` in the fake interpreter as well.

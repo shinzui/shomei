@@ -40,3 +40,4 @@
 0040-add-session-keyset-index.sql
 0041-add-active-session-principal-indexes.sql
 0042-add-admin-keyset-indexes.sql
+0043-enforce-session-provenance-upgrades.sql

@@ -85,6 +85,8 @@ New ADRs are expected for TOTP envelope migration, atomic quota/retention policy
 
 ## Progress
 
+2026-11-05: EP-7 integration reopened EP-3 for a legacy provenance upgrade gap. Historical row mapping is complete; the populated-schema migration regression and core/PostgreSQL gates now pass, reaccepting EP-3. Final candidate integration and review remain.
+
 2026-11-05: All six behavior children are Complete. EP-1 binds/migrates TOTP; EP-2 enforces new-write/input and quota limits with the owner's legacy-login choice; EP-3's wire acceptance and aggregate interoperability leaves are terminal; EP-4 bounds database work and proves persisted races; EP-5 verifies actual signed ceremonies; EP-6 bounds runtime work and persists downstream audits. Implementations and acceptance commits are pinned in each child and the ledger. EP-7 historical verification, performance/upgrade integration and final closure remain open. Latest verification `1e3bbae` adds explicit nested/client credential redaction and HTTP role/scope boundary tests without changing runtime behavior.
 
 

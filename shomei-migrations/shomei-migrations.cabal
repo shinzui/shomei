@@ -114,9 +114,11 @@ test-suite shomei-migrations-test
 
   build-depends:
     base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
     containers >=0.7 && <0.8,
     hasql >=1.10 && <1.11,
     pg-migrate >=1.2 && <1.3,
+    pg-migrate-embed >=1.2 && <1.3,
     pg-migrate-test-support >=1.2 && <1.3,
     shomei-migrations ^>=0.2.0.0,
     tasty >=1.4 && <1.6,

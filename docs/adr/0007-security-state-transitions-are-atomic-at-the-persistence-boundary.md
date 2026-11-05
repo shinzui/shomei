@@ -5,7 +5,7 @@ description: Single-use and monotonic transitions use conditional writes, while 
 docId: ADR-7
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-11-05T16:41:30Z
+timestamp: 2026-11-05T18:09:53Z
 originatingPlan: docs/plans/55-atomic-state-transitions-round-two-lockout-counters-and-transactional-credential-tails.md
 generated:
   by: openai-codex/gpt-5
@@ -50,6 +50,15 @@ preserving `created_at`. A repeated revocation cannot overwrite the original `re
 Expiry cleanup is a bounded, paced sweeper operation; the unused unbatched authorization-code
 expiry port is removed. Live rotation and sweeper interaction are verified with a real SQL lock
 barrier, alongside persisted single-winner reset, verification, recovery and ceremony races.
+
+Persisted status vocabularies use database CHECK constraints; password credentials have a
+unique user index and identity columns have `lower(...)` unique indexes. These preserve
+invariants for direct SQL writers as well as workflows. The existing normalization policy
+uses Haskell lowercasing and PostgreSQL's collation-dependent `lower`, so rare Unicode
+collisions may be stricter at the database and return a typed conflict. Imports must normalize
+and preflight collisions. Migration backfills and ordinary index builds require maintenance
+windows on populated hosts. Foreign keys used only when hard-deleting a user remain unindexed:
+account deletion is soft, and introducing hard deletion requires its own index measurements.
 
 ## Consequences
 

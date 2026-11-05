@@ -136,6 +136,31 @@ Resolve any duplicates before migration. Building the index takes a `SHARE` lock
 `shomei_password_credentials` for its duration, so schedule the upgrade accordingly on a large
 credential table.
 
+Older identity backfills (0016/0018), retention indexes (0020), and the ordered indexes
+in 0040–0042 also scan populated tables in their migration transactions. Budget a maintenance
+window for their table locks and backfills; these migrations do not promise online index builds.
+
+Identity uniqueness uses PostgreSQL `lower(...)` expression indexes alongside application
+normalization. Haskell Unicode lowercasing and the database collation can disagree for rare
+characters. A database collision still fails as a typed `409` conflict; imports must use the
+same normalization as the application and check collisions before migration. This is not a
+locale-independent Unicode case-folding guarantee.
+
+The remaining unindexed foreign keys on pending-ceremony `user_id`, role-grant `granted_by`,
+and authorization-code `user_id` support referential checks on hard deletion. Account deletion
+is a status change; the sweeper deletes child records, never user rows. No current hot query
+requires these indexes. A future hard-delete feature must measure and add its own supporting
+indexes before enabling parent deletion.
+
+Migration 0043 repairs legacy session provenance from migration 0029. Stop old issuer binaries
+before migrating. Actor-bearing sessions become delegated; sessions backed by a service account or lacking a persisted refresh-token record
+become machine; explicit NULL provenance becomes machine. These sessions retain their ordinary
+expiry but cannot authorize an interactive OAuth code. A human using such a backing account must
+log in again to establish explicit interactive provenance. Existing human sessions with their persisted refresh records remain
+interactive. Migration 0043 scans and updates populated session tables and validates its new
+constraint under table locks; include it in the maintenance window. Direct SQL writers that omit kind now create machine sessions, and NULL/unknown
+kinds are rejected. Current issuers always supply the kind explicitly.
+
 ### Migration composition and authoring
 
 An embedding application should compose `shomeiMigrationComponent` with its own pg-migrate
