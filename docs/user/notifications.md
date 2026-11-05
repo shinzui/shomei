@@ -203,7 +203,9 @@ by environment variables; the two secrets are environment-only.
 The server refuses to boot if the selected transport is not fully configured: `smtp` needs a host
 and from-address (and a username/password pair, both or neither) plus a non-empty `publicBaseUrl`;
 `webhook` needs an HTTPS URL and a non-empty secret. The two insecure-transport flags are env-only
-and intended solely for lab receivers.
+and intended solely for lab receivers. Boot warns when either override permits HTTP webhook
+delivery or plaintext SMTP with credentials. Warning text does not include the receiver URL or
+credential values.
 
 ### Staged rollout
 
@@ -308,3 +310,17 @@ never let a delivery failure propagate to the HTTP request.
 `Shomei.Test.InMemory` provides `runNotifier`, a list-capturing interpreter
 that records each `Notification` in the `World` instead of sending it — use it to assert that a
 workflow emitted the expected notification with the expected token, with no network.
+
+
+### Outbound proxy environment
+
+The HTTP TLS manager used for webhooks and HIBP lookups honors inherited `http_proxy` and
+`https_proxy` environment settings, with the HTTP client's `no_proxy` exclusions. The downstream
+JWKS example uses the same dependency behavior. These are outbound transport settings, separate
+from `SHOMEI_TRUSTED_PROXIES`, which controls inbound client identity. Inspect or explicitly unset
+inherited proxy variables when deploying: they can change where requests go and who observes
+plaintext HTTP or CONNECT destinations. HTTPS still validates the remote certificate using the
+configured system trust. Do not put receiver credentials into URLs; use the dedicated signing
+secret. The manager's behavior is defined by
+[http-client](mori://snoyberg/http-client/packages/http-client) and
+[http-client-tls](mori://snoyberg/http-client/packages/http-client-tls).

@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Explicit lab overrides for HTTP webhooks and plaintext SMTP credentials now emit fixed secret-free boot warnings. The notification guide documents inherited outbound HTTP proxy settings.
+
 - Signing-key CLI transactions use finite database retry/deadline defaults. Activation revalidates and locks the pending source row before retiring the old key; injected activation/rewrap write failures roll back wholly. Key assembly fails closed on multiple active rows even after index bypass.
 
 - Audit CLI accepts canonical user/session TypeIDs and legacy UUID filters and emits canonical user/session IDs. HIBP failures have an injectable query/report boundary and a tested bounded, secret-free diagnostic.

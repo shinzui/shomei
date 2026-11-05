@@ -759,10 +759,12 @@ notifierSecretsAreStrippedAndConfigIsSecretFree = do
   setEnv "SHOMEI_NOTIFIER_TRANSPORT" "webhook"
   setEnv "SHOMEI_WEBHOOK_URL" "  https://hooks.example.com/shomei  "
   setEnv "SHOMEI_WEBHOOK_SECRET" "  webhook-secret\n"
+  setEnv "SHOMEI_SMTP_PASSWORD" "  smtp-secret\n"
   (cfg, settings) <- loadConfigFromEnv
   settings.serverConnStr @?= "host=localhost dbname=shomei"
   secrets <- loadNotifierSecretsFromEnv cfg
   fmap webhookSecretBytes secrets.webhookSecret @?= Just "webhook-secret"
+  fmap smtpPasswordText secrets.smtpPassword @?= Just "smtp-secret"
   let notifier = cfg.notifierConfig
       fullConfig =
         cfg
@@ -799,6 +801,10 @@ notifierInsecureTransportFlags = do
   setEnv "SHOMEI_WEBHOOK_ALLOW_INSECURE" "true"
   (webhookCfg, _) <- loadConfigFromEnv
   _ <- loadNotifierSecretsFromEnv webhookCfg
+  setEnv "SHOMEI_WEBHOOK_URL" "http://hooks.example.com/hook?secret=hidden"
+  (_, httpSettings) <- loadConfigFromEnv
+  assertBool "non-loopback HTTP lab receiver warns" ("webhookUrl uses HTTP under SHOMEI_WEBHOOK_ALLOW_INSECURE; one-time links travel in the clear; lab receivers only" `elem` httpSettings.serverWarnings)
+  assertBool "warning contains no URL secrets" (not (any (Text.isInfixOf "hidden") httpSettings.serverWarnings))
 
   mapM_ unsetEnv notifierEnvVars
   setEnv "SHOMEI_NOTIFIER_TRANSPORT" "smtp"
@@ -810,7 +816,8 @@ notifierInsecureTransportFlags = do
   plaintextAuth <- try loadConfigFromEnv
   expectUserErrorNaming "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" plaintextAuth
   setEnv "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" "true"
-  (smtpCfg, _) <- loadConfigFromEnv
+  (smtpCfg, smtpSettings) <- loadConfigFromEnv
+  assertBool "plaintext credentials warn under the explicit lab override" ("smtpTlsMode=plain sends mail and SMTP credentials in the clear; explicit lab override" `elem` smtpSettings.serverWarnings)
   _ <- loadNotifierSecretsFromEnv smtpCfg
 
   unsetEnv "SHOMEI_SMTP_USERNAME"

@@ -1114,8 +1114,8 @@ validateNotifierConfig nc = do
         when (tls == SmtpPlain && isJust u && not allowPlaintextAuth) $
           failWith "smtpTlsMode=plain with authentication is refused (set SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH=true for a lab relay)"
         pure
-          [ "smtpTlsMode=plain sends mail in the clear; lab sinks only"
-          | tls == SmtpPlain && isNothing u
+          [ if isJust u then "smtpTlsMode=plain sends mail and SMTP credentials in the clear; explicit lab override" else "smtpTlsMode=plain sends mail in the clear; lab sinks only"
+          | tls == SmtpPlain
           ]
     WebhookNotifier -> case nc.webhookConfig of
       Nothing ->
@@ -1126,7 +1126,7 @@ validateNotifierConfig nc = do
             isHttp = Text.isPrefixOf "http://" normalizedUrl
         unless (isHttps || (isHttp && allowInsecureWebhook)) $
           failWith "webhookUrl must be https:// (set SHOMEI_WEBHOOK_ALLOW_INSECURE=true for a lab receiver)"
-        pure []
+        pure ["webhookUrl uses HTTP under SHOMEI_WEBHOOK_ALLOW_INSECURE; one-time links travel in the clear; lab receivers only" | isHttp]
   where
     failWith = ioError . userError
 
