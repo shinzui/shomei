@@ -4,9 +4,9 @@ description: >-
   Cut a release of the Shōmei Haskell packages and publish them to Hackage
   following the PVP. Versions each package independently, updates internal
   dependency bounds and per-package changelogs, runs the project's format /
-  build / test / flake-check gates, tags each package (<pkg>-<version>), pushes,
-  uploads to Hackage in dependency order, and creates per-package GitHub
-  releases (plus a coordinated umbrella release for cross-package major changes).
+  build / test / flake-check gates, creates one version tag (vA.B.C.D), pushes,
+  uploads to Hackage in dependency order, and creates one GitHub release
+  listing the published package versions.
 argument-hint: "[major|minor|patch]"
 disable-model-invocation: true
 allowed-tools: Read, Bash, Edit, Glob, Grep, Write, AskUserQuestion
@@ -50,11 +50,19 @@ So the `major | minor | patch` argument maps to PVP as:
 > change goes `0.1.x.x` → `0.2.0.0`.
 
 **Each package is versioned independently.** A given release may bump only a
-subset of packages — only those with changes since their last
-`<pkg>-<version>` tag. Do **not** bump a package that has no changes.
+subset of packages — only those with changes since they were last published.
+Do **not** bump a package that has no changes.
 
 When a package's version changes, every other published package that depends
 on it must have its **internal dependency bound** updated (see below).
+
+**Git tags identify repository releases**, using `vA.B.C.D` (for example,
+`v0.3.0.0`). Create one annotated tag and one GitHub release for each batch,
+even when it contains only one package. Package versions remain independent;
+the repository release version does not force every package to that version.
+The release notes and root changelog must list each published package and its
+version, plus any skipped packages. Do not create new package-prefixed,
+date-based, or campaign tags. Preserve existing tags as historical references.
 
 ---
 
@@ -133,9 +141,8 @@ Before uploading a package, verify a **clean Hackage-only solve** for it (see
 step 8). If a package is still blocked, **publish the unblocked packages and
 stop** at the first blocked one; record what was skipped.
 
-As of this writing the repo has **no tags and every package is still at
-`0.1.0.0`**, so nothing has shipped yet. Blocker status by package — verify,
-don't assume:
+The following blocker snapshot is historical. Verify current Hackage releases
+and dependency availability before choosing the release set:
 
 | package             | releasable? | blocked by                                                                          |
 | ------------------- | ----------- | ----------------------------------------------------------------------------------- |
@@ -235,22 +242,27 @@ Stop if there are uncommitted changes unrelated to this release.
 
 ### 2. Determine what changed per package
 
-For each candidate package, find the last release tag and the changes since:
+List repository version tags in descending version order:
 
 ```bash
-# last tag for a package (per-package tag scheme: <pkg>-<version>)
-git tag --list 'shomei-core-*' --sort=-v:refname | head -1
-
-# changes to that package's directory since its last tag (or all history if none)
-git log <last-tag>..HEAD --oneline -- shomei-core/
+git tag --list 'v[0-9]*' --sort=-v:refname
 ```
 
-A package with **no commits touching its directory** since its last tag (and
-no internal-bound bump forced by a dependency) is **not** released. Build the
-list of packages-to-release from this.
+For each candidate package, find the most recent release that actually
+published it, using the GitHub release notes and root changelog. Use that
+release's tag as its baseline; a newer release that skipped the package does
+not advance its baseline. For releases predating this convention, use the
+existing `<pkg>-<version>` tag for the last published version as a fallback.
+Do not create or rename historical tags.
 
-> First release: no tags exist yet, so every selected package is a candidate;
-> use full history (`git log --oneline -- <dir>/`) to write its first changelog.
+```bash
+git log <last-published-tag>..HEAD --oneline -- shomei-core/
+```
+
+A package with **no commits touching its directory** since its last published
+release (and no internal-bound bump forced by a dependency) is **not** released.
+If it has never been published, use full history (`git log --oneline -- <dir>/`)
+to write its first changelog. Build the list of packages-to-release from this.
 
 ### 3. Compute the PVP bump for each package
 
@@ -264,8 +276,17 @@ Propagate: if a bumped package is a dependency of another published package,
 that dependent needs at least a bounds bump (often `D`, or `A.B` if the upstream
 bump was major and breaks the dependent's API).
 
-Present the full proposed table — `package | old → new | reason` — and
-**confirm with the user via AskUserQuestion before writing anything.**
+Also choose the repository release version. Starting from the latest
+`vA.B.C.D` tag, apply the largest PVP bump required by any selected package
+(or the argument's default if larger). When migrating from the old tag
+scheme, start from the highest historically released package version.
+The new version must be greater than the previous repository release and
+its tag must not already exist. For example, a major bump after the historical
+`0.2.0.0` releases produces `v0.3.0.0`.
+
+Present the repository tag and full proposed table —
+`package | old → new | reason` — and **confirm with the user via
+AskUserQuestion before writing anything.**
 
 ### 4. Update cabal versions and internal bounds
 
@@ -302,12 +323,9 @@ Also update the **root `CHANGELOG.md`** "Unreleased" section: convert the
 relevant entries into a dated roundup that names each package and its new
 version (the root changelog stays the project-level overview).
 
-> The root `CHANGELOG.md` header currently says versioning "will move to
-> semantic versioning (`MAJOR.MINOR.PATCH`) and git tags (`vMAJOR.MINOR.PATCH`)
-> at the first tagged release". That contradicts this skill: Shōmei versions
-> **each package independently under PVP** with `<pkg>-<version>` tags, and
-> there is no repo-wide `vX.Y.Z` tag. Rewrite that header as part of the first
-> release.
+Use `## vA.B.C.D — YYYY-MM-DD` for the root roundup heading, matching the
+repository release tag. Keep its versioning description consistent with
+independent PVP package versions and one version tag per repository release.
 
 ### 6. Format, build, test, and run the check gate
 
@@ -339,22 +357,21 @@ Commit the release with a Conventional Commits message, e.g.:
 
 ```bash
 git add -A
-git commit -m "chore(release): shomei-core 0.2.0.0, shomei-jwt 0.1.1.0"
+git commit -m "chore(release): v0.3.0.0"
 ```
 
-Create an **annotated, per-package tag** for each released package
-(`<pkg>-<version>`):
+Create **one annotated version tag** for the repository release (use the
+version agreed in step 3; `v0.3.0.0` is an example):
 
 ```bash
-git tag -a shomei-core-0.2.0.0 -m "shomei-core 0.2.0.0"
-git tag -a shomei-jwt-0.1.1.0  -m "shomei-jwt 0.1.1.0"
+git tag -a v0.3.0.0 -m "Shōmei v0.3.0.0"
 ```
 
-Push commit and tags:
+Push the commit and this release's tag:
 
 ```bash
 git push
-git push --tags
+git push origin v0.3.0.0
 ```
 
 ### 8. Publish to Hackage (dependency order)
@@ -407,37 +424,24 @@ table**, one at a time:
 depend on the failed one — a dependent uploaded against a missing dependency
 version will be broken on Hackage.
 
-### 9. Create GitHub releases
+### 9. Create the GitHub release
 
-`gh` is available. Create a **per-package GitHub release** for each published
-package, using its tag and changelog section as the body:
-
-```bash
-gh release create shomei-core-0.2.0.0 \
-  --title "shomei-core 0.2.0.0" \
-  --notes-file <(awk '/^## /{n++} n==1' shomei-core/CHANGELOG.md)
-```
-
-For a **major change that spans multiple packages**, *also* create one
-**coordinated "umbrella" GitHub release** that summarizes the whole batch and
-links each per-package tag. Use a date- or campaign-based tag for it (e.g.
-`release-YYYY-MM-DD`) so it doesn't collide with the per-package tags:
+`gh` is available. Create **one GitHub release** using the repository version
+tag from step 7. Prepare a notes file from the root changelog roundup, with
+per-package changes, exact published versions, Hackage links, and any skipped
+packages and their blockers. Record actual upload results; a tag alone does
+not mean every selected package reached Hackage.
 
 ```bash
-git tag -a release-YYYY-MM-DD -m "Coordinated release YYYY-MM-DD"
-git push origin release-YYYY-MM-DD
-gh release create release-YYYY-MM-DD \
-  --title "Shōmei release YYYY-MM-DD" \
-  --notes "Cross-package release. Packages:
-- shomei-core 0.2.0.0
-- shomei-jwt 0.1.1.0
-..."
+gh release create v0.3.0.0 --verify-tag \
+  --title "Shōmei v0.3.0.0" \
+  --notes-file <release-notes-file>
 ```
 
 ### 10. Hand off
 
 Summarize: which packages were published (and versions), which were skipped and
-why (blockers), the tags created, the Hackage URLs, and the GitHub releases.
+why (blockers), the repository version tag, the Hackage URLs, and the GitHub release.
 
 ---
 

@@ -3,11 +3,12 @@
 All notable changes to Shōmei are documented here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-Shōmei does **not** carry a single repo-wide version. Each package is versioned
-independently under the Haskell [PVP](https://pvp.haskell.org/) (`A.B.C.D`) and tagged
-`<package>-<version>` — for example `shomei-core-0.1.0.0`. There is no `vX.Y.Z` tag.
-Per-package detail lives in each package's own `CHANGELOG.md`; this file is the
-project-level roundup of what shipped together.
+Each Shōmei package is versioned independently under the Haskell
+[PVP](https://pvp.haskell.org/) (`A.B.C.D`). Repository releases use a single
+`vA.B.C.D` tag, for example `v0.3.0.0`, with a roundup listing the packages
+and versions published together. Earlier releases used package-prefixed and
+dated tags; those remain historical references. Per-package detail lives in
+each package's own `CHANGELOG.md`.
 
 ## Unreleased
 
