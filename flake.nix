@@ -58,10 +58,6 @@
     # NOTE: flake inputs can only be declared here in the top-level flake.nix, which
     # nix-haskell-flake generates. This is the one seihou-managed edit that has no home in
     # the unmanaged flake.module.nix; re-apply it after any future `seihou run` of this module.
-    jose-src = {
-      url = "github:sumo/hs-jose/4726d077a13b24cd1d78fb94b2db5a86c79e3f0f";
-      flake = false;
-    };
     openapi-hs-src = {
       url = "github:shinzui/openapi-hs/06fc11713094bf39ac00353b052f4ded5a534567";
       flake = false;
@@ -72,10 +68,6 @@
     };
     servant-openapi-hs-src = {
       url = "github:shinzui/servant-openapi-hs/181ca609688af3cad994a73988492605c71bc2d0";
-      flake = false;
-    };
-    webauthn-src = {
-      url = "github:shinzui/webauthn/c274e23a5e31aac8932bac6398b65e8bca584a99";
       flake = false;
     };
   };

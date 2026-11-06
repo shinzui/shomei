@@ -14,125 +14,167 @@
 # landed. Verify with `nix build .#dockerImage` in an environment with the flake's substituters.
 { inputs, lib, ... }:
 {
-  perSystem = { pkgs, config, ... }: {
-    # shomei-server renders its Dhall config to JSON by shelling out to the
-    # `dhall-to-json` binary (shomei-server/src/Shomei/Server/Config.hs). The
-    # production image (below) already bundles it; the dev shell must too, so
-    # `cabal test` runs shomei-server-config-test locally and in CI without
-    # depending on a globally-installed binary.
-    haskellProject.extraDevPackages = [ pkgs.dhall-json ];
+  perSystem = { pkgs, config, ... }:
+    let
+      haskellLib = pkgs.haskell.lib.compose;
+      upstream = pkgs.haskell.packages.ghc9124;
+      haskellPackages = upstream.override {
+        overrides = hself: hsuper: {
+          crypton = hsuper.crypton_1_1_2;
+          crypton-connection = hsuper.crypton-connection_0_4_6;
+          crypton-x509 = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "crypton-x509";
+              ver = "1.9.1";
+              sha256 = "1zh5w1isgzgl5vjb9skhrxidjzilx6fgarp3lgwbi264avh7lmpi";
+            }
+            { });
+          crypton-x509-store = hsuper.crypton-x509-store_1_9_0;
+          crypton-x509-system = hsuper.crypton-x509-system_1_9_0;
+          crypton-x509-validation = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "crypton-x509-validation";
+              ver = "1.9.1";
+              sha256 = "1c5c3jxqmskq6q8rd0ac7ljg0nimqixi776lsbyarwn20mb9zav0";
+            }
+            { });
+          hasql = hsuper.hasql_1_10_3;
+          hasql-pool = hsuper.hasql-pool_1_4_2;
+          hasql-transaction = hsuper.hasql-transaction_1_2_2;
+          hpke = haskellLib.dontCheck (haskellLib.doJailbreak hsuper.hpke_0_1_0);
+          http-client-tls = hsuper.http-client-tls_0_4_0;
+          mlkem = haskellLib.markUnbroken (haskellLib.dontCheck (haskellLib.doJailbreak hsuper.mlkem));
+          postgresql-binary = hsuper.postgresql-binary_0_15_0_1;
+          smtp-mail = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "smtp-mail";
+              ver = "0.5.0.2";
+              sha256 = "0p8hddrmkv3cmlvg0r5xx4jqwyqlnsifn8k43v8k9zl94zpv272x";
+            }
+            { });
+          tls = haskellLib.dontCheck hsuper.tls_2_4_1;
+          validation = haskellLib.dontCheck hsuper.validation_1_2_2;
 
-    # The repository is a Cabal project containing several local packages, while the generated
-    # base module's callCabal2nix target assumes one root .cabal file. Compose the package set
-    # explicitly so the default package and OCI image build the same shomei-server closure as
-    # cabal.project. Dependency sources and compatibility pins were verified through:
-    #
-    #   mori://shinzui/haskell-nix/repos/haskell-nix
-    #   mori://shinzui/pg-migrate/repos/pg-migrate
-    #   mori://shinzui/ephemeral-pg/repos/ephemeral-pg
-    #   mori://frasertweedale/hs-jose/repos/hs-jose
-    #   mori://tweag/webauthn/repos/webauthn-shomei-fork
-    #   mori://shinzui/openapi-hs/repos/openapi-hs
-    #   mori://shinzui/servant-openapi-hs/repos/servant-openapi-hs
-    #   mori://shinzui/servant-health/repos/servant-health
-    packages.default = lib.mkForce (
-      let
-        haskellLib = pkgs.haskell.lib.compose;
-        upstream = pkgs.haskell.packages.ghc9124;
-        haskellPackages = upstream.override {
-          overrides = hself: hsuper: {
-            crypton = hsuper.crypton_1_1_2;
-            crypton-connection = hsuper.crypton-connection_0_4_6;
-            crypton-x509 = hsuper.crypton-x509_1_9_0;
-            crypton-x509-store = hsuper.crypton-x509-store_1_9_0;
-            crypton-x509-system = hsuper.crypton-x509-system_1_9_0;
-            crypton-x509-validation = hsuper.crypton-x509-validation_1_9_0;
-            hasql = hsuper.hasql_1_10_3;
-            hasql-pool = hsuper.hasql-pool_1_4_2;
-            hasql-transaction = hsuper.hasql-transaction_1_2_2;
-            hpke = haskellLib.dontCheck (haskellLib.doJailbreak hsuper.hpke_0_1_0);
-            http-client-tls = hsuper.http-client-tls_0_4_0;
-            mlkem = haskellLib.markUnbroken (haskellLib.dontCheck (haskellLib.doJailbreak hsuper.mlkem));
-            postgresql-binary = hsuper.postgresql-binary_0_15_0_1;
-            # nixpkgs still carries Hackage revision 1 (ram <0.22); revision 2 allows ram <0.23.
-            smtp-mail = haskellLib.doJailbreak hsuper.smtp-mail_0_5_0_1;
-            tls = haskellLib.dontCheck hsuper.tls_2_4_1;
-            validation = haskellLib.dontCheck hsuper.validation_1_2_2;
+          # pg-migrate 1.2.0.0 is on Hackage but not yet in the pinned nixpkgs ghc9124 set,
+          # and ephemeral-pg 0.3.1.0 provides withCachedConfig for stable cleanup roots.
+          # Pull the required releases straight from Hackage so the Nix closure matches the
+          # Hackage-only solve that cabal.project now performs.
+          ephemeral-pg = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "ephemeral-pg";
+              ver = "0.3.1.0";
+              sha256 = "0sr8xpglwkzk6bgxdm9n1zdndjdqp49sks57ck97525vj6m83z6h";
+            }
+            { });
+          # mori://shinzui/pg-migrate/packages/pg-migrate-test-support 1.2
+          # admits ephemeral-pg 0.3; keep the coupled migration family aligned.
+          pg-migrate-test-support = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "pg-migrate-test-support";
+              ver = "1.2.0.0";
+              sha256 = "03j3ch0ydkf5f9hk6p1z81bpps0zs90xmkw457xzj88irla9d7gr";
+            }
+            { });
+          pg-migrate = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "pg-migrate";
+              ver = "1.2.0.0";
+              sha256 = "0w337zx84rmqdllvk6xszvzsz9k3v7xah40nxl4yzpfhy6rc6fh3";
+            }
+            { });
+          pg-migrate-embed = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "pg-migrate-embed";
+              ver = "1.2.0.0";
+              sha256 = "02b1q2xskymq67ns1zj2rnanm2a60fh3nzksq1shl412bz7n26ls";
+            }
+            { });
+          pg-migrate-cli = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "pg-migrate-cli";
+              ver = "1.2.0.0";
+              sha256 = "1avaxnn2ncfmkvbcij7r3bgh324rj9h9mzchwllzdwpadp6qxfkk";
+            }
+            { });
+          jose = haskellLib.dontCheck (hself.callHackageDirect
+            {
+              pkg = "jose";
+              ver = "0.13";
+              sha256 = "03lgv4nvwwwsk9j3b32gfz5xxzr2qngp3xmv7m2bj3mj027kbi4v";
+            }
+            { });
+          openapi-hs = haskellLib.dontCheck (hself.callCabal2nix "openapi-hs" inputs.openapi-hs-src { });
+          servant-health = haskellLib.dontCheck (hself.callCabal2nix "servant-health" inputs.servant-health-src { });
+          servant-openapi-hs = haskellLib.dontCheck (hself.callCabal2nix "servant-openapi-hs" inputs.servant-openapi-hs-src { });
+          # Match cabal.project's scoped time override for this exact release.
+          webauthn = haskellLib.overrideCabal
+            (drv: {
+              postPatch = (drv.postPatch or "") + ''
+                substituteInPlace webauthn.cabal \
+                  --replace-fail 'time                    >= 1.9.3 && < 1.14' \
+                                 'time                    >= 1.9.3 && < 1.15'
+              '';
+            })
+            (haskellLib.dontCheck (hself.callHackageDirect
+              {
+                pkg = "webauthn";
+                ver = "0.12.0.0";
+                sha256 = "148y3bpwyyzqr69xl3fz08dlm4f60rz39y90vqk7zsklxkhx4s5z";
+              }
+              { }));
 
-            # pg-migrate 1.2.0.0 is on Hackage but not yet in the pinned nixpkgs ghc9124 set,
-            # and ephemeral-pg 0.3.1.0 provides withCachedConfig for stable cleanup roots.
-            # Pull the required releases straight from Hackage so the Nix closure matches the
-            # Hackage-only solve that cabal.project now performs.
-            ephemeral-pg = haskellLib.dontCheck (hself.callHackageDirect
-              {
-                pkg = "ephemeral-pg";
-                ver = "0.3.1.0";
-                sha256 = "0sr8xpglwkzk6bgxdm9n1zdndjdqp49sks57ck97525vj6m83z6h";
-              }
-              { });
-            # mori://shinzui/pg-migrate/packages/pg-migrate-test-support 1.2
-            # admits ephemeral-pg 0.3; keep the coupled migration family aligned.
-            pg-migrate-test-support = haskellLib.dontCheck (hself.callHackageDirect
-              {
-                pkg = "pg-migrate-test-support";
-                ver = "1.2.0.0";
-                sha256 = "03j3ch0ydkf5f9hk6p1z81bpps0zs90xmkw457xzj88irla9d7gr";
-              }
-              { });
-            pg-migrate = haskellLib.dontCheck (hself.callHackageDirect
-              {
-                pkg = "pg-migrate";
-                ver = "1.2.0.0";
-                sha256 = "0w337zx84rmqdllvk6xszvzsz9k3v7xah40nxl4yzpfhy6rc6fh3";
-              }
-              { });
-            pg-migrate-embed = haskellLib.dontCheck (hself.callHackageDirect
-              {
-                pkg = "pg-migrate-embed";
-                ver = "1.2.0.0";
-                sha256 = "02b1q2xskymq67ns1zj2rnanm2a60fh3nzksq1shl412bz7n26ls";
-              }
-              { });
-            pg-migrate-cli = haskellLib.dontCheck (hself.callHackageDirect
-              {
-                pkg = "pg-migrate-cli";
-                ver = "1.2.0.0";
-                sha256 = "1avaxnn2ncfmkvbcij7r3bgh324rj9h9mzchwllzdwpadp6qxfkk";
-              }
-              { });
-            jose = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "jose" inputs.jose-src { }));
-            openapi-hs = haskellLib.dontCheck (hself.callCabal2nix "openapi-hs" inputs.openapi-hs-src { });
-            servant-health = haskellLib.dontCheck (hself.callCabal2nix "servant-health" inputs.servant-health-src { });
-            servant-openapi-hs = haskellLib.dontCheck (hself.callCabal2nix "servant-openapi-hs" inputs.servant-openapi-hs-src { });
-            webauthn = haskellLib.dontCheck (haskellLib.doJailbreak (hself.callCabal2nix "webauthn" inputs.webauthn-src { }));
-
-            shomei-core = haskellLib.dontCheck (hself.callCabal2nix "shomei-core" (inputs.self + "/shomei-core") { });
-            shomei-jwt = haskellLib.dontCheck (hself.callCabal2nix "shomei-jwt" (inputs.self + "/shomei-jwt") { });
-            shomei-migrations = haskellLib.dontCheck (hself.callCabal2nix "shomei-migrations" (inputs.self + "/shomei-migrations") { });
-            shomei-postgres = haskellLib.dontCheck (hself.callCabal2nix "shomei-postgres" (inputs.self + "/shomei-postgres") { });
-            shomei-servant = haskellLib.dontCheck (hself.callCabal2nix "shomei-servant" (inputs.self + "/shomei-servant") { });
-            shomei-webauthn = haskellLib.dontCheck (hself.callCabal2nix "shomei-webauthn" (inputs.self + "/shomei-webauthn") { });
-            shomei-server = haskellLib.dontCheck (hself.callCabal2nix "shomei-server" (inputs.self + "/shomei-server") { });
-          };
+          shomei-core = haskellLib.dontCheck (hself.callCabal2nix "shomei-core" (inputs.self + "/shomei-core") { });
+          shomei-jwt = haskellLib.dontCheck (hself.callCabal2nix "shomei-jwt" (inputs.self + "/shomei-jwt") { });
+          shomei-migrations = haskellLib.dontCheck (hself.callCabal2nix "shomei-migrations" (inputs.self + "/shomei-migrations") { });
+          shomei-postgres = haskellLib.dontCheck (hself.callCabal2nix "shomei-postgres" (inputs.self + "/shomei-postgres") { });
+          shomei-servant = haskellLib.dontCheck (hself.callCabal2nix "shomei-servant" (inputs.self + "/shomei-servant") { });
+          shomei-webauthn = haskellLib.dontCheck (hself.callCabal2nix "shomei-webauthn" (inputs.self + "/shomei-webauthn") { });
+          shomei-server = haskellLib.dontCheck (hself.callCabal2nix "shomei-server" (inputs.self + "/shomei-server") { });
         };
-      in
-      haskellLib.justStaticExecutables haskellPackages.shomei-server
-    );
+      };
+    in
+    {
+      # shomei-server renders its Dhall config to JSON by shelling out to the
+      # `dhall-to-json` binary (shomei-server/src/Shomei/Server/Config.hs). The
+      # production image (below) already bundles it; the dev shell must too, so
+      # `cabal test` runs shomei-server-config-test locally and in CI without
+      # depending on a globally-installed binary.
+      haskellProject.extraDevPackages = [ pkgs.dhall-json ];
 
-    packages.dockerImage = pkgs.dockerTools.buildLayeredImage {
-      name = "shomei-server";
-      tag = "latest";
-      contents = [
-        config.packages.default # provides /bin/shomei-server and /bin/shomei-admin
-        pkgs.dhall-json # dhall-to-json, used by the config loader
-        pkgs.busybox # sh + wget for the entrypoint and healthcheck
-        pkgs.cacert
+      # The repository is a Cabal project containing several local packages, while the generated
+      # base module's callCabal2nix target assumes one root .cabal file. Compose the package set
+      # explicitly so the default package and OCI image build the same shomei-server closure as
+      # cabal.project. Dependency sources and compatibility pins were verified through:
+      #
+      #   mori://shinzui/haskell-nix/repos/haskell-nix
+      #   mori://shinzui/pg-migrate/repos/pg-migrate
+      #   mori://shinzui/ephemeral-pg/repos/ephemeral-pg
+      #   mori://frasertweedale/hs-jose/repos/hs-jose
+      #   mori://tweag/webauthn/packages/webauthn
+      #   mori://shinzui/openapi-hs/repos/openapi-hs
+      #   mori://shinzui/servant-openapi-hs/repos/servant-openapi-hs
+      #   mori://shinzui/servant-health/repos/servant-health
+      # The scaffold's default recipe is forced while module priorities are merged.
+      # Point its alias at the assembled workspace package instead of a missing root cabal file.
+      haskellProject.applicationOverlays = lib.mkForce [
+        (_final: _prev: { shomei = haskellPackages.shomei-server; })
       ];
-      config = {
-        Entrypoint = [ "/bin/sh" "${./deploy/entrypoint.sh}" ];
-        ExposedPorts = { "8080/tcp" = { }; };
-        Env = [ "SHOMEI_PORT=8080" ];
+      packages.default = lib.mkForce (haskellLib.justStaticExecutables haskellPackages.shomei-server);
+
+      packages.dockerImage = pkgs.dockerTools.buildLayeredImage {
+        name = "shomei-server";
+        tag = "latest";
+        contents = [
+          config.packages.default # provides /bin/shomei-server and /bin/shomei-admin
+          pkgs.dhall-json # dhall-to-json, used by the config loader
+          pkgs.busybox # sh + wget for the entrypoint and healthcheck
+          pkgs.cacert
+        ];
+        config = {
+          Entrypoint = [ "/bin/sh" "${./deploy/entrypoint.sh}" ];
+          ExposedPorts = { "8080/tcp" = { }; };
+          Env = [ "SHOMEI_PORT=8080" ];
+        };
       };
     };
-  };
 }

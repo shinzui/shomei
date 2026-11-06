@@ -4,7 +4,9 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.3.0.0 — 2026-11-05
+
+- **Breaking:** the package and its test suite move to the 0.3 API series.
 
 - **Upgrade:** migration 0043 repairs legacy machine/delegated provenance and makes omitted SQL provenance default to machine. Missing kinds fail closed on read; authorize also refuses a stored actor. Stop old issuers before migration; affected backing-account humans can establish a new interactive session by logging in. See deployment.md.
 

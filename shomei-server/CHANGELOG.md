@@ -4,7 +4,10 @@ All notable changes to `shomei-server` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.3.0.0 — 2026-11-05
+
+- **Breaking:** internal dependency bounds follow the 0.3 API series; migration dependencies require `shomei-migrations ^>=0.2.0.1`.
+- First Hackage publication; earlier version sections describe repository development milestones.
 
 - Explicit lab overrides for HTTP webhooks and plaintext SMTP credentials now emit fixed secret-free boot warnings. The notification guide documents inherited outbound HTTP proxy settings.
 

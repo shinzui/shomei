@@ -4,7 +4,12 @@ All notable changes to `shomei-webauthn` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.3.0.0 — 2026-11-05
+
+- **Breaking:** internal dependency bounds follow the 0.3 API series.
+- First Hackage publication; earlier version sections describe repository development milestones.
+- Require released [`webauthn >=0.12 && <0.13`](mori://tweag/webauthn/packages/webauthn); the compatible upstream release replaces the development fork.
+- The workspace permits `time` 1.14 through a version-scoped `allow-newer` override; this project setting is not part of the published package's dependency metadata.
 
 - **Breaking:** remove `VerifiedAuthentication.cloneWarning`; cloned/regressed counters return `WebAuthnCounterCloned` through the MFA failure/audit path.
 - Add deterministic signed ES256 registration/assertion wire fixtures and real-verifier workflow tests.

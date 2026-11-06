@@ -4,7 +4,11 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.1 — 2026-11-05
+
+- Keep the exported Haskell API unchanged; require the released [`pg-migrate`](mori://shinzui/pg-migrate/packages/pg-migrate) 1.2 family and [`ephemeral-pg`](mori://shinzui/ephemeral-pg/packages/ephemeral-pg) 0.3.1, with stable per-user test database cleanup roots.
+- Migration 0038 versions TOTP envelopes for the required offline conversion; 0039 enforces new-write field budgets, and 0040–0041 add session paging and active-principal indexes.
+- Before upgrading, stop all writers, back up the database and retain the TOTP key, then apply migrations and convert legacy TOTP envelopes. Follow the deployment and MFA upgrade guides; old issuers must stay stopped during provenance repair.
 
 - **Upgrade:** migration 0043 repairs legacy machine/delegated provenance and makes omitted SQL provenance default to machine. Missing kinds fail closed on read; authorize also refuses a stored actor. Stop old issuers before migration; affected backing-account humans can establish a new interactive session by logging in. See deployment.md.
 

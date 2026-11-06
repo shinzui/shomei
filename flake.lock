@@ -200,23 +200,6 @@
         "type": "github"
       }
     },
-    "jose-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1773377618,
-        "narHash": "sha256-830QyjNu4EeRK4zak9iLXUfTZgQ0rRBz4yNdjOlOeaU=",
-        "owner": "sumo",
-        "repo": "hs-jose",
-        "rev": "4726d077a13b24cd1d78fb94b2db5a86c79e3f0f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "sumo",
-        "repo": "hs-jose",
-        "rev": "4726d077a13b24cd1d78fb94b2db5a86c79e3f0f",
-        "type": "github"
-      }
-    },
     "keiki-src": {
       "flake": false,
       "locked": {
@@ -483,7 +466,6 @@
         ],
         "haskell-nix": "haskell-nix",
         "haskell-nix-dev": "haskell-nix-dev",
-        "jose-src": "jose-src",
         "nix2container": "nix2container",
         "nixpkgs": [
           "haskell-nix-dev",
@@ -500,8 +482,7 @@
         "treefmt-nix": [
           "haskell-nix-dev",
           "treefmt-nix"
-        ],
-        "webauthn-src": "webauthn-src"
+        ]
       }
     },
     "servant-health-src": {
@@ -664,23 +645,6 @@
       "original": {
         "owner": "shinzui",
         "repo": "typesafe-hs",
-        "type": "github"
-      }
-    },
-    "webauthn-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1781753341,
-        "narHash": "sha256-ODP0Jnug7NAWQrJ3x11Qz5d4tQpSqUK48EPX+2VitHA=",
-        "owner": "shinzui",
-        "repo": "webauthn",
-        "rev": "c274e23a5e31aac8932bac6398b65e8bca584a99",
-        "type": "github"
-      },
-      "original": {
-        "owner": "shinzui",
-        "repo": "webauthn",
-        "rev": "c274e23a5e31aac8932bac6398b65e8bca584a99",
         "type": "github"
       }
     }

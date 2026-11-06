@@ -4,7 +4,9 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.3.0.0 — 2026-11-05
+
+- **Breaking:** internal dependency bounds follow the 0.3 API series.
 
 - **Breaking (Haskell route type only):** OpenApiRoute returns `CachedJson`; use `cachedJsonValue` for its parsed document. The URL, application/json media type, JSON schema and bytes are preserved. Shared standalone/embedded assembly now renders one forced byte representation per document version.
 

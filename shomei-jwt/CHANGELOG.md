@@ -4,7 +4,9 @@ All notable changes to `shomei-jwt` are documented here. This package adheres to
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.3.0.0 — 2026-11-05
+
+- **Breaking:** internal dependency bounds follow the 0.3 API series.
 
 - **Breaking:** `VerifierSettings` requires a finite positive `maxTokenLifetime` and an explicit
   optional legacy actor deadline. Verification rejects nonpositive/excess lifetimes independently

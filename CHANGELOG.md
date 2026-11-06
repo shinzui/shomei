@@ -10,13 +10,65 @@ and versions published together. Earlier releases used package-prefixed and
 dated tags; those remain historical references. Per-package detail lives in
 each package's own `CHANGELOG.md`.
 
-## Unreleased
+## v0.3.0.0 — 2026-11-05
 
-- Remembered sessions: `POST /v1/auth/login`, `/v1/auth/mfa/complete` and
-  `/v1/auth/login/passkey/complete` accept an optional `"remember"`. A remembered session lasts
-  `rememberedSessionTTL` (default 365 days, `SHOMEI_REMEMBERED_SESSION_TTL`), and every token pair
-  reports `"remembered"` so a browser-facing embedder can choose its cookies' persistence.
-  Migration `0037-remembered-sessions` adds `shomei_sessions.remembered` (existing rows read `true`).
+Package versions remain independent. This batch selects all eight packages;
+`shomei-webauthn`, `shomei-server`, and `shomei-client` make their first Hackage publication.
+Examples are excluded from versioning and publication.
+
+| package | version | changes |
+| --- | --- | --- |
+| [`shomei-core`](shomei-core/CHANGELOG.md) | 0.3.0.0 | breaking session, passkey, configuration and port contracts; finite input and principal budgets |
+| [`shomei-migrations`](shomei-migrations/CHANGELOG.md) | 0.2.0.1 | migrations 0037–0043; released pg-migrate 1.2 and stable test database cleanup; exported Haskell API unchanged |
+| [`shomei-jwt`](shomei-jwt/CHANGELOG.md) | 0.3.0.0 | breaking verifier settings; bounded token lifetimes and strict actor claims |
+| [`shomei-webauthn`](shomei-webauthn/CHANGELOG.md) | 0.3.0.0 | released webauthn 0.12; cloned-counter failures and signed ceremony verification |
+| [`shomei-postgres`](shomei-postgres/CHANGELOG.md) | 0.3.0.0 | breaking managed pool, bounded transactions, clocks, atomic quotas and revocation |
+| [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.3.0.0 | breaking remembered-session DTOs, admin pagination and cached OpenAPI route result |
+| [`shomei-server`](shomei-server/CHANGELOG.md) | 0.3.0.0 | breaking runtime settings and assembly; finite admission limits, offline TOTP converter and operational diagnostics |
+| [`shomei-client`](shomei-client/CHANGELOG.md) | 0.3.0.0 | breaking paged admin session API and updated domain/HTTP contracts |
+
+The workspace now uses released [`webauthn >=0.12 && <0.13`](mori://tweag/webauthn/packages/webauthn), replacing its git fork
+and replacing the blanket `allow-newer` override with `webauthn-0.12.0.0:time`,
+bounded by `time <1.15` for the GHC 9.12.4 toolchain. The Nix server closure uses released
+WebAuthn, JOSE, SMTP and compatible X.509 packages. Every internal dependency bound
+follows its selected package version across libraries, executables and tests.
+
+GHC 9.12.4 consumers must also configure the following until upstream widens its
+published `time` bound. This setting belongs in the consuming project's
+`cabal.project`; package tarballs do not carry it. Release dependency solves use only
+Hackage sources with this same explicit override.
+
+```cabal
+allow-newer: webauthn-0.12.0.0:time
+constraints: time <1.15
+```
+
+Upgrade requirements:
+
+- **TOTP conversion requires an outage.** Back up the database and retain its matching
+  `SHOMEI_TOTP_ENCRYPTION_KEY`; stop all writers, including embedded hosts and admin jobs.
+  Apply migrations, then run `shomei-admin totp migrate-envelopes --check`, `--offline`,
+  and `--check` again. Start upgraded hosts only after `legacy=0 invalid_versions=0`.
+  Old binaries cannot read converted envelopes; rollback requires the matching database/key
+  backup. See the [MFA upgrade guide](docs/user/mfa.md#totp-parameters).
+- **Session provenance repair:** migration 0043 repairs legacy machine/delegated sessions,
+  changes omitted provenance to machine and rejects invalid kinds. Stop old issuers before
+  migration. Affected users can log in again for a new interactive session. Plan the table
+  scan and constraint-validation window; see the [deployment guide](docs/user/deployment.md#postgresql-version).
+- **Actor-token rollout:** new delegated tokens carry `act: {"sub":"user_…"}`. Upgrade all
+  readers with a finite legacy cutoff before switching issuers to object emission. Keep the
+  compatible reader through rollback and follow the [token upgrade sequence](docs/user/token-compatibility.md).
+- **Haskell consumers:** adapt to the 0.3 record/port changes, configure a finite positive
+  `VerifierSettings.maxTokenLifetime`, use the managed PostgreSQL pool, pass admin session
+  pagination arguments, and extract parsed OpenAPI through `cachedJsonValue` when needed.
+
+Remembered sessions are opt-in at login, MFA completion and passwordless login. Their
+TTL defaults to 365 days (`SHOMEI_REMEMBERED_SESSION_TTL`); each token pair reports
+`remembered`. Refresh tokens issued at sign-in no longer outlive their session.
+
+Other changes include atomic passkey enrollment ceilings, finite identity/role/scope
+write limits, case-insensitive bearer schemes with strict duplicate/malformed credential
+rejection, shared connection admission and slow-client limits, and improved audit/boot diagnostics.
 
 ## 2026-08-27 — second Hackage release
 
