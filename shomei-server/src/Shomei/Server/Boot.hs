@@ -80,6 +80,7 @@ import Shomei.Servant.Seam qualified as Seam
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
+import Shomei.Server.ConfigurationError (reportConfigurationError)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
 import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
 import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddleware)
@@ -103,7 +104,10 @@ main = do
   -- is a pipe/file it would otherwise be block-buffered and logs would not appear promptly).
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
-  (cfg, settings) <- loadConfig
+  (cfg, settings) <- reportConfigurationError "shomei-server" loadConfig
+  -- Validate env-only notifier credentials before startup diagnostics or database work.
+  -- buildEnv also loads these values for embedding callers.
+  _ <- reportConfigurationError "shomei-server" (loadNotifierSecretsFromEnv cfg)
   let trustedProxySummary =
         case trustedProxyTexts settings.serverTrustedProxies of
           [] -> "none"

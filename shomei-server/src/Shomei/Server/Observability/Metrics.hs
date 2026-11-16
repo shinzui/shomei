@@ -31,7 +31,6 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Builder (Builder, byteString, doubleDec, intDec, toLazyByteString)
 import Data.ByteString.Lazy qualified as BL
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -60,7 +59,10 @@ data Metrics = Metrics
   }
 
 histogramBuckets :: [Double]
-histogramBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+histogramBuckets = map fst bucketLabels
+
+bucketLabels :: [(Double, Text)]
+bucketLabels = [(0.005, "0.005"), (0.01, "0.01"), (0.025, "0.025"), (0.05, "0.05"), (0.1, "0.1"), (0.25, "0.25"), (0.5, "0.5"), (1, "1"), (2.5, "2.5"), (5, "5"), (10, "10")]
 
 newMetrics :: IO Metrics
 newMetrics =
@@ -156,29 +158,29 @@ exportMetrics m = do
     )
   where
     reqLines reqs =
-      helpType "http_requests_total" "counter"
+      helpType "http_requests_total" "counter" "Requests with a completed response, by method and status."
         : [ line ("http_requests_total" <> labels [("method", method), ("status", tshow status)]) (intDec n)
           | ((method, status), n) <- Map.toList reqs
           ]
     flightLines flight =
-      [ helpType "http_requests_in_flight" "gauge",
+      [ helpType "http_requests_in_flight" "gauge" "Requests currently being handled.",
         line "http_requests_in_flight" (intDec flight)
       ]
     histLines dsum dcount buckets =
-      helpType "http_request_duration_seconds" "histogram"
-        : [ line ("http_request_duration_seconds_bucket" <> labels [("le", tshow le)]) (intDec c)
-          | (le, c) <- sortOn fst (Map.toList buckets)
+      helpType "http_request_duration_seconds" "histogram" "Time in seconds through response completion."
+        : [ line ("http_request_duration_seconds_bucket" <> labels [("le", label)]) (intDec (Map.findWithDefault 0 le buckets))
+          | (le, label) <- bucketLabels
           ]
           <> [ line ("http_request_duration_seconds_bucket" <> labels [("le", "+Inf")]) (intDec dcount),
                line "http_request_duration_seconds_sum" (doubleDec dsum),
                line "http_request_duration_seconds_count" (intDec dcount)
              ]
     domainLines ok failed issued =
-      [ helpType "shomei_logins_succeeded_total" "counter",
+      [ helpType "shomei_logins_succeeded_total" "counter" "Login POST responses with status 200.",
         line "shomei_logins_succeeded_total" (intDec ok),
-        helpType "shomei_logins_failed_total" "counter",
+        helpType "shomei_logins_failed_total" "counter" "Login POST responses with status 401.",
         line "shomei_logins_failed_total" (intDec failed),
-        helpType "shomei_tokens_issued_total" "counter",
+        helpType "shomei_tokens_issued_total" "counter" "Successful token-issuing login, signup, refresh and OAuth token responses.",
         line "shomei_tokens_issued_total" (intDec issued)
       ]
 
@@ -187,8 +189,22 @@ exportMetrics m = do
 line :: Builder -> Builder -> Builder
 line name val = name <> byteString " " <> val <> byteString "\n"
 
-helpType :: ByteString -> ByteString -> Builder
-helpType name ty = byteString "# TYPE " <> byteString name <> byteString " " <> byteString ty <> byteString "\n"
+helpType :: ByteString -> ByteString -> Text -> Builder
+helpType name ty description =
+  byteString "# HELP "
+    <> byteString name
+    <> byteString " "
+    <> byteString (encodeUtf8 (Text.concatMap escapeHelp description))
+    <> byteString "\n"
+    <> byteString "# TYPE "
+    <> byteString name
+    <> byteString " "
+    <> byteString ty
+    <> byteString "\n"
+  where
+    escapeHelp '\\' = "\\\\"
+    escapeHelp '\n' = "\\n"
+    escapeHelp c = Text.singleton c
 
 labels :: [(ByteString, Text)] -> Builder
 labels [] = mempty

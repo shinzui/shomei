@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6.1-sol"
     harness: "codex-cli"
     at: 2026-11-16T05:09:48Z
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-16T05:19:38Z
+      mode: "implement"
+      note: "Implement admin validation, safe configuration failures, no-op conversion, and metrics readability"
 ---
 
 
@@ -25,16 +31,16 @@ Fix all six operator-facing defects in [issue #8](https://github.com/shinzui/sho
 
 ## Progress
 
-- [ ] Milestone 1: Admin parsing and guidance reject missing redirect URIs and unknown audit types, preserve valid filters, and remove the fixed five-minute revocation claim.
-- [ ] Milestone 2: Empty/already-converted TOTP stores need no key for offline conversion; real conversion still enforces safeguards; both executables report configuration failures concisely without exposing secrets.
-- [ ] Milestone 3: Metrics expose decimal bucket boundaries and HELP metadata, preserve existing observations, and all required regression checks pass with operator documentation updated.
+- [x] Milestone 1 (2026-11-16): Required/repeated redirects, direct-call validation, all four audit parsers, known empty queries, and lifetime-independent revocation guidance pass in the 36-test admin suite. All 293 core tests pass, including unique vocabulary coverage and projection/decoding of every constructor fixture.
+- [x] Milestone 2 (2026-11-16): Subprocess tests prove empty/bound keyless no-ops, malformed-key no-ops, offline/version guards, missing/malformed/wrong-key rejection, correct-key conversion and keyless rerun. Both binaries produce safe single-line configuration failures, including converter and notifier-secret failures. The config suite and all 100 PostgreSQL tests pass.
+- [x] Milestone 3 (2026-11-16): All 57 server tests pass, including empty/populated WAI metrics responses, six metadata families, ordered decimal buckets and infinity/count equality. Operator guides, changelogs, ADR-8 and ADR-20 are updated. Full `cabal test all`, `cabal build all`, formatting, whitespace and strict ADR checks pass.
 
-Planning is complete; implementation has not started. Existing capability-document changes and other untracked plans predate this work and must be preserved.
+Implementation and validation are complete. Concurrently committed plan 71 remains untouched.
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+Discovery (2026-11-16): The server executable has no help parser; normal help acceptance applies to the existing admin CLI. Server configuration failures are tested by invoking its existing argument-free startup. No new server command interface is introduced.
 
 
 ## Decision Log
@@ -50,7 +56,11 @@ Decision (2026-11-15): Treat decimal bucket labels and HELP metadata as an opera
 
 ## Outcomes & Retrospective
 
-(To be filled during implementation.)
+Completed 2026-11-16. All six operator defects are fixed without changing schemas, stored event names, HTTP audit filter semantics, token lifetimes, encryption formats, or numerical histogram boundaries. Executable subprocess coverage verifies observable output and redaction; temporary PostgreSQL fixtures verify no-op and real conversion safeguards. The public event vocabulary is checked against the same constructor fixtures used for projection and reconstruction.
+
+`nix develop --command cabal test all --test-options='-j2' --test-show-details=direct` passed every configured suite. After final test-fixture and early notifier-validation refinements, `cabal build all` and the core/admin/config/server suites passed again (293/36/1/57 tests respectively); the unchanged PostgreSQL suite retains its 100-test passing result. `nix fmt -- --fail-on-change`, `git diff --check`, and strict profiled ADR validation passed. No implementation friction entries were recorded under this plan, and none remain to triage.
+
+ADR distillation updated ADR-8 with the typed, redacted configuration boundary and ADR-20 with the keyless offline no-op rule. Exact finite histogram `le` labels change spelling and can create new Prometheus series; the changelog calls out exact-label dashboard adjustments. No release/version bump was made.
 
 
 ## Context and Orientation
@@ -149,7 +159,7 @@ Milestone 2 must prove keyless offline success with `legacy=0 invalid_versions=0
 
 Milestone 3 must prove `/metrics` returns the existing successful text response with HELP descriptions, ordinary decimal finite bucket labels, consistent cumulative counts and correct infinity/count behavior. The source specifies six families: HTTP total, in-flight requests, duration histogram, successful logins, failed logins, and issued tokens. No metric names or numerical boundaries change. The label spelling change can create new series for the finite buckets on existing Prometheus installations; document this in the changelog so dashboards using exact label text can be adjusted.
 
-Record concise command results and behavioral evidence in Progress as milestones complete. Compilation alone does not accept output behavior. This is a plan-creation task; do not mark implementation milestones complete based on the planning investigation.
+Record concise command results and behavioral evidence in Progress as milestones complete. Compilation alone does not accept output behavior. Mark implementation milestones complete only from verified implementation behavior.
 
 
 ## Idempotence and Recovery

@@ -5,8 +5,7 @@
 -- against the @event_type@/payload mapping drifting from the writer.
 --
 -- If a new 'AuthEvent' constructor is added, add a case here (and the @event_type@ string is
--- exercised by the writer's mapping). The @allEventTypes@ count assertion catches a missing
--- constructor cheaply.
+-- exercised by the writer's mapping). The vocabulary assertion checks these fixtures too.
 module Shomei.Audit.Event.CodecSpec (tests) where
 
 import Data.Aeson (ToJSON, toJSON)
@@ -18,7 +17,7 @@ import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Data.UUID qualified as UUID
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
-import Shomei.Audit.Event.Codec (reconstructAuthEvent)
+import Shomei.Audit.Event.Codec (knownAuthEventTypes, projectAuthEvent, reconstructAuthEvent)
 import Shomei.Audit.Event.Domain
 import Shomei.Authorization.Claims.Domain (Role (..), Scope (..))
 import Shomei.Config (ServiceAccountId (..))
@@ -73,9 +72,14 @@ aliceLogin :: LoginId
 aliceLogin = either (error . show) id (mkLoginId (emailText aliceEmail))
 
 -- | Assert that the event survives @project → toJSON → reconstruct@.
-check :: (ToJSON a) => Text -> a -> AuthEvent -> TestTree
+check :: (ToJSON a) => Text -> a -> AuthEvent -> (Text, TestTree)
 check ty dataRecord expected =
-  testCase (Text.unpack ty) (reconstructAuthEvent ty (toJSON dataRecord) @?= Right expected)
+  ( ty,
+    testCase (Text.unpack ty) do
+      reconstructAuthEvent ty (toJSON dataRecord) @?= Right expected
+      let (_, _, projected, _, _) = projectAuthEvent expected
+      projected @?= ty
+  )
 
 -- Tests ----------------------------------------------------------------------
 
@@ -83,7 +87,7 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Audit.Event.Codec"
-    [ testGroup "round-trips every constructor" roundTrips,
+    [ testGroup "round-trips every constructor" (map snd roundTrips),
       testUnknownType,
       testConstructorCount,
       testOldLoginFailedDecodes,
@@ -93,7 +97,7 @@ tests =
 
 -- | One assertion per 'AuthEvent' constructor. The @event_type@ strings here MUST match
 -- 'Shomei.Audit.Publisher.Postgres.projectAuthEvent' verbatim.
-roundTrips :: [TestTree]
+roundTrips :: [(Text, TestTree)]
 roundTrips =
   [ let d = UserRegisteredData uid aliceLogin (Just aliceEmail) t0 in check "user_registered" d (UserRegistered d),
     let d = LoginSucceededData uid sid t0 in check "login_succeeded" d (LoginSucceeded d),
@@ -165,10 +169,11 @@ testUnknownType =
       Left _ -> pure ()
       Right _ -> error "expected Left for unknown event_type"
 
--- | Guard: the round-trip list must cover every 'AuthEvent' constructor (currently 42).
+-- | The public vocabulary is unique and exactly matches the constructor fixtures.
 testConstructorCount :: TestTree
-testConstructorCount =
-  testCase "covers all 42 AuthEvent constructors" (length roundTrips @?= 42)
+testConstructorCount = testCase "known vocabulary matches every constructor fixture" do
+  length knownAuthEventTypes @?= Set.size (Set.fromList knownAuthEventTypes)
+  Set.fromList knownAuthEventTypes @?= Set.fromList (map fst roundTrips)
 
 -- | Historical rows contained the submitted login identifier verbatim. The new optional fields
 -- deliberately make those rows readable without reproducing that identifier in the typed event.

@@ -522,6 +522,12 @@ login or refresh. Revoke their sessions if you need it to bite immediately.
 
 ## Audit log (EP-7)
 
+The admin audit commands (`events`, `user`, `session`, and `count`) accept repeatable `--type`
+filters only for event names known to that admin binary. Unknown names fail and list accepted values
+before configuration or database loading. Use a matching admin binary when filtering event types
+introduced by a newer deployment. Known types with no matching events succeed with empty output or
+count zero. The HTTP audit filter contract is unchanged.
+
 ### `GET /v1/admin/audit/events` *(admin role or scope required)*
 Read the append-only security audit trail (`shomei_auth_events`), newest first. Query params,
 all optional: `user` (UUID), `session` (UUID), `type` (repeatable — `?type=login_failed&type=account_locked`),

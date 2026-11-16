@@ -4,6 +4,10 @@ All notable changes to `shomei-server` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Fix admin redirect requirements, audit type validation, lifetime-independent revocation guidance, keyless no-op TOTP conversion, and concise redacted configuration errors. Add Prometheus HELP metadata and decimal bucket labels. Exact finite `le` label spellings change and may create new Prometheus series; update dashboards that match their old text.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series; migration dependencies require `shomei-migrations ^>=0.2.0.1`.

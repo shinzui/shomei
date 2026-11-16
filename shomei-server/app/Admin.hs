@@ -22,6 +22,7 @@ import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
 import Shomei.Admin.Users (createUserAction)
 import Shomei.Mfa.Totp.Postgres (checkTotpEnvelopeVersions, migrateTotpEnvelopeBatch, totpEncryptionKeyFromBase64)
 import Shomei.Migrations (applyShomeiMigrations)
+import Shomei.Server.ConfigurationError (reportConfigurationError)
 import Shomei.Server.Keys (loadKekFromEnv, loadNamedKekFromEnv)
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256), signingAlgorithmFromText)
 import System.Environment (lookupEnv)
@@ -128,7 +129,7 @@ main = do
 run :: Command -> IO ()
 run = \case
   Migrate -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     applyShomeiMigrations env.connStr >>= \case
       Left migrationError -> do
         hPutStrLn stderr ("shomei-admin: schema migration failed: " <> show migrationError)
@@ -144,7 +145,7 @@ run = \case
               <> "); run `shomei-migrate status` for per-migration detail"
           )
   Keys kc -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     case kc of
       KeysGenerate alg -> do
         kek <- loadKekFromEnv
@@ -159,25 +160,25 @@ run = \case
         keysRewrap oldKek newKek env.pool
   Users (UsersCreate {email, passwordFile, displayName, emailVerified}) -> do
     password <- readPasswordSecret passwordFile
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     createUserAction env email password displayName emailVerified
   Roles rc -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runRoles env rc
   ServiceAccounts sc -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runServiceAccounts env sc
   OAuthClients oc -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runOAuthClients env oc
   Audit ac -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runAudit env ac
   Sweep opts -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runSweep env opts
   TotpMigrateEnvelopes check offline -> do
-    env <- loadAdminEnv
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
     let die message = hPutStrLn stderr message >> exitFailure
         counts = checkTotpEnvelopeVersions env.pool >>= either (const (die "shomei-admin: TOTP version/schema check failed")) pure
     (legacy, invalid) <- counts
@@ -187,25 +188,28 @@ run = \case
       else do
         if not offline then die "shomei-admin: stop all Shomei writers, retain database/key backup, then pass --offline" else pure ()
         if invalid /= 0 then die "shomei-admin: unknown TOTP envelope version; conversion refused" else pure ()
-        raw <- lookupEnv "SHOMEI_TOTP_ENCRYPTION_KEY"
-        key <-
-          either
-            (const (die "shomei-admin: valid SHOMEI_TOTP_ENCRYPTION_KEY required"))
-            pure
-            (maybe (Left "missing") (totpEncryptionKeyFromBase64 . Text.pack) raw)
-        let loop total conflicts = do
-              (remaining, unknown) <- counts
-              if unknown /= 0
-                then die "shomei-admin: unknown TOTP envelope version"
-                else
-                  if remaining == 0
-                    then putStrLn ("converted=" <> show total)
-                    else do
-                      converted <- migrateTotpEnvelopeBatch key env.pool >>= either (const (die "shomei-admin: TOTP batch failed; restore key/snapshot and retry; no unreadable row overwritten")) pure
-                      if converted == 0 && conflicts >= (2 :: Int)
-                        then die "shomei-admin: repeated conversion conflicts; verify all writers are stopped"
-                        else loop (total + converted) (if converted == 0 then conflicts + 1 else 0)
-        loop (0 :: Int) 0
+        if legacy == 0
+          then putStrLn "converted=0"
+          else do
+            raw <- lookupEnv "SHOMEI_TOTP_ENCRYPTION_KEY"
+            key <-
+              either
+                (const (die "shomei-admin: valid SHOMEI_TOTP_ENCRYPTION_KEY required"))
+                pure
+                (maybe (Left "missing") (totpEncryptionKeyFromBase64 . Text.pack) raw)
+            let loop total conflicts = do
+                  (remaining, unknown) <- counts
+                  if unknown /= 0
+                    then die "shomei-admin: unknown TOTP envelope version"
+                    else
+                      if remaining == 0
+                        then putStrLn ("converted=" <> show total)
+                        else do
+                          converted <- migrateTotpEnvelopeBatch key env.pool >>= either (const (die "shomei-admin: TOTP batch failed; restore key/snapshot and retry; no unreadable row overwritten")) pure
+                          if converted == 0 && conflicts >= (2 :: Int)
+                            then die "shomei-admin: repeated conversion conflicts; verify all writers are stopped"
+                            else loop (total + converted) (if converted == 0 then conflicts + 1 else 0)
+            loop (0 :: Int) 0
 
 -- | Read a secret without placing it in argv. A terminal gets a no-echo prompt; redirected
 -- stdin and files are consumed in full. Remove exactly one conventional line ending so

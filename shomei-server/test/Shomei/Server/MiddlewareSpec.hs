@@ -43,7 +43,7 @@ import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
 import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterFor, newRateLimiterWith, takeToken, throttledPath)
 import Shomei.Server.Middleware.TrustedProxy (emptyTrustedProxies, parseTrustedProxies, trustedProxyMiddleware)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, responseLogLevel, serverErrorLine)
-import Shomei.Server.Observability.Metrics (exportMetrics, metricsMiddleware, newMetrics)
+import Shomei.Server.Observability.Metrics (exportMetrics, metricsEndpointMiddleware, metricsMiddleware, newMetrics)
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.IO (BufferMode (LineBuffering), hClose, hSetBuffering, openTempFile)
 import Test.Tasty (TestTree, testGroup)
@@ -75,7 +75,8 @@ tests =
         ],
       testGroup
         "metrics"
-        [ testThrowingHandlerLeavesGaugeAtZero,
+        [ testMetricsExposition,
+          testThrowingHandlerLeavesGaugeAtZero,
           testNormalRequestCountedAndGaugeReturnsToZero,
           testHostileMethodsShareTheBoundedSeries
         ],
@@ -544,3 +545,38 @@ assertExceptionProblem expectedStatus expectedCode err = do
 
 okResponse :: Response
 okResponse = responseLBS status200 [] "ok"
+
+-- The actual endpoint must keep metadata, labels, and cumulative samples coherent.
+testMetricsExposition :: TestTree
+testMetricsExposition = testCase "metrics endpoint exposes decimal buckets and family metadata" do
+  m <- newMetrics
+  let inner _ respond = respond (responseLBS status200 [] "ok")
+      families = ["http_requests_total", "http_requests_in_flight", "http_request_duration_seconds", "shomei_logins_succeeded_total", "shomei_logins_failed_total", "shomei_tokens_issued_total"]
+      bounds = ["0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "+Inf"]
+      check expected = do
+        ResponseReceived <- metricsEndpointMiddleware m inner defaultRequest {rawPathInfo = "/metrics"} \response -> do
+          responseStatus response @?= status200
+          lookup hContentType (responseHeaders response) @?= Just "text/plain; version=0.0.4"
+          let (_, _, stream) = responseToStream response
+          chunks <- newIORef mempty
+          stream (\body -> body (\chunk -> modifyIORef' chunks (<> toLazyByteString chunk)) (pure ()))
+          rows <- BLC.lines <$> readIORef chunks
+          forM_ families \family -> do
+            let help = filter (BLC.isPrefixOf ("# HELP " <> family <> " ")) rows
+                ty = filter (BLC.isPrefixOf ("# TYPE " <> family <> " ")) rows
+            length help @?= 1
+            length ty @?= 1
+            let beforeSamples = takeWhile (\row -> not (BLC.isPrefixOf family row)) rows
+            assertBool "metadata precedes samples" (head help `elem` beforeSamples && head ty `elem` beforeSamples)
+          let buckets = filter (BLC.isPrefixOf "http_request_duration_seconds_bucket{") rows
+              values = map (read . BLC.unpack . last . BLC.words) buckets :: [Int]
+          length buckets @?= length bounds
+          forM_ (zip bounds buckets) \(bound, row) -> assertBool "ordered decimal boundary" (BL.toStrict ("le=\"" <> bound <> "\"") `BS.isInfixOf` BL.toStrict row)
+          values @?= sort values
+          last values @?= expected
+          assertBool "count equals infinity" (("http_request_duration_seconds_count " <> BLC.pack (show expected)) `elem` rows)
+          pure ResponseReceived
+        pure ()
+  check 0
+  ResponseReceived <- metricsMiddleware m inner defaultRequest (\_ -> pure ResponseReceived)
+  check 1

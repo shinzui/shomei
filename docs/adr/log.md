@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-11-16
+* **Amendment**: ADR-8 requires typed safe single-line configuration rejection and captured converter diagnostics; ADR-20 clarifies keyless offline no-op conversion with version checks.
+
 ## 2026-11-05
 * **Amendment**: ADR-1 repairs legacy session provenance during upgrade and makes missing provenance fail closed rather than assuming interactive.
 * **Amendment**: ADR-7 distills verified persisted vocabularies, Unicode normalization limits, maintenance locks and the soft-delete foreign-key index boundary.

@@ -9,6 +9,11 @@ twelve-factor — env always wins):
 2. a typed **Dhall file** at `$SHOMEI_CONFIG` (if set), rendered with `dhall-to-json` and decoded;
 3. individual environment variables.
 
+Expected startup configuration failures exit with one prefixed stderr line naming the setting and
+its constraint. Submitted values, rendered configuration, file paths, and Dhall converter
+diagnostics are excluded. Correct the named setting and restart. Library loaders raise
+`ConfigurationError`; unexpected runtime failures retain their normal handling.
+
 ### Environment variables
 
 JWT issuer and audience values use RFC 7519's StringOrURI shape: an arbitrary string is valid,
@@ -432,6 +437,8 @@ published JWKS. First-boot key generation is **guarded on "no active key"**, so 
 during the overlap). A running server applies the rotation at its next key reload — within
 `SHOMEI_KEY_REFRESH_INTERVAL` seconds, or immediately on `kill -HUP <pid>` — with no restart.
 
+`oauth-clients create` requires at least one `--redirect-uri URI`; repeat it for additional callbacks.
+
 ## Encrypting signing keys at rest
 
 Shōmei requires `SHOMEI_KEY_ENCRYPTION_KEY` and stores every private signing key as an `enc:v1:`
@@ -644,6 +651,13 @@ never takes the server down, and `GET /health/live` keeps answering throughout.
   reloads) log JSON lines on stderr.
 - **Data retention** is handled by the sweeper; audit-event deletion is opt-in (see above).
 - **Key rotation** is zero-downtime — see [security.md](security.md).
+
+The `/metrics` response includes HELP and TYPE metadata for all six families, including an empty
+registry. HTTP totals count completed responses by method and status; the in-flight gauge counts
+active handlers; the duration histogram measures seconds through response completion. Login counters
+count POST login responses with status 200 or 401, and the token counter counts successful login,
+signup, refresh, and OAuth token responses. Finite bucket labels use ordinary decimals from `0.005`
+through `10`; `+Inf` equals the observation count.
 
 ## CI
 

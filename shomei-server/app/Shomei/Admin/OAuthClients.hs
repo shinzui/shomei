@@ -111,7 +111,7 @@ oauthClientsParser =
               <> metavar "confidential|public"
               <> help "confidential: can keep a secret. public: cannot (SPA, native app); PKCE is then mandatory"
           )
-        <*> many (Text.pack <$> strOption (long "redirect-uri" <> metavar "URI" <> help "An exact redirect target; repeatable. Matched by exact string equality"))
+        <*> some (Text.pack <$> strOption (long "redirect-uri" <> metavar "URI" <> help "An exact redirect target; repeatable. Matched by exact string equality"))
         <*> many (Text.pack <$> strOption (long "scope" <> metavar "SCOPE" <> help "A scope this client may request; repeatable"))
     clientIdArg = Text.pack <$> argument str (metavar "CLIENT_ID")
 

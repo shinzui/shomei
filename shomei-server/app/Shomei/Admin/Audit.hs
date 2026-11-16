@@ -38,6 +38,7 @@ import Effectful (Eff, IOE, runEff)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Options.Applicative
 import Shomei.Admin.Env (AdminEnv (..))
+import Shomei.Audit.Event.Codec (knownAuthEventTypes)
 import Shomei.Audit.Reader.Postgres (runAuthEventReaderPostgres)
 import Shomei.Audit.Reader.Store
   ( AuditEventQuery (..),
@@ -89,7 +90,7 @@ filtersParser =
   AuditFilters
     <$> optional (txt (long "user" <> metavar "USER_ID" <> help "Canonical user TypeID or legacy UUID"))
     <*> optional (txt (long "session" <> metavar "SESSION_ID" <> help "Canonical session TypeID or legacy UUID"))
-    <*> many (txt (long "type" <> metavar "EVENT_TYPE" <> help "Filter by event type (repeatable)"))
+    <*> many (option (eitherReader (validateEventType . Text.pack)) (long "type" <> metavar "EVENT_TYPE" <> help "Filter by event type known to this binary (repeatable)"))
     <*> optional (txt (long "since" <> metavar "ISO8601" <> help "Only events at or after this time (inclusive)"))
     <*> optional (txt (long "until" <> metavar "ISO8601" <> help "Only events strictly before this time"))
     <*> option auto (long "limit" <> metavar "N" <> value 50 <> showDefault <> help "Max rows (clamped to 1000)")
@@ -146,6 +147,7 @@ toJsonObject s =
 -- | Validate the textual filters into an 'AuditEventQuery' (a bad typed ID/UUID/timestamp aborts).
 toQuery :: AuditFilters -> IO AuditEventQuery
 toQuery f = do
+  forM_ f.fTypes (either die (const (pure ())) . validateEventType)
   user <- parseIdentityOpt (fmap userIdToUUID . parseId) "--user" f.fUser
   session <- parseIdentityOpt (fmap sessionIdToUUID . parseId) "--session" f.fSession
   since <- parseTimeOpt "--since" f.fSince
@@ -190,3 +192,8 @@ runReaderOrDie pool act = do
 
 die :: String -> IO a
 die msg = hPutStrLn stderr ("shomei-admin: " <> msg) >> exitFailure
+
+validateEventType :: Text -> Either String Text
+validateEventType ty
+  | ty `elem` knownAuthEventTypes = Right ty
+  | otherwise = Left ("--type: unknown event type; accepted: " <> Text.unpack (Text.intercalate ", " knownAuthEventTypes))

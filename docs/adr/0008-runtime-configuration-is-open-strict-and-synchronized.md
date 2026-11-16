@@ -5,7 +5,7 @@ description: Dhall record completion keeps partial files evolvable while unknown
 docId: ADR-8
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-08-27T20:50:03Z
+timestamp: 2026-11-16T05:30:00Z
 originatingPlan: docs/plans/56-bound-password-hashing-for-real-and-refuse-to-boot-on-unsafe-configuration.md
 generated:
   by: openai-codex/gpt-5
@@ -44,6 +44,13 @@ The configuration suite renders the schema's completed default with `dhall-to-js
 `FileConfig`. This both type-checks `default` against `Type` and makes schema/loader drift a failing
 test. Normal config loading does not preserve nulls, so completed `None` fields remain absent from
 the rendered deployment JSON.
+
+Expected loader rejections use a typed `ConfigurationError`. Executable loading boundaries render
+a single safe line naming the setting and constraint without submitted values. Dhall conversion
+captures child diagnostics and replaces conversion/decoding failures with safe stage descriptions;
+paths, rendered JSON, and subprocess errors never cross this diagnostic boundary. Library loaders
+still throw the typed failure. Only expected configuration failures are caught; runtime and
+asynchronous exceptions keep their normal propagation.
 
 ## Consequences
 

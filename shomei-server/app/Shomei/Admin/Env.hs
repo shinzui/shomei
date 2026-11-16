@@ -18,6 +18,7 @@ import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), argon2HardFloor
 import Shomei.Config (ShomeiConfig)
 import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
 import Shomei.Server.Config (defaultDbStatementTimeoutMs, loadCoreConfig)
+import Shomei.Server.ConfigurationError (configurationError)
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 
@@ -46,13 +47,12 @@ argon2FromEnv = do
   lanes <- intEnvOr "SHOMEI_ARGON2_PARALLELISM" defaultArgon2Params.parallelism
   let params = Argon2Params {memoryKiB = mem, iterations = iters, parallelism = lanes}
   for_ (argon2HardFloor params) \why ->
-    ioError
-      ( userError
-          ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
-              <> "are rejected by the Argon2 implementation: "
-              <> Text.unpack why
-          )
+    configurationError
+      ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
+          <> "are rejected by the Argon2 implementation: "
+          <> Text.unpack why
       )
+
   pure params
 
 intEnvOr :: Text -> Int -> IO Int
@@ -61,7 +61,7 @@ intEnvOr name def = do
   case m of
     Just v | not (null v) -> case readMaybe v of
       Just n | n > 0 -> pure n
-      _ -> ioError (userError (Text.unpack name <> " must be a positive integer"))
+      _ -> configurationError (Text.unpack name <> " must be a positive integer")
     _ -> pure def
 
 requireEnv :: Text -> IO Text
@@ -70,4 +70,4 @@ requireEnv name = do
   case m of
     Just v
       | let stripped = Text.strip (Text.pack v), not (Text.null stripped) -> pure stripped
-    _ -> ioError (userError (Text.unpack name <> " is not set"))
+    _ -> configurationError (Text.unpack name <> " is not set")

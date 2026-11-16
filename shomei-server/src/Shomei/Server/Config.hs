@@ -30,6 +30,7 @@ where
 
 -- Argon2Params is re-exported through 'ServerSettings'; import it from "Shomei.Account.Password.Hash.Postgres".
 
+import Control.Exception (IOException, try)
 import Data.Aeson (eitherDecodeStrict')
 import Data.Char (isDigit)
 import Data.Foldable (for_)
@@ -70,11 +71,12 @@ import Shomei.Config
 import Shomei.Notify (NotifierSecrets (..), SmtpPassword (..), WebhookSecret (..))
 import Shomei.Persistence.Maintenance.Postgres (SweepConfig (..), defaultSweepConfig)
 import Shomei.Prelude
+import Shomei.Server.ConfigurationError (configurationError)
 import Shomei.Server.Middleware.TrustedProxy (TrustedProxies, emptyTrustedProxies, parseTrustedProxies)
 import Shomei.SigningKey.Verify.Jwt (checkStringOrUri)
 import System.Environment (lookupEnv)
-import System.IO (hPutStrLn, stderr)
-import System.Process (readProcess)
+import System.Exit (ExitCode (..))
+import System.Process (readProcessWithExitCode)
 import Text.Read (readMaybe)
 
 -- | Server-only settings not part of the transport-agnostic 'ShomeiConfig'.
@@ -354,12 +356,14 @@ loadDhallFile = do
   mPath <- lookupEnv "SHOMEI_CONFIG"
   case mPath of
     Just path | not (null path) -> do
-      out <- readProcess "dhall-to-json" ["--file", path] ""
-      case eitherDecodeStrict' (TE.encodeUtf8 (Text.pack out)) of
-        Right fc -> pure (Just fc)
-        Left err -> do
-          hPutStrLn stderr ("shomei: could not decode rendered Dhall config " <> path <> ": " <> err)
-          ioError (userError ("invalid SHOMEI_CONFIG: " <> path))
+      result <- try @IOException (readProcessWithExitCode "dhall-to-json" ["--file", path] "")
+      case result of
+        Left _ -> configurationError "SHOMEI_CONFIG: could not run dhall-to-json"
+        Right (ExitFailure _, _, _) -> configurationError "SHOMEI_CONFIG: Dhall conversion failed"
+        Right (ExitSuccess, out, _) ->
+          case eitherDecodeStrict' (TE.encodeUtf8 (Text.pack out)) of
+            Right fc -> pure (Just fc)
+            Left _ -> configurationError "SHOMEI_CONFIG: rendered configuration rejected (unknown field or invalid value)"
     _ -> pure Nothing
 
 baseDefaults :: IO (ShomeiConfig, ServerSettings)
@@ -566,24 +570,22 @@ overlayFromEnvBoth baseCfg baseSettings = do
   cfg <- overlayCoreFromEnv baseCfg {issuer = Issuer iss, audience = Audience aud}
   let WebAuthnConfig {origins = originList} = cfg.webauthnConfig
   when (null originList) $
-    ioError
-      ( userError
-          "SHOMEI_WEBAUTHN_ORIGINS (Dhall field webauthnOrigins) must list at least one origin; an empty list would fail every passkey ceremony"
-      )
-  when (Text.null connStr) (ioError (userError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)"))
+    configurationError "SHOMEI_WEBAUTHN_ORIGINS (Dhall field webauthnOrigins) must list at least one origin; an empty list would fail every passkey ceremony"
+
+  when (Text.null connStr) (configurationError "PG_CONNECTION_STRING is not set (and no databaseUrl in the Dhall config)")
   -- Validated after the overlay so a bad value fails the boot whichever layer supplied it.
   -- A zero-size pool deadlocks every request and a zero acquisition timeout fails every
   -- checkout, so neither is a survivable "disable" setting: refuse to start.
-  when (Text.null (Text.strip host)) (ioError (userError "SHOMEI_BIND_HOST (Dhall field bindHost) must be non-empty"))
+  when (Text.null (Text.strip host)) (configurationError "SHOMEI_BIND_HOST (Dhall field bindHost) must be non-empty")
   requirePositive "SHOMEI_MAX_CONNECTIONS" "maxConnections" connections
   requirePositive "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS" "slowClientTimeoutSeconds" slowTimeout
-  when (slowTimeout > maxBound `div` 1000000) (ioError (userError "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS is not representable in microseconds"))
+  when (slowTimeout > maxBound `div` 1000000) (configurationError "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS is not representable in microseconds")
   requirePositive "SHOMEI_DB_POOL_SIZE" "dbPoolSize" poolSize
   requirePositive "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "dbPoolAcquisitionTimeoutMs" poolTimeout
   requireNonNegative "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "dbStatementTimeoutMs" statementTimeout
   requirePositive "SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS" "dbTransactionMaxAttempts" transactionAttempts
   requirePositive "SHOMEI_DB_TRANSACTION_DEADLINE_MS" "dbTransactionDeadlineMs" transactionDeadline
-  when (transactionDeadline > min 2147483647 (maxBound `div` 1000)) (ioError (userError "SHOMEI_DB_TRANSACTION_DEADLINE_MS is not representable"))
+  when (transactionDeadline > min 2147483647 (maxBound `div` 1000)) (configurationError "SHOMEI_DB_TRANSACTION_DEADLINE_MS is not representable")
   requirePositive "SHOMEI_NOTIFIER_QUEUE_SIZE" "notifierQueueSize" notifierQueueSize
   -- A zero interval would spin the sweeper; a zero batch size would make it delete nothing
   -- forever. Neither is a survivable "disable" setting — sweepEnabled=false is.
@@ -601,14 +603,13 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_ARGON2_ITERATIONS" "argon2Iterations" argon2.iterations
   requirePositive "SHOMEI_ARGON2_PARALLELISM" "argon2Parallelism" argon2.parallelism
   for_ (argon2HardFloor argon2) \why ->
-    ioError
-      ( userError
-          ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
-              <> "(Dhall fields argon2MemoryKiB/argon2Iterations/argon2Parallelism) are rejected "
-              <> "by the Argon2 implementation: "
-              <> Text.unpack why
-          )
+    configurationError
+      ( "SHOMEI_ARGON2_MEMORY_KIB/SHOMEI_ARGON2_ITERATIONS/SHOMEI_ARGON2_PARALLELISM "
+          <> "(Dhall fields argon2MemoryKiB/argon2Iterations/argon2Parallelism) are rejected "
+          <> "by the Argon2 implementation: "
+          <> Text.unpack why
       )
+
   -- Zero permits would block every login forever.
   requirePositive "SHOMEI_HASHING_MAX_CONCURRENCY" "hashingMaxConcurrency" hashingConcurrency
   requireNonNegative
@@ -621,9 +622,9 @@ overlayFromEnvBoth baseCfg baseSettings = do
   requirePositive "SHOMEI_PER_IP_REQUESTS_PER_MINUTE" "perIpRequestsPerMinute" rate.perIpRequestsPerMinute
   requirePositive "SHOMEI_PER_IP_BURST" "perIpBurst" rate.perIpBurst
   when (rate.lockoutWindow <= 0) $
-    ioError (userError "SHOMEI_LOCKOUT_WINDOW_SECONDS (Dhall field lockoutWindowSeconds) must be a positive number of seconds")
+    configurationError "SHOMEI_LOCKOUT_WINDOW_SECONDS (Dhall field lockoutWindowSeconds) must be a positive number of seconds"
   when (rate.lockoutDuration <= 0) $
-    ioError (userError "SHOMEI_LOCKOUT_DURATION_SECONDS (Dhall field lockoutDurationSeconds) must be a positive number of seconds")
+    configurationError "SHOMEI_LOCKOUT_DURATION_SECONDS (Dhall field lockoutDurationSeconds) must be a positive number of seconds"
   -- Validated after the overlay so a selected notifier transport is proven fully configured
   -- whichever layer supplied its fields (secrets always come from the environment).
   notifierWarnings <- validateNotifierConfig cfg.notifierConfig
@@ -659,29 +660,22 @@ overlayFromEnvBoth baseCfg baseSettings = do
       case checkStringOrUri value of
         Right () -> pure ()
         Left reason ->
-          ioError
-            ( userError
-                ( Text.unpack envName
-                    <> " (Dhall field "
-                    <> Text.unpack dhallField
-                    <> ") "
-                    <> Text.unpack reason
-                    <> ", got "
-                    <> show value
-                )
+          configurationError
+            ( Text.unpack envName
+                <> " (Dhall field "
+                <> Text.unpack dhallField
+                <> ") "
+                <> Text.unpack reason
             )
+
     requireBound ok expected envName dhallField n =
       unless (ok n) do
-        ioError
-          ( userError
-              ( Text.unpack envName
-                  <> " (Dhall field "
-                  <> Text.unpack dhallField
-                  <> ") must be "
-                  <> expected
-                  <> ", got "
-                  <> show n
-              )
+        configurationError
+          ( Text.unpack envName
+              <> " (Dhall field "
+              <> Text.unpack dhallField
+              <> ") must be "
+              <> expected
           )
 
 -- | Overlay the @SHOMEI_ARGON2_*@ environment variables onto the Argon2 cost parameters.
@@ -732,10 +726,10 @@ overlayCoreFromEnv base = do
   rememberedSes <- ttlEnv "SHOMEI_REMEMBERED_SESSION_TTL"
   activeSessionCap <- intEnvMaybe "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS"
   let activeCap = fromMaybe base.maxActiveNonInteractiveSessions activeSessionCap
-  when (activeCap < 1) (ioError (userError "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS (Dhall field maxActiveNonInteractiveSessions) must be positive"))
+  when (activeCap < 1) (configurationError "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS (Dhall field maxActiveNonInteractiveSessions) must be positive")
   passkeyCap <- intEnvMaybe "SHOMEI_MAX_PASSKEYS_PER_USER"
   let cap = fromMaybe base.maxPasskeysPerUser passkeyCap
-  when (cap < 1 || cap > 100) (ioError (userError "SHOMEI_MAX_PASSKEYS_PER_USER (Dhall field maxPasskeysPerUser) must be between 1 and 100"))
+  when (cap < 1 || cap > 100) (configurationError "SHOMEI_MAX_PASSKEYS_PER_USER (Dhall field maxPasskeysPerUser) must be between 1 and 100")
   tr <- transportEnv
   sc <- sessionCheckEnv
   wa <- overlayWebAuthnFromEnv base.webauthnConfig
@@ -757,8 +751,8 @@ overlayCoreFromEnv base = do
   legacyEmission <- boolEnv "SHOMEI_EMIT_LEGACY_ACTOR"
   let deadline = actorUntil <|> base.signingKeyConfig.legacyActorUntilUnix
       emitLegacy = fromMaybe base.signingKeyConfig.emitLegacyActor legacyEmission
-  for_ deadline \value -> when (value <= 0) (ioError (userError "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX (Dhall field legacyActorUntilUnix) must be a positive finite Unix timestamp"))
-  when (emitLegacy && isNothing deadline) (ioError (userError "SHOMEI_EMIT_LEGACY_ACTOR requires SHOMEI_LEGACY_ACTOR_UNTIL_UNIX or legacyActorUntilUnix"))
+  for_ deadline \value -> when (value <= 0) (configurationError "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX (Dhall field legacyActorUntilUnix) must be a positive finite Unix timestamp")
+  when (emitLegacy && isNothing deadline) (configurationError "SHOMEI_EMIT_LEGACY_ACTOR requires SHOMEI_LEGACY_ACTOR_UNTIL_UNIX or legacyActorUntilUnix")
   -- Deliberately env-only, with no Dhall-file field: logging raw one-time tokens must be an
   -- explicit per-process decision, not something that lingers unnoticed in a committed file.
   logSecrets <- boolEnv "SHOMEI_NOTIFIER_LOG_SECRETS"
@@ -899,7 +893,7 @@ parseNotifierTransport label t = case Text.toLower (Text.strip t) of
   "log" -> pure LogNotifier
   "smtp" -> pure SmtpNotifier
   "webhook" -> pure WebhookNotifier
-  other -> ioError (userError (Text.unpack label <> " must be log|smtp|webhook, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be log|smtp|webhook")
 
 -- | @plain@ (lab only) | @starttls@ | @implicit@. Accepts a couple of common spellings.
 parseSmtpTlsMode :: Text -> Text -> IO SmtpTlsMode
@@ -910,7 +904,7 @@ parseSmtpTlsMode label t = case Text.toLower (Text.strip t) of
   "implicit" -> pure SmtpImplicitTls
   "implicit-tls" -> pure SmtpImplicitTls
   "tls" -> pure SmtpImplicitTls
-  other -> ioError (userError (Text.unpack label <> " must be plain|starttls|implicit, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be plain|starttls|implicit")
 
 notifierTransportEnv :: IO (Maybe NotifierTransport)
 notifierTransportEnv = do
@@ -1093,7 +1087,7 @@ loadNotifierSecretsFromEnv cfg = do
         failWith "notifier transport webhook requires a non-empty SHOMEI_WEBHOOK_SECRET"
   pure NotifierSecrets {smtpPassword = smtpSecret, webhookSecret = webhookSigningSecret}
   where
-    failWith = ioError . userError
+    failWith = configurationError
 
 -- | Refuse incomplete or unsafe non-secret notifier settings. Lab escape hatches are env-only;
 -- plaintext unauthenticated SMTP is permitted but returned as a boot warning.
@@ -1128,7 +1122,7 @@ validateNotifierConfig nc = do
           failWith "webhookUrl must be https:// (set SHOMEI_WEBHOOK_ALLOW_INSECURE=true for a lab receiver)"
         pure ["webhookUrl uses HTTP under SHOMEI_WEBHOOK_ALLOW_INSECURE; one-time links travel in the clear; lab receivers only" | isHttp]
   where
-    failWith = ioError . userError
+    failWith = configurationError
 
 -- | Apply the optional @webauthn*@ fields of a decoded Dhall 'FileConfig' onto a base
 -- 'WebAuthnConfig'. The base record is read via record destructuring (not @value.field@ dot
@@ -1214,7 +1208,7 @@ boolEnv name = do
     Just s -> case Text.toLower (Text.pack s) of
       "true" -> pure (Just True)
       "false" -> pure (Just False)
-      _ -> ioError (userError (Text.unpack name <> " must be true|false"))
+      _ -> configurationError (Text.unpack name <> " must be true|false")
 
 -- | Parse a WebAuthn user-verification policy from either configuration source. Unknown text is
 -- a boot error: silently falling back can weaken the ceremony an operator intended to require.
@@ -1223,14 +1217,14 @@ parseUserVerificationPolicy label t = case Text.toLower (Text.strip t) of
   "required" -> pure UVRequired
   "preferred" -> pure UVPreferred
   "discouraged" -> pure UVDiscouraged
-  other -> ioError (userError (Text.unpack label <> " must be required|preferred|discouraged, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be required|preferred|discouraged")
 
 -- | Parse a WebAuthn attestation policy from either configuration source.
 parseAttestationPolicy :: Text -> Text -> IO AttestationPolicy
 parseAttestationPolicy label t = case Text.toLower (Text.strip t) of
   "none" -> pure AttestationNone
   "direct" -> pure AttestationDirect
-  other -> ioError (userError (Text.unpack label <> " must be none|direct, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be none|direct")
 
 textEnv :: Text -> Text -> IO Text
 textEnv name def = do
@@ -1248,7 +1242,7 @@ intEnv name def = do
     Just "" -> pure def
     Just s -> case readMaybe s of
       Just n -> pure n
-      Nothing -> ioError (userError (Text.unpack name <> " must be an integer"))
+      Nothing -> configurationError (Text.unpack name <> " must be an integer")
 
 -- | Like 'textEnv' but overlay-only: absent or empty → 'Nothing', so a caller can distinguish
 -- "the operator set nothing" from "the operator set the empty string" and fall back to the
@@ -1270,7 +1264,7 @@ intEnvMaybe name = do
     Just "" -> pure Nothing
     Just s -> case readMaybe s of
       Just n -> pure (Just n)
-      Nothing -> ioError (userError (Text.unpack name <> " must be an integer"))
+      Nothing -> configurationError (Text.unpack name <> " must be an integer")
 
 ttlEnv :: Text -> IO (Maybe NominalDiffTime)
 ttlEnv name = do
@@ -1280,7 +1274,7 @@ ttlEnv name = do
     Just "" -> pure Nothing
     Just s -> case readMaybe s :: Maybe Integer of
       Just n -> pure (Just (fromIntegral n))
-      Nothing -> ioError (userError (Text.unpack name <> " must be an integer (seconds)"))
+      Nothing -> configurationError (Text.unpack name <> " must be an integer (seconds)")
 
 transportEnv :: IO (Maybe TokenTransport)
 transportEnv = do
@@ -1296,7 +1290,7 @@ parseTransport label t = case Text.toLower (Text.strip t) of
   "bearer" -> pure BearerToken
   "cookie" -> pure HttpOnlyCookie
   "both" -> pure BearerAndCookie
-  other -> ioError (userError (Text.unpack label <> " must be bearer|cookie|both, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be bearer|cookie|both")
 
 -- | @strict@ | @lax@ | @none@. Rejects anything else rather than silently defaulting: a typo
 -- that quietly became @Lax@ when the operator meant @None@ would break their deployment in a
@@ -1306,7 +1300,7 @@ parseSameSite label t = case Text.toLower (Text.strip t) of
   "strict" -> pure SameSiteStrict
   "lax" -> pure SameSiteLax
   "none" -> pure SameSiteNone
-  other -> ioError (userError (Text.unpack label <> " must be strict|lax|none, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be strict|lax|none")
 
 sameSiteEnv :: IO (Maybe SameSitePolicy)
 sameSiteEnv = do
@@ -1319,7 +1313,7 @@ sameSiteEnv = do
 parseTrustedProxyList :: [Text] -> IO TrustedProxies
 parseTrustedProxyList values =
   case parseTrustedProxies values of
-    Left reason -> ioError (userError (Text.unpack reason))
+    Left _ -> configurationError "SHOMEI_TRUSTED_PROXIES (Dhall field trustedProxies) must contain valid CIDRs"
     Right proxies -> pure proxies
 
 -- | A comma-separated CIDR list. An explicitly empty value clears a file-supplied list.
@@ -1340,11 +1334,8 @@ parseProxyProtocol label value =
   case Text.toLower (Text.strip value) of
     "none" -> pure ProxyProtocolOff
     "required" -> pure ProxyProtocolRequired
-    other ->
-      ioError
-        ( userError
-            (Text.unpack label <> " must be none|required, got " <> Text.unpack other)
-        )
+    _ ->
+      configurationError (Text.unpack label <> " must be none|required")
 
 proxyProtocolEnv :: ProxyProtocolMode -> IO ProxyProtocolMode
 proxyProtocolEnv fallback = do
@@ -1359,7 +1350,7 @@ normalizeOrigins = traverse normalizeOne
   where
     normalizeOne origin =
       case normalizeOrigin origin of
-        Left reason -> ioError (userError (Text.unpack reason))
+        Left _ -> configurationError "SHOMEI_WEBAUTHN_ORIGINS (Dhall field webauthnOrigins) must be scheme://host[:port] with no path"
         Right normalized -> pure normalized
 
 -- | Warn when browser-cookie transport still has development-only or insecure origin policy.
@@ -1425,7 +1416,7 @@ keyRefreshIntervalEnv :: IO (Maybe Int)
 keyRefreshIntervalEnv = do
   m <- intEnvMaybe "SHOMEI_KEY_REFRESH_INTERVAL"
   case m of
-    Just n | n < 0 -> ioError (userError "SHOMEI_KEY_REFRESH_INTERVAL must be >= 0 (0 disables the periodic reload)")
+    Just n | n < 0 -> configurationError "SHOMEI_KEY_REFRESH_INTERVAL must be >= 0 (0 disables the periodic reload)"
     _ -> pure m
 
 -- | Read the JWT verifier's tolerance for exp/nbf/iat. A negative value has no
@@ -1436,10 +1427,7 @@ clockSkewEnv = do
   case m of
     Just n
       | n < 0 ->
-          ioError
-            ( userError
-                "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS (Dhall field allowedClockSkewSeconds) must be >= 0"
-            )
+          configurationError "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS (Dhall field allowedClockSkewSeconds) must be >= 0"
     _ -> pure m
 
 -- | Read and validate @SHOMEI_SIGNING_ALG@ (@ES256@|@RS256@); absent/empty → Nothing.
@@ -1458,7 +1446,7 @@ normalizeSigningAlg :: Text -> Text -> IO Text
 normalizeSigningAlg label t = case Text.strip t of
   "ES256" -> pure "ES256"
   "RS256" -> pure "RS256"
-  other -> ioError (userError (Text.unpack label <> " must be ES256|RS256, got " <> Text.unpack other))
+  _ -> configurationError (Text.unpack label <> " must be ES256|RS256")
 
 sessionCheckEnv :: IO (Maybe SessionCheckMode)
 sessionCheckEnv = do
@@ -1468,4 +1456,4 @@ sessionCheckEnv = do
     Just "" -> pure Nothing
     Just "token-only" -> pure (Just VerifyTokenOnly)
     Just "token-and-session" -> pure (Just VerifyTokenAndSession)
-    Just other -> ioError (userError ("SHOMEI_SESSION_CHECK must be token-only|token-and-session, got " <> other))
+    Just _ -> configurationError "SHOMEI_SESSION_CHECK must be token-only|token-and-session"

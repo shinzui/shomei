@@ -180,3 +180,10 @@ export SHOMEI_TOTP_ENCRYPTION_KEY=$(openssl rand -base64 32)
 
 See [api.md](api.md#totp--recovery-codes-masterplan-7-ep-7) for the endpoint reference and
 [security.md](security.md) for how these fit the threat model.
+
+Offline envelope conversion with no legacy rows reports `legacy=0 invalid_versions=0` and
+`converted=0` without reading `SHOMEI_TOTP_ENCRYPTION_KEY`. This covers empty tables and tables
+containing only version 1 rows; even a malformed key is ignored. Conversion still requires
+`--offline` and rejects unknown envelope versions. Real legacy conversion requires stopped writers,
+matching database/key backups, and the correct deployment key. `--check` remains read-only and
+keyless, including with `--offline`.

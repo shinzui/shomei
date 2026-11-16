@@ -4,6 +4,10 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Export `knownAuthEventTypes` from the audit codec for version-specific event vocabulary validation.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** the package and its test suite move to the 0.3 API series.

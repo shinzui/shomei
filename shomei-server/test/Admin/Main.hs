@@ -4,16 +4,21 @@
 -- overlapping-key JWKS verification.
 module Main (main) where
 
-import Control.Exception (try)
+import Control.Exception (bracket, try)
 import Control.Monad (forM_, void)
+import Crypto.Cipher.AES (AES256)
+import Crypto.Cipher.Types (AEAD, AEADMode (AEAD_GCM), aeadInit, aeadSimpleEncrypt, cipherInit, unAuthTag)
+import Crypto.Error (CryptoFailable (..))
 import Crypto.JOSE.JWK (JWK, JWKSet (JWKSet))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteArray qualified as BA
 import Data.ByteArray.Encoding (Base (Base64), convertToBase)
+import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, isInfixOf, isPrefixOf)
 import Data.Maybe (isJust)
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -34,7 +39,7 @@ import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, inf
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
-import Shomei.Admin.Audit (AuditFilters (..), runAuditReader, toJsonObject, toQuery)
+import Shomei.Admin.Audit (AuditFilters (..), auditParser, runAuditReader, toJsonObject, toQuery)
 import Shomei.Admin.Env (AdminEnv (..))
 import Shomei.Admin.Keys
   ( keysActivate,
@@ -97,7 +102,11 @@ import Shomei.SigningKey.Sign.Jwt (signAccessToken)
 import Shomei.SigningKey.Signer (TokenSigner (..))
 import Shomei.SigningKey.Verify.Jwt (verifyToken)
 import Shomei.Time.Postgres (runClockIO)
+import System.Directory (findExecutable, getTemporaryDirectory, removeFile)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
+import System.IO (hClose, hPutStr, openTempFile)
+import System.Process (CreateProcess (..), proc, readCreateProcessWithExitCode)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -165,7 +174,11 @@ main =
   defaultMain
     ( testGroup
         "shomei-admin"
-        [ testMigrateEmpty,
+        [ testOperatorArguments,
+          testStartupErrors,
+          testTotpMaintenance,
+          testRevocationNote,
+          testMigrateEmpty,
           testLifecycleOverlap,
           testReloadPicksUpRotation,
           testReloadKeepsLastGoodMaterial,
@@ -1075,3 +1088,125 @@ testMultipleActiveFailClosed = testCase "key material loader rejects multiple ac
   case loaded of
     Left reason -> assertBool "diagnostic names the invariant" ("multiple active signing keys" `Text.isInfixOf` reason)
     Right _ -> assertFailure "ambiguous signer was accepted"
+
+-- Child environments never inherit deployment credentials or policy.
+runBinary :: String -> [String] -> [(String, String)] -> IO (ExitCode, String, String)
+runBinary binary args fixture = do
+  executable <- findExecutable binary >>= maybe (assertFailure ("missing build tool " <> binary)) pure
+  inherited <- getEnvironment
+  let clean = filter (\(key, _) -> not ("SHOMEI_" `isPrefixOf` key) && key `notElem` ["DATABASE_URL", "PG_CONNECTION_STRING"] && key `notElem` map fst fixture) inherited
+  readCreateProcessWithExitCode (proc executable args) {env = Just (fixture <> clean)} ""
+
+withConfigText :: String -> (FilePath -> IO a) -> IO a
+withConfigText contents action = do
+  directory <- getTemporaryDirectory
+  bracket (do (path, handle) <- openTempFile directory "shomei-config"; hPutStr handle contents; hClose handle; pure path) removeFile action
+
+assertSafeFailure :: String -> (ExitCode, String, String) -> IO ()
+assertSafeFailure setting (code, out, err) = do
+  assertBool "failure exit" (code /= ExitSuccess)
+  length (lines err) @?= 1
+  assertBool "names setting" (setting `isInfixOf` err)
+  forM_ ["Uncaught exception", "user error", "CallStack", "SENTINEL_SECRET"] \forbidden ->
+    assertBool ("diagnostic excludes " <> forbidden) (not (forbidden `isInfixOf` (out <> err)))
+
+testOperatorArguments :: TestTree
+testOperatorArguments = testCase "required redirects and known audit types are validated before loading configuration" do
+  let create = ["oauth-clients", "create", "--display-name", "example", "--type", "public"]
+  (helpCode, helpText, _) <- runBinary "shomei-admin" (create <> ["--help"]) []
+  helpCode @?= ExitSuccess
+  assertBool "help requires the first redirect" ("--redirect-uri URI" `isInfixOf` helpText && not ("[--redirect-uri URI" `isInfixOf` helpText))
+  (missing, _, missingErr) <- runBinary "shomei-admin" create []
+  assertBool "missing redirect fails at parse" (missing /= ExitSuccess && "--redirect-uri" `isInfixOf` missingErr && not ("DATABASE_URL" `isInfixOf` missingErr))
+  forM_ [["https://example.com/a"], ["https://example.com/a", "https://example.com/b"]] \uris -> do
+    result <- runBinary "shomei-admin" (create <> concatMap (\uri -> ["--redirect-uri", uri]) uris) []
+    assertSafeFailure "DATABASE_URL" result
+  forM_ [["events"], ["user", "00000000-0000-0000-0000-000000000001"], ["session", "00000000-0000-0000-0000-000000000001"], ["count"]] \command -> do
+    forM_ [["no_such_type"], ["login_failed", "no_such_type"]] \types -> do
+      (code, _, err) <- runBinary "shomei-admin" (["audit"] <> command <> concatMap (\ty -> ["--type", ty]) types) []
+      assertBool "unknown filter lists accepted names at parse time" (code /= ExitSuccess && "accepted:" `isInfixOf` err && "login_failed" `isInfixOf` err && not ("DATABASE_URL" `isInfixOf` err))
+    case execParserPure defaultPrefs (info auditParser mempty) (command <> ["--type", "login_failed", "--type", "login_succeeded"]) of
+      Success _ -> pure ()
+      _ -> assertFailure "repeated valid types should parse"
+  let filters = AuditFilters Nothing Nothing ["no_such_type"] Nothing Nothing 50 False
+  valid <- toQuery filters {fTypes = ["login_failed", "login_succeeded"]}
+  valid.queryEventTypes @?= ["login_failed", "login_succeeded"]
+  rejected <- try @ExitCode (toQuery filters)
+  case rejected of Left (ExitFailure _) -> pure (); _ -> assertFailure "direct unknown filter accepted"
+
+testStartupErrors :: TestTree
+testStartupErrors = testCase "both binaries report safe single-line configuration failures" do
+  forM_ [("shomei-admin", ["keys", "list"], "DATABASE_URL"), ("shomei-server", [], "PG_CONNECTION_STRING")] \(binary, args, connection) -> do
+    runBinary binary args [] >>= assertSafeFailure connection
+    let db = [(connection, "host=localhost password=SENTINEL_SECRET")]
+    runBinary binary args (db <> [("SHOMEI_ARGON2_MEMORY_KIB", "SENTINEL_SECRET\ninjected")]) >>= assertSafeFailure "SHOMEI_ARGON2_MEMORY_KIB"
+    runBinary binary args (db <> [("SHOMEI_CONFIG", "/missing/SENTINEL_SECRET")]) >>= assertSafeFailure "SHOMEI_CONFIG"
+    runBinary binary args (db <> [("SHOMEI_CONFIG", "/missing/SENTINEL_SECRET"), ("PATH", "/missing")]) >>= assertSafeFailure "SHOMEI_CONFIG"
+    forM_ ["{ unknown = \"SENTINEL_SECRET\" }", "{ argon2MemoryKiB = \"SENTINEL_SECRET\" }", "SENTINEL_SECRET invalid Dhall", "{ attestationPolicy = \"SENTINEL_SECRET\" }"] \contents ->
+      withConfigText contents \path -> runBinary binary args (db <> [("SHOMEI_CONFIG", path)]) >>= assertSafeFailure "SHOMEI_CONFIG"
+  runBinary "shomei-server" [] [("PG_CONNECTION_STRING", "host=localhost password=SENTINEL_SECRET"), ("SHOMEI_NOTIFIER_TRANSPORT", "webhook"), ("SHOMEI_WEBHOOK_URL", "https://example.com/SENTINEL_SECRET")] >>= assertSafeFailure "SHOMEI_WEBHOOK_SECRET"
+  (code, _, _) <- runBinary "shomei-admin" ["--help"] []
+  code @?= ExitSuccess
+
+testRevocationNote :: TestTree
+testRevocationNote = testCase "revocation guidance is independent of machine token TTL" $ withDb \pool connStr -> do
+  let admin = AdminEnv cfg pool connStr testArgon2Params
+  emptyRedirects <- try @ExitCode (OAuthClients.createAction admin "empty" PublicClient [] [])
+  case emptyRedirects of
+    Left (ExitFailure _) -> pure ()
+    _ -> assertFailure "direct empty redirect list accepted"
+  forM_ [[], [("SHOMEI_MACHINE_TOKEN_TTL", "900")]] \policy -> do
+    (account, _) <- createAction admin "note test" []
+    (code, out, err) <- runBinary "shomei-admin" ["service-accounts", "revoke", Text.unpack (saClientId' account)] ([("DATABASE_URL", Text.unpack connStr)] <> policy)
+    code @?= ExitSuccess
+    err @?= ""
+    lines out @?= ["revoked " <> Text.unpack (saClientId' account), "note: tokens already issued to this account remain valid until they expire"]
+
+testTotpMaintenance :: TestTree
+testTotpMaintenance = testCase "offline TOTP no-op is keyless but still checks versions and offline acknowledgement" $ withDb \pool connStr -> do
+  let fixture = [("DATABASE_URL", Text.unpack connStr)]
+      args = ["totp", "migrate-envelopes"]
+      success extra env expected = do
+        (code, out, err) <- runBinary "shomei-admin" (args <> extra) (env <> fixture)
+        code @?= ExitSuccess
+        err @?= ""
+        out @?= expected
+  success ["--check"] [] "legacy=0 invalid_versions=0\n"
+  forM_ [[], [("SHOMEI_TOTP_ENCRYPTION_KEY", "SENTINEL_SECRET")]] \key -> success ["--offline"] key "legacy=0 invalid_versions=0\nconverted=0\n"
+  (offlineCode, _, _) <- runBinary "shomei-admin" args fixture
+  assertBool "offline required even for no-op" (offlineCode /= ExitSuccess)
+  -- The no-op must neither decrypt nor rewrite bound rows, including pending factors.
+  execSql pool "INSERT INTO shomei.shomei_users (user_id,login_id,status,created_at,updated_at) VALUES ('00000000-0000-0000-0000-000000000001','totp-noop','active',now(),now()); INSERT INTO shomei.shomei_totp_credentials (totp_credential_id,user_id,secret_enc,envelope_version,created_at) VALUES ('00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001',decode('010203','hex'),1,now())"
+  success ["--offline"] [] "legacy=0 invalid_versions=0\nconverted=0\n"
+  success ["--offline"] [("SHOMEI_TOTP_ENCRYPTION_KEY", "SENTINEL_SECRET")] "legacy=0 invalid_versions=0\nconverted=0\n"
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials WHERE secret_enc=decode('010203','hex')" >>= (@?= 1)
+  execSql pool "ALTER TABLE shomei.shomei_totp_credentials DROP CONSTRAINT IF EXISTS shomei_totp_credentials_envelope_version_check; UPDATE shomei.shomei_totp_credentials SET envelope_version=9"
+  success ["--check", "--offline"] [] "legacy=0 invalid_versions=1\n"
+  (unknown, _, _) <- runBinary "shomei-admin" (args <> ["--offline"]) fixture
+  assertBool "unknown version refused" (unknown /= ExitSuccess)
+  execSql pool "UPDATE shomei.shomei_totp_credentials SET envelope_version=0"
+  forM_ [[], [("SHOMEI_TOTP_ENCRYPTION_KEY", "SENTINEL_SECRET")]] \key -> do
+    result <- runBinary "shomei-admin" (args <> ["--offline"]) (key <> fixture)
+    assertSafeFailure "SHOMEI_TOTP_ENCRYPTION_KEY" result
+
+  -- Reuse the legacy AES-GCM fixture construction from the PostgreSQL converter tests.
+  let legacyBlob = case cipherInit (BS.replicate 32 7) >>= (\cipher -> aeadInit AEAD_GCM cipher (BS.replicate 12 3)) :: CryptoFailable (AEAD AES256) of
+        CryptoFailed _ -> error "test-only AES initialization failed"
+        CryptoPassed st ->
+          let (tag, ciphertext) = aeadSimpleEncrypt st (BS.empty :: BS.ByteString) ("12345678901234567890" :: BS.ByteString) 16
+           in BS.replicate 12 3 <> ciphertext <> BA.convert (unAuthTag tag)
+      seed = preparable "UPDATE shomei.shomei_totp_credentials SET secret_enc=$1, envelope_version=0" (E.param (E.nonNullable E.bytea)) D.noResult
+      encodedKey byte = Text.unpack (TE.decodeUtf8 (convertToBase Base64 (BS.replicate 32 byte) :: BS.ByteString))
+  okR =<< Pool.use pool (Session.statement legacyBlob seed)
+  (wrong, _, wrongErr) <- runBinary "shomei-admin" (args <> ["--offline"]) ([("SHOMEI_TOTP_ENCRYPTION_KEY", encodedKey 8)] <> fixture)
+  assertBool "wrong key fails without overwrite" (wrong /= ExitSuccess && "no unreadable row overwritten" `isInfixOf` wrongErr)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials WHERE envelope_version=0" >>= (@?= 1)
+  success ["--offline"] [("SHOMEI_TOTP_ENCRYPTION_KEY", encodedKey 7)] "legacy=1 invalid_versions=0\nconverted=1\n"
+  success ["--offline"] [] "legacy=0 invalid_versions=0\nconverted=0\n"
+  (emptyCode, emptyOut, emptyErr) <- runBinary "shomei-admin" ["audit", "events", "--type", "login_failed"] fixture
+  emptyCode @?= ExitSuccess
+  emptyOut @?= ""
+  emptyErr @?= ""
+  (countCode, countOut, _) <- runBinary "shomei-admin" ["audit", "count", "--type", "login_failed"] fixture
+  countCode @?= ExitSuccess
+  countOut @?= "0\n"

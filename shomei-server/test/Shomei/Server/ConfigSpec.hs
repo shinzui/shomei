@@ -19,10 +19,10 @@ import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (CookieConfig (..), MachineTokenConfig (..), MfaConfig (..), NotifierConfig (..), NotifierTransport (..), RateLimitConfig (..), ShomeiConfig (..), SigningKeyConfig (..), SmtpConfig (..), SmtpTlsMode (..), WebAuthnConfig (..), WebhookConfig (..))
 import Shomei.Notify (NotifierSecrets (..), smtpPasswordText, webhookSecretBytes)
 import Shomei.Server.Config (FileConfig, ServerSettings (..), SweepSettings (..), loadConfig, loadConfigFromEnv, loadCoreConfig, loadNotifierSecretsFromEnv)
+import Shomei.Server.ConfigurationError (ConfigurationError)
 import Shomei.Server.Keys (loadKekFromEnv)
 import System.Directory (makeAbsolute)
 import System.Environment (setEnv, unsetEnv)
-import System.IO.Error (isUserError)
 import System.Process (readProcess)
 import Test.Tasty (TestTree, defaultMain)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -94,25 +94,25 @@ poolRejectsNonPositive = do
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   setEnv "SHOMEI_DB_POOL_SIZE" "0"
   sizeResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_DB_POOL_SIZE" sizeResult
+  expectConfigurationErrorNaming "SHOMEI_DB_POOL_SIZE" sizeResult
   unsetEnv "SHOMEI_DB_POOL_SIZE"
   setEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" "-1"
   timeoutResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" timeoutResult
+  expectConfigurationErrorNaming "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS" timeoutResult
   unsetEnv "SHOMEI_DB_POOL_ACQUISITION_TIMEOUT_MS"
   setEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS" "-1"
   statementTimeoutResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_DB_STATEMENT_TIMEOUT_MS" statementTimeoutResult
+  expectConfigurationErrorNaming "SHOMEI_DB_STATEMENT_TIMEOUT_MS" statementTimeoutResult
   unsetEnv "SHOMEI_DB_STATEMENT_TIMEOUT_MS"
   setEnv "SHOMEI_NOTIFIER_QUEUE_SIZE" "0"
   notifierQueueResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_NOTIFIER_QUEUE_SIZE" notifierQueueResult
+  expectConfigurationErrorNaming "SHOMEI_NOTIFIER_QUEUE_SIZE" notifierQueueResult
   unsetEnv "SHOMEI_NOTIFIER_QUEUE_SIZE"
   mapM_
     ( \key -> do
         setEnv key "0"
         invalid <- try loadConfigFromEnv
-        expectUserErrorNaming key invalid
+        expectConfigurationErrorNaming key invalid
         unsetEnv key
     )
     ["SHOMEI_DB_TRANSACTION_MAX_ATTEMPTS", "SHOMEI_DB_TRANSACTION_DEADLINE_MS", "SHOMEI_MAX_CONNECTIONS", "SHOMEI_SLOW_CLIENT_TIMEOUT_SECONDS"]
@@ -195,18 +195,18 @@ sweepRejectsNonPositive = do
   setEnv "PG_CONNECTION_STRING" "host=localhost dbname=shomei"
   setEnv "SHOMEI_SWEEP_INTERVAL_SECONDS" "0"
   intervalResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_SWEEP_INTERVAL_SECONDS" intervalResult
+  expectConfigurationErrorNaming "SHOMEI_SWEEP_INTERVAL_SECONDS" intervalResult
   unsetEnv "SHOMEI_SWEEP_INTERVAL_SECONDS"
 
   setEnv "SHOMEI_SWEEP_BATCH_SIZE" "0"
   batchResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_SWEEP_BATCH_SIZE" batchResult
+  expectConfigurationErrorNaming "SHOMEI_SWEEP_BATCH_SIZE" batchResult
   unsetEnv "SHOMEI_SWEEP_BATCH_SIZE"
 
   -- A negative grace period would sweep rows that have not expired yet.
   setEnv "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" "-1"
   graceResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" graceResult
+  expectConfigurationErrorNaming "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES" graceResult
   unsetEnv "SHOMEI_SWEEP_CEREMONY_GRACE_MINUTES"
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -236,7 +236,7 @@ argon2Settings = do
   setEnv "SHOMEI_ARGON2_MEMORY_KIB" "64"
   setEnv "SHOMEI_ARGON2_PARALLELISM" "16"
   hardFloorResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" hardFloorResult
+  expectConfigurationErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" hardFloorResult
 
   setEnv "SHOMEI_ARGON2_MEMORY_KIB" "128"
   (_, boundary) <- loadConfigFromEnv
@@ -247,12 +247,12 @@ argon2Settings = do
   -- A zero permit count would block every login forever.
   setEnv "SHOMEI_ARGON2_MEMORY_KIB" "0"
   memResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" memResult
+  expectConfigurationErrorNaming "SHOMEI_ARGON2_MEMORY_KIB" memResult
   unsetEnv "SHOMEI_ARGON2_MEMORY_KIB"
 
   setEnv "SHOMEI_HASHING_MAX_CONCURRENCY" "0"
   concResult <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_HASHING_MAX_CONCURRENCY" concResult
+  expectConfigurationErrorNaming "SHOMEI_HASHING_MAX_CONCURRENCY" concResult
   mapM_ unsetEnv argon2EnvVars
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -273,20 +273,20 @@ strictConfigurationSettings = do
 
   writeFile configPath "{ cookieSecue = False }"
   unknownKey <- try loadConfig
-  expectUserErrorNaming "invalid SHOMEI_CONFIG" unknownKey
+  expectConfigurationErrorNaming "SHOMEI_CONFIG" unknownKey
 
   writeFile configPath "{ webauthnAttestation = \"nope\" }"
   badAttestation <- try loadConfig
-  expectUserErrorNaming "webauthnAttestation" badAttestation
+  expectConfigurationErrorNaming "webauthnAttestation" badAttestation
 
   writeFile configPath "{ webauthnOrigins = ([] : List Text) }"
   emptyFileOrigins <- try loadConfig
-  expectUserErrorNaming "webauthnOrigins" emptyFileOrigins
+  expectConfigurationErrorNaming "webauthnOrigins" emptyFileOrigins
 
   unsetEnv "SHOMEI_CONFIG"
   setEnv "SHOMEI_WEBAUTHN_ORIGINS" ","
   emptyEnvOrigins <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_WEBAUTHN_ORIGINS" emptyEnvOrigins
+  expectConfigurationErrorNaming "SHOMEI_WEBAUTHN_ORIGINS" emptyEnvOrigins
   unsetEnv "SHOMEI_WEBAUTHN_ORIGINS"
 
   setEnv "SHOMEI_EMAIL_VERIFICATION_REQUIRED" "true"
@@ -314,13 +314,13 @@ dhallSchemaMatchesFileConfig = do
     _ -> assertFailure "FileConfig did not encode as an object"
   Set.fromList dhallKeys @?= Set.fromList loaderKeys
 
--- | Assert a config load failed with a 'userError' whose message names the offending variable.
-expectUserErrorNaming :: String -> Either IOError a -> Assertion
-expectUserErrorNaming name = \case
+-- | Assert a config load failed with a 'ConfigurationError' whose message names the offending variable.
+expectConfigurationErrorNaming :: String -> Either ConfigurationError a -> Assertion
+expectConfigurationErrorNaming name = \case
   Left e ->
     assertBool
-      ("expected a userError naming " <> name <> ", got: " <> show e)
-      (isUserError e && Text.isInfixOf (Text.pack name) (Text.pack (show e)))
+      ("expected a ConfigurationError naming " <> name <> ", got: " <> show e)
+      (Text.isInfixOf (Text.pack name) (Text.pack (show e)))
   Right _ -> assertFailure (name <> " out of range should have failed the config load")
 
 testLoadAndOverride :: TestTree
@@ -455,6 +455,7 @@ testLoadAndOverride = testCase "Dhall file is loaded and env vars override it" d
   notifierSecretsAreStrippedAndConfigIsSecretFree
   notifierInsecureTransportFlags
   kekIsRequired
+  safeLoaderFailures
 
 passkeyQuotaSettings :: Assertion
 passkeyQuotaSettings = do
@@ -468,7 +469,7 @@ passkeyQuotaSettings = do
   limited.maxPasskeysPerUser @?= 1
   setEnv "SHOMEI_MAX_PASSKEYS_PER_USER" "101"
   bad <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_MAX_PASSKEYS_PER_USER" bad
+  expectConfigurationErrorNaming "SHOMEI_MAX_PASSKEYS_PER_USER" bad
   unsetEnv "SHOMEI_MAX_PASSKEYS_PER_USER"
 
 -- | Administrative workflows consume the deployment's core policy without pretending to be a
@@ -502,7 +503,7 @@ verifierSettings = do
 
   setEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" "-1"
   negativeSkew <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" negativeSkew
+  expectConfigurationErrorNaming "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS" negativeSkew
   unsetEnv "SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS"
 
   -- RFC 3986 permits a scheme with a rootless path, so this is a valid URI.
@@ -513,12 +514,12 @@ verifierSettings = do
 
   setEnv "SHOMEI_ISSUER" "https://bad host"
   invalidIssuer <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_ISSUER" invalidIssuer
+  expectConfigurationErrorNaming "SHOMEI_ISSUER" invalidIssuer
   unsetEnv "SHOMEI_ISSUER"
 
   setEnv "SHOMEI_AUDIENCE" "https://bad audience"
   invalidAudience <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_AUDIENCE" invalidAudience
+  expectConfigurationErrorNaming "SHOMEI_AUDIENCE" invalidAudience
 
   unsetEnv "SHOMEI_AUDIENCE"
   unsetEnv "PG_CONNECTION_STRING"
@@ -563,7 +564,7 @@ rateLimitAndCookieEdgeSettings = do
 
   setEnv "SHOMEI_PER_IP_BURST" "0"
   zeroBurst <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_PER_IP_BURST" zeroBurst
+  expectConfigurationErrorNaming "SHOMEI_PER_IP_BURST" zeroBurst
   mapM_ unsetEnv rateLimitEnvVars
 
   setEnv "SHOMEI_CSRF_ALLOWED_ORIGINS" "HTTPS://App.Example.com/"
@@ -571,7 +572,7 @@ rateLimitAndCookieEdgeSettings = do
   normalized.cookieConfig.allowedOrigins @?= ["https://app.example.com"]
   setEnv "SHOMEI_CSRF_ALLOWED_ORIGINS" "https://app.example.com/login"
   invalidOrigin <- try loadConfigFromEnv
-  expectUserErrorNaming "must be scheme://host[:port] with no path" invalidOrigin
+  expectConfigurationErrorNaming "must be scheme://host[:port] with no path" invalidOrigin
 
   unsetEnv "SHOMEI_CSRF_ALLOWED_ORIGINS"
   setEnv "SHOMEI_TOKEN_TRANSPORT" "cookie"
@@ -590,11 +591,11 @@ rateLimitAndCookieEdgeSettings = do
 kekIsRequired :: Assertion
 kekIsRequired = do
   unsetEnv "SHOMEI_KEY_ENCRYPTION_KEY"
-  missing <- try loadKekFromEnv
-  expectUserErrorNaming "SHOMEI_KEY_ENCRYPTION_KEY" missing
+  missing <- try @IOError loadKekFromEnv
+  assertBool "missing KEK rejected with setting name" (either (("SHOMEI_KEY_ENCRYPTION_KEY" `isInfixOf`) . show) (const False) missing)
   setEnv "SHOMEI_KEY_ENCRYPTION_KEY" "not-base64"
-  malformed <- try loadKekFromEnv
-  expectUserErrorNaming "SHOMEI_KEY_ENCRYPTION_KEY" malformed
+  malformed <- try @IOError loadKekFromEnv
+  assertBool "malformed KEK rejected with setting name" (either (("SHOMEI_KEY_ENCRYPTION_KEY" `isInfixOf`) . show) (const False) malformed)
   setEnv "SHOMEI_KEY_ENCRYPTION_KEY" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   _ <- loadKekFromEnv
   unsetEnv "SHOMEI_KEY_ENCRYPTION_KEY"
@@ -716,7 +717,7 @@ notifierSmtpMissingHostFails = do
   setEnv "SHOMEI_NOTIFIER_TRANSPORT" "smtp"
   setEnv "SHOMEI_SMTP_FROM" "auth@example.com"
   result <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_SMTP_HOST" result
+  expectConfigurationErrorNaming "SHOMEI_SMTP_HOST" result
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -733,7 +734,7 @@ notifierSmtpUsernameWithoutPasswordFails = do
   setEnv "SHOMEI_SMTP_USERNAME" "relay-user"
   (cfg, _) <- loadConfigFromEnv
   result <- try (loadNotifierSecretsFromEnv cfg)
-  expectUserErrorNaming "SHOMEI_SMTP_PASSWORD" result
+  expectConfigurationErrorNaming "SHOMEI_SMTP_PASSWORD" result
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -747,7 +748,7 @@ notifierWebhookMissingSecretFails = do
   setEnv "SHOMEI_WEBHOOK_URL" "https://hooks.example.com/shomei"
   (cfg, _) <- loadConfigFromEnv
   result <- try (loadNotifierSecretsFromEnv cfg)
-  expectUserErrorNaming "SHOMEI_WEBHOOK_SECRET" result
+  expectConfigurationErrorNaming "SHOMEI_WEBHOOK_SECRET" result
   mapM_ unsetEnv notifierEnvVars
   unsetEnv "PG_CONNECTION_STRING"
 
@@ -797,7 +798,7 @@ notifierInsecureTransportFlags = do
   setEnv "SHOMEI_WEBHOOK_URL" "http://127.0.0.1:9999/hook"
   setEnv "SHOMEI_WEBHOOK_SECRET" "secret"
   insecureWebhook <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_WEBHOOK_ALLOW_INSECURE" insecureWebhook
+  expectConfigurationErrorNaming "SHOMEI_WEBHOOK_ALLOW_INSECURE" insecureWebhook
   setEnv "SHOMEI_WEBHOOK_ALLOW_INSECURE" "true"
   (webhookCfg, _) <- loadConfigFromEnv
   _ <- loadNotifierSecretsFromEnv webhookCfg
@@ -814,7 +815,7 @@ notifierInsecureTransportFlags = do
   setEnv "SHOMEI_SMTP_USERNAME" "relay-user"
   setEnv "SHOMEI_SMTP_PASSWORD" "relay-password"
   plaintextAuth <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" plaintextAuth
+  expectConfigurationErrorNaming "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" plaintextAuth
   setEnv "SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH" "true"
   (smtpCfg, smtpSettings) <- loadConfigFromEnv
   assertBool "plaintext credentials warn under the explicit lab override" ("smtpTlsMode=plain sends mail and SMTP credentials in the clear; explicit lab override" `elem` smtpSettings.serverWarnings)
@@ -841,14 +842,14 @@ actorCompatibilitySettings = do
   defaults.signingKeyConfig.emitLegacyActor @?= False
   setEnv "SHOMEI_EMIT_LEGACY_ACTOR" "true"
   missing <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" missing
+  expectConfigurationErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" missing
   setEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" "2000000000"
   (compatible, _) <- loadConfigFromEnv
   compatible.signingKeyConfig.legacyActorUntilUnix @?= Just 2000000000
   compatible.signingKeyConfig.emitLegacyActor @?= True
   setEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" "0"
   invalid <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" invalid
+  expectConfigurationErrorNaming "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX" invalid
   unsetEnv "SHOMEI_LEGACY_ACTOR_UNTIL_UNIX"
   unsetEnv "SHOMEI_EMIT_LEGACY_ACTOR"
 
@@ -864,5 +865,24 @@ sessionQuotaSettings = do
   limited.maxActiveNonInteractiveSessions @?= 1
   setEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" "0"
   bad <- try loadConfigFromEnv
-  expectUserErrorNaming "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" bad
+  expectConfigurationErrorNaming "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS" bad
   unsetEnv "SHOMEI_MAX_ACTIVE_NON_INTERACTIVE_SESSIONS"
+
+safeLoaderFailures :: Assertion
+safeLoaderFailures = do
+  setEnv "SHOMEI_CONFIG" configPath
+  mapM_
+    ( \contents -> do
+        writeFile configPath contents
+        result <- try @ConfigurationError loadCoreConfig
+        expectConfigurationErrorNaming "SHOMEI_CONFIG" result
+        case result of
+          Left err -> assertBool "loader error redacts rendered content" (not ("SENTINEL_SECRET" `isInfixOf` show err))
+          Right _ -> assertFailure "invalid configuration accepted"
+    )
+    ["{ unknown = \"SENTINEL_SECRET\" }", "{ argon2MemoryKiB = \"SENTINEL_SECRET\" }", "SENTINEL_SECRET invalid Dhall"]
+  setEnv "SHOMEI_CONFIG" "/missing/SENTINEL_SECRET"
+  missing <- try @ConfigurationError loadCoreConfig
+  expectConfigurationErrorNaming "SHOMEI_CONFIG" missing
+  assertBool "missing file path redacted" (not ("SENTINEL_SECRET" `isInfixOf` show missing))
+  unsetEnv "SHOMEI_CONFIG"

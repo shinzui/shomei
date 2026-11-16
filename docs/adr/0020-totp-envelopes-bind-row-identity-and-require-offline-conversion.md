@@ -5,7 +5,7 @@ description: TOTP AES-GCM envelopes authenticate both persisted identifiers and 
 docId: ADR-20
 status: Accepted
 date: 2026-11-05
-timestamp: 2026-11-05T13:18:00Z
+timestamp: 2026-11-16T05:30:00Z
 originatingPlan: docs/plans/62-bind-totp-ciphertext-to-credentials-and-migrate-legacy-envelopes.md
 generated:
   by: codex-cli/gpt-6.1-sol
@@ -33,7 +33,8 @@ failures never trigger legacy decoding. Pending and confirmed rows follow the sa
 Normal interpreters read version 1 only. Shared server assembly refuses startup if legacy or
 unknown versions remain. `shomei-admin totp migrate-envelopes --check` reads only version counts
 and needs no encryption key. Conversion requires stopped writers, a matching database/key backup,
-and the existing deployment key. It decrypts and encrypts at most 100 rows outside a transaction,
+and the existing deployment key when legacy rows remain. An offline no-op on an empty or fully
+converted store still rejects unknown versions but neither loads nor validates the key. It decrypts and encrypts at most 100 rows outside a transaction,
 then acquires a transaction-scoped converter lock and compares the original identities, version
 and ciphertext before replacing each row. Only this explicit converter can decrypt version 0.
 

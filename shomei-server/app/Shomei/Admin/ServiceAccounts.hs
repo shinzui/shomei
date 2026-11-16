@@ -243,7 +243,7 @@ runServiceAccounts env = \case
     account <- revokeAction env cid
     putStrLn ("revoked " <> Text.unpack (saClientId account))
     -- Access tokens are stateless JWTs: one minted a moment ago stays valid until it expires.
-    putStrLn "note: tokens already issued to this account remain valid until they expire (default 5 minutes)"
+    putStrLn "note: tokens already issued to this account remain valid until they expire"
   ServiceAccountsList -> do
     accounts <- listAction env
     forM_ accounts \a ->

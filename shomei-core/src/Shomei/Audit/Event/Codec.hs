@@ -15,6 +15,7 @@
 module Shomei.Audit.Event.Codec
   ( reconstructAuthEvent,
     projectAuthEvent,
+    knownAuthEventTypes,
   )
 where
 
@@ -25,6 +26,53 @@ import Data.UUID (UUID)
 import Shomei.Audit.Event.Domain
 import Shomei.Id (sessionIdToUUID, userIdToUUID)
 import Shomei.Prelude
+
+-- | Stored event names supported by this binary. Keep in sync with the codec fixtures.
+knownAuthEventTypes :: [Text]
+knownAuthEventTypes =
+  [ "user_registered",
+    "login_succeeded",
+    "login_failed",
+    "session_started",
+    "session_revoked",
+    "refresh_token_rotated",
+    "refresh_token_reuse_detected",
+    "email_verification_requested",
+    "email_verified",
+    "password_reset_requested",
+    "password_reset_completed",
+    "password_changed",
+    "password_change_failed",
+    "user_suspended",
+    "user_deleted",
+    "user_reinstated",
+    "account_locked",
+    "login_throttled",
+    "passkey_registered",
+    "passkey_removed",
+    "mfa_challenged",
+    "mfa_succeeded",
+    "mfa_failed",
+    "totp_enrolled",
+    "totp_removed",
+    "recovery_codes_generated",
+    "recovery_code_used",
+    "impersonation_started",
+    "impersonation_stopped",
+    "impersonation_action_blocked",
+    "service_on_behalf_issued",
+    "service_token_issued",
+    "role_granted",
+    "role_revoked",
+    "service_account_created",
+    "service_account_secret_rotated",
+    "service_account_revoked",
+    "oauth_client_created",
+    "oauth_client_revoked",
+    "oauth_code_issued",
+    "oauth_code_replayed",
+    "notification_delivery_failed"
+  ]
 
 -- | Reconstruct a typed event. The @event_type@ strings are the exact ones the writer
 -- emits (see 'Shomei.Audit.Publisher.Postgres.projectAuthEvent'); keep the two in lockstep.
