@@ -222,3 +222,29 @@ against `/.well-known/jwks.json`. It carries `iss`, `sub`, `aud` (the `client_id
 **no** `sid`, scopes, or roles, and its `aud` is the `client_id` — so presenting an ID token as a
 bearer credential to a resource server is refused. It is a statement *to the client* that a user
 authenticated, not an API credential.
+
+## Error and challenge contract
+
+OAuth errors contain `error` and `error_description`, including failures before handlers run.
+Interactive authorization's `401 login_required` carries no `WWW-Authenticate` challenge.
+Client-authenticated token, introspection and revocation failures retain `401 invalid_client`
+and `Basic realm="shomei"`, including required absent or body-supplied credentials. UserInfo
+uses `Bearer realm="shomei"` for missing credentials and adds `error="invalid_token"` for invalid
+credentials. Supplying Basic on an unrelated grant failure does not add a challenge.
+
+OAuth errors have JSON media type, `Cache-Control: no-store` and `Pragma: no-cache`.
+Parsing and duplicate-Authorization errors return safe 400 `invalid_request`; unknown namespace
+paths return 404 `invalid_request`; method, Accept and Content-Type failures preserve 405, 406
+and 415 with `invalid_request`. Even an unacceptable Accept header receives a JSON error.
+Semantic headers such as `Allow` are preserved when supplied by the router.
+
+Oversized bodies return **413 `invalid_request`**. Throttling returns **429
+`temporarily_unavailable`** with `Retry-After: 60`. These are Shōmei operational extensions
+using the OAuth envelope; RFC 6749 section 5.2 does not prescribe these HTTP status/code pairs.
+Both have the cache headers above and no authentication challenge. Limits and eligibility are
+unchanged. See [architecture](architecture.md) for mount configuration and [the live contract
+suite](../../integration-tests/oauth/README.md) for validation.
+
+This contract covers application-controlled HTTP responses. Malformed HTTP rejected by Warp
+before WAI, socket admission failures, disconnected clients and reverse-proxy-generated responses
+are outside it.

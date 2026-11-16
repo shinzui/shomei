@@ -68,3 +68,7 @@ reviews-validate:
 # Strictly enforce the shared architecture-decisions profile and its update log.
 adr-validate:
     okf validate docs/adr --strict --profile docs/adr/profile.dhall --profile-enforce --log-enforce
+
+# Validate OAuth errors against the packaged executable in an isolated database.
+test-oauth-contract:
+    scripts/test-oauth-contract.sh

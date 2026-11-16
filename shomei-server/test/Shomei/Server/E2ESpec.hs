@@ -5,7 +5,7 @@
 -- detection (HTTP 401 plus the persisted session revocation and reuse event), logout, the
 -- public JWKS document, and health — i.e. the vertical slice actually behaves against real
 -- PostgreSQL and real ES256 signing.
-module Shomei.Server.E2ESpec (tests) where
+module Shomei.Server.E2ESpec (tests, seedPublicOAuthClient) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
@@ -322,7 +322,13 @@ oidcRedirectUri = "http://localhost:9999/callback"
 -- | Insert a confidential OAuth client through the PostgreSQL interpreter, as
 -- @shomei-admin oauth-clients create@ does. Returns its @client_id@.
 seedOAuthClient :: Pool -> IO Text
-seedOAuthClient pool = do
+seedOAuthClient = seedOAuthClientFor ConfidentialClient
+
+seedPublicOAuthClient :: Pool -> IO Text
+seedPublicOAuthClient = seedOAuthClientFor PublicClient
+
+seedOAuthClientFor :: ClientType -> Pool -> IO Text
+seedOAuthClientFor kind pool = do
   outcome <-
     runEff
       . runErrorNoCallStack @AuthError
@@ -338,8 +344,8 @@ seedOAuthClient pool = do
             NewOAuthClient
               { oauthClientId = ocid,
                 clientId = cid,
-                secretHash = Just (sha256Hex oidcClientSecret),
-                clientType = ConfidentialClient,
+                secretHash = if kind == ConfidentialClient then Just (sha256Hex oidcClientSecret) else Nothing,
+                clientType = kind,
                 displayName = "e2e rp",
                 redirectUris = [oidcRedirectUri],
                 allowedScopes = Set.fromList [Scope "openid", Scope "profile"],

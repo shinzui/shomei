@@ -1,25 +1,20 @@
--- | The WAI layer that finishes what @ErrorFormatters@ cannot.
---
--- Servant lets you format its body-parse, url-parse, header-parse, and not-found failures
--- through 'Servant.ErrorFormatters'. It does __not__ let you format a method mismatch: a request
--- to a known path with the wrong verb raises a hardcoded @err405@ with an empty body from
--- @Servant.Server.Internal.methodCheck@, below any hook. This middleware converts that response
--- into the same RFC 9457 problem document every other failure carries.
---
--- Shōmei never returns 405 from a handler, so rewriting the status unconditionally is safe.
+-- | Complete Servant's parsing hooks with protocol-aware method and negotiation errors.
+-- Namespace matching uses the original decoded path at this outer boundary. Responses
+-- already carrying OAuth JSON pass through; no response body or stream is inspected.
 module Shomei.Servant.Middleware
   ( problemMiddleware,
     problemResponse,
+    problemMiddlewareWithOAuthMounts,
   )
 where
 
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Char8 qualified as BS8
 import Network.HTTP.Types (Status, mkStatus, statusCode)
-import Network.Wai (Middleware, Response, pathInfo, requestHeaders, responseLBS, responseStatus)
+import Network.Wai (Middleware, Response, pathInfo, requestHeaders, responseHeaders, responseLBS, responseStatus)
 import Servant (ServerError (..))
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts, isOAuthPath, oauthBoundaryError, oauthBoundaryResponse)
 import Shomei.Servant.Error (ProblemOccurrence, ProblemSpec (..), bearerOccurrence, noProblemOccurrence, pcMethodNotAllowed, pcTokenInvalidAuth, problemBody, problemHeaders)
-import Shomei.Servant.OAuth qualified as OAuth
 
 -- | Build a WAI response carrying a problem document. Used by this module and by the
 -- rate-limit middleware, which answers before Servant ever sees the request.
@@ -30,18 +25,28 @@ problemResponse spec occurrence =
 statusOf :: ProblemSpec -> Status
 statusOf spec = mkStatus spec.problemStatus.errHTTPCode (BS8.pack spec.problemStatus.errReasonPhrase)
 
--- | Rewrite Servant's bare @405 Method Not Allowed@ into a problem document.
+-- | Complete Servant's formatter hooks without inspecting downstream bodies or streams.
 problemMiddleware :: Middleware
-problemMiddleware _ req respond
+problemMiddleware = problemMiddlewareWithOAuthMounts defaultOAuthMounts
+
+problemMiddlewareWithOAuthMounts :: OAuthMounts -> Middleware
+problemMiddlewareWithOAuthMounts mounts app req respond
   | length [() | (name, _) <- requestHeaders req, name == "Authorization"] > 1 =
-      if "oauth" `elem` pathInfo req
-        then
-          let err = OAuth.invalidRequest "multiple Authorization headers"
-           in respond (responseLBS (mkStatus err.errHTTPCode (BS8.pack err.errReasonPhrase)) err.errHeaders err.errBody)
-        else respond (problemResponse pcTokenInvalidAuth bearerOccurrence)
-problemMiddleware app req respond =
-  app req \res ->
-    respond
-      if statusCode (responseStatus res) == 405
-        then problemResponse pcMethodNotAllowed noProblemOccurrence
-        else res
+      respond
+        if isOAuthPath mounts (pathInfo req)
+          then oauthBoundaryResponse 400
+          else problemResponse pcTokenInvalidAuth bearerOccurrence
+  | otherwise = app req \res -> respond (normalize res)
+  where
+    normalize res
+      | isOAuthPath mounts (pathInfo req), Just contentType <- lookup "Content-Type" (responseHeaders res), BS8.takeWhile (/= ';') contentType == "application/json" = res
+      | isOAuthPath mounts (pathInfo req),
+        code `elem` [404, 405, 406, 415] =
+          let err = oauthBoundaryError code
+              -- Retain semantic headers (e.g. Allow), discard the replaced representation.
+              semantic = filter (\(name, _) -> name `notElem` ["Content-Type", "Content-Length", "Content-Encoding", "Content-Range", "Content-Language", "Content-Location", "Content-Disposition", "Content-MD5", "Content-Digest", "Repr-Digest", "Digest", "Transfer-Encoding", "Trailer", "Accept-Ranges", "ETag", "Last-Modified", "Cache-Control", "Pragma", "WWW-Authenticate", "Retry-After"]) (responseHeaders res)
+           in responseLBS (responseStatus res) (err.errHeaders <> semantic) err.errBody
+      | code == 405 = problemResponse pcMethodNotAllowed noProblemOccurrence
+      | otherwise = res
+      where
+        code = statusCode (responseStatus res)

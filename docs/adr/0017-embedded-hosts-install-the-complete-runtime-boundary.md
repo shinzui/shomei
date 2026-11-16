@@ -5,7 +5,7 @@ description: Hosts embedding Shomei install its background services and wrap the
 docId: ADR-17
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-11-05T17:03:09Z
+timestamp: 2026-11-16T15:04:02Z
 originatingPlan: docs/plans/59-embedding-parity-and-a-trustworthy-downstream-verification-template.md
 generated:
   by: openai-codex/gpt-5
@@ -39,7 +39,10 @@ The host creates the Shōmei limiter and metrics values, then wraps its whole WA
 `hostMiddleware`. The middleware order is the standalone order: trusted-proxy resolution,
 request-ID and structured logging, HTTP metrics and the metrics endpoint, metered request-body cap,
 then per-client rate limiting. The mounted Shōmei routes and host-owned routes therefore share one
-edge policy and one resolved client identity.
+edge policy and one resolved client identity. When mounting OAuth beneath another prefix, hosts
+share one validated `OAuthMounts` value between `hostMiddlewareWithOAuthMounts`,
+`authContextWithOAuthMounts` and `problemMiddlewareWithOAuthMounts`. Default wrappers use `/oauth`.
+[ADR-27](0027-oauth-namespaces-own-errors-through-the-http-boundary.md) defines namespace error ownership.
 
 Warp hosts also call `hostWarpSettings` once for each listener. This shared assembly sets bind
 host (default `*4`, preserving all-IPv4 behavior), a finite admission cap (default 1024), and a

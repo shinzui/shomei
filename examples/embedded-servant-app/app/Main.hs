@@ -3,12 +3,12 @@
 module Main (main) where
 
 import Data.Maybe (fromMaybe)
-import Embedded.App (embeddedApplicationWith)
+import Embedded.App (embeddedApplicationWith, embeddedOAuthMounts)
 import Network.Wai.Handler.Warp qualified as Warp
 import Shomei.Config (ObservabilityConfig (..), ShomeiConfig (..))
 import Shomei.Health.Server (buildHealthChecks)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
-import Shomei.Server.Boot (HostBackgroundTasks (..), buildEnv, hostMiddleware, installHostBackgroundTasks)
+import Shomei.Server.Boot (HostBackgroundTasks (..), buildEnv, hostMiddlewareWithOAuthMounts, installHostBackgroundTasks)
 import Shomei.Server.Config (ServerSettings (..), loadConfig)
 import Shomei.Server.Middleware.RateLimit (newRateLimiterFor)
 import Shomei.Server.Observability.Metrics (newMetrics)
@@ -31,5 +31,5 @@ main = do
   hPutStrLn stderr ("[embedded-servant-app] listening on :" <> show settings.serverPort)
   hPutStrLn stderr ("[embedded-servant-app] serving demo assets from " <> wwwDir)
   warpSettings <- hostWarpSettings cfg settings Warp.defaultSettings
-  Warp.runSettings warpSettings (hostMiddleware cfg settings limiter metrics (embeddedApplicationWith wwwDir env liveness readiness))
+  Warp.runSettings warpSettings (hostMiddlewareWithOAuthMounts embeddedOAuthMounts cfg settings limiter metrics (embeddedApplicationWith wwwDir env liveness readiness))
   stopHostBackgroundTasks backgroundTasks cfg.observabilityConfig.gracefulShutdownTimeoutSeconds

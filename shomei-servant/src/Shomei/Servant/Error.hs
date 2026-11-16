@@ -21,9 +21,9 @@
 --
 --   * health probe failures use the structured 'Servant.Health.ProbeResult' body,
 --     not a problem document. It is a status report, not an error.
---   * The future @POST \/oauth\/token@ endpoint must use RFC 6749 §5.2's
+--   * OAuth namespaces use RFC 6749 §5.2's
 --     @{"error":"invalid_grant",…}@ shape, which OAuth2 clients require. That surface belongs
---     to MasterPlan 7 EP-4 and is exempt from this envelope.
+--     to their protocol boundary, including errors before handlers run.
 --
 -- Never leaks internal detail: 'InvalidCredentials', 'UserNotActive', and 'AccountLocked' all
 -- collapse to the same generic @401 invalid_login@ so account existence and status are not
@@ -51,6 +51,7 @@ module Shomei.Servant.Error
 
     -- * Servant's built-in failures
     shomeiErrorFormatters,
+    shomeiErrorFormattersWithOAuthMounts,
 
     -- * Specs with an 'AuthError' counterpart
 
@@ -129,6 +130,8 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Network.HTTP.Media (MediaType)
 import Network.HTTP.Types.Header (Header)
+import Network.HTTP.Types.URI (decodePathSegments)
+import Network.Wai (rawPathInfo)
 import Numeric.Natural (Natural)
 import Servant
   ( Accept (..),
@@ -149,6 +152,7 @@ import Servant
   )
 import Shomei.Authorization.Claims.Domain (Role (..))
 import Shomei.Error (AuthError (..))
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts, isOAuthPath, oauthBoundaryError)
 import Shomei.Prelude
 
 -- ---------------------------------------------------------------------------
@@ -339,16 +343,23 @@ toProblemError spec occurrence =
 -- hardcoded @err405@ (empty body) inside @Servant.Server.Internal.methodCheck@. The
 -- 'Shomei.Servant.Middleware.problemMiddleware' WAI layer converts that one.
 shomeiErrorFormatters :: ErrorFormatters
-shomeiErrorFormatters =
+shomeiErrorFormatters = shomeiErrorFormattersWithOAuthMounts defaultOAuthMounts
+
+shomeiErrorFormattersWithOAuthMounts :: OAuthMounts -> ErrorFormatters
+shomeiErrorFormattersWithOAuthMounts mounts =
   defaultErrorFormatters
-    { bodyParserErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBodyParseError (detailOccurrence (Text.pack msg)),
-      urlParseErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBadRequest (detailOccurrence (Text.pack msg)),
-      headerParseErrorFormatter = \_typeRep _req msg ->
-        toProblemError pcBadRequest (detailOccurrence (Text.pack msg)),
-      notFoundErrorFormatter = \_req -> toProblemError pcNotFound noProblemOccurrence
+    { bodyParserErrorFormatter = \_typeRep req msg ->
+        select req 400 (toProblemError pcBodyParseError (detailOccurrence (Text.pack msg))),
+      urlParseErrorFormatter = \_typeRep req msg ->
+        select req 400 (toProblemError pcBadRequest (detailOccurrence (Text.pack msg))),
+      headerParseErrorFormatter = \_typeRep req msg ->
+        select req 400 (toProblemError pcBadRequest (detailOccurrence (Text.pack msg))),
+      notFoundErrorFormatter = \req -> select req 404 (toProblemError pcNotFound noProblemOccurrence)
     }
+  where
+    select req code fallback
+      | isOAuthPath mounts (decodePathSegments (rawPathInfo req)) = oauthBoundaryError code
+      | otherwise = fallback
 
 -- ---------------------------------------------------------------------------
 -- The catalog

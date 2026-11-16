@@ -7,6 +7,7 @@
 -- length are metered chunk by chunk as the downstream application consumes them.
 module Shomei.Server.Middleware.BodyLimit
   ( bodyLimitMiddleware,
+    bodyLimitMiddlewareWithOAuthMounts,
     defaultBodyLimitBytes,
   )
 where
@@ -20,9 +21,11 @@ import Network.Wai
   ( Middleware,
     RequestBodyLength (KnownLength),
     getRequestBodyChunk,
+    pathInfo,
     requestBodyLength,
     setRequestBodyChunks,
   )
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts, isOAuthPath, oauthBoundaryResponse)
 import Shomei.Servant.Error (noProblemOccurrence, pcPayloadTooLarge)
 import Shomei.Servant.Middleware (problemResponse)
 
@@ -37,7 +40,10 @@ defaultBodyLimitBytes = 1024 * 1024
 
 -- | Reject a request once its declared or observed body length is strictly greater than @limit@.
 bodyLimitMiddleware :: Word64 -> Middleware
-bodyLimitMiddleware limit app req respond
+bodyLimitMiddleware = bodyLimitMiddlewareWithOAuthMounts defaultOAuthMounts
+
+bodyLimitMiddlewareWithOAuthMounts :: OAuthMounts -> Word64 -> Middleware
+bodyLimitMiddlewareWithOAuthMounts mounts limit app req respond
   | KnownLength n <- requestBodyLength req, n > limit = respond tooLarge
   | otherwise = do
       seen <- newIORef 0
@@ -55,4 +61,6 @@ bodyLimitMiddleware limit app req respond
         already <- readIORef responded
         if already then throwIO e else respond tooLarge
   where
-    tooLarge = problemResponse pcPayloadTooLarge noProblemOccurrence
+    tooLarge
+      | isOAuthPath mounts (pathInfo req) = oauthBoundaryResponse 413
+      | otherwise = problemResponse pcPayloadTooLarge noProblemOccurrence

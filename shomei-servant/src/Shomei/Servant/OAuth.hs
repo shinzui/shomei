@@ -14,7 +14,7 @@
 --
 --   * @invalid_request@ (400) — a required parameter is missing or malformed.
 --   * @invalid_client@ (401) — client authentication failed. Also carries
---     @WWW-Authenticate: Basic realm="shomei"@ when the client attempted Basic authentication.
+--     @WWW-Authenticate: Basic realm="shomei"@ whenever client authentication is required.
 --   * @invalid_grant@ (400) — the presented grant is invalid, expired, or revoked.
 --   * @unauthorized_client@ (400) — this client may not use this grant type.
 --   * @unsupported_grant_type@ (400) — the server does not implement this @grant_type@.
@@ -91,9 +91,7 @@ instance ToSchema OAuthErrorResponse where
 -- @Cache-Control: no-store@ rides on every response from this endpoint, error included: an
 -- intermediary must never cache a token endpoint's answer.
 --
--- A 401 additionally carries @WWW-Authenticate: Basic realm="shomei"@, as RFC 6749 §5.2 requires
--- of an @invalid_client@ response to a request that used the Basic scheme. Shōmei sends it on
--- every @invalid_client@, which is permitted and simpler than remembering how the client tried.
+-- Challenges belong to the authentication boundary, independently of HTTP status.
 oauthError :: Status -> Text -> Text -> ServerError
 oauthError status code description =
   ServerError
@@ -106,14 +104,15 @@ oauthError status code description =
           ("Cache-Control", "no-store"),
           ("Pragma", "no-cache")
         ]
-          <> [("WWW-Authenticate", "Basic realm=\"shomei\"") | statusCode status == 401]
     }
 
 -- | The single answer to every client-authentication failure: an unknown @client_id@, a wrong
 -- secret, a revoked account, an absent credential, and a malformed @Authorization@ header all
 -- produce this exact response. Nothing about which one occurred reaches the caller.
 invalidClient :: ServerError
-invalidClient = oauthError status401 "invalid_client" "client authentication failed"
+invalidClient =
+  let err = oauthError status401 "invalid_client" "client authentication failed"
+   in err {errHeaders = ("WWW-Authenticate", "Basic realm=\"shomei\"") : err.errHeaders}
 
 -- | OIDC UserInfo bearer authentication failure. Unlike client authentication at the token,
 -- introspection, and revocation endpoints, this challenge names the Bearer scheme and uses the

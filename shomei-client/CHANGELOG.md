@@ -4,6 +4,10 @@ All notable changes to `shomei-client` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Generated OAuth clients decode routing and operational 405/406/413/415/429 errors as typed results, preserving optional challenges, Retry-After and Allow. **Source compatibility:** downstream exhaustive OAuthResult matches and OAuthErrorWithHeaders construction must account for the added constructors/field.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series; migration dependencies require `shomei-migrations ^>=0.2.0.1`.

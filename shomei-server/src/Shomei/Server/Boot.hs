@@ -14,7 +14,10 @@ module Shomei.Server.Boot
     HostBackgroundTasks (..),
     installHostBackgroundTasks,
     hostMiddleware,
+    hostMiddlewareWithOAuthMounts,
+    authContextWithOAuthMounts,
     edgeMiddleware,
+    edgeMiddlewareWithOAuthMounts,
     buildEnv,
     seamEnv,
     authContext,
@@ -70,10 +73,12 @@ import Shomei.Persistence.Pool.Postgres qualified as Pool
 
 -- '(.=)' is hidden from the prelude (it re-exports lens's state-setter of the same name);
 -- we mean aeson's JSON pair constructor here.
+
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts)
 import Shomei.Prelude hiding (Context, (.=))
 import Shomei.Servant.Api (shomeiRoutesApi, shomeiThrottledRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
-import Shomei.Servant.Error (shomeiErrorFormatters)
+import Shomei.Servant.Error (shomeiErrorFormattersWithOAuthMounts)
 import Shomei.Servant.Middleware (problemMiddleware)
 import Shomei.Servant.Oidc (isAbsoluteHttpUrl)
 import Shomei.Servant.Seam qualified as Seam
@@ -82,8 +87,8 @@ import Shomei.Server.App (Env (..), runAppIO)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), loadConfig, loadNotifierSecretsFromEnv, toSweepConfig)
 import Shomei.Server.ConfigurationError (reportConfigurationError)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys, loadKekFromEnv, reloadKeys)
-import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, defaultBodyLimitBytes)
-import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddleware)
+import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddlewareWithOAuthMounts, defaultBodyLimitBytes)
+import Shomei.Server.Middleware.RateLimit (RateLimiter, newRateLimiterFor, rateLimitMiddlewareWithOAuthMounts)
 import Shomei.Server.Middleware.TrustedProxy (TrustedProxies, trustedProxyMiddleware, trustedProxyTexts)
 import Shomei.Server.Observability.Logging (requestLoggingMiddleware)
 import Shomei.Server.Observability.Metrics (Metrics, metricsEndpointMiddleware, metricsMiddleware, newMetrics)
@@ -197,18 +202,24 @@ installHostBackgroundTasks cfg settings env = do
 -- routes receive the same trusted-proxy attribution, request IDs, metrics, body cap, and
 -- per-client rate limiting as Shōmei's routes.
 hostMiddleware :: ShomeiConfig -> ServerSettings -> RateLimiter -> Metrics -> Middleware
-hostMiddleware cfg settings =
-  edgeMiddleware cfg.observabilityConfig settings.serverTrustedProxies
+hostMiddleware = hostMiddlewareWithOAuthMounts defaultOAuthMounts
+
+hostMiddlewareWithOAuthMounts :: OAuthMounts -> ShomeiConfig -> ServerSettings -> RateLimiter -> Metrics -> Middleware
+hostMiddlewareWithOAuthMounts mounts cfg settings =
+  edgeMiddlewareWithOAuthMounts mounts cfg.observabilityConfig settings.serverTrustedProxies
 
 -- | The WAI edge every host must install. The trusted-proxy rewrite is outermost so logging,
 -- metrics, the limiter, and Servant's 'RemoteHost' all observe the same client address.
 edgeMiddleware :: ObservabilityConfig -> TrustedProxies -> RateLimiter -> Metrics -> Middleware
-edgeMiddleware obs proxies limiter metrics =
+edgeMiddleware = edgeMiddlewareWithOAuthMounts defaultOAuthMounts
+
+edgeMiddlewareWithOAuthMounts :: OAuthMounts -> ObservabilityConfig -> TrustedProxies -> RateLimiter -> Metrics -> Middleware
+edgeMiddlewareWithOAuthMounts mounts obs proxies limiter metrics =
   trustedProxyMiddleware proxies
     . requestLoggingMiddleware obs
     . withMetrics
-    . bodyLimitMiddleware defaultBodyLimitBytes
-    . rateLimitMiddleware limiter
+    . bodyLimitMiddlewareWithOAuthMounts mounts defaultBodyLimitBytes
+    . rateLimitMiddlewareWithOAuthMounts mounts limiter
   where
     withMetrics
       | obs.metricsEnabled = metricsMiddleware metrics . metricsEndpointMiddleware metrics
@@ -516,9 +527,8 @@ millisToDiffTime ms = picosecondsToDiffTime (fromIntegral ms * 1_000_000_000)
 -- The served tree is 'shomeiRoutesApi' (EP-3): application routes under @\/v1@, JWKS and the
 -- probes at unversioned root paths.
 --
--- 'problemMiddleware' converts Servant's one un-formattable failure — the bare @405@ a method
--- mismatch raises below any 'ErrorFormatters' hook — into a problem document, so /every/ error
--- the process emits carries the same envelope.
+-- 'problemMiddleware' completes Servant's formatter hooks for method and negotiation failures.
+-- OAuth namespaces retain OAuth JSON; application routes use problem documents.
 application :: Env -> ProbeCheck -> ProbeCheck -> Application
 application env liveness readiness =
   problemMiddleware (serveWithContext shomeiRoutesApi (authContext senv) (shomeiRoutes senv liveness readiness))
@@ -527,12 +537,15 @@ application env liveness readiness =
 
 -- | The Servant 'Context' carrying the @AuthProtect "shomei-jwt"@ 'AuthHandler' (built from the
 -- seam env itself) and the 'ErrorFormatters' that render Servant's own body-parse,
--- url-parse, header-parse, and not-found failures as RFC 9457 problem documents. A host app
+-- url-parse, header-parse, and not-found failures according to their protocol namespace. A host app
 -- embedding 'ShomeiAPI' serves with this same context.
 authContext :: Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
-authContext senv =
+authContext = authContextWithOAuthMounts defaultOAuthMounts
+
+authContextWithOAuthMounts :: OAuthMounts -> Seam.Env -> Context '[AuthHandler Request AuthUser, ErrorFormatters]
+authContextWithOAuthMounts mounts senv =
   authHandler senv
-    :. shomeiErrorFormatters
+    :. shomeiErrorFormattersWithOAuthMounts mounts
     :. EmptyContext
 
 -- | Build EP-5's seam 'Seam.Env' from this server's assembly 'Env'. The port runner

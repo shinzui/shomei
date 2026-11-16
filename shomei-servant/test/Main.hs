@@ -52,7 +52,7 @@ import Network.HTTP.Client
     responseStatus,
     urlEncodedBody,
   )
-import Network.HTTP.Types (Header, statusCode)
+import Network.HTTP.Types (Header, status401, statusCode)
 import Network.HTTP.Types.URI (parseSimpleQuery, urlEncode)
 import Network.Wai (Application, Request)
 import Network.Wai qualified as Wai
@@ -62,10 +62,17 @@ import Servant
     ErrorFormatters,
     Get,
     Handler,
+    Header',
     JSON,
     NamedRoutes,
+    Post,
     Proxy (Proxy),
+    QueryParam',
+    ReqBody,
+    Required,
     Server,
+    ServerError (..),
+    Strict,
     serveWithContext,
     type (:<|>) ((:<|>)),
     type (:>),
@@ -95,6 +102,7 @@ import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailab
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, genSessionId, genUserId, idText, parseId)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..))
+import Shomei.OAuth.Boundary (oauthMounts)
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenExchange.Workflow (tokenExchangeSubjectScope)
@@ -104,8 +112,9 @@ import Shomei.Prelude ((^.))
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
-import Shomei.Servant.Error (ProblemDetails (..), problemTypeFor, shomeiErrorFormatters)
-import Shomei.Servant.Middleware (problemMiddleware)
+import Shomei.Servant.Error (ProblemDetails (..), problemTypeFor, shomeiErrorFormatters, shomeiErrorFormattersWithOAuthMounts)
+import Shomei.Servant.Middleware (problemMiddleware, problemMiddlewareWithOAuthMounts)
+import Shomei.Servant.OAuth qualified as OAuth
 import Shomei.Servant.OpenApi (openApiValue)
 import Shomei.Servant.Result (ApplicationResult (ApplicationInternal, ApplicationUnavailable), ProblemWithRetryAfter (..), applicationError)
 import Shomei.Servant.Seam (AppEffects, Env (..))
@@ -708,6 +717,7 @@ scenarioOAuthToken clientId port = do
   -- (6) No credentials at all is also invalid_client.
   noCreds <- postForm mgr port "/oauth/token" Nothing [("grant_type", "client_credentials")]
   assertOAuthError "no credentials" 401 "invalid_client" noCreds
+  headerValue "WWW-Authenticate" (headersOf noCreds) @?= Just "Basic realm=\"shomei\""
 
   -- (7) A scope outside allowed_scopes is invalid_scope, not a silent downgrade.
   badScope <-
@@ -1395,7 +1405,11 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "OpenAPI HTTP responses reuse the exact JSON document and media type" $ do
+    [ testCase "OAuth boundary uses safe errors and complete configured path segments" (scenarioOAuthBoundary env),
+      testCase "generic OAuth 401 does not select an authentication scheme" do
+        lookup "WWW-Authenticate" (OAuth.oauthError status401 "login_required" "login required").errHeaders @?= Nothing
+        lookup "WWW-Authenticate" OAuth.invalidClient.errHeaders @?= Just "Basic realm=\"shomei\"",
+      testCase "OpenAPI HTTP responses reuse the exact JSON document and media type" $ do
         e <- freshEnv
         testWithApplication (pure (app e)) $ \port -> do
           manager <- newManager defaultManagerSettings
@@ -1818,6 +1832,7 @@ scenarioAuthorizeProvenance ref jwk cfg issuedAt confId pubId svcId port = do
       refuse what token = do
         response <- getNoRedirect mgr port (authorizeUrl nonInteractiveParams) (bearer token)
         assertOAuthError what 401 "login_required" response
+        headerValue "WWW-Authenticate" (headersOf response) @?= Nothing
         headerValue "Location" (headersOf response) @?= Nothing
 
   interactive <- getNoRedirect mgr port (authorizeUrl interactiveParams) (bearer userToken)
@@ -2316,6 +2331,7 @@ scenarioAuthorizeNoLoginUrl confId port = do
       []
   assertOAuthError "unauthenticated with no loginUrl" 401 "login_required" r
   headerValue "Location" (headersOf r) @?= Nothing
+  headerValue "WWW-Authenticate" (headersOf r) @?= Nothing
 
 -- | @\/oauth\/authorize@ authenticates outside Servant's 'Authenticated' combinator, through
 -- 'resolveAuthUser'. In token-and-session mode it must treat a revoked session as anonymous and
@@ -2657,6 +2673,10 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   assertBool
     "userinfo authentication failures stay outside the problem envelope"
     (headerValue "Content-Type" noTokenHeaders /= Just "application/problem+json")
+
+  invalidUi <- getRaw mgr port "/oauth/userinfo" [("Authorization", "Bearer invalid-sentinel")]
+  assertOAuthError "invalid UserInfo token" 401 "invalid_token" invalidUi
+  headerValue "WWW-Authenticate" (headersOf invalidUi) @?= Just "Bearer realm=\"shomei\", error=\"invalid_token\""
 
   -- introspection requires client auth; without it, 401.
   noAuth <- postForm mgr port "/oauth/introspect" Nothing [("token", Text.encodeUtf8 accessToken)]
@@ -3919,3 +3939,48 @@ scenarioSessionPaging ref port = do
   allIds <- walk Nothing []
   length allIds @?= 206
   Set.size (Set.fromList allIds) @?= 206
+
+-- A narrow typed route exercises both parsing hooks without involving credentials.
+type OAuthParseAPI =
+  "identity" :> "oauth" :> "parse" :> QueryParam' '[Required, Strict] "number" Int :> Header' '[Required, Strict] "X-Number" Int :> Get '[JSON] Int
+    :<|> "identity" :> "oauth" :> "body" :> ReqBody '[JSON] Int :> Post '[JSON] Int
+
+scenarioOAuthBoundary :: Env -> IO ()
+scenarioOAuthBoundary env = do
+  mounts <- either (fail . T.unpack) pure (oauthMounts [["oauth"], ["identity", "oauth"]])
+  let ctx = authHandler env :. shomeiErrorFormattersWithOAuthMounts mounts :. EmptyContext
+      mounted =
+        problemMiddlewareWithOAuthMounts mounts $
+          serveWithContext
+            (Proxy @(TestAPI :<|> "identity" :> TestAPI :<|> OAuthParseAPI))
+            ctx
+            (testServer env :<|> testServer env :<|> ((\n h -> pure (n + h)) :<|> pure))
+  testWithApplication (pure mounted) \port -> do
+    mgr <- newManager defaultManagerSettings
+    forM_ ["/oauth", "/identity/oauth"] \prefix -> do
+      unknown <- getRaw mgr port (prefix <> "/unknown") []
+      assertOAuthError "namespace not found" 404 "invalid_request" unknown
+      wrongMethod <- getRaw mgr port (prefix <> "/token") []
+      assertOAuthError "method mismatch" 405 "invalid_request" wrongMethod
+      forM_ [("Accept", "application/xml", 406), ("Content-Type", "application/xml", 415)] \(name, value, expected) -> do
+        initial <- parseRequest ("http://127.0.0.1:" <> show port <> prefix <> "/token")
+        response <- httpLbs initial {method = "POST", requestHeaders = [(name, value)], requestBody = RequestBodyLBS "secret-sentinel"} mgr
+        statusCode (responseStatus response) @?= expected
+        assertBool "JSON errors ignore unacceptable Accept" (maybe False (BS.isPrefixOf "application/json") (lookup "Content-Type" (responseHeaders response)))
+        assertBool "no parser diagnostics" (not ("secret-sentinel" `BS.isInfixOf` LBS.toStrict (responseBody response)))
+      duplicate <- getRaw mgr port (prefix <> "/token") [("Authorization", "secret-sentinel"), ("Authorization", "second")]
+      assertOAuthError "duplicate authentication" 400 "invalid_request" duplicate
+    forM_ ["/oauthish/token", "/reports/oauth/token"] \path -> do
+      response <- getRaw mgr port path []
+      assertProblem "outside configured namespaces" 404 "not_found" response
+      duplicate <- getRaw mgr port path [("Authorization", "one"), ("Authorization", "two")]
+      assertProblem "outside duplicate header" 401 "token_invalid" duplicate
+    forM_ [("/identity/oauth/parse?number=secret-sentinel", [("X-Number", "1")]), ("/identity/oauth/parse?number=1", [("X-Number", "secret-sentinel")])] \(path, headers) -> do
+      response <- getRaw mgr port path headers
+      assertOAuthError "safe query/header parsing" 400 "invalid_request" response
+      (dig ["error_description"] =<< bodyOf response) @?= Just (String "request could not be parsed")
+
+    initial <- parseRequest ("http://127.0.0.1:" <> show port <> "/identity/oauth/body")
+    malformed <- httpLbs initial {method = "POST", requestHeaders = [("Content-Type", "application/json")], requestBody = RequestBodyLBS "\"secret-sentinel\""} mgr
+    statusCode (responseStatus malformed) @?= 400
+    (Aeson.decode (responseBody malformed) :: Maybe OAuth.OAuthErrorResponse) @?= Just (OAuth.OAuthErrorResponse "invalid_request" "request could not be parsed")

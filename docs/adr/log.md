@@ -1,6 +1,15 @@
 # Bundle Update Log
 
 ## 2026-11-16
+
+* **Update**: ADR-27 includes non-JSON 404 normalization for host Raw/static fallbacks while preserving existing OAuth JSON without inspecting response bodies.
+
+
+* **Update**: ADR-17 clarifies that embedded hosts reuse one OAuthMounts value across context, response normalization and outer middleware.
+
+
+* **Addition**: ADR-27 assigns OAuth error ownership to shared namespace policy across routing and middleware, with explicit challenge boundaries.
+
 * **Amendment**: ADR-8 requires typed safe single-line configuration rejection and captured converter diagnostics; ADR-20 clarifies keyless offline no-op conversion with version checks.
 
 ## 2026-11-05

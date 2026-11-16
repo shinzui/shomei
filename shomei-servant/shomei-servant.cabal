@@ -77,6 +77,7 @@ library
     Shomei.Mfa.Handler
     Shomei.Mfa.Result
     Shomei.OAuth.Api
+    Shomei.OAuth.Boundary
     Shomei.OAuth.Handler
     Shomei.OAuth.Result
     Shomei.Passkey.Api

@@ -52,7 +52,8 @@ type OAuthErrorHeaders =
   '[ DescHeader "Cache-Control" "OAuth responses are not cacheable" Text,
      DescHeader "Pragma" "OAuth responses are not cacheable" Text,
      OptHeader (DescHeader "WWW-Authenticate" "Client authentication challenge" Text),
-     OptHeader (DescHeader "Retry-After" "Seconds until retry" Natural)
+     OptHeader (DescHeader "Retry-After" "Seconds until retry" Natural),
+     OptHeader (DescHeader "Allow" "Allowed HTTP methods" Text)
    ]
 
 data OAuthErrorWithHeaders = OAuthErrorWithHeaders
@@ -60,32 +61,35 @@ data OAuthErrorWithHeaders = OAuthErrorWithHeaders
     oauthCacheControl :: !Text,
     oauthPragma :: !Text,
     oauthAuthenticate :: !(Maybe Text),
-    oauthRetryAfter :: !(Maybe Natural)
+    oauthRetryAfter :: !(Maybe Natural),
+    oauthAllow :: !(Maybe Text)
   }
   deriving stock (Eq, Show, Generic)
 
-instance AsHeaders '[Text, Text, Maybe Text, Maybe Natural] OAuthErrorResponse OAuthErrorWithHeaders where
+instance AsHeaders '[Text, Text, Maybe Text, Maybe Natural, Maybe Text] OAuthErrorResponse OAuthErrorWithHeaders where
   toHeaders response =
-    ( I response.oauthCacheControl :* I response.oauthPragma :* I response.oauthAuthenticate :* I response.oauthRetryAfter :* Nil,
+    ( I response.oauthCacheControl :* I response.oauthPragma :* I response.oauthAuthenticate :* I response.oauthRetryAfter :* I response.oauthAllow :* Nil,
       response.oauthErrorBody
     )
-  fromHeaders (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* Nil, oauthErrorBody) =
-    OAuthErrorWithHeaders {oauthErrorBody, oauthCacheControl, oauthPragma, oauthAuthenticate, oauthRetryAfter}
+  fromHeaders (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* I oauthAllow :* Nil, oauthErrorBody) =
+    OAuthErrorWithHeaders {oauthErrorBody, oauthCacheControl, oauthPragma, oauthAuthenticate, oauthRetryAfter, oauthAllow}
 
 -- servant 0.20.3's generic header decoder rejects absent optional fields. OAuth explicitly
 -- permits WWW-Authenticate and Retry-After to be absent, so preserve that contract in clients.
-instance {-# OVERLAPPING #-} ServantHeaders OAuthErrorHeaders '[Text, Text, Maybe Text, Maybe Natural] where
-  constructHeaders (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* Nil) =
+instance {-# OVERLAPPING #-} ServantHeaders OAuthErrorHeaders '[Text, Text, Maybe Text, Maybe Natural, Maybe Text] where
+  constructHeaders (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* I oauthAllow :* Nil) =
     requiredHeader "Cache-Control" oauthCacheControl
       <> requiredHeader "Pragma" oauthPragma
       <> optionalHeader "WWW-Authenticate" oauthAuthenticate
       <> optionalHeader "Retry-After" oauthRetryAfter
+      <> optionalHeader "Allow" oauthAllow
   extractHeaders headers = do
     oauthCacheControl <- extractRequiredHeader "Cache-Control" headers
     oauthPragma <- extractRequiredHeader "Pragma" headers
     oauthAuthenticate <- extractOptionalHeader "WWW-Authenticate" headers
     oauthRetryAfter <- extractOptionalHeader "Retry-After" headers
-    pure (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* Nil)
+    oauthAllow <- extractOptionalHeader "Allow" headers
+    pure (I oauthCacheControl :* I oauthPragma :* I oauthAuthenticate :* I oauthRetryAfter :* I oauthAllow :* Nil)
 
 requiredHeader :: (ToHttpApiData a) => HTTP.HeaderName -> a -> [HTTP.Header]
 requiredHeader name value = [(name, toHeader value)]
@@ -114,6 +118,11 @@ type OAuthErrorResponses =
   '[ WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 400 "OAuth request rejected" OAuthErrorResponse),
      WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 401 "OAuth authentication failed" OAuthErrorResponse),
      WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 404 "OAuth resource not found" OAuthErrorResponse),
+     WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 405 "OAuth method not allowed" OAuthErrorResponse),
+     WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 406 "OAuth response representation not acceptable" OAuthErrorResponse),
+     WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 413 "OAuth request body too large" OAuthErrorResponse),
+     WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 415 "OAuth request media type unsupported" OAuthErrorResponse),
+     WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 429 "OAuth request throttled" OAuthErrorResponse),
      WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 500 "OAuth server error" OAuthErrorResponse),
      WithHeaders OAuthErrorHeaders OAuthErrorWithHeaders (RespondAs JSON 503 "OAuth dependency unavailable" OAuthErrorResponse)
    ]
@@ -127,6 +136,11 @@ data OAuthResult a
   | OAuthBadRequest !OAuthErrorWithHeaders
   | OAuthAuthenticationFailed !OAuthErrorWithHeaders
   | OAuthNotFound !OAuthErrorWithHeaders
+  | OAuthMethodNotAllowed !OAuthErrorWithHeaders
+  | OAuthNotAcceptable !OAuthErrorWithHeaders
+  | OAuthPayloadTooLarge !OAuthErrorWithHeaders
+  | OAuthUnsupportedMediaType !OAuthErrorWithHeaders
+  | OAuthTooManyRequests !OAuthErrorWithHeaders
   | OAuthInternal !OAuthErrorWithHeaders
   | OAuthUnavailable !OAuthErrorWithHeaders
   deriving stock (Eq, Show, Generic, Functor)
@@ -143,24 +157,34 @@ instance AsUnion (WithHeaders headers a response ': OAuthErrorResponses) (OAuthR
   toUnion = oauthToUnion
   fromUnion = oauthFromUnion
 
-oauthToUnion :: OAuthResult a -> NS I '[a, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders]
+oauthToUnion :: OAuthResult a -> NS I '[a, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders]
 oauthToUnion = \case
   OAuthSuccess value -> Z (I value)
   OAuthBadRequest value -> S (Z (I value))
   OAuthAuthenticationFailed value -> S (S (Z (I value)))
   OAuthNotFound value -> S (S (S (Z (I value))))
-  OAuthInternal value -> S (S (S (S (Z (I value)))))
-  OAuthUnavailable value -> S (S (S (S (S (Z (I value))))))
+  OAuthMethodNotAllowed value -> S (S (S (S (Z (I value)))))
+  OAuthNotAcceptable value -> S (S (S (S (S (Z (I value))))))
+  OAuthPayloadTooLarge value -> S (S (S (S (S (S (Z (I value)))))))
+  OAuthUnsupportedMediaType value -> S (S (S (S (S (S (S (Z (I value))))))))
+  OAuthTooManyRequests value -> S (S (S (S (S (S (S (S (Z (I value)))))))))
+  OAuthInternal value -> S (S (S (S (S (S (S (S (S (Z (I value))))))))))
+  OAuthUnavailable value -> S (S (S (S (S (S (S (S (S (S (Z (I value)))))))))))
 
-oauthFromUnion :: NS I '[a, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders] -> OAuthResult a
+oauthFromUnion :: NS I '[a, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders, OAuthErrorWithHeaders] -> OAuthResult a
 oauthFromUnion = \case
   Z (I value) -> OAuthSuccess value
   S (Z (I value)) -> OAuthBadRequest value
   S (S (Z (I value))) -> OAuthAuthenticationFailed value
   S (S (S (Z (I value)))) -> OAuthNotFound value
-  S (S (S (S (Z (I value))))) -> OAuthInternal value
-  S (S (S (S (S (Z (I value)))))) -> OAuthUnavailable value
-  S (S (S (S (S (S impossible))))) -> case impossible of {}
+  S (S (S (S (Z (I value))))) -> OAuthMethodNotAllowed value
+  S (S (S (S (S (Z (I value)))))) -> OAuthNotAcceptable value
+  S (S (S (S (S (S (Z (I value))))))) -> OAuthPayloadTooLarge value
+  S (S (S (S (S (S (S (Z (I value)))))))) -> OAuthUnsupportedMediaType value
+  S (S (S (S (S (S (S (S (Z (I value))))))))) -> OAuthTooManyRequests value
+  S (S (S (S (S (S (S (S (S (Z (I value)))))))))) -> OAuthInternal value
+  S (S (S (S (S (S (S (S (S (S (Z (I value))))))))))) -> OAuthUnavailable value
+  S (S (S (S (S (S (S (S (S (S (S (impossible))))))))))) -> case impossible of {}
 
 type AuthorizeHeaders =
   '[ DescHeader "Location" "Redirect target" Text,
@@ -230,12 +254,18 @@ oauthServerErrorResult err = constructor response
           oauthCacheControl = headerText "Cache-Control" "no-store",
           oauthPragma = headerText "Pragma" "no-cache",
           oauthAuthenticate = optionalHeaderText "WWW-Authenticate",
-          oauthRetryAfter = optionalHeaderText "Retry-After" >>= readMaybe . Text.unpack
+          oauthRetryAfter = optionalHeaderText "Retry-After" >>= readMaybe . Text.unpack,
+          oauthAllow = optionalHeaderText "Allow"
         }
     constructor = case err.errHTTPCode of
       400 -> OAuthBadRequest
       401 -> OAuthAuthenticationFailed
       404 -> OAuthNotFound
+      405 -> OAuthMethodNotAllowed
+      406 -> OAuthNotAcceptable
+      413 -> OAuthPayloadTooLarge
+      415 -> OAuthUnsupportedMediaType
+      429 -> OAuthTooManyRequests
       503 -> OAuthUnavailable
       _ -> OAuthInternal
     optionalHeaderText name = TextEncoding.decodeUtf8 <$> lookup name err.errHeaders

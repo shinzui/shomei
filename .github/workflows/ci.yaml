@@ -64,6 +64,9 @@ jobs:
       - name: Build embedded en example
         run: nix develop --command just build-embedded-with-en
 
+      - name: Validate packaged OAuth contract
+        run: nix develop --command just test-oauth-contract
+
       - name: Run all test suites
         run: nix develop --command cabal test all --test-options='-j2'
 

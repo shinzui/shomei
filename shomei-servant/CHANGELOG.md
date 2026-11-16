@@ -4,6 +4,10 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- OAuth namespaces now retain OAuth JSON through parsing, routing and middleware errors. Authentication boundaries own challenges; authorize login_required has none. **Source compatibility:** OAuthResult adds 405/406/413/415/429 constructors and OAuthErrorWithHeaders adds optional oauthAllow; update exhaustive matches and record construction. Additive mount-aware formatter and response middleware APIs preserve default entry points.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series.

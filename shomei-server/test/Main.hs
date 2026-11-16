@@ -3,6 +3,7 @@ module Main (main) where
 import Shomei.Server.E2ESpec qualified as E2ESpec
 import Shomei.Server.MiddlewareSpec qualified as MiddlewareSpec
 import Shomei.Server.NotifySpec qualified as NotifySpec
+import Shomei.Server.OAuthContractSpec qualified as OAuthContract
 import Shomei.Server.RuntimeSpec qualified as RuntimeSpec
 import Shomei.Server.SupervisorSpec qualified as SupervisorSpec
 import Test.Tasty (defaultMain, testGroup)
@@ -12,5 +13,5 @@ main =
   defaultMain
     ( testGroup
         "shomei-server"
-        [RuntimeSpec.tests, NotifySpec.tests, SupervisorSpec.tests, MiddlewareSpec.tests, E2ESpec.tests]
+        [OAuthContract.tests, RuntimeSpec.tests, NotifySpec.tests, SupervisorSpec.tests, MiddlewareSpec.tests, E2ESpec.tests]
     )

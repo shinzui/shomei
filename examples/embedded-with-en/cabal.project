@@ -52,22 +52,17 @@ source-repository-package
 
 -- jose 0.13 (crypton + ram) is published on Hackage; no source pin is required.
 
--- the shinzui/webauthn fork builds the library against crypton >= 1.1.0 + jose 0.13.
-source-repository-package
-  type: git
-  location: https://github.com/shinzui/webauthn.git
-  tag: c274e23a5e31aac8932bac6398b65e8bca584a99
-
+-- Released WebAuthn configuration mirrored from the root project.
+-- mori://tweag/webauthn/packages/webauthn
 package webauthn
   tests: False
   benchmarks: False
 
 allow-newer:
-  webauthn:*
+  webauthn-0.12.0.0:time
 
--- Match the root workspace's floor for CVE-2026-9648. Relaxing webauthn's historical upper
--- bound must not let the solver select an X.509 validator without NameConstraints enforcement.
 constraints:
   crypton-x509-validation >= 1.9.1
+  , time < 1.15
 
 -- openapi-hs / servant-openapi-hs need no pins: both are on Hackage as of 5.0.0.

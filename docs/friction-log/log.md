@@ -1,5 +1,11 @@
 # Bundle Update Log
 
+## 2026-11-16
+
+* **Update**: FRIC-5 resolved: Removed the stale fork pin and mirrored the root narrow time relaxation; the required embedding build succeeds.
+
+* **Addition**: FRIC-5 records detour tooling friction with mori://shinzui/shomei: Separate embedding project retained an obsolete WebAuthn pin
+
 ## 2026-11-05
 * **Update**: FRIC-4 accepted: Accept the managed local pool while released migration and harness packages require the older driver generation.
 * **Update**: FRIC-3 accepted: Accept the tested server deadline workaround; the upstream cleanup ordering remains.

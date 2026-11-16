@@ -91,3 +91,24 @@ password policy, token transport, session-check mode, signing algorithm, notifie
 observability, WebAuthn, delegation, and machine-token sub-records). `Shomei.Server.Config`
 assembles the standalone server subset from defaults, an optional typed Dhall file
 (`$SHOMEI_CONFIG`), and environment variables — see [deployment.md](deployment.md).
+
+## OAuth mount policy
+
+`Shomei.OAuth.Boundary.oauthMounts` validates full decoded path prefixes. For an embedding under
+`/identity`, construct `oauthMounts [["identity", "oauth"]]`, handle its `Either` result, and reuse
+the resulting value in `authContextWithOAuthMounts`, `problemMiddlewareWithOAuthMounts` around
+`serveWithContext`, and `hostMiddlewareWithOAuthMounts` around the entire application. The
+standalone/default wrappers use exactly `/oauth`. Empty mounts and empty segments are rejected;
+`oauthMounts []` explicitly disables namespace ownership. `/oauthish` and `/reports/oauth` never
+match `/oauth`. Register every OAuth mount if serving more than one namespace.
+
+Servant formatters match the decoded original `rawPathInfo` because routing may already have
+consumed `pathInfo`. Outer middleware matches the original decoded `pathInfo`. OAuth errors use
+safe fixed descriptions, JSON and no-store/no-cache headers. 413 `invalid_request` and 429
+`temporarily_unavailable` (with Retry-After) are operational extensions. Basic belongs to client
+authentication, Bearer to UserInfo, and authorize's login-required 401 has no challenge.
+
+Derive limiter eligibility from the host API's `RateLimited` markers, including its prefixes;
+namespace ownership never adds throttled routes. The embedding example shares one mount value
+across all three assembly sites. The boundary excludes malformed HTTP rejected before WAI,
+socket admission failures, disconnected clients and reverse-proxy-generated responses.

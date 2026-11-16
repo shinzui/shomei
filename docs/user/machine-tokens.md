@@ -67,6 +67,14 @@ OAuth failures use RFC 6749 error objects rather than Problem Details:
 {"error":"invalid_client","error_description":"client authentication failed"}
 ```
 
+Every OAuth error carries `Cache-Control: no-store` and `Pragma: no-cache`. Client-authentication
+failures use `401 invalid_client` with `WWW-Authenticate: Basic realm="shomei"`, including required
+absent or body-supplied credentials. An unrelated grant rejection has no challenge. Oversized
+bodies use 413 `invalid_request`; edge throttling uses 429 `temporarily_unavailable` with
+`Retry-After: 60` and no challenge. These operational extensions preserve HTTP status and use
+the OAuth JSON envelope. [OIDC errors](oidc.md#error-and-challenge-contract) document routing
+errors and the lower-level/proxy exclusions.
+
 Unknown client ids, wrong secrets, revoked accounts, and inactive backing users are deliberately
 indistinguishable. Successful issuance writes a `service_token_issued` audit event; lifecycle
 operations write `service_account_created`, `service_account_secret_rotated`, and

@@ -272,14 +272,11 @@ spec = do
                   health503Witness `seq`
                     True `shouldBe` True
 
-  describe "EP-4: /oauth/token speaks RFC 6749 behind a problem-details edge throttle" $ do
+  describe "OAuth errors include the HTTP boundary" $ do
     it "declares the OAuthErrorResponse schema" $
       (lookupTop "components" >>= field "schemas" >>= field "OAuthErrorResponse") `shouldSatisfy` isJust
 
-    -- Handler-owned failures stay in the shape a stock OAuth2 client parses. The sole exception
-    -- is 429: the edge limiter answers before routing and therefore uses the shared problem
-    -- document (with Retry-After), exactly as the runtime middleware does.
-    it "documents only the edge 429 as problem+json on /oauth/token" $
+    it "documents OAuth JSON for every token error" $
       [ Key.toText status
       | (path, Object item) <- KM.toList paths,
         path == "/oauth/token",
@@ -287,10 +284,22 @@ spec = do
         (status, resp) <- responsesOf op,
         isProblemResponse resp
       ]
-        `shouldBe` ["429"]
+        `shouldBe` []
 
     it "documents the protocol-owned error statuses" $
-      responseStatusesAt "/oauth/token" `shouldBe` ["200", "400", "401", "404", "429", "500", "503"]
+      responseStatusesAt "/oauth/token" `shouldBe` ["200", "400", "401", "404", "405", "406", "413", "415", "429", "500", "503"]
+
+    it "keeps OAuth schemas and cache/retry/challenge metadata for operational errors" $ do
+      forM_ ["405", "406", "413", "415", "429"] \status -> do
+        let response = KM.lookup "/oauth/token" paths >>= field "post" >>= field "responses" >>= field status
+        (response >>= field "content" >>= field "application/json" >>= field "schema" >>= field "$ref")
+          `shouldBe` Just (String "#/components/schemas/OAuthErrorResponse")
+        forM_ ["Cache-Control", "Pragma", "WWW-Authenticate", "Retry-After", "Allow"] \header ->
+          (response >>= field "headers" >>= field header) `shouldSatisfy` isJust
+        (response >>= field "headers" >>= field "WWW-Authenticate" >>= field "required") `shouldNotBe` Just (Bool True)
+      let app429 = KM.lookup "/v1/auth/login" paths >>= field "post" >>= field "responses" >>= field "429"
+      (app429 >>= field "content" >>= field "application/problem+json") `shouldSatisfy` isJust
+      (app429 >>= field "content" >>= field "application/json") `shouldBe` Nothing
 
   describe "EP-5: the OIDC discovery document is on the OAuth side of the envelope boundary" $ do
     -- Reached by OIDC tooling, so its "provider disabled" refusal must be a shape that tooling
@@ -336,7 +345,7 @@ spec = do
     -- Every OTHER authorize failure -- bad response_type, PKCE policy, disallowed scope -- is a
     -- 302 back to the validated redirect_uri, so it is not a status this operation declares.
     it "documents only protocol statuses rather than redirect query error values" $
-      responseStatusesAt "/oauth/authorize" `shouldBe` ["302", "400", "401", "404", "500", "503"]
+      responseStatusesAt "/oauth/authorize" `shouldBe` ["302", "400", "401", "404", "405", "406", "413", "415", "429", "500", "503"]
 
   describe "EP-3: the error surface cannot drift from the runtime catalog" $ do
     it "declares the ProblemDetails schema with the RFC 9457 profile members" $

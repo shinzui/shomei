@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-11-16T05:08:40Z
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-16T14:54:43Z
+      mode: "implement"
+      note: "Implement protocol-owned OAuth errors across handlers, middleware, clients and live server checks"
 ---
 
 
@@ -26,22 +32,28 @@ Fix [GitHub issue #7](https://github.com/shinzui/shomei/issues/7): OAuth clients
 
 After implementation, an oversized `POST /oauth/token` returns HTTP 413 with `error: "invalid_request"`; a throttled request returns HTTP 429 with `error: "temporarily_unavailable"` and `Retry-After`. Both carry `application/json` and non-cacheable response headers. `GET /oauth/authorize` returning `401 login_required` no longer advertises Basic authentication. Application endpoints such as `/v1/auth/login` continue to use RFC 9457 problem documents.
 
-This is a plan creation deliverable. Implementation is not yet performed. The plan addresses application-controlled HTTP responses; malformed HTTP rejected by Warp before WAI, socket admission failures, disconnected clients, and reverse-proxy-generated responses remain explicitly outside this application contract.
+The plan addresses application-controlled HTTP responses; malformed HTTP rejected by Warp before WAI, socket admission failures, disconnected clients, and reverse-proxy-generated responses remain explicitly outside this application contract.
 
 
 ## Progress
 
 
-- [ ] Milestone 1: Authentication challenges follow the authentication boundary; authorize, client authentication, and UserInfo regression tests pass.
-- [ ] Milestone 2: OAuth middleware and routing rejections use one protocol policy in standalone and mounted applications, with bounded body consumption preserved.
-- [ ] Milestone 3: Typed OAuth clients and generated OpenAPI agree with the actual rejection statuses, bodies, and headers.
-- [ ] Milestone 4: The executable passes live OAuth contract checks, documentation explains the policy, and final validation passes.
+- [x] Milestone 1 (2026-11-16): Authentication challenges follow the authentication boundary; authorize, client authentication, and UserInfo regression tests pass. The no-login regression failed with Basic on the baseline and passes after explicit challenge ownership (50 Servant tests).
+- [x] Milestone 2 (2026-11-16): OAuth middleware and routing rejections use one protocol policy in standalone and mounted applications, with bounded body consumption preserved. Focused Servant and server suites pass, including mounted routing, exact-cap/chunk reads, downstream suppression and no double response.
+- [x] Milestone 3 (2026-11-16): Typed OAuth clients and generated OpenAPI agree with the actual rejection statuses, bodies, and headers. Generated token calls return typed 413/429 through the full host assembly, issuance and 400/401/503 remain consumable, all error/header alternatives round-trip, and two OpenAPI generations are byte-identical.
+- [x] Milestone 4 (2026-11-16): The packaged executable passes both Hurl suites; documentation, ADR-27 and changelogs describe the policy. Final build, all tests, both embedding builds, formatting, host flake checks, strict ADR/friction validation and whitespace checks pass.
 
 
 ## Surprises & Discoveries
 
+2026-11-16: A host `Raw` static fallback can produce 404 without invoking Servant's not-found formatter. Namespace response normalization therefore also covers non-JSON 404 responses. Existing OAuth JSON (including handler-owned provider-disabled errors) passes through without body inspection. This is needed for the existing unknown-path criterion in the embedding example.
+
+2026-11-16: Servant consumes `pathInfo` while routing, including before invoking some error formatters. The first mounted 404 regression returned problem JSON. Formatters now decode the unchanged `rawPathInfo` before applying the shared segment matcher; the mounted 400/404 checks pass. Outer middleware continues matching its original decoded `pathInfo`.
+
 
 ## Decision Log
+
+2026-11-16: Repair the separate en embedding project's stale WebAuthn mirror to satisfy the existing final embedding-build criterion. Mirror root settings (released 0.12, narrow time relaxation and time ceiling); no root dependency upgrade. The registry and upstream v0.12.0.0 tag agree. See FRIC-5 in `docs/friction-log/`.
 
 
 2026-11-15: Correct the response behavior rather than merely documenting the current 413/429 problem-document exception. Preserve the useful HTTP statuses and resource limits. Use `invalid_request` for 413 and `temporarily_unavailable` for 429. These status/code combinations are Shōmei's documented operational extension using the OAuth error envelope, not a claim that RFC 6749 section 5.2 prescribes 413 or 429.
@@ -54,6 +66,16 @@ This is a plan creation deliverable. Implementation is not yet performed. The pl
 
 
 ## Outcomes & Retrospective
+
+Completed 2026-11-16. OAuth challenges now belong to their authentication boundary. One segment-safe namespace policy supplies safe JSON errors across parsing, routing, Raw/static fallbacks, body limits and throttling. Existing application problem documents, resource limits, limiter eligibility and successful OAuth workflows remain intact. The default exported middleware signatures are preserved; additive mount-aware variants support embedding.
+
+Acceptance evidence: `nix develop --command cabal build all` and `nix develop --command env TASTY_NUM_THREADS=1 cabal test all --test-show-details=failures -j1` exit zero. The final Servant suite has 50 passing tests, the OpenAPI suite has 66 passing examples, and the server suite has 62 passing tests, including packaged Hurl through the ordinary test runner. Generated-client checks prove real 413/429 typed results, successful issuance and existing 400/401/503 decoding, every union alternative, and absent/present optional headers. `just test-oauth-contract` separately passes against the executable with both normal and low-burst server lifetimes. Two generated OpenAPI documents are byte-identical and the checked-in artifact comes from that generation.
+
+Both embedding applications build, including `nix develop --command just build-embedded-with-en`. `nix fmt -- --fail-on-change`, `nix flake check` on aarch64-darwin, strict ADR and friction profile validation, and `git diff --check` pass. Flake checks cover formatting/pre-commit; the executable/Hurl proof is explicit and does not depend on Nix package tests.
+
+[ADR-27](../adr/0027-oauth-namespaces-own-errors-through-the-http-boundary.md) captures protocol ownership, fixed descriptions, operational extension statuses, challenge selection, original-path matching, Raw fallback normalization and explicit exclusions. [ADR-17](../adr/0017-embedded-hosts-install-the-complete-runtime-boundary.md) now requires the shared mount value across embedding assembly sites. Public result constructors and the optional `oauthAllow` record field have source-compatibility implications documented in package changelogs.
+
+[FRIC-5](../friction-log/5-separate-embedding-project-retained-an-obsolete-webauthn-pin.md) is resolved: the separate example mirrors the root released WebAuthn configuration and builds successfully. No friction entries remain logged under this plan. No implementation work remains.
 
 
 ## Context and Orientation
@@ -104,7 +126,7 @@ Provide mount-aware variants of the error formatters and `problemMiddleware`, an
 
 At the points where 413 and 429 are created, select OAuth JSON for a registered OAuth namespace and the existing problem response elsewhere. OAuth 413 is `invalid_request` with a constant oversized-request description; OAuth 429 is `temporarily_unavailable` with a constant throttling description and the existing `Retry-After: 60`. Neither has a challenge. Both carry `Cache-Control: no-store` and `Pragma: no-cache`. Do not alter admission decisions, bucket bookkeeping, cap size, middleware order, chunk consumption, or retry timing in this issue.
 
-Make body/query/header parsing failures inside the namespace return 400 `invalid_request` with fixed descriptions that do not echo submitted secrets or parser diagnostics. Use the same mount selector for duplicate Authorization headers and unknown-route 404 responses. In the response middleware, normalize Servant's 405/406/415 within the OAuth namespace to JSON `invalid_request`, preserving their original HTTP status and semantic headers such as `Allow`. Replace stale content representation headers when changing the body. These operations are invalid HTTP/protocol requests, not authentication failures. Preserve existing protocol bodies and redirects; never consume a response stream or decode arbitrary downstream bodies to guess their protocol. A request with an unacceptable `Accept` header still gets a JSON error with 406, as the documented error contract.
+Make body/query/header parsing failures inside the namespace return 400 `invalid_request` with fixed descriptions that do not echo submitted secrets or parser diagnostics. Use the same mount selector for duplicate Authorization headers and unknown-route 404 responses. In the response middleware, normalize non-JSON 404 (including a host Raw/static fallback) and Servant's 405/406/415 within the OAuth namespace to JSON `invalid_request`, preserving their original HTTP status and semantic headers such as `Allow`. Replace stale content representation headers when changing the body. These operations are invalid HTTP/protocol requests, not authentication failures. Preserve existing protocol bodies and redirects; never consume a response stream or decode arbitrary downstream bodies to guess their protocol. A request with an unacceptable `Accept` header still gets a JSON error with 406, as the documented error contract.
 
 Extend `shomei-server/test/Shomei/Server/MiddlewareSpec.hs` with deterministic known-length and chunked-body checks, cap equality, no body reads for immediate rejection, no double response, and a downstream-call counter for rate rejection. Extend `shomei-servant/test/Main.hs` for parsing, routing, duplicate-header, and mounted namespace behavior. Include `/identity/oauth/token`, `/oauth/unknown`, `/oauthish/token`, and a host path such as `/reports/oauth/token`; only configured namespaces get the OAuth policy. Execute one representative full `hostMiddleware` plus Servant token request early, then add the other cases once response headers and routing agree.
 
@@ -232,3 +254,5 @@ The main interface changes are the new OAuth result alternatives and any added o
 The OAuth body remains exactly the established `error` and `error_description` representation; no application `ProblemDetails` fields or nested wrappers are added. HTTP status is independent of authentication scheme. Shared header rendering preserves cache policy and optional challenge/retry/Allow fields without duplicates. Existing grant workflows and persistence interfaces do not change.
 
 Use the existing Servant, WAI, Aeson, `openapi-hs`, and `servant-openapi-hs` dependencies. Relevant package identities include [Servant](mori://haskell-servant/servant/packages/servant) and [servant-openapi-hs](mori://shinzui/servant-openapi-hs/packages/servant-openapi-hs). This plan selects no new Haskell dependency bounds or compatibility workaround. Hurl is a development/CI executable provided by the existing Nix lock, not a library dependency. If the packaged test needs a process-control library not already declared, locate it with Mori and verify its released API before adding the narrow test dependency.
+
+Revision note (2026-11-16): Implementation extends namespace response normalization to non-JSON 404 from host Raw/static fallbacks, satisfying the existing mounted unknown-path criterion, and repairs the stale separate embedding dependency mirror required by final acceptance.

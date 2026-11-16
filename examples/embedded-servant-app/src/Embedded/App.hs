@@ -8,6 +8,7 @@
 -- A token minted by @\/v1\/auth\/login@ is therefore accepted by @\/projects@.
 module Embedded.App
   ( AppAPI,
+    embeddedOAuthMounts,
     Project (..),
     embeddedApplication,
     embeddedApplicationWith,
@@ -30,12 +31,14 @@ import Servant.Server (Handler)
 import Servant.Server.StaticFiles (serveDirectoryWebApp)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Id (idText)
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts)
 import Shomei.Prelude
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser (..), Authenticated)
+import Shomei.Servant.Middleware (problemMiddlewareWithOAuthMounts)
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.Server.App (Env)
-import Shomei.Server.Boot (authContext, seamEnv)
+import Shomei.Server.Boot (authContextWithOAuthMounts, seamEnv)
 import System.IO (hPutStrLn, stderr)
 
 -- | A trivial demo business type the host app owns.
@@ -64,10 +67,11 @@ embeddedApplication = embeddedApplicationWith "www"
 -- executable reads it from @SHOMEI_DEMO_WWW@ so the demo can be launched from any directory).
 embeddedApplicationWith :: FilePath -> Env -> ProbeCheck -> ProbeCheck -> Application
 embeddedApplicationWith wwwDir env liveness readiness =
-  serveWithContext
-    (Proxy @AppAPI)
-    (authContext senv)
-    (shomeiRoutes senv liveness readiness :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
+  problemMiddlewareWithOAuthMounts embeddedOAuthMounts $
+    serveWithContext
+      (Proxy @AppAPI)
+      (authContextWithOAuthMounts embeddedOAuthMounts senv)
+      (shomeiRoutes senv liveness readiness :<|> projectsHandler :<|> serveDirectoryWebApp wwwDir)
   where
     senv = seamEnv env
 
@@ -85,3 +89,7 @@ projectsHandler user = do
           )
       )
   pure [Project {projectId = "proj_demo_1", projectName = "Shōmei Demo Project"}]
+
+-- Reuse this value for formatters, response normalization and the outer host boundary.
+embeddedOAuthMounts :: OAuthMounts
+embeddedOAuthMounts = defaultOAuthMounts

@@ -22,7 +22,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word16, Word64, Word8)
-import Network.HTTP.Types (hContentType, methodDelete, methodPost, statusCode)
+import Network.HTTP.Types (hContentType, methodDelete, methodPost, mkStatus, statusCode)
 import Network.HTTP.Types.Status (status200)
 import Network.Socket (SockAddr (..), tupleToHostAddress, tupleToHostAddress6)
 import Network.Wai (Request (..), RequestBodyLength (..), Response, defaultRequest, getRequestBodyChunk, responseHeaders, responseLBS, responseStatus, responseToStream, setRequestBodyChunks)
@@ -32,15 +32,18 @@ import Servant.Health.Paths (healthRawPaths)
 import Shomei.Account.Password.Hash.Postgres (defaultArgon2Params)
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (LogFormat (..), RateLimitConfig (..), ShomeiConfig (..), defaultObservabilityConfig, defaultRateLimitConfig, defaultShomeiConfig)
+import Shomei.OAuth.Boundary (oauthMounts)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
 import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Error (ProblemDetails (..))
+import Shomei.Servant.Middleware (problemMiddlewareWithOAuthMounts)
+import Shomei.Servant.OAuth (OAuthErrorResponse (..))
 import Shomei.Servant.Throttle (PathSegment (Literal), ThrottledRoute (..))
 import Shomei.Server.Boot (hostMiddleware)
 import Shomei.Server.Config (ProxyProtocolMode (..), ServerSettings (..), SweepSettings (..), defaultSweepSettings)
 import Shomei.Server.ExceptionResponse (problemExceptionResponse)
-import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware)
-import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterFor, newRateLimiterWith, takeToken, throttledPath)
+import Shomei.Server.Middleware.BodyLimit (bodyLimitMiddleware, bodyLimitMiddlewareWithOAuthMounts)
+import Shomei.Server.Middleware.RateLimit (bucketCount, newRateLimiterFor, newRateLimiterWith, rateLimitMiddlewareWithOAuthMounts, takeToken, throttledPath)
 import Shomei.Server.Middleware.TrustedProxy (emptyTrustedProxies, parseTrustedProxies, trustedProxyMiddleware)
 import Shomei.Server.Observability.Logging (emitLine, renderLogLine, requestLoggingMiddleware, responseLogLevel, serverErrorLine)
 import Shomei.Server.Observability.Metrics (exportMetrics, metricsEndpointMiddleware, metricsMiddleware, newMetrics)
@@ -92,7 +95,11 @@ tests =
         ],
       testGroup
         "body limit"
-        [ testHostMiddlewareOrder,
+        [ testOAuthResourceBoundary,
+          testNoDoubleBodyResponse,
+          testOAuthResponseHeaders,
+          testOAuthRawNotFound,
+          testHostMiddlewareOrder,
           testOversizedBodyRejected,
           testKnownSmallBodyPassesThrough,
           testChunkedBodyOverCapRejected,
@@ -580,3 +587,103 @@ testMetricsExposition = testCase "metrics endpoint exposes decimal buckets and f
   check 0
   ResponseReceived <- metricsMiddleware m inner defaultRequest (\_ -> pure ResponseReceived)
   check 1
+
+testOAuthResourceBoundary :: TestTree
+testOAuthResourceBoundary = testCase "OAuth body and rate rejections preserve resource accounting and namespace policy" do
+  mounts <- either (fail . show) pure (oauthMounts [["oauth"], ["identity", "oauth"]])
+  forM_ [["oauth", "token"], ["identity", "oauth", "token"], ["oauthish", "token"], ["reports", "oauth", "token"], ["v1", "auth", "login"]] \segments -> do
+    let oauth = segments `elem` [["oauth", "token"], ["identity", "oauth", "token"]]
+    forM_ [(KnownLength 9, ["ignored"], 0, 413), (KnownLength 8, ["12345678", ""], 2, 200), (ChunkedBody, ["1234", "5678", "9", "unread"], 3, 413), (ChunkedBody, ["1234", "5678", ""], 3, 200)] \(len, chunks, expectedReads, expectedStatus) -> do
+      chunksRef <- newIORef chunks
+      chunkReads <- newIORef (0 :: Int)
+      calls <- newIORef (0 :: Int)
+      let next = do
+            modifyIORef' chunkReads (+ 1)
+            atomicModifyIORef' chunksRef \case
+              [] -> ([], "")
+              chunk : rest -> (rest, chunk)
+          req = setRequestBodyChunks next defaultRequest {pathInfo = segments, requestBodyLength = len}
+          drain request = do
+            chunk <- getRequestBodyChunk request
+            unless (BS.null chunk) (drain request)
+          inner request respond = drain request >> modifyIORef' calls (+ 1) >> respond okResponse
+      ResponseReceived <- bodyLimitMiddlewareWithOAuthMounts mounts 8 inner req \res -> do
+        statusCode (responseStatus res) @?= expectedStatus
+        whenRejected oauth 413 res
+        pure ResponseReceived
+      readIORef chunkReads >>= (@?= expectedReads)
+      readIORef calls >>= (@?= if expectedStatus == 200 then 1 else 0)
+    calls <- newIORef (0 :: Int)
+    limiter <- newRateLimiterFor [ThrottledRoute methodPost (map Literal segments)] testLimiterConfig {perIpBurst = 0}
+    let req = defaultRequest {pathInfo = segments, requestMethod = methodPost}
+        inner _ respond = modifyIORef' calls (+ 1) >> respond okResponse
+    ResponseReceived <- rateLimitMiddlewareWithOAuthMounts mounts limiter inner req \res -> do
+      statusCode (responseStatus res) @?= 429
+      lookup "Retry-After" (responseHeaders res) @?= Just "60"
+      whenRejected oauth 429 res
+      pure ResponseReceived
+    readIORef calls >>= (@?= 0)
+  where
+    whenRejected :: Bool -> Int -> Response -> IO ()
+    whenRejected oauth code res
+      | statusCode (responseStatus res) == 200 = pure ()
+      | oauth = do
+          lookup "Content-Type" (responseHeaders res) @?= Just "application/json"
+          lookup "Cache-Control" (responseHeaders res) @?= Just "no-store"
+          lookup "Pragma" (responseHeaders res) @?= Just "no-cache"
+          lookup "WWW-Authenticate" (responseHeaders res) @?= Nothing
+          body <- collectResponseBody res
+          fmap oauthErrorCode (decode body :: Maybe OAuthErrorResponse) @?= Just (if code == 429 then "temporarily_unavailable" else "invalid_request")
+      | otherwise = lookup "Content-Type" (responseHeaders res) @?= Just "application/problem+json"
+
+testNoDoubleBodyResponse :: TestTree
+testNoDoubleBodyResponse = testCase "body overflow after a response never calls respond twice" do
+  calls <- newIORef (0 :: Int)
+  let req = setRequestBodyChunks (pure "oversized") defaultRequest {requestBodyLength = ChunkedBody, pathInfo = ["oauth", "token"]}
+      inner request respond = do
+        result <- respond okResponse
+        _ <- getRequestBodyChunk request
+        pure result
+  result <- try (bodyLimitMiddleware 1 inner req (\_ -> modifyIORef' calls (+ 1) >> pure ResponseReceived)) :: IO (Either SomeException ResponseReceived)
+  case result of
+    Left _ -> pure ()
+    Right _ -> fail "body cap exception must propagate after response"
+  readIORef calls >>= (@?= 1)
+
+testOAuthResponseHeaders :: TestTree
+testOAuthResponseHeaders = testCase "OAuth normalization preserves semantic headers and existing JSON without stale representation headers" do
+  mounts <- either (fail . show) pure (oauthMounts [["oauth"]])
+  forM_ [False, True] \alreadyProtocol -> do
+    let headers = [("Content-Type", if alreadyProtocol then "application/json" else "text/plain"), ("Allow", "POST"), ("Content-Length", "3"), ("ETag", "stale")]
+        response = responseLBS (mkStatus 405 "Method Not Allowed") headers "old"
+        app _ respond = respond response
+    ResponseReceived <- problemMiddlewareWithOAuthMounts mounts app defaultRequest {pathInfo = ["oauth", "token"]} \res -> do
+      lookup "Allow" (responseHeaders res) @?= Just "POST"
+      lookup "Content-Type" (responseHeaders res) @?= Just "application/json"
+      body <- collectResponseBody res
+      if alreadyProtocol
+        then body @?= "old"
+        else do
+          lookup "Content-Length" (responseHeaders res) @?= Nothing
+          lookup "ETag" (responseHeaders res) @?= Nothing
+          fmap oauthErrorCode (decode body :: Maybe OAuthErrorResponse) @?= Just "invalid_request"
+      pure ResponseReceived
+    pure ()
+  case oauthMounts [[]] of
+    Left _ -> pure ()
+    Right _ -> fail "root OAuth mount accepted"
+  case oauthMounts [["identity", ""]] of
+    Left _ -> pure ()
+    Right _ -> fail "empty OAuth segment accepted"
+
+testOAuthRawNotFound :: TestTree
+testOAuthRawNotFound = testCase "a host Raw fallback cannot replace an OAuth namespace 404 with plain text" do
+  mounts <- either (fail . show) pure (oauthMounts [["identity", "oauth"]])
+  let fallback _ respond = respond (responseLBS (mkStatus 404 "Not Found") [("Content-Type", "text/plain")] "host static file not found")
+  ResponseReceived <- problemMiddlewareWithOAuthMounts mounts fallback defaultRequest {pathInfo = ["identity", "oauth", "unknown"]} \res -> do
+    statusCode (responseStatus res) @?= 404
+    lookup "Content-Type" (responseHeaders res) @?= Just "application/json"
+    body <- collectResponseBody res
+    fmap oauthErrorCode (decode body :: Maybe OAuthErrorResponse) @?= Just "invalid_request"
+    pure ResponseReceived
+  pure ()

@@ -63,4 +63,8 @@ or `code`, not on `title` or `detail`.
 | <a id="role_not_granted"></a>`role_not_granted` | User does not hold that role | 404 | no | Refresh the user's grants. | never |
 
 OAuth/OIDC protocol errors are intentionally not listed here: those operations retain the RFC
-6749 JSON vocabulary. Health probes retain the package-owned `servant-health` report shape.
+6749 JSON vocabulary through parsing, routing and outer middleware. In an OAuth namespace,
+413 is `invalid_request` and 429 is `temporarily_unavailable` with `Retry-After: 60`; both are
+non-cacheable JSON operational extensions without a challenge. Application paths such as
+`/v1/auth/login` retain the catalog entries above. See [the OAuth error contract](oidc.md#error-and-challenge-contract)
+for challenges and explicit lower-level/proxy exclusions. Health probes retain the package-owned `servant-health` report shape.

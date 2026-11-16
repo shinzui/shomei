@@ -42,6 +42,7 @@ module Shomei.Server.Middleware.RateLimit
     newRateLimiterFor,
     newRateLimiterWith,
     rateLimitMiddleware,
+    rateLimitMiddlewareWithOAuthMounts,
     throttledPath,
     takeToken,
     bucketCount,
@@ -56,6 +57,7 @@ import Data.Text.Encoding (encodeUtf8)
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.Wai (Middleware, Request, pathInfo, remoteHost, requestMethod)
 import Shomei.Config (RateLimitConfig (..))
+import Shomei.OAuth.Boundary (OAuthMounts, defaultOAuthMounts, isOAuthPath, oauthBoundaryResponse)
 import Shomei.Servant.Api (shomeiThrottledRoutes)
 import Shomei.Servant.ClientIp (clientIpText)
 import Shomei.Servant.Error (pcTooManyRequests, retryAfterOccurrence)
@@ -152,7 +154,10 @@ takeToken rl key nowSecs = atomically do
 
 -- | The WAI middleware. Passes non-throttled paths straight through.
 rateLimitMiddleware :: RateLimiter -> Middleware
-rateLimitMiddleware rl app req respond
+rateLimitMiddleware = rateLimitMiddlewareWithOAuthMounts defaultOAuthMounts
+
+rateLimitMiddlewareWithOAuthMounts :: OAuthMounts -> RateLimiter -> Middleware
+rateLimitMiddlewareWithOAuthMounts mounts rl app req respond
   | not rl.enabled || not (throttledPath rl req) = app req respond
   | otherwise = do
       nowSecs <- monotonicSeconds
@@ -163,7 +168,9 @@ rateLimitMiddleware rl app req respond
     -- @Retry-After@. This
     -- answers before Servant ever routes the request, so it cannot go through the handler
     -- error mapping — it shares the catalog constant instead.
-    tooMany = problemResponse pcTooManyRequests (retryAfterOccurrence 60)
+    tooMany
+      | isOAuthPath mounts (pathInfo req) = oauthBoundaryResponse 429
+      | otherwise = problemResponse pcTooManyRequests (retryAfterOccurrence 60)
 
 -- | Match the request against the routes derived from the API type. Method, path length, and
 -- every literal segment must agree; captures match exactly one segment.

@@ -112,6 +112,7 @@
         pkgs.postgresql
         pkgs.postgresql.dev
         pkgs.openssl.dev
+        pkgs.hurl
         pkgs.jq
         pkgs.process-compose
       ];
