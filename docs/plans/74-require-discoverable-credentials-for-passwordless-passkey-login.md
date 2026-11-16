@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-11-16T05:10:41Z
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-16T15:53:33Z
+      mode: "implement"
+      note: "Implement required residency, regression and workflow coverage, browser acceptance, and compatibility policy."
 ---
 
 # Require discoverable credentials for passwordless passkey login
@@ -27,14 +33,16 @@ A discoverable credential (historically a resident key) is one an authenticator 
 ## Progress
 
 
-- [ ] Milestone 1: registration emits required residency in both browser JSON and persisted options, with failing-before/passing-after regression coverage.
-- [ ] Milestone 2: enrollment followed by passwordless login is verified through the real interpreter and a browser authenticator; existing step-up behavior remains valid.
-- [ ] Milestone 3: compatibility guidance, changelog, and durable policy documentation are complete and relevant project checks pass.
+- [x] Milestone 1 (2026-11-16): registration emits required residency in browser and independently decoded persisted options for all three UV policies. Before the fix, three tests failed with discouraged/false; afterwards all 16 WebAuthn tests passed, including signed policy negatives.
+- [x] Milestone 2 (2026-11-16): real-interpreter workflow tests and Chrome 157.0.8103.51 with a CTAP2 virtual authenticator passed enrollment, same-user passwordless token issuance, and known-account step-up. A virtual authenticator without residency rejected creation and stored zero credentials. The corrected demo buttons also passed enrollment and step-up.
+- [x] Milestone 3 (2026-11-16): compatibility and recovery guidance, both changelogs, and ADR-28 are complete. Full build and all test suites, format check, strict ADR validation (28 concepts), strict friction validation (6 concepts), and diff checks passed. FRIC-6 is resolved.
 
-Planning is complete; implementation has not begun. The intention was created with `mina ci --json` and is recorded in frontmatter. The working tree already contains unrelated edits and untracked plans 71–73; preserve them and stage only this work.
+Implementation is complete. The intention in frontmatter is authoritative. The working tree was clean at implementation start; the planning-time unrelated edits had already been committed.
 
 ## Surprises & Discoveries
 
+
+2026-11-16: Browser execution found that the demo and the original browser snippet expected `options.publicKey`, but the real HTTP handlers return the WebAuthn options directly. Passing `{publicKey: response.options}` to the existing JSON wrapper preserves all server-chosen fields and fixes both enrollment and step-up. Recorded as [FRIC-6](../friction-log/6-passkey-demo-assumes-an-extra-publickey-wrapper.md), now resolved. A fresh browser load with cache disabled verified the corrected page buttons.
 
 ## Decision Log
 
@@ -45,13 +53,34 @@ Planning is complete; implementation has not begun. The intention was created wi
 
 2026-11-15: Preserve stored credentials and the existing verifier contract. This fix requests browser behavior; it does not establish a server-verifiable guarantee of credential storage modality. No database migration, credential deletion, or mandatory `credProps` response is required.
 
+2026-11-16: Correct the demo's existing options-shape defect and matching documentation as necessary integration work for the accepted browser path. Keep the server HTTP shape and all option values unchanged. Use a disposable socket-only PostgreSQL database and port 18080 with `SHOMEI_WEBAUTHN_ORIGINS=http://localhost:18080`, because another process already owns port 8080.
+
 ## Outcomes & Retrospective
 
+
+2026-11-16: All milestones passed. New enrollments request discoverability independently of UV, and the dependency emits both residency fields consistently in browser and stored JSON. Existing signed verifier, replay, counter, owner-binding and audit tests remain valid. Documentation explains device compatibility, safe replacement enrollment and the fact that password reset does not bypass MFA. [ADR-28](../adr/0028-shared-passkey-enrollment-requires-discoverable-credentials.md) preserves the shared-enrollment policy and deliberate exclusions. No dependency, version, configuration API, or schema change was needed.
+
+The fail-before check produced three failures, one per UV policy: expected required/true, received discouraged/false. The fixed focused suite passed all 16 tests. Final commands `nix develop --command cabal build all`, `nix develop --command cabal test all --test-options='-j2'`, `nix fmt -- --fail-on-change`, `nix develop --command just adr-validate`, and `git diff --check` exited zero. Strict friction-log validation passed as well.
+
+Browser acceptance used headless Chrome 157.0.8103.51 on macOS through its built-in DevTools WebAuthn domain, with CTAP2/USB, UV support, verified-user status and automatic presence enabled. Fresh users and raw server options were used against the real embedded application and 43 migrations in the disposable database. The same `@github/webauthn-json@2.1.1` CDN wrapper as the demo performed creation and assertion without option overrides. Sanitized observations were:
+
+```text
+Registration selection: residentKey=required, requireResidentKey=true, userVerification=preferred
+Resident-capable authenticator: enrollment completed
+Passwordless begin: allowCredentials count=0, userVerification=required
+Passwordless completion: access/refresh tokens issued; authenticated /me matched the enrolled user
+Password step-up: allowCredentials count=1, enrolled ID present; tokens issued
+Non-resident authenticator (hasResidentKey=false, UV still enabled): create rejected with NotAllowedError
+Unsupported enrollment: completion never submitted, stored credential count=0
+Demo buttons, fresh page with cache disabled: login, enrollment, and password step-up completed
+```
+
+These browser checks establish discovery behavior beyond what the signed software fixture models; they do not establish physical-device or provider compatibility across every browser. [FRIC-6](../friction-log/6-passkey-demo-assumes-an-extra-publickey-wrapper.md) was resolved by correcting the demo and documented wrapper calls, then verifying actual page interactions. No friction remains open under this plan.
 
 ## Context and Orientation
 
 
-`shomei-webauthn/src/Shomei/WebAuthn/Ceremony.hs` implements the core ceremony port with the WebAuthn library. `beginRegistration` sets `WA.ascResidentKey` to `Discouraged`; the same encoded options become `BeginCeremony.optionsJson` and `optionsBlob` (bytes retained for completion). `beginAuthentication` maps a supplied credential list into `allowCredentials`.
+`shomei-webauthn/src/Shomei/WebAuthn/Ceremony.hs` implements the core ceremony port with the WebAuthn library. Before this repair, `beginRegistration` set `WA.ascResidentKey` to `Discouraged`; it now uses `Required`. The same encoded options become `BeginCeremony.optionsJson` and `optionsBlob` (bytes retained for completion). `beginAuthentication` maps a supplied credential list into `allowCredentials`.
 
 `shomei-core/src/Shomei/Passkey/Workflow.hs` owns authenticated enrollment. `shomei-core/src/Shomei/Mfa/Workflow.hs` calls `beginAuthenticationCeremony UVRequired []` for passwordless begin, stores no associated user yet, then resolves the user from the signed response on completion. Password step-up already knows the account and supplies its credential IDs. `shomei-core/src/Shomei/Config.hs` defines `WebAuthnConfig`; its UV preference must remain independent of the residency repair.
 
@@ -59,7 +88,7 @@ Planning is complete; implementation has not begun. The intention was created wi
 
 `shomei-servant/src/Shomei/Passkey/Api.hs`, `Dto.hs`, and `Handler.hs` expose registration and `/v1/auth/login/passkey/{begin,complete}`. `examples/embedded-servant-app/www/passkeys.js` provides enrollment and step-up using a JSON wrapper for browser WebAuthn; it currently has no passwordless button. `docs/user/passkeys.md` describes deployment and the demo. `Justfile`, `cabal.project`, and `.github/workflows/ci.yml` define development checks.
 
-Relevant decisions consulted are [ADR-25](../adr/0025-attestation-conveyance-does-not-establish-device-trust.md), which preserves challenge/origin/signature/binding checks and mandatory passwordless UV without implying trusted hardware, and [ADR-21](../adr/0021-passkey-enrollment-spends-an-atomic-account-quota.md), which preserves existing credentials and enforces enrollment quotas atomically. Neither currently decides residency.
+Relevant prior decisions consulted are [ADR-25](../adr/0025-attestation-conveyance-does-not-establish-device-trust.md), which preserves challenge/origin/signature/binding checks and mandatory passwordless UV without implying trusted hardware, and [ADR-21](../adr/0021-passkey-enrollment-spends-an-atomic-account-quota.md), which preserves existing credentials and enforces enrollment quotas atomically. Neither decides residency; the new [ADR-28](../adr/0028-shared-passkey-enrollment-requires-discoverable-credentials.md) records that policy.
 
 The dependency was located through Mori as `mori://tweag/webauthn/packages/webauthn`. Its source repository is `mori://tweag/webauthn/repos/webauthn`; project-relative source `webauthn/src/Crypto/WebAuthn/Encoding/Internal/WebAuthnJson.hs` (artifact-level URI pending) implements `Encode AuthenticatorSelectionCriteria` by emitting `residentKey` and setting `requireResidentKey` to whether residency is required. No new dependency bounds or pins are proposed. The [W3C selection criteria](https://www.w3.org/TR/webauthn-3/#dictdef-authenticatorselectioncriteria) specify the legacy Boolean, and the [residency enumeration](https://www.w3.org/TR/webauthn-3/#enumdef-residentkeyrequirement) distinguishes required from preferred. Required fails creation when discovery cannot be supported; preferred permits fallback.
 
@@ -132,7 +161,7 @@ const wa = await import('https://unpkg.com/@github/webauthn-json@2.1.1/dist/esm/
 const beginResponse = await fetch('/v1/auth/login/passkey/begin', {method: 'POST'});
 if (!beginResponse.ok) throw new Error('passwordless begin failed');
 const begun = await beginResponse.json();
-const assertion = await wa.get({publicKey: begun.options.publicKey});
+const assertion = await wa.get({publicKey: begun.options});
 const completed = await fetch('/v1/auth/login/passkey/complete', {
   method: 'POST', headers: {'Content-Type': 'application/json'},
   body: JSON.stringify({ceremonyId: begun.ceremonyId, assertion, remember: false})
@@ -159,6 +188,8 @@ Tests and builds are repeatable. Use fresh disposable users for browser repeats 
 ## Interfaces and Dependencies
 
 
-The only production behavior change is `beginRegistration`'s authenticator selection in `shomei-webauthn/src/Shomei/WebAuthn/Ceremony.hs`. Preserve `BeginCeremony`, `WebAuthnConfig`, registration/authentication port signatures, HTTP DTOs and persistence schema. The existing dependency encoder must emit the legacy flag; verify through output tests rather than hand-writing duplicate JSON. No parent MasterPlan prerequisite applies.
+The only server policy change is `beginRegistration`'s authenticator selection in `shomei-webauthn/src/Shomei/WebAuthn/Ceremony.hs`. The demo wrapper correction passes the existing direct HTTP options shape to the browser. Preserve `BeginCeremony`, `WebAuthnConfig`, registration/authentication port signatures, HTTP DTOs and persistence schema. The existing dependency encoder must emit the legacy flag; verify through output tests rather than hand-writing duplicate JSON. No parent MasterPlan prerequisite applies.
 
 Every implementation commit uses Conventional Commits and includes `ExecPlan: docs/plans/74-require-discoverable-credentials-for-passwordless-passkey-login.md` and `Intention: intention_01m7hc6hpcevfbe2y2f6kzqza1` trailers. Record a provenance revision with the bundled script when implementation first edits this plan.
+
+Revision note (2026-11-16): corrected the browser snippet's options shape and included the matching demo repair after exercising the real HTTP boundary; original residency and browser acceptance requirements are preserved.

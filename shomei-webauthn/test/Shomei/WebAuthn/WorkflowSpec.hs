@@ -6,10 +6,11 @@ module Shomei.WebAuthn.WorkflowSpec (tests) where
 
 import Control.Monad (forM_)
 import Data.Aeson (Value, encode)
-import Data.Aeson.Types (parseMaybe, withObject, (.:))
+import Data.Aeson.Types (parseEither, parseMaybe, withObject, (.:), (.:?))
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
+import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
 import Effectful (Eff, IOE, liftIO, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpose)
@@ -25,7 +26,7 @@ import Shomei.Id (genCeremonyId)
 import Shomei.Mfa.Workflow (MfaCompletion (..), beginPasswordlessLogin, completeMfa, completePasswordlessLogin)
 import Shomei.Passkey.Ceremony.Port
 import Shomei.Passkey.Ceremony.Store (putPendingCeremony)
-import Shomei.Passkey.Domain (CeremonyKind (..), PasskeyCredential (..), PendingCeremony (..), SignatureCounter (..), b64urlDecode)
+import Shomei.Passkey.Domain (CeremonyKind (..), PasskeyCredential (..), PendingCeremony (..), SignatureCounter (..), b64urlDecode, b64urlEncode)
 import Shomei.Passkey.Workflow (beginPasskeyRegistration, completePasskeyRegistration)
 import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..), login, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), SignupCommand (..))
@@ -74,6 +75,8 @@ seed = do
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- right =<< runHybrid ref (signup cfg (SignupCommand fixtureLoginId Nothing fixturePassword Nothing))
   (cid, options) <- right =<< runHybrid ref (beginPasskeyRegistration cfg user.userId)
+  parseEither (withObject "options" (\o -> o .: "authenticatorSelection" >>= withObject "selection" (\s -> (,) <$> s .: "residentKey" <*> s .: "requireResidentKey"))) options
+    @?= Right ("required" :: Text, True)
   handle <- case parseMaybe (withObject "options" (\o -> o .: "user" >>= withObject "user" (.: "id"))) options of
     Just value -> right (b64urlDecode value)
     Nothing -> assertFailure "fixture options lack user handle"
@@ -82,6 +85,14 @@ seed = do
   replay <- runHybrid ref (completePasskeyRegistration cfg user.userId cid (registrationResponse options policy) Nothing)
   replay @?= Left PendingCeremonyNotFound
   pure (ref, user, policy)
+
+-- The signed fixture checks the server contract; browser discovery is verified
+-- separately with a resident-capable virtual authenticator (ExecPlan 74).
+assertPasswordlessOptions :: Value -> IO ()
+assertPasswordlessOptions options = do
+  allowed <- right (parseEither (withObject "options" (.:? "allowCredentials")) options :: Either String (Maybe [Value]))
+  assertBool "passwordless begin does not restrict credential discovery" (maybe True null allowed)
+  parseEither (withObject "options" (.: "userVerification")) options @?= Right ("required" :: Text)
 
 tests :: TestTree
 tests =
@@ -92,11 +103,14 @@ tests =
         challenge <- right =<< runHybrid ref (login cfg (ClientContext (ClientIp "fixture") (AccountKey "fixture-user")) (LoginCommand fixtureLoginId fixturePassword False))
         case challenge of
           MfaRequired MfaChallenge {ceremonyId, options} -> do
+            parseEither (withObject "options" (\o -> o .: "allowCredentials" >>= traverse (withObject "credential" (.: "id")))) options
+              @?= Right [b64urlEncode credentialBytes]
             _ <- right =<< runHybrid ref (completeMfa cfg proof ceremonyId (MfaPasskey (assertionResponse options policy {responseCounter = 1, responseFlags = 1})))
             replay <- runHybrid ref (completeMfa cfg proof ceremonyId (MfaPasskey (assertionResponse options policy {responseCounter = 1})))
             replay @?= Left PendingCeremonyNotFound
           _ -> assertFailure "expected password step-up"
         (cid, options) <- right =<< runHybrid ref (beginPasswordlessLogin cfg)
+        assertPasswordlessOptions options
         (resolved, _) <- right =<< runHybrid ref (completePasswordlessLogin cfg proof cid (assertionResponse options policy {responseCounter = 2}))
         resolved.userId @?= user.userId
         world <- readIORef ref
@@ -113,6 +127,7 @@ tests =
           let run :: Eff InMemoryPorts a -> IO a
               run = runInMemory ref . realCeremonies cfg.webauthnConfig {userVerification = uv}
           (cid, options) <- right =<< run (beginPasswordlessLogin cfg)
+          assertPasswordlessOptions options
           failed <- run (completePasswordlessLogin cfg proof cid (assertionResponse options policy {responseCounter = 1, responseFlags = 1}))
           failed @?= Left MfaAssertionInvalid
           replay <- run (completePasswordlessLogin cfg proof cid (assertionResponse options policy {responseCounter = 1}))

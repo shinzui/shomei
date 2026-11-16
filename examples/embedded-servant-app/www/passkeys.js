@@ -31,7 +31,7 @@ document.getElementById("loginBtn").addEventListener("click", async () => {
   } else if (r.json.status === "mfa_required") {
     log("password ok — passkey required, running assertion…");
     // r.json.options is the WebAuthn get() options the server chose.
-    const assertion = await get({ publicKey: r.json.options.publicKey });
+    const assertion = await get({ publicKey: r.json.options });
     const c = await postJSON("/v1/auth/mfa/complete",
       { ceremonyId: r.json.ceremonyId, proof: { type: "passkey", assertion } });
     if (!c.ok) { log("mfa complete failed: " + c.json); return; }
@@ -52,7 +52,7 @@ document.getElementById("enrollBtn").addEventListener("click", async () => {
   if (!b.ok) { log("register/begin failed: " + b.json); return; }
 
   // b.json.options is the WebAuthn create() options the server chose.
-  const credential = await create({ publicKey: b.json.options.publicKey });
+  const credential = await create({ publicKey: b.json.options });
 
   const c = await postJSON("/v1/auth/passkeys/register/complete",
     { ceremonyId: b.json.ceremonyId, credential, label }, accessToken);

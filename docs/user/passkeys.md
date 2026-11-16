@@ -31,7 +31,7 @@ HTTP surface is in [api.md](api.md); the security properties are summarized in
    empty body. The server replies with `{ "ceremonyId": "...", "options": { ... } }`. `options`
    is the WebAuthn *creation options* — a random challenge, the relying-party id, the user's
    handle, and the list of already-enrolled credentials to exclude.
-2. The browser calls `navigator.credentials.create({ publicKey: options.publicKey })` (via the
+2. The browser calls `navigator.credentials.create({ publicKey: options })` (via the
    `@github/webauthn-json` helper, which handles the base64url ↔ binary conversion). The device
    prompts the user (a fingerprint, a PIN, a tap) and mints a fresh key pair.
 3. The browser POSTs to `/v1/auth/passkeys/register/complete` with the bearer token and
@@ -40,6 +40,30 @@ HTTP surface is in [api.md](api.md); the security properties are summarized in
    stored passkey `{ "passkeyId", "label", "transports", "createdAt", "lastUsedAt" }`.
 
 List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{passkeyId}` (`204`).
+
+### Discoverable credentials and existing passkeys
+
+Every new enrollment requests `authenticatorSelection.residentKey: "required"` and the legacy
+`requireResidentKey: true`. A discoverable credential (also called a resident key) lets the
+authenticator find the account's credential when passwordless login supplies no username or
+credential IDs. This policy applies to the shared enrollment used by both login modes and is
+independent of user verification (UV), the authenticator's local PIN or biometric check.
+Changing `userVerification` does not relax the residency requirement; passwordless login always
+requires UV.
+
+Enrollment now needs a resident-capable authenticator. If the device cannot create discoverable
+credentials, the browser rejects creation instead of silently enrolling a credential unsuitable
+for passwordless login. Use a capable device or credential provider and retry. Successful server
+verification does not independently prove the authenticator's storage modality.
+
+Existing credentials are preserved. An older non-discoverable credential can still complete
+password-plus-passkey step-up, where Shōmei supplies the account's credential IDs, but it needs
+replacement enrollment for passwordless use. A server upgrade cannot convert it. Sign in through
+an already usable login/factor, enroll a replacement, and verify passwordless login before
+removing the old credential. Enrollment still respects the account quota above; if it is full,
+retain a usable factor while freeing a slot or ask the operator to raise the configured quota
+within its supported range. [ADR-28](../adr/0028-shared-passkey-enrollment-requires-discoverable-credentials.md)
+records this policy.
 
 ## 2. Logging in with password + passkey (MFA step-up)
 
@@ -50,7 +74,7 @@ List with `GET /v1/auth/passkeys`; remove one with `DELETE /v1/auth/passkeys/{pa
    credentials) and `methods` lists the factors that can complete the challenge — `"passkey"`
    here, plus `"totp"` / `"recovery_code"` if the account also has those (see [mfa.md](mfa.md)).
    An account *without* any enrolled factor still gets `{ "status": "complete", "user", "token" }`.
-2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`. The device
+2. The browser calls `navigator.credentials.get({ publicKey: options })`. The device
    signs the challenge with the passkey's private key.
 3. POST `/v1/auth/mfa/complete` with
    `{ "ceremonyId": "<from step 1>", "proof": { "type": "passkey", "assertion": <the get() output> } }`.
@@ -70,8 +94,9 @@ missing/expired/already-consumed ceremony returns `404 ceremony_not_found`.
 
 1. POST `/v1/auth/login/passkey/begin` (no password). The response is
    `{ "ceremonyId": "...", "options": { ... } }` — WebAuthn authentication options for
-   discoverable credentials.
-2. The browser calls `navigator.credentials.get({ publicKey: options.publicKey })`.
+   discoverable credentials, with absent or empty `allowCredentials` and no account lookup at
+   begin time.
+2. The browser calls `navigator.credentials.get({ publicKey: options })`.
    Shōmei sets WebAuthn's `userVerification` option to `required` for this flow, so the
    authenticator must verify the user locally (for example with a PIN or biometric) and set the UV
    flag. Possession of an unlocked security key alone is not enough.
@@ -164,11 +189,10 @@ See [security.md](security.md) for how these fit the wider threat model.
 
 ## Recovery: losing a passkey
 
-The **password remains the first factor**. A user who loses their only passkey is not locked out
-of recovery: the existing password-reset flow (`POST /v1/auth/password-reset/request` →
-`…/confirm`) still works, because reset is gated on the password/email, not the passkey. After a
-reset, the user can remove the lost passkey (`DELETE /v1/auth/passkeys/{passkeyId}`) and enroll a new
-one.
+Password reset changes the password; it does not bypass MFA or grant an authenticated session
+for removing or enrolling passkeys. Use another enrolled passkey, TOTP, or a recovery code to
+complete login before managing credentials. If no usable factor remains, contact the operator
+for the deployment's account-recovery process.
 
 As of MasterPlan 7, two in-MFA fallbacks also exist (see [mfa.md](mfa.md)): **recovery codes**
 (single-use codes generated at `POST /v1/auth/recovery-codes`, which complete an MFA challenge

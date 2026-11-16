@@ -2,6 +2,9 @@
 
 ## 2026-11-16
 
+* **Addition**: ADR-28 requires discoverable credentials for shared passkey enrollment, preserving UV policy and legacy step-up compatibility.
+
+
 * **Update**: ADR-27 includes non-JSON 404 normalization for host Raw/static fallbacks while preserving existing OAuth JSON without inspecting response bodies.
 
 

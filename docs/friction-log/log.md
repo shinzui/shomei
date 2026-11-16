@@ -2,6 +2,12 @@
 
 ## 2026-11-16
 
+* **Update**: FRIC-6 resolved: Resolve the extra-wrapper mismatch encountered during browser acceptance.
+
+
+* **Addition**: FRIC-6 records detour interface friction with mori://shinzui/shomei: Passkey demo assumes an extra publicKey wrapper
+
+
 * **Update**: FRIC-5 resolved: Removed the stale fork pin and mirrored the root narrow time relaxation; the required embedding build succeeds.
 
 * **Addition**: FRIC-5 records detour tooling friction with mori://shinzui/shomei: Separate embedding project retained an obsolete WebAuthn pin

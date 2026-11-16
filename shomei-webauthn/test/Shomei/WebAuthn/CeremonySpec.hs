@@ -17,7 +17,7 @@ import Data.Text (Text)
 import Effectful (runEff)
 import Shomei.Config
   ( AttestationPolicy (..),
-    UserVerificationPolicy (UVDiscouraged, UVRequired),
+    UserVerificationPolicy (..),
     WebAuthnConfig (attestation, origins, userVerification),
     defaultWebAuthnConfig,
   )
@@ -51,7 +51,12 @@ tests =
       testCase "begin authentication produces a round-tripping options blob" beginAuthenticationRoundTrips,
       testCase "passwordless authentication requires UV even when step-up discourages it" passwordlessRequiresUv,
       testCase "complete registration on malformed credential JSON fails closed" completeRejectsGarbage,
-      testCase "empty origins fail closed before credential decoding" emptyOriginsFailClosed
+      testCase "empty origins fail closed before credential decoding" emptyOriginsFailClosed,
+      testGroup
+        "registration requires discoverable credentials independently of UV"
+        [ testCase (show uv) (registrationRequiresResidency uv expectedUv)
+        | (uv, expectedUv) <- [(UVPreferred, "preferred"), (UVRequired, "required"), (UVDiscouraged, "discouraged")]
+        ]
     ]
 
 sampleUser :: CredentialUserInfo
@@ -68,6 +73,18 @@ beginRegistrationRoundTrips = do
     runEff . runWebAuthnCeremonyLibrary defaultWebAuthnConfig $ beginRegistrationCeremony sampleUser []
   assertBool "registration optionsBlob is non-empty" (not (BC.null blob))
   assertBool "registration optionsBlob round-trips through webauthn-json" (registrationBlobRoundTrips blob)
+
+registrationRequiresResidency :: UserVerificationPolicy -> Text -> IO ()
+registrationRequiresResidency uv expectedUv = do
+  let cfg = defaultWebAuthnConfig {userVerification = uv}
+  BeginCeremony {optionsJson, optionsBlob} <-
+    runEff . runWebAuthnCeremonyLibrary cfg $ beginRegistrationCeremony sampleUser []
+  let stored = eitherDecodeStrict' optionsBlob :: Either String Value
+      selection = parseEither (withObject "options" (\o -> o .: "authenticatorSelection" >>= withObject "selection" (\s -> (,,) <$> s .: "residentKey" <*> s .: "requireResidentKey" <*> s .: "userVerification")))
+      expected = Right ("required" :: Text, True, expectedUv)
+  selection optionsJson @?= expected
+  (stored >>= selection) @?= expected
+  stored @?= Right optionsJson
 
 beginAuthenticationRoundTrips :: IO ()
 beginAuthenticationRoundTrips = do

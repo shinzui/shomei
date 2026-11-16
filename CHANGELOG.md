@@ -10,6 +10,13 @@ and versions published together. Earlier releases used package-prefixed and
 dated tags; those remain historical references. Per-package detail lives in
 each package's own `CHANGELOG.md`.
 
+## Unreleased
+
+- Fix passwordless passkey enrollment: new credentials require discoverability
+  (`residentKey: "required"`, `requireResidentKey: true`). Resident-capable authenticators
+  are now required for enrollment; existing non-discoverable credentials remain usable for
+  known-account step-up and need new enrollment for passwordless login. Fixes #13.
+
 ## v0.3.0.0 — 2026-11-05
 
 Package versions remain independent. This batch selects all eight packages;

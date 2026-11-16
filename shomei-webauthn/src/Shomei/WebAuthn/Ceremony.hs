@@ -110,7 +110,9 @@ beginRegistration cfg (CredentialUserInfo uh accountName displayName) excludeIds
               Just
                 WA.AuthenticatorSelectionCriteria
                   { WA.ascAuthenticatorAttachment = Nothing,
-                    WA.ascResidentKey = WA.ResidentKeyRequirementDiscouraged,
+                    -- Passwordless login supplies no credential IDs, so every new
+                    -- enrollment must be discoverable independently of UV policy.
+                    WA.ascResidentKey = WA.ResidentKeyRequirementRequired,
                     WA.ascUserVerification = mapUV (userVerification cfg)
                   },
             WA.corHints = [],
