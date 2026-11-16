@@ -331,6 +331,10 @@ The account lockout and failure-throttle state is durable in PostgreSQL, while t
 buckets are process-local and reset on restart. Multi-replica deployments therefore need an
 equivalent aggregate request budget at their ingress if they require a fleet-wide ceiling.
 
+`rateLimitEnabled = False` (`SHOMEI_RATE_LIMIT_ENABLED=false`) disables all three abuse controls:
+the account lockout, the per-IP failure throttle, and the request-rate token bucket. The request
+body cap remains enforced.
+
 Both per-IP controls use the canonical WAI peer address. Behind a reverse proxy that means the
 proxy unless its exact address or CIDR is listed in `trustedProxies` / `SHOMEI_TRUSTED_PROXIES`.
 Only then may its `X-Forwarded-For` chain supply identity; Shōmei walks from the right and selects
@@ -430,9 +434,20 @@ without shedding their own identity.
   live operator session, and an operator account that is still active. These liveness and status
   checks apply in every `sessionCheckMode`.
   Refreshing does not renew `auth_time`; the caller must log in or complete MFA again.
-- **Credential endpoints refuse delegated tokens.** Password change and passkey
-  enrollment/removal return `403 impersonation_action_blocked` for any delegated token: an operator
-  can look but cannot change the customer's credentials. Each blocked attempt is audited.
+- **Credential and admin mutations refuse delegated tokens.** `denyUnderDelegation` blocks
+  password change, passkey enrollment/removal, TOTP enrollment/removal, recovery-code
+  generation, and admin actions: grant/revoke role, suspend, reinstate, delete, password reset,
+  and revoke one or all sessions. It returns `403 impersonation_action_blocked` and audits the
+  refusal when the request reaches the handler. Admin routes first require the `admin` role or
+  `shomei:admin` scope; a token lacking both is refused by that guard before the handler runs.
+- **Delegation omits role authority.** Both delegation modes mint empty `roles` and
+  `permissions`, so `RequireRole` and `RequirePermission` refuse their tokens. Impersonation also
+  mints empty `scopes`, so `RequireScope` and `RequireAdmin` refuse it. Service on-behalf-of
+  tokens can pass scope guards only for their negotiated scopes.
+- **Sensitive MFA actions share the freshness window.** TOTP removal and recovery-code
+  generation require `auth_time` within `impersonationConfig.actorFreshnessWindow` (default
+  5 minutes), even for an ordinary interactive token. A stale proof returns
+  `403 reauthentication_required`; refresh does not renew `auth_time`.
 - **Everything is audited with both ids.** `impersonation_started` (with reason, ticket id, and
   client IP), `impersonation_action_blocked`, and `impersonation_stopped` are written to
   `shomei_auth_events` carrying both the actor and subject user ids.
@@ -796,8 +811,8 @@ pull in opposite directions, and only you can resolve that. See
 [deployment.md](deployment.md#audit-event-retention-is-off-by-default).
 
 - **CLI — the supported operator path.** `shomei-admin audit …` queries the trail directly
-  (no HTTP, no token), reading the same `DATABASE_URL`/`PG_CONNECTION_STRING` the other admin
-  subcommands use:
+  (no HTTP, no token), reading `DATABASE_URL` through `loadAdminEnv`, as the other admin
+  subcommands do. There is no `PG_CONNECTION_STRING` fallback for these commands:
 
   ```text
   shomei-admin audit events  [--user UUID] [--session UUID] [--type T ...] [--since TS] [--until TS] [--limit N] [--json]

@@ -9,7 +9,7 @@ capabilityId: CAP-21
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
   - shomei-servant
@@ -53,6 +53,9 @@ Four independent layers:
 | Failure throttle | client IP | PostgreSQL attempt log | `429` |
 | Request-rate limiter | client IP | in-process token bucket | `429` before Servant or the database |
 | Body-size cap | request | none | `413` |
+
+`rateLimitEnabled = False` (`SHOMEI_RATE_LIMIT_ENABLED=false`) disables the account lockout,
+failure throttle, and request-rate limiter together. The body-size cap remains enforced.
 
 None of them leak account existence. A locked account returns exactly the same error as a wrong
 password — never `AccountLocked` — and a login for an account that does not exist performs a dummy

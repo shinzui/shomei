@@ -47,10 +47,14 @@ consumer can adopt on its own, backed by evidence.
 ## Reading the fields
 
 - `status` — whether a consumer can use it right now (`shipped` / `deprecated` / `withdrawn`).
-- `stability` — the compatibility promise. **Shōmei has never cut a tagged release, so every
-  capability here is `experimental`** and every `since` is `unreleased`: these exist on the
-  default branch only, and the changelog's own "Breaking (pre-1.0 window)" entries are the
-  evidence that the surface still moves. `since` becomes meaningful at the first tag.
+- `stability` — the compatibility promise. Capabilities remain `experimental`: tagged releases
+  exist, but the pre-1.0 API still changes. Consult the package changelogs for compatibility.
+- `since` — the first tagged source version containing the capability, not its first Hackage
+  publication or a promise that every later refinement existed then. All 24 capabilities were
+  present in the `0.1.0.0` source snapshot, tagged with package-prefixed tags on 2026-08-24.
+  Those packages were uploaded as Hackage candidates; the first Hackage publications were
+  `0.2.0.0` on 2026-08-27. The current repository release is `v0.3.0.0`; see the
+  [release history](../../CHANGELOG.md) for the packages published in each batch.
 - `packages` — what to add to `build-depends`, or which binary to run, to get it.
 - `evidence` — artifacts proving the claim: tests, conformance suites, modules, examples,
   guides. `okf` does not check these paths (a path rule resolves only inside the bundle), so

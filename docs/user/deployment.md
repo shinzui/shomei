@@ -39,19 +39,34 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_DB_STATEMENT_TIMEOUT_MS` | maximum duration of one PostgreSQL statement or an idle transaction. Must be non-negative; `0` disables both guards | `30000` |
 | `SHOMEI_ISSUER` | JWT `iss` | `shomei` |
 | `SHOMEI_AUDIENCE` | JWT `aud` | `shomei-clients` |
-| `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` | seconds of tolerance the verifier grants `exp`/`nbf`/`iat` (inherited by downstream hosts using `shomei-jwt`'s `verifyToken`); must be non-negative | `30` |
+| `SHOMEI_ALLOWED_CLOCK_SKEW_SECONDS` | seconds of tolerance the verifier grants `exp`/`nbf`/`iat` (inherited by downstream hosts using `shomei-jwt`'s `verifyTokenWith` with settings derived from this config); must be non-negative | `30` |
+| `SHOMEI_LEGACY_ACTOR_UNTIL_UNIX` | finite Unix timestamp until which legacy scalar `act` claims are accepted (`legacyActorUntilUnix`); see [token rollout](token-compatibility.md) | unset (reject legacy claims) |
+| `SHOMEI_EMIT_LEGACY_ACTOR` | emit scalar `act` during a compatibility rollout (`emitLegacyActor`); requires a legacy-actor deadline | `false` |
 | `SHOMEI_ACCESS_TTL` / `SHOMEI_REFRESH_TTL` / `SHOMEI_SESSION_TTL` | token/session lifetimes (seconds) | config defaults |
 | `SHOMEI_REMEMBERED_SESSION_TTL` | lifetime (seconds) of a session signed in with `"remember": true`; its refresh tokens still expire after `SHOMEI_REFRESH_TTL` of disuse | `31536000` (365 days) |
 | `SHOMEI_TOKEN_TRANSPORT` | `bearer` \| `cookie` \| `both`. `cookie`/`both` set `HttpOnly` cookies and accept them as credentials; `bearer` neither sets nor accepts them | `bearer` |
 | `SHOMEI_COOKIE_SECURE` | mark Shōmei's cookies `Secure` (HTTPS only; browsers exempt localhost) | `true` |
 | `SHOMEI_COOKIE_SAMESITE` | `strict` \| `lax` \| `none` | `lax` |
 | `SHOMEI_CSRF_ALLOWED_ORIGINS` | **set this in production.** Comma-separated origins allowed to make cookie-authenticated *mutating* requests, e.g. `https://app.example.com`. Anything else gets `403 csrf_rejected` | `http://localhost:8080` |
-| `SHOMEI_SESSION_CHECK` | `token-only` \| `token-and-session` | `token-only` |
+| `SHOMEI_SESSION_CHECK` | **environment only**: `token-only` \| `token-and-session`; there is no Dhall field | `token-only` |
+| `SHOMEI_DEFAULT_ROLES` | comma-separated roles granted at signup; every role must already be defined | empty |
 | `SHOMEI_SIGNING_ALG` | JWT signing algorithm for keys generated on first boot: `ES256` \| `RS256` | `ES256` |
 | `SHOMEI_KEY_REFRESH_INTERVAL` | seconds between background reloads of signing-key material, so `keys activate`/`keys revoke` reach a running server; `0` disables the periodic reload (`SIGHUP` still reloads) | `60` |
 | `SHOMEI_NOTIFIER_LOG_SECRETS` | **development only.** Log the full password-reset / verification link, raw token included, instead of a SHA-256 prefix. Anyone who can read the log can then take over an account | `false` |
 | `SHOMEI_NOTIFIER_QUEUE_SIZE` | maximum notifications held for the background delivery worker. Must be positive; a full queue drops new work with a `queue_full` audit reason instead of blocking a request | `1024` |
+| `SHOMEI_NOTIFIER_TRANSPORT` | notification sender: `log` \| `smtp` \| `webhook` | `log` |
+| `SHOMEI_NOTIFIER_ALSO_LOG` | also send notifications through the log sender | `false` |
+| `SHOMEI_PUBLIC_BASE_URL` | base URL for account-verification and password-reset links; independent of the OIDC issuer | `http://localhost:8080` |
+| `SHOMEI_SMTP_HOST` | SMTP relay host; required for SMTP transport | unset |
+| `SHOMEI_SMTP_PORT` | SMTP relay port | `587` when SMTP is configured |
+| `SHOMEI_SMTP_TLS_MODE` | `plain` \| `starttls` \| `implicit` | `starttls` |
+| `SHOMEI_SMTP_USERNAME` | SMTP authentication user; set together with the password, or leave both unset | unset |
 | `SHOMEI_SMTP_PASSWORD` | SMTP authentication password; carried outside printable `ShomeiConfig` | unset |
+| `SHOMEI_SMTP_FROM` | sender address; required for SMTP transport | unset |
+| `SHOMEI_SMTP_TIMEOUT` | SMTP delivery timeout, seconds | `10` |
+| `SHOMEI_WEBHOOK_URL` | notification receiver URL; required for webhook transport | unset |
+| `SHOMEI_WEBHOOK_TIMEOUT` | webhook timeout per attempt, seconds | `5` |
+| `SHOMEI_WEBHOOK_MAX_ATTEMPTS` | total webhook delivery attempts, including the initial attempt | `3` |
 | `SHOMEI_WEBHOOK_SECRET` | secret used to sign webhook deliveries; carried outside printable `ShomeiConfig` | unset |
 | `SHOMEI_WEBHOOK_ALLOW_INSECURE` | **lab only.** Allow an `http://` notification receiver; production webhooks must use HTTPS | `false` |
 | `SHOMEI_SMTP_ALLOW_PLAINTEXT_AUTH` | **lab only.** Allow SMTP credentials over `smtpTlsMode=plain`; production authentication must use STARTTLS or implicit TLS | `false` |
@@ -70,8 +85,16 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_WEBAUTHN_USER_VERIFICATION` | `required` \| `preferred` \| `discouraged` | `preferred` |
 | `SHOMEI_WEBAUTHN_ATTESTATION` | `none` \| `direct` | `none` |
 | `SHOMEI_WEBAUTHN_CEREMONY_TIMEOUT` / `SHOMEI_WEBAUTHN_PENDING_TTL` | ceremony timeout / pending-ceremony TTL (seconds) | `300` |
+| `SHOMEI_MAX_PASSKEYS_PER_USER` | enrolled-passkey ceiling per account; integer from 1 to 100 | `20` |
 | `SHOMEI_MFA_REQUIRE_SECOND_FACTOR` | require MFA for accounts with an enrolled factor | `true` |
+| `SHOMEI_TOTP_ENABLED` | enable TOTP enrollment and login challenges | `false` |
+| `SHOMEI_TOTP_ENROLLMENT_TTL` | pending TOTP enrollment lifetime, seconds | `900` |
+| `SHOMEI_TOTP_ENCRYPTION_KEY` | **environment only**: base64 of 32 bytes; encrypts stored TOTP secrets; required when TOTP is enabled | unset |
 | `SHOMEI_MACHINE_TOKEN_TTL` | `client_credentials` and token-exchange access-token lifetime, seconds | `300` |
+| `SHOMEI_OIDC_ENABLED` | enable discovery and `/oauth/authorize`; requires an absolute `http(s)` issuer URL | `false` |
+| `SHOMEI_OAUTH_LOGIN_URL` | host login page for unauthenticated authorize redirects; unset returns `401` | unset |
+| `SHOMEI_OAUTH_CODE_TTL` | authorization-code lifetime, seconds | `60` |
+| `SHOMEI_OAUTH_ID_TOKEN_TTL` | ID-token lifetime, seconds | `900` |
 | `SHOMEI_SWEEP_ENABLED` | run the background expired-data sweeper in-process. Set `false` if you schedule `shomei-admin sweep` externally | `true` |
 | `SHOMEI_SWEEP_INTERVAL_SECONDS` | seconds between sweep cycles. Must be positive | `3600` |
 | `SHOMEI_SWEEP_BATCH_SIZE` | rows deleted per statement (sessions per statement, for refresh tokens). Must be positive | `1000` |
@@ -87,6 +110,26 @@ but any value containing `:` must parse as a URI. The server validates both valu
 | `SHOMEI_RTS_OPTS` | GHC runtime options the container entrypoint passes as `+RTS … -RTS`. Empty string passes none. **Do not use `GHCRTS`** — it leaks into `dhall-to-json` and breaks config loading | `-N<cpu-quota> [-A64m] --nonmoving-gc` |
 | `SHOMEI_CGROUP_ROOT` | where the entrypoint looks for the CPU quota. A test seam; leave unset | `/sys/fs/cgroup` |
 | `DATABASE_URL` | connection string used by `shomei-admin` | — |
+
+### Configuration-source differences
+
+`SHOMEI_SESSION_CHECK` is an environment-only override of the library's `sessionCheckMode`.
+Putting `sessionCheckMode` in a Dhall file is rejected as an unknown field. Embedded Haskell
+hosts can set it directly in `ShomeiConfig`.
+
+These standalone settings are available only through the Dhall file at `SHOMEI_CONFIG`;
+they have no environment-variable overrides:
+
+| Dhall field | Meaning | Default |
+|---|---|---|
+| `metricsEnabled` | record metrics and serve `GET /metrics` | `True` |
+| `requestLoggingEnabled` | emit a structured log line per request | `True` |
+| `gracefulShutdownTimeoutSeconds` | seconds to drain in-flight requests on shutdown | `30` |
+
+Secrets such as `SHOMEI_KEY_ENCRYPTION_KEY`, `SHOMEI_TOTP_ENCRYPTION_KEY`,
+`SHOMEI_SMTP_PASSWORD`, and `SHOMEI_WEBHOOK_SECRET` are environment-only and are not fields in
+the printable Dhall configuration. Admin commands using `loadAdminEnv`, including `audit`,
+require `DATABASE_URL`; they do not fall back to `PG_CONNECTION_STRING` or Dhall `databaseUrl`.
 
 ### Sizing the connection pool
 

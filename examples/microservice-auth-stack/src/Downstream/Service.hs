@@ -25,7 +25,7 @@
 --   The token was never judged invalid; the verifier is impaired.
 -- * __@Cache-Control: max-age@ is honored__ when the JWKS response carries it.
 --
--- Each request's Bearer token is verified offline with @shomei-jwt@'s 'verifyToken' against
+-- Each request's Bearer token is verified offline with @shomei-jwt@'s 'verifyTokenWith' against
 -- the cached keys. This service deliberately does not depend on @shomei-postgres@ and has no
 -- database.
 --

@@ -9,7 +9,7 @@ capabilityId: CAP-14
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
   - shomei-postgres
@@ -57,6 +57,10 @@ PKCE is **S256 only** and **mandatory for public clients**; a `code_challenge` w
 `S256` method is rejected rather than falling back to `plain`. Authorization codes are single-use
 and short-lived, and replay, a wrong verifier, and a stolen code are all one `invalid_grant` — a
 client cannot distinguish them.
+
+Replaying a still-live consumed authorization code also revokes the session and refresh tokens
+created by the first successful exchange. Outstanding access tokens remain subject to the
+session-check or introspection policy below.
 
 Introspection (`POST /oauth/introspect`) is **session-aware**: a token is `active` only if it
 verifies *and* its session is live, regardless of `sessionCheckMode`. That is what lets a resource

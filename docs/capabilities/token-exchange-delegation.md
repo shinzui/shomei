@@ -9,7 +9,7 @@ capabilityId: CAP-15
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
   - shomei-servant
@@ -27,7 +27,7 @@ evidence:
     proves: A delegated session is short-lived, carries act, and gets no refresh token.
   - kind: test
     resource: shomei-servant/test/Main.hs
-    proves: Both modes over HTTP including denyUnderImpersonation inheritance and the wire refusals; and that a delegated token cannot perform an admin mutation.
+    proves: Both modes over HTTP including denyUnderDelegation and the wire refusals; and that a delegated token cannot perform an admin mutation.
   - kind: test
     resource: shomei-server/test/Shomei/Server/E2ESpec.hs
     proves: On-behalf-of and impersonation against the live server, verified against the published JWKS and audited.
@@ -54,10 +54,17 @@ token. This is the paved road for propagating user identity across service hops.
 `ticket_id` parameters feed the audit trail, and an `impersonation_started` event is written.
 
 A delegated session is a **new, short-lived row with no refresh token**, so it cannot be silently
-renewed. Credential-changing endpoints — password change and every passkey mutation — refuse a
-delegated token with `403 impersonation_action_blocked` and audit the refusal, as do admin
-mutations. An operator can look but cannot change the customer's credentials or launder privilege
-through the admin API.
+renewed. `denyUnderDelegation` refuses password changes, passkey enrollment/removal, TOTP
+enrollment/removal, recovery-code generation, and admin mutations (grant/revoke role, suspend,
+reinstate, delete, password reset, and revoke one or all sessions) with
+`403 impersonation_action_blocked` and audits the refusal when the request reaches the handler.
+Admin routes first require the `admin` role or `shomei:admin` scope, so a delegated token without
+either is refused by that guard before the handler runs.
+
+Both modes mint empty `roles` and `permissions`; impersonation also mints empty `scopes`.
+Consequently role and permission guards refuse all delegated tokens, scope guards refuse
+impersonation tokens, and service on-behalf-of tokens can pass only their negotiated scope
+checks. See [CAP-9](type-level-authorization-guards.md).
 
 ## Limits
 

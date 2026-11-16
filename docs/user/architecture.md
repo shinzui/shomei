@@ -23,13 +23,14 @@ Each effect interface lives beside the concept it serves, usually in a
 smart constructor. Examples include `Shomei.Session.Store`, `Shomei.Account.User.Store`, and
 `Shomei.SigningKey.Store`; the non-store ports include `Shomei.SigningKey.Signer`,
 `Shomei.SigningKey.Verifier`, `Shomei.Session.Token.Generator`, `Shomei.Time.Store`, and
-`Shomei.Audit.Publisher.Store`. The surviving `Shomei.Effect` directory contains shared effect
-machinery, not the interfaces themselves.
+`Shomei.Audit.Publisher.Store`. There is no `Shomei.Effect` directory; interfaces and interpreters
+live in their concept-owned modules.
 
 There are two interpreter assemblies for the same canonical effect stack (`AppEffects`):
 
 - **In-memory** (`shomei-core/src/Shomei/Test/InMemory.hs`) — a single mutable `World` in an
-  `IORef`, used by the pure test suites. No database, JWT library, or network.
+  `IORef`, used by the test suites. Atomic compare-and-swap consumes and unit-of-work updates
+  honor the same port contracts as production; no database, JWT library, or network is needed.
 - **Production** (`shomei-server`/`runAppIO`) — the `hasql` PostgreSQL interpreters plus the real
   `jose` signer/verifier (ES256 by default, RS256 selectable). The servant in-process test uses a
   *hybrid* (in-memory stores + real ES256) so signing is genuinely exercised.

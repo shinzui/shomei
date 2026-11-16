@@ -9,7 +9,7 @@ capabilityId: CAP-1
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
 interface:
@@ -51,16 +51,18 @@ result <- runInMemory ref (login config clientContext loginCommand)
 ```
 
 `Shomei.Test.InMemory` is a shipped module, not test-suite scaffolding: it exports a `World`
-plus a `run*` interpreter for each of the ~20 ports (`runUserStore`, `runSessionStore`,
+plus a `run*` interpreter for each of the 28 ports (`runUserStore`, `runSessionStore`,
 `runRoleStore`, `runPasskeyStore`, `runTotpCredentialStore`, `runNotifier`, `runTokenSigner`, …),
 so a host can exercise its own code against Shōmei's workflows with no PostgreSQL.
 
 ## Limits
 
-- The in-memory interpreters are for tests and demos. They hold state in `IORef`s, are lost on
-  process exit, and make no attempt at the concurrency guarantees the PostgreSQL interpreters
-  provide — the compare-and-swap semantics that make refresh-token reuse detection safe are a
-  property of [CAP-6](postgresql-persistence-and-migrations.md), not of the port.
+- The in-memory interpreters are for tests and demos; their state is lost on process exit.
+  They implement the ports' atomicity contracts: `casWorld` uses `atomicModifyIORef'` for
+  single-winner consumes, and `runAuthUnitOfWork` commits multi-store write tails in one atomic
+  world update, including refresh rotation. [ADR-7](../adr/0007-security-state-transitions-are-atomic-at-the-persistence-boundary.md)
+  requires both interpreter sets to honor these contracts. This models atomicity for tests;
+  PostgreSQL supplies production durability and database isolation ([CAP-6](postgresql-persistence-and-migrations.md)).
 - PostgreSQL is the only production interpreter set that ships. The ports are pluggable in
   principle, but nobody has proven a second backend here.
 - The password hasher and breach checker are ports; `shomei-core` on its own gives you a stub

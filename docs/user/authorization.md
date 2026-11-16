@@ -94,7 +94,7 @@ host whose en schema genuinely branches on machine-ness *may* adopt `ObjectType 
 by the `client_id`, as a deliberate, documented schema choice — but the recommendation is to
 keep `user:` unless the schema actually decides on it.
 
-**Impersonation and delegated tokens** (RFC 8693 token exchange, `/auth/impersonate`) carry the
+**Impersonation and delegated tokens** (RFC 8693 token exchange at `POST /oauth/token`) carry the
 impersonated user in `sub` and the operator in `act`. Check en against the **subject** — that is
 the whole point of impersonation: the operator should see exactly what the user can see.
 Checking only the actor would leak the operator's broader access into the user's view. **Audit
@@ -103,6 +103,12 @@ in the verified Shōmei claims, and en has no actor notion of its own. If a poli
 "impersonation must not exceed the operator's own access," add a **second** en check against the
 actor (e.g. an `operator` permission on the same object); if the schema wants conditional rules
 about actor facts, those go in the **caveat context**.
+
+Delegated tokens carry no roles or permissions, so Shōmei's `RequireRole` and
+`RequirePermission` guards refuse them. Impersonation tokens also carry no scopes, so they
+cannot pass `RequireScope` or `RequireAdmin`. Service on-behalf-of tokens carry only their
+negotiated scopes and can pass matching scope guards. All admin mutations additionally reject
+tokens carrying `act`; see [the delegation policy](security.md#impersonation--delegated-tokens).
 
 ## Consistency
 

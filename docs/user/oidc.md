@@ -137,6 +137,14 @@ Send `code_challenge=$challenge&code_challenge_method=S256` at authorize, and th
 `code_verifier=$verifier` at token. A `code_challenge` sent without an explicit `S256` method is
 rejected — Shōmei never silently falls back to `plain`.
 
+## Authorization-code replay
+
+Authorization codes are single-use. Redeeming a still-live consumed code again returns
+`invalid_grant` and revokes the session and refresh tokens created by its first successful
+exchange. Discard the code after exchanging it; retrying a successful exchange can invalidate
+the relying party's new session. Outstanding access tokens still follow the
+[session-revocation rules](security.md#session-revocation).
+
 ## Refresh
 
 An authorization-code session always gets a refresh token (the `offline_access` scope is accepted

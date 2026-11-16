@@ -1,7 +1,7 @@
 ---
 title: "Type-level authorization guards"
 type: Capability
-description: "Guard a Servant route by writing a combinator in its type - Authenticated, RequireRole, RequireScope, or RequirePermission - with no in-handler check to forget."
+description: "Guard a Servant route by writing a combinator in its type - Authenticated, RequireRole, RequireScope, RequirePermission, or RequireAdmin - with no in-handler check to forget."
 generated:
   by: claude-opus-5/1
   at: "2026-08-27T00:00:00Z"
@@ -9,7 +9,7 @@ capabilityId: CAP-9
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-servant
 interface:
@@ -33,19 +33,28 @@ evidence:
 
 **Builds on:** [CAP-4 — jWT access tokens with a published JWKS](jwt-access-tokens-and-jwks.md).
 
-Four combinators, written in the route type:
+Five combinators, written in the route type:
 
 ```haskell
 Authenticated                  :> "me"       :> Get '[JSON] UserResponse
 RequireRole       "admin"      :> "admin" :> "users" :> Get '[JSON] [User]
 RequireScope      "kawa:ingest":> "ingest"   :> Post '[JSON] ()
 RequirePermission "projects:write" :> "projects" :> Put '[JSON] Project
+RequireAdmin                   :> "operations" :> Get '[JSON] Operations
 ```
 
 Each authenticates the caller and refuses one that lacks the role, scope, or permission —
 `401` with no token, `403` with the wrong one — before the handler runs. They **replace**
 `Authenticated` on a route rather than accompanying it, and the guarded handler receives the
 resolved `AuthUser`.
+
+`Authenticated` requires a valid credential without an additional claim gate. `RequireAdmin`
+accepts either the `admin` role or the `shomei:admin` scope.
+
+Delegated tokens have empty `roles` and `permissions`, so `RequireRole` and `RequirePermission`
+refuse them. Impersonation tokens also have empty `scopes`, so `RequireScope` and `RequireAdmin`
+refuse them too. Service on-behalf-of tokens can pass scope guards for their negotiated scopes;
+admin mutations additionally reject any token carrying `act` ([CAP-15](token-exchange-delegation.md)).
 
 `RequirePermission` is the one to reach for in a host service. It checks a flat `resource:verb`
 capability rather than a role name, so which roles imply it stays a central, re-wireable decision

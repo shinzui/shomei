@@ -1,5 +1,18 @@
 # Bundle Update Log
 
+## 2026-11-15
+* **Update**: Set CAP-1 through CAP-24 `since` to the first tagged source snapshot, `0.1.0.0`,
+  and distinguish source tags, Hackage candidates, and publication dates in the index.
+* **Update**: CAP-1, CAP-3, and CAP-6 now describe atomicity as a shared port contract, including
+  the in-memory interpreter's compare-and-swap and unit-of-work updates; CAP-1 lists 28 ports.
+* **Update**: CAP-5 states the required signing-key KEK; CAP-9 lists all five combinators and
+  their delegation behavior; CAP-14 explains authorization-code replay revocation; CAP-15
+  lists the credential, MFA, and admin mutations refused under delegation.
+* **Update**: CAP-17 explains that TOTP removal and recovery-code generation share the
+  impersonation freshness window and measure credential proof time, not token issuance time.
+* **Update**: CAP-21 explains that the master switch disables lockout, failure throttling, and
+  request-rate limiting together; CAP-22 gives the actual readiness body and check names.
+
 ## 2026-09-05
 * **Migrate**: Repin the shared `coordination.capabilities` profile to okf-profiles v0.13.1; the profile definition is unchanged, only its transitive OKF core import is newer.
 
@@ -19,5 +32,6 @@ consumer depends on, evidence a reader can open, and a truthful `Limits` section
 to match every other capability catalog in the portfolio. Provision claims only: absent
 capabilities stay in the improvement-request bundle, the two-tier authorization story with
 **en** is excluded as a composition claim, and there is deliberately no `planned` status.
-* **Note**: Every record carries `since: unreleased` and `stability: experimental`, because the
-repository has never cut a tagged release. Both fields become informative at the first tag.
+* **Note**: Records were initially authored with `since: unreleased` and `stability: experimental`.
+The source snapshot was subsequently tagged that day; the 2026-11-15 update reconciles `since`
+with those tags. Stability remains experimental.

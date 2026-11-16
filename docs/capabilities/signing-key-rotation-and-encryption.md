@@ -9,7 +9,7 @@ capabilityId: CAP-5
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-jwt
   - shomei-postgres
@@ -62,11 +62,12 @@ shomei-admin keys list
 A running server picks up an activation without a restart — the key reloader is a supervised
 background loop, and `SIGHUP` forces it.
 
-**Encryption at rest.** With `SHOMEI_KEY_ENCRYPTION_KEY` set, private key material is stored
-encrypted under that KEK. Publishing the JWKS and verifying tokens need no KEK at all — only
-signing does. `shomei-admin keys rewrap` moves every row from an old KEK to a new one, and aborts
-having written nothing if the old KEK is wrong, so a half-rewrapped table is not a reachable
-state.
+**Encryption at rest.** The standalone server requires `SHOMEI_KEY_ENCRYPTION_KEY` (base64 of
+32 bytes) and refuses to start if it is absent or malformed. Private key material is stored
+encrypted under that KEK. Offline verification and publishing public keys need no KEK, while
+loading private keys for signing requires it. `shomei-admin keys rewrap` moves every row from
+an old KEK to a new one, and aborts having written nothing if the old KEK is wrong, so a
+half-rewrapped table is not a reachable state.
 
 ## Limits
 

@@ -9,7 +9,7 @@ capabilityId: CAP-3
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
   - shomei-postgres
@@ -49,8 +49,8 @@ and expiry on every call. Access tokens are stateless by default: revoking a ses
 *refresh* immediately, while an outstanding access token rides out its TTL (15 minutes by
 default). Deployments that cannot accept that window set:
 
-```dhall
-sessionCheckMode = VerifyTokenAndSession
+```bash
+export SHOMEI_SESSION_CHECK=token-and-session
 ```
 
 which re-reads the session on every authenticated request and answers `401 session_revoked` or
@@ -65,9 +65,11 @@ the admin session listing, so a live session is distinguishable from a revoked o
   HTTP logout non-idempotent: a second `POST /v1/auth/logout` with the same access token is
   refused `401 session_revoked` by the auth handler. Under the default `VerifyTokenOnly`, logout
   is idempotent.
-- Reuse detection depends on the compare-and-swap `markUsed`, which is a PostgreSQL guarantee
-  ([CAP-6](postgresql-persistence-and-migrations.md)). The in-memory interpreter does not model
-  concurrent writers the same way.
+- Reuse detection depends on the atomic refresh-rotation port. Both the PostgreSQL
+  ([CAP-6](postgresql-persistence-and-migrations.md)) and in-memory interpreters enforce its
+  single-winner compare-and-swap contract; the in-memory interpreter commits the rotation in
+  one `atomicModifyIORef'` world update. Database durability and isolation still require the
+  production interpreter.
 - Delegated (impersonation) sessions deliberately have **no** refresh token — see
   [CAP-15](token-exchange-delegation.md).
 - This setting was documented before it worked: until the fix recorded in the current changelog,

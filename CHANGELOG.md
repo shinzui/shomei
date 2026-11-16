@@ -70,7 +70,7 @@ Other changes include atomic passkey enrollment ceilings, finite identity/role/s
 write limits, case-insensitive bearer schemes with strict duplicate/malformed credential
 rejection, shared connection admission and slow-client limits, and improved audit/boot diagnostics.
 
-## 2026-08-27 — second Hackage release
+## 2026-08-27 — first Hackage release
 
 Every package moved to `0.2.0.0`. Five were published:
 
@@ -90,11 +90,11 @@ Still not published, and still blocked by the same upstream:
 | `shomei-server` | 0.2.0.0 | depends on `shomei-webauthn` |
 | `shomei-client` | 0.2.0.0 | its library is clean, but its test-suite depends on `shomei-server` |
 
-The `jose 0.13` blocker recorded at the first release is gone — `jose` 0.13 is on Hackage and the
-git pin was dropped. The `webauthn` fork is the only remaining non-Hackage dependency.
+The `jose 0.13` blocker recorded during candidate preparation is gone — `jose` 0.13 is on Hackage
+and the git pin was dropped. The `webauthn` fork is the only remaining non-Hackage dependency.
 
 Upgrading from `0.1.0.0` is a breaking change in every package. The one that needs operator
-attention beyond a recompile is `shomei-migrations`: its published SQL was rewritten in place to
+attention beyond a recompile is `shomei-migrations`: its candidate SQL was rewritten in place to
 schema-qualify every Shōmei relation, so a database that already applied the `0.1.0.0` files will
 fail `pg-migrate` checksum verification.
 
@@ -117,9 +117,11 @@ The changes that make up this release follow.
 - OIDC interoperability now form-decodes Basic credentials, advertises token exchange, recognizes
   refresh tokens during hint-less introspection, and emits the correct missing-bearer challenge.
 
-## 2026-08-24 — first Hackage release
+## 2026-08-24 — tagged source and Hackage candidates
 
-The first packages published to Hackage, all at `0.1.0.0`:
+The first package-prefixed source tags and Hackage candidates, all at `0.1.0.0`.
+These candidates were not published as Hackage releases; the first published versions were
+`0.2.0.0` on 2026-08-27:
 
 | package | version | notes |
 | --- | --- | --- |
@@ -129,7 +131,7 @@ The first packages published to Hackage, all at `0.1.0.0`:
 | [`shomei-postgres`](shomei-postgres/CHANGELOG.md) | 0.1.0.0 | `hasql` interpreters, Argon2id hashing, unit of work, sweeper |
 | [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.1.0.0 | `ShomeiAPI`, handlers, auth combinators, OpenAPI 3.1 document |
 
-Not published in this batch:
+Other packages remained blocked:
 
 | package | blocked by |
 | --- | --- |
@@ -143,7 +145,7 @@ to match the rest), `description`, `homepage`, `bug-reports`, `tested-with`, a
 `source-repository head` stanza, per-package changelogs, and PVP upper bounds on every
 dependency, with `^>=` caret bounds on the internal ones.
 
-The changes that make up this first release follow.
+The changes that make up this first tagged source snapshot follow.
 
 ### Fixed — security: `sessionCheckMode = VerifyTokenAndSession` was a no-op on authenticated routes
 
@@ -330,9 +332,9 @@ outstanding *access* tokens ride out their TTL unless the deployment sets
 
 ### Breaking (pre-1.0 window) — MasterPlan 7 (Interop Wave), EP-3: `/v1` and problem-details errors
 
-Shōmei has never cut a tagged release. These changes land together, deliberately, so that a
-consumer migrates once rather than three times. Every later MasterPlan-7 endpoint (the admin API,
-OAuth2, OIDC, token exchange, TOTP) is born under the contract established here.
+These changes landed together before the first source tags, so that a consumer migrated once
+rather than three times. Every later MasterPlan-7 endpoint (the admin API, OAuth2, OIDC, token
+exchange, TOTP) was introduced under the contract established here.
 
 **1. Application routes moved under `/v1`.** `POST /auth/login` is now `POST /v1/auth/login`, and
 so on for every `/auth/*` and `/admin/*` route. The old paths are **gone** — they answer `404`,

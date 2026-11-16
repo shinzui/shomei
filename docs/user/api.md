@@ -406,9 +406,9 @@ A *delegated token* lets an authorized internal operator act **on behalf of** a 
 keeping their own identity attached. The minted access token carries **two identities**: `sub`
 is the customer being acted upon and `act` is the real operator (mirroring RFC 8693). The
 delegated session is a brand-new, short-lived row with **no refresh token**, so it cannot be
-silently renewed and expires at its TTL. Shōmei gates only its own credential-changing endpoints
-against delegated tokens; who-may-impersonate-whom policy and business-action gating live in the
-embedding service, which reads `act`/`sub` from the verified token. See
+silently renewed and expires at its TTL. Shōmei blocks its own credential-changing and admin
+mutations under delegated tokens; who-may-impersonate-whom policy and business-action gating
+live in the embedding service, which reads `act`/`sub` from the verified token. See
 [security.md](security.md#impersonation--delegated-tokens).
 
 Create delegated tokens with the [RFC 8693 token-exchange grant](#token-exchange-rfc-8693):

@@ -9,7 +9,7 @@ capabilityId: CAP-4
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-jwt
   - shomei-core

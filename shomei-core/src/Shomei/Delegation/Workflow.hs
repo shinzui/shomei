@@ -132,8 +132,8 @@ data DelegatedMint = DelegatedMint
 -- 'subjectUserId', @act@ = 'actorUserId') plus 'scopes'. No refresh token, no @LoginSucceeded@\/
 -- @SessionStarted@ events — the delegated session cannot be silently renewed and dies at its TTL.
 --
--- This is the single mint both delegation flows share, so the standards-based token-exchange grant
--- and the bespoke @\/auth\/impersonate@ endpoint cannot drift in session shape or claim contents.
+-- This is the single mint both modes of the @POST \/oauth\/token@ token-exchange grant share,
+-- so impersonation and service on-behalf-of cannot drift in session shape or claim contents.
 -- The audit event is the caller's responsibility, because impersonation and on-behalf-of publish
 -- different events.
 mintDelegatedToken ::

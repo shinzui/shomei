@@ -9,7 +9,7 @@ capabilityId: CAP-17
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-core
   - shomei-postgres
@@ -65,8 +65,9 @@ each completes an MFA challenge exactly once.
   absent or malformed, the server refuses to boot.
 - **Losing that key makes every stored TOTP secret undecryptable.** Affected users must complete
   MFA with a recovery code or a passkey, remove TOTP, and re-enroll. There is no escrow.
-- Regenerating recovery codes invalidates the previous set, and requires a token newer than
-  `impersonationConfig.actorFreshnessWindow` (5 minutes by default) — otherwise
-  `403 reauthentication_required`.
+- Regenerating recovery codes invalidates the previous set. Both regeneration and TOTP removal
+  require the token's `auth_time` to be within `impersonationConfig.actorFreshnessWindow`
+  (5 minutes by default), otherwise `403 reauthentication_required`. Refresh rotates `iat`
+  without renewing `auth_time`; a stale caller must authenticate again.
 - A delegated (impersonation) token cannot enroll, remove, or regenerate; those paths answer
   `403` and are audited.

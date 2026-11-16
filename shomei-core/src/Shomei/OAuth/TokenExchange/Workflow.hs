@@ -3,15 +3,15 @@
 -- Token exchange generalizes the two delegated-token stories Shōmei already tells into one
 -- standard grant. Both modes issue a __delegation-shaped__ token — @sub@ names the represented
 -- party, @act@ names who is wielding it — through the single shared mint
--- 'Shomei.Delegation.Workflow.mintDelegatedToken', so the standards path and the bespoke
--- @\/auth\/impersonate@ endpoint cannot drift.
+-- 'Shomei.Delegation.Workflow.mintDelegatedToken', so impersonation and service on-behalf-of
+-- cannot drift in session shape or claim contents.
 --
 --   * __Impersonation mode__ — an operator holding the @impersonate:user@ scope exchanges a bare
 --     user id (@subject_token_type = urn:shomei:params:oauth:token-type:user-id@) plus their own
 --     access token as the @actor_token@, for a token that /is/ that user. This reuses
 --     'Shomei.Delegation.Workflow.startImpersonation' verbatim, so the scope gate, freshness
 --     gate, self\/active-target checks, refresh-less session, and @impersonation_started@ audit
---     event are literally the same code as the bespoke endpoint.
+--     event are shared with the library's impersonation workflow.
 --
 --   * __Service on-behalf-of mode__ — a service account (EP-4) authenticates as the OAuth client of
 --     the request and presents a user's access token as the @subject_token@. It receives a

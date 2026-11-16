@@ -9,7 +9,7 @@ capabilityId: CAP-16
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-webauthn
   - shomei-core

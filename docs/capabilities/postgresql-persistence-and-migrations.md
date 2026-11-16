@@ -9,7 +9,7 @@ capabilityId: CAP-6
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-postgres
   - shomei-migrations
@@ -76,9 +76,9 @@ standalone server forks it) or once with `shomei-admin sweep`.
 
 ## Limits
 
-- **PostgreSQL only.** There is no second production interpreter set, and some behavior a
-  consumer depends on — the compare-and-swap consumes above — is a property of these
-  interpreters rather than of the ports.
+- **PostgreSQL only.** There is no second production interpreter set. Atomic consumes and
+  multi-store write tails are port contracts honored by both PostgreSQL and the in-memory
+  test interpreter; PostgreSQL provides their durable, database-backed implementation.
 - The schema occupies the `shomei` PostgreSQL schema and tracks applied migrations in
   `pg-migrate`'s own ledger. A host composing components shares that ledger; two plans over one
   database is not a supported topology.

@@ -9,7 +9,7 @@ capabilityId: CAP-22
 provider: mori://shinzui/shomei
 status: shipped
 stability: experimental
-since: unreleased
+since: "0.1.0.0"
 packages:
   - shomei-server
 interface:
@@ -39,9 +39,11 @@ evidence:
 **Builds on:** [CAP-20 — standalone authentication service](standalone-auth-service.md).
 
 - **`GET /health/live`** — the process is up.
-- **`GET /health/ready`** — PostgreSQL is reachable *and* an active signing key exists. A `503`
-  answers with a `{"status","database","signingKey"}` document naming which check failed, so an
-  orchestrator's probe output says *why*.
+- **`GET /health/ready`** — PostgreSQL is reachable *and* an active signing key exists. A `200`
+  answers with `{"check":"all","failingSince":null,"status":"ok"}`. A `503` carries
+  `"status":"failed"`, a `failingSince` timestamp, and `"check":"signing-key"` when no active
+  key exists or `"check":"postgres"` when the database query fails or times out. The timestamp
+  records the start of the current failing run and resets after recovery.
 - **`GET /metrics`** — a hand-rolled Prometheus exposition: request counts, an in-flight gauge,
   and latency. The gauge is decremented even when a handler throws, method labels have a fixed
   vocabulary, and label values are escaped for the exposition format.
