@@ -312,9 +312,9 @@ problemBody spec = toJSON . problemDetails spec
 
 -- | The response headers a problem document carries at a given status.
 --
--- A 401 advertises the scheme the client should use (RFC 6750 §3); a 429 tells the client how
--- long to wait. The token bucket refills continuously, so 60 seconds is an honest upper bound
--- for a full per-minute budget rather than an exact wait.
+-- Challenges and retry intervals are supplied by the occurrence, not inferred from status.
+-- The request throttle supplies 60 seconds: an honest upper bound for a full per-minute
+-- token-bucket budget. A retryable specification alone supplies no interval.
 problemHeaders :: ProblemOccurrence -> [Header]
 problemHeaders occurrence =
   [("Content-Type", "application/problem+json")]

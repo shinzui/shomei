@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-11-16T21:31:44Z
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-16T21:42:05Z
+      mode: "implement"
+      note: "Implement accurate served OAuth catalog and regression coverage"
 ---
 
 # Align the public error catalog with served OAuth responses
@@ -24,10 +30,10 @@ After implementation, a reader can distinguish a quota refusal (`503 temporarily
 
 ## Progress
 
-- [ ] Correct the public catalog and related OAuth guidance, preserving all existing problem-type anchors and documenting which mappings are library-only.
-- [ ] Verify the documented distinctions with HTTP and catalog regression coverage; pass the focused test suites and formatting checks.
+- [x] (2026-11-16) Corrected the public catalog and related OAuth guidance, preserved all problem-type anchors, and separated library-only mappings. Catalog-anchor and mapping checks pass.
+- [x] (2026-11-16) Verified all four served mappings, optional instance serialization, and catalog classification: 53 HTTP tests and 72 OpenAPI/catalog examples pass. Restoring the old classification and retry promise produces the intended catalog-test failure. Formatting and whitespace checks pass.
 
-Planning completed on 2026-11-16. Implementation has not begun.
+Implementation completed on 2026-11-16. Existing runtime contracts and generated OpenAPI are unchanged.
 
 ## Surprises & Discoveries
 
@@ -38,6 +44,28 @@ Planning completed on 2026-11-16. Implementation has not begun.
 - Decision: Preserve the exported problem specifications, generic AuthError mappings, optional occurrence fields, and public anchors. Separate library-only mappings from the built-in route catalog. Rationale: embedding applications can use these APIs and existing type URIs must continue to resolve; availability in the library does not prove reachability from a built-in route. Date: 2026-11-16.
 
 ## Outcomes & Retrospective
+
+Completed both milestones on 2026-11-16. The public documentation now describes the OAuth
+responses actually served for session quotas and impersonation refusals, retains the reusable
+library mappings and public anchors, and explains omission of built-in `instance` values.
+Regression coverage exercises real HTTP requests, safe descriptions, cache headers, absent
+retry/challenge headers and problem members, optional instance serialization and schema
+validation, and the two catalog classifications.
+
+Baseline suites passed (52 HTTP tests; 68 OpenAPI examples). The expanded suites pass
+(53 HTTP tests; 72 OpenAPI examples). A deliberate restoration of the old session-limit row
+and always-retry claim failed only the targeted catalog classification check (72 examples,
+1 failure); restoring the corrected catalog returned the suite to green. `nix fmt -- --fail-on-change`
+and `git diff --check` pass. No schema regeneration or runtime behavior change was necessary.
+
+ADR distillation reviewed the Decision Log against ADR-27: the existing namespace-owned
+OAuth envelope, challenge policy and throttle retry interval already capture the durable
+architecture. This implementation adds documentation and regression evidence without a new
+architectural decision, so no ADR change is needed.
+
+[FRIC-8](../friction-log/8-mori-registry-requires-an-unavailable-local-postgresql-service.md)
+was triaged as accepted: Mori registry discovery required an unavailable local PostgreSQL
+service; this plan used repository-local APIs and needed no dependency lookup or version changes.
 
 
 ## Context and Orientation

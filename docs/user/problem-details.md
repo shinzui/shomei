@@ -7,7 +7,10 @@ URL prefix; `retryable` is a Shōmei extension. Clients must ignore unknown exte
 
 `detail` and `instance` are optional occurrence data. They never contain tokens, database
 identifiers, driver messages, stack traces, or other secrets. A client should branch on `type`
-or `code`, not on `title` or `detail`.
+or `code`, not on `title` or `detail`. Built-in handlers omit `instance`; embedding
+applications can supply a safe reference through `ProblemOccurrence.instanceUri`.
+
+## Built-in application errors
 
 | Type anchor | Stable title | Status | Retryable | Safe client behavior | `Retry-After` |
 | --- | --- | ---: | :---: | --- | --- |
@@ -17,7 +20,6 @@ or `code`, not on `title` or `detail`.
 | <a id="email_taken"></a>`email_taken` | Email is already registered | 409 | no | Use another email or recover the existing account. | never |
 | <a id="login_id_taken"></a>`login_id_taken` | Login identifier is already registered | 409 | no | Choose another login identifier. | never |
 | <a id="invalid_login"></a>`invalid_login` | Invalid login identifier or password | 401 | no | Re-enter credentials without probing account existence. | never |
-| <a id="session_limit_reached"></a>`session_limit_reached` | Active machine or delegated session limit reached | 429 | yes | Revoke an unused session or wait for expiry; existing sessions remain usable. | always, in seconds |
 | <a id="too_many_requests"></a>`too_many_requests` | Too many requests | 429 | yes | Wait before retrying. | always, in seconds |
 | <a id="session_not_found"></a>`session_not_found` | Session not found | 404 | no | Refresh local session state. | never |
 | <a id="session_expired"></a>`session_expired` | Session expired | 401 | no | Authenticate again. | never |
@@ -40,8 +42,6 @@ or `code`, not on `title` or `detail`.
 | <a id="totp_code_invalid"></a>`totp_code_invalid` | TOTP code is invalid | 401 | no | Present a new current code. | never |
 | <a id="recovery_code_invalid"></a>`recovery_code_invalid` | Recovery code is invalid | 401 | no | Present an unused recovery code. | never |
 | <a id="reauthentication_required"></a>`reauthentication_required` | Recent authentication required for this action | 403 | no | Log in again (or complete MFA again); refreshing does not count. | never |
-| <a id="impersonation_forbidden"></a>`impersonation_forbidden` | Not allowed to impersonate | 403 | no | Stop; the caller lacks delegation authority. | never |
-| <a id="impersonation_target_invalid"></a>`impersonation_target_invalid` | Invalid impersonation target | 400 | no | Correct the delegation target. | never |
 | <a id="impersonation_action_blocked"></a>`impersonation_action_blocked` | This action is not permitted while impersonating | 403 | no | Use the actor's own session. | never |
 | <a id="user_not_found"></a>`user_not_found` | User not found | 404 | no | Refresh user state. | never |
 | <a id="role_not_defined"></a>`role_not_defined` | Role not defined | 422 | no | Choose a role defined by the deployment. | never |
@@ -62,9 +62,42 @@ or `code`, not on `title` or `detail`.
 | <a id="self_target_forbidden"></a>`self_target_forbidden` | An administrator cannot perform this action on their own account | 403 | no | Choose another administrator or target. | never |
 | <a id="role_not_granted"></a>`role_not_granted` | User does not hold that role | 404 | no | Refresh the user's grants. | never |
 
-OAuth/OIDC protocol errors are intentionally not listed here: those operations retain the RFC
-6749 JSON vocabulary through parsing, routing and outer middleware. In an OAuth namespace,
-413 is `invalid_request` and 429 is `temporarily_unavailable` with `Retry-After: 60`; both are
-non-cacheable JSON operational extensions without a challenge. Application paths such as
-`/v1/auth/login` retain the catalog entries above. See [the OAuth error contract](oidc.md#error-and-challenge-contract)
-for challenges and explicit lower-level/proxy exclusions. Health probes retain the package-owned `servant-health` report shape.
+## Library-only mappings
+
+These reusable library specifications and generic `AuthError` mappings are available to
+embedding applications that explicitly render them. Built-in routes currently do not emit
+these problem documents. Their type anchors remain stable.
+
+| Type anchor | Stable title | Status | Retryable | Safe client behavior | `Retry-After` |
+| --- | --- | ---: | :---: | --- | --- |
+| <a id="session_limit_reached"></a>`session_limit_reached` | Active machine or delegated session limit reached | 429 | yes | Revoke an unused session or wait for expiry; existing sessions remain usable. | absent in generic mapping |
+| <a id="impersonation_forbidden"></a>`impersonation_forbidden` | Not allowed to impersonate | 403 | no | Stop; the caller lacks delegation authority. | never |
+| <a id="impersonation_target_invalid"></a>`impersonation_target_invalid` | Invalid impersonation target | 400 | no | Correct the delegation target. | never |
+
+For `session_limit_reached`, the generic mapping supplies no `Retry-After`. Retryability means
+retry can make sense; it does not promise a known delay. A caller may supply an honest interval
+through `ProblemOccurrence.retryAfterSeconds` when one is known.
+
+## Served OAuth errors
+
+These failures use RFC 6749 JSON (`error` and `error_description`), with `Cache-Control: no-store`
+and `Pragma: no-cache`, throughout the OAuth namespace. They have no problem-document fields.
+
+| Failure | Endpoint | Status | OAuth error | `Retry-After` | `WWW-Authenticate` |
+| --- | --- | ---: | --- | --- | --- |
+| Machine-session quota | `POST /oauth/token` | 503 | `temporarily_unavailable` | absent | absent |
+| Delegated-session quota | `POST /oauth/token` | 503 | `temporarily_unavailable` | absent | absent |
+| Impersonation authority refusal | `POST /oauth/token` | 400 | `invalid_grant` | absent | absent |
+| Invalid impersonation target | `POST /oauth/token` | 400 | `invalid_grant` | absent | absent |
+
+Quota refusals describe `active session limit reached`. Revoke an unused session or wait for
+expiry; existing sessions remain usable and there is no fixed recovery delay. Both
+impersonation refusals deliberately describe `the subject or actor token is invalid`, concealing
+policy and target details.
+
+Request throttling is separate: in an OAuth namespace it returns 429 `temporarily_unavailable`
+with `Retry-After: 60`. Oversized bodies return 413 `invalid_request`. Both are non-cacheable
+JSON operational extensions without a challenge. Application paths such as `/v1/auth/login`
+use the built-in application catalog above. See [the OAuth error contract](oidc.md#error-and-challenge-contract)
+for challenges and explicit lower-level/proxy exclusions. Health probes retain the package-owned
+`servant-health` report shape.

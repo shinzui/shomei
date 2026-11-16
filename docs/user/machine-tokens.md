@@ -67,6 +67,12 @@ OAuth failures use RFC 6749 error objects rather than Problem Details:
 {"error":"invalid_client","error_description":"client authentication failed"}
 ```
 
+Machine and delegated session quota exhaustion at `POST /oauth/token` returns
+503 `temporarily_unavailable` without `Retry-After` or an authentication challenge. Revoke an
+unused session or wait for expiry; there is no fixed recovery delay. Impersonation refusals
+return generic 400 `invalid_grant`. See [served OAuth mappings](problem-details.md#served-oauth-errors)
+for the authoritative quota and impersonation error contract, distinct from throttling below.
+
 Every OAuth error carries `Cache-Control: no-store` and `Pragma: no-cache`. Client-authentication
 failures use `401 invalid_client` with `WWW-Authenticate: Basic realm="shomei"`, including required
 absent or body-supplied credentials. An unrelated grant rejection has no challenge. Oversized

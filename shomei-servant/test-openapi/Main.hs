@@ -12,9 +12,9 @@
 --   2. Smoke assertions on the assembled 'shomeiOpenApi': the @openapi@ version
 --      is @3.1.0@ and the document covers the expected number of paths.
 --
---   3. EP-3: the error surface. Every documented error code exists in the runtime
---      'problemCatalog' at the documented status, so the spec cannot promise a code or a
---      status the server never sends; and the document 'Shomei.Servant.Error.problemBody'
+--   3. EP-3: the error surface. The public catalog distinguishes built-in responses from
+--      generic library mappings, preserves all type anchors, and documents served OAuth
+--      quota and impersonation refusals; the document 'Shomei.Servant.Error.problemBody'
 --      actually writes for every catalog entry validates against the published @Problem@
 --      schema, so the two halves of the envelope cannot drift apart. Plus the hygiene
 --      invariants a generated client depends on: no @204@ carries content, no response
@@ -58,6 +58,7 @@ import Shomei.Account.User.Dto
 import Shomei.Audit.Api
 import Shomei.Audit.Dto
 import Shomei.Authorization.Api
+import Shomei.Error (AuthError (SessionLimitReached))
 import Shomei.Mfa.Api
 import Shomei.Mfa.Dto
 import Shomei.OAuth.Api
@@ -65,7 +66,7 @@ import Shomei.Passkey.Api
 import Shomei.Passkey.Dto
 import Shomei.Servant.Api (OpenApiRoute, ShomeiRoutes)
 import Shomei.Servant.CachedJson (CachedJson, cacheJson, cachedJsonBytes, cachedJsonValue)
-import Shomei.Servant.Error (ProblemDetails (..), ProblemSpec (..), detailOccurrence, noProblemOccurrence, problemBody, problemCatalog, problemDetails, problemTypeFor, toProblemError)
+import Shomei.Servant.Error (ProblemDetails (..), ProblemOccurrence (..), ProblemSpec (..), authErrorToServerError, detailOccurrence, noProblemOccurrence, pcSessionLimitReached, problemBody, problemCatalog, problemDetails, problemTypeFor, toProblemError)
 import Shomei.Servant.OAuth (OAuthErrorResponse (..), TokenResponse (..))
 import Shomei.Servant.OpenApi (openApiDocument, openApiValue, shomeiOpenApi)
 import Shomei.Session.Admin.Api
@@ -387,6 +388,44 @@ spec = do
       [p.problemCode | p <- problemCatalog, not (Text.isInfixOf ("id=\"" <> p.problemCode <> "\"") problemCatalogDocument)]
         `shouldBe` []
 
+    it "keeps the three generic mappings outside the built-in application table" $ do
+      let builtin = catalogTable problemCatalogDocument "Built-in application errors"
+          library = catalogTable problemCatalogDocument "Library-only mappings"
+      forM_
+        [ ("session_limit_reached", "429", "yes", "absent in generic mapping"),
+          ("impersonation_forbidden", "403", "no", "never"),
+          ("impersonation_target_invalid", "400", "no", "never")
+        ]
+        $ \(code, status, retryable, retryHeader) -> do
+          filter (any (Text.isInfixOf ("id=\"" <> code <> "\""))) builtin `shouldBe` []
+          case filter (any (Text.isInfixOf ("id=\"" <> code <> "\""))) library of
+            [[_, _, actualStatus, actualRetryable, _, actualRetryHeader]] -> do
+              actualStatus `shouldBe` status
+              actualRetryable `shouldBe` retryable
+              actualRetryHeader `shouldBe` retryHeader
+            rows -> expectationFailure ("expected one library row for " <> Text.unpack code <> ": " <> show rows)
+
+    it "documents the served OAuth quota and impersonation statuses without retry or challenge headers" $ do
+      catalogTable problemCatalogDocument "Served OAuth errors"
+        `shouldBe` [ ["Machine-session quota", "`POST /oauth/token`", "503", "`temporarily_unavailable`", "absent", "absent"],
+                     ["Delegated-session quota", "`POST /oauth/token`", "503", "`temporarily_unavailable`", "absent", "absent"],
+                     ["Impersonation authority refusal", "`POST /oauth/token`", "400", "`invalid_grant`", "absent", "absent"],
+                     ["Invalid impersonation target", "`POST /oauth/token`", "400", "`invalid_grant`", "absent", "absent"]
+                   ]
+
+    it "renders the generic session-limit mapping without an invented retry interval" $ do
+      let rendered = authErrorToServerError SessionLimitReached
+      rendered.errHTTPCode `shouldBe` 429
+      lookup "Retry-After" rendered.errHeaders `shouldBe` Nothing
+
+    it "serializes and schema-validates an explicit safe instance while omitting empty occurrences" $ do
+      let occurrence = noProblemOccurrence {instanceUri = Just "/requests/example"}
+          populated = problemBody pcSessionLimitReached occurrence
+          empty = problemBody pcSessionLimitReached noProblemOccurrence
+      field "instance" populated `shouldBe` Just (String "/requests/example")
+      field "instance" empty `shouldBe` Nothing
+      validateJSON mempty publishedProblemSchema populated `shouldBe` []
+
     it "renders matching RFC 9457 bodies and media types at the pre-handler boundary" $
       [ p.problemCode
       | p <- problemCatalog,
@@ -413,6 +452,15 @@ spec = do
     it "marks every request body required" $
       [key | (key, op) <- operations, Just body <- [KM.lookup "requestBody" op], not (isRequired body)] `shouldBe` []
   where
+    -- Read only table rows in one section; explanatory prose is free to evolve.
+    catalogTable document heading =
+      let section =
+            takeWhile
+              (not . Text.isPrefixOf "## ")
+              (drop 1 (dropWhile (/= "## " <> heading) (Text.lines document)))
+          rows = filter (Text.isPrefixOf "| ") section
+       in [map Text.strip (init (tail (Text.splitOn "|" row))) | row <- drop 2 rows]
+
     decoded :: KM.KeyMap Value
     decoded = case decode (encode shomeiOpenApi) of
       Just (Object o) -> o

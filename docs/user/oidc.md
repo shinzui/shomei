@@ -232,6 +232,12 @@ and `Basic realm="shomei"`, including required absent or body-supplied credentia
 uses `Bearer realm="shomei"` for missing credentials and adds `error="invalid_token"` for invalid
 credentials. Supplying Basic on an unrelated grant failure does not add a challenge.
 
+Machine and delegated session quota exhaustion at `POST /oauth/token` returns
+503 `temporarily_unavailable` without `Retry-After` or an authentication challenge. Revoke an
+unused session or wait for expiry; there is no fixed recovery delay. Impersonation refusals
+return generic 400 `invalid_grant`. See [served OAuth mappings](problem-details.md#served-oauth-errors)
+for the authoritative quota and impersonation error contract, distinct from throttling below.
+
 OAuth errors have JSON media type, `Cache-Control: no-store` and `Pragma: no-cache`.
 Parsing and duplicate-Authorization errors return safe 400 `invalid_request`; unknown namespace
 paths return 404 `invalid_request`; method, Accept and Content-Type failures preserve 405, 406

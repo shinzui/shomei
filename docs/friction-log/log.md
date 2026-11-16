@@ -2,6 +2,12 @@
 
 ## 2026-11-16
 
+* **Update**: FRIC-8 accepted: Accept the local registry outage for this documentation and regression-only plan.
+
+
+* **Addition**: FRIC-8 records detour environment friction with mori://shinzui/mori: Mori registry requires an unavailable local PostgreSQL service
+
+
 * **Update**: FRIC-7 accepted: Accept a narrowly scoped http-client internal manager override until a per-request retry API exists.
 
 

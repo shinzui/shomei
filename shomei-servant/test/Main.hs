@@ -849,6 +849,7 @@ scenarioProblemEnvelope port = do
   -- (1) The auth handler: no credential at all. The commonest failure in any deployment.
   r1 <- getRaw mgr port "/v1/auth/me" []
   assertProblem "missing token" 401 "missing_token" r1
+  (bodyOf r1 >>= dig ["instance"]) @?= Nothing
   headerValue "WWW-Authenticate" (headersOf r1) @?= Just "Bearer"
 
   -- (2) The auth handler: a credential that fails verification. Deliberately indistinguishable
@@ -1336,6 +1337,19 @@ assertOAuthError what expectedStatus expectedCode (status, hdrs, body) = do
   assertEqual (what <> ": error code") (Just expectedCode) (dig ["error"] doc >>= asText)
   assertBool (what <> ": has an error_description") (isJust (dig ["error_description"] doc))
 
+-- Quota and impersonation refusals deliberately supply neither a delay nor a challenge.
+assertOAuthRefusal :: String -> Int -> Text -> Text -> RawResponse -> IO ()
+assertOAuthRefusal what expectedStatus expectedCode description response = do
+  assertOAuthError what expectedStatus expectedCode response
+  let hdrs = headersOf response
+  headerValue "Pragma" hdrs @?= Just "no-cache"
+  headerValue "Retry-After" hdrs @?= Nothing
+  headerValue "WWW-Authenticate" hdrs @?= Nothing
+  doc <- must (what <> ": body") (bodyOf response)
+  dig ["error_description"] doc @?= Just (String description)
+  forM_ ["type", "title", "status", "code", "retryable", "instance", "detail"] $ \key ->
+    assertEqual (what <> ": no problem member " <> T.unpack key) Nothing (dig [key] doc)
+
 -- | POST an arbitrary (here: malformed) body, to exercise Servant's body parser.
 postRawBytes :: Manager -> Int -> String -> LBS.ByteString -> IO RawResponse
 postRawBytes mgr port path raw = do
@@ -1434,7 +1448,27 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
           first <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "client_credentials")]
           statusOf first @?= 200
           second <- postForm mgr port "/oauth/token" (Just (clientId, oauthClientSecret)) [("grant_type", "client_credentials")]
-          assertOAuthError "machine quota" 503 "temporarily_unavailable" second,
+          assertOAuthRefusal "machine quota" 503 "temporarily_unavailable" "active session limit reached" second,
+      testCase "OAuth delegated quota returns 503 after a successful exchange" $ do
+        (_, gateId, _, _, e) <- freshExchangeEnv
+        testWithApplication (pure (app e {config = e.config {maxActiveNonInteractiveSessions = 1}})) $ \port -> do
+          mgr <- newManager defaultManagerSettings
+          (subjectToken, _) <- signupTokenAndId mgr port "quota-subject"
+          let exchange =
+                postForm
+                  mgr
+                  port
+                  "/oauth/token"
+                  (Just (gateId, oauthClientSecret))
+                  [ ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+                    ("subject_token", Text.encodeUtf8 subjectToken),
+                    ("subject_token_type", "urn:ietf:params:oauth:token-type:access_token"),
+                    ("scope", "kawa:ingest")
+                  ]
+          first <- exchange
+          statusOf first @?= 200
+          second <- exchange
+          assertOAuthRefusal "delegated quota" 503 "temporarily_unavailable" "active session limit reached" second,
       testCase "HTTP session pages default to 50, cap at 200 and walk tied timestamps" $ do
         (r, e) <- freshPermissionEnv
         testWithApplication (pure (app e)) (scenarioSessionPaging r),
@@ -2016,6 +2050,26 @@ scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId adminClientId
     postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
   introInactiveDoc <- must "introspect (inactive) body" (bodyOf introInactive)
   dig ["active"] introInactiveDoc @?= Just (Bool False)
+
+  -- Valid signed, live actors reach the workflow guards: missing authority and self-target.
+  ordinaryActor <- mkTokenForSession jwk cfg operatorUid operatorSid Set.empty Set.empty Nothing issuedAt
+  let impersonate actor target =
+        postForm
+          mgr
+          port
+          "/oauth/token"
+          Nothing
+          [ teGrant,
+            ("subject_token", enc target),
+            ("subject_token_type", userIdType),
+            ("actor_token", enc actor),
+            ("actor_token_type", accessType)
+          ]
+      safeDescription = "the subject or actor token is invalid"
+  forbidden <- impersonate ordinaryActor targetId
+  assertOAuthRefusal "impersonation authority" 400 "invalid_grant" safeDescription forbidden
+  invalidTarget <- impersonate impToken (idText operatorUid)
+  assertOAuthRefusal "impersonation target" 400 "invalid_grant" safeDescription invalidTarget
 
   -- A stale operator token is one generic invalid_grant.
   staleR <-
