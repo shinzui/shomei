@@ -7,20 +7,23 @@ module Main (main) where
 import Control.Monad (forM_)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
-import Data.IORef (newIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Effectful (runEff)
 import Effectful.Error.Static (runErrorNoCallStack)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
+import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Types (mkStatus)
 import Network.Wai (responseLBS)
+import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant (ServerError (..))
 import Servant.API.MultiVerb (AsUnion (..))
+import Servant.Client qualified as ServantClient
 import Servant.Health (ProbeCheck, ProbeVerdict (Healthy))
-import Shomei.Account.Dto (SignupRequest (..), SignupResponse (..))
+import Shomei.Account.Dto (ResetMfaRequest (..), SignupRequest (..), SignupResponse (..))
 import Shomei.Account.LoginId.Domain (mkLoginId)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), defaultArgon2Params, newHashingLimiter)
 import Shomei.Account.User.Domain (NewUser (..), User (..))
@@ -31,7 +34,7 @@ import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..), Scope (..
 import Shomei.Client qualified as C
 import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError)
-import Shomei.Id (genServiceAccountDbId, idText, parseId)
+import Shomei.Id (genServiceAccountDbId, genUserId, idText, parseId)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (noNotifierSecrets)
@@ -81,7 +84,9 @@ tests :: TestTree
 tests =
   testGroup
     "shomei-client round-trip against a live server"
-    [ testCase "generated token client decodes every error and optional headers" oauthWireResults,
+    [ testCase "recovery never replays after an ambiguous reused-connection close" (recoveryNoReplay False),
+      testCase "recovery never follows a redirect with another destructive request" (recoveryNoReplay True),
+      testCase "generated token client decodes every error and optional headers" oauthWireResults,
       testCase "OAuth result union round trips every HTTP boundary alternative" oauthUnionRoundTrips,
       testCase "client bearer diagnostics redact the credential" (show (C.Token "sensitive-bearer") @?= "Token <redacted>"),
       testCase "signup → login → me → refresh; then every admin wrapper reaches its route" $
@@ -170,6 +175,7 @@ tests =
             expect403 "adminRevokeSessions" =<< C.adminRevokeSessions cenv tok uid
             expect403 "adminRevokeSession" =<< C.adminRevokeSession cenv tok sid
             expect403 "adminPasswordReset" =<< C.adminPasswordReset cenv tok uid
+            expect403 "adminResetMfa" =<< C.adminResetMfa cenv tok uid (ResetMfaRequest True "INC-client")
             expect403 "adminGrantRole" =<< C.adminGrantRole cenv tok uid "admin"
             expect403 "adminRevokeRole" =<< C.adminRevokeRole cenv tok uid "admin"
     ]
@@ -275,3 +281,38 @@ seedClient pool = do
               }
         pure cid
   either (assertFailure . ("could not seed the service account: " <>) . show) pure outcome
+
+-- The first GET deliberately primes a reusable connection. The server then records the
+-- destructive request and closes without a response, representing an ambiguous commit.
+-- With http-client's default replay policy the request arrives a second time.
+recoveryNoReplay :: Bool -> IO ()
+recoveryNoReplay redirect = do
+  observed <- newIORef []
+  let app request respond = do
+        let prime = Wai.rawPathInfo request == "/prime"
+        atomicModifyIORef' observed (\seen -> (seen <> [(prime, Wai.remoteHost request, lookup "X-Configured" (Wai.requestHeaders request))], ()))
+        if prime
+          then respond (Wai.responseLBS (mkStatus 200 "OK") [] "primed")
+          else
+            if redirect
+              then respond (Wai.responseLBS (mkStatus 307 "Temporary Redirect") [("Location", "/again")] "")
+              else respond (Wai.responseRaw (\_ _ -> pure ()) (Wai.responseLBS (mkStatus 500 "") [] ""))
+  testWithApplication (pure app) \port -> do
+    let baseText = "http://127.0.0.1:" <> show port
+        settings = HTTP.defaultManagerSettings {HTTP.managerModifyRequest = \request -> pure request {HTTP.requestHeaders = ("X-Configured", "preserved") : HTTP.requestHeaders request}}
+    manager <- HTTP.newManager settings
+    base <- ServantClient.parseBaseUrl baseText
+    let env = ServantClient.mkClientEnv manager base
+    prime <- HTTP.parseRequest (baseText <> "/prime")
+    _ <- HTTP.httpLbs prime manager
+    target <- genUserId
+    result <- C.adminResetMfa env (C.Token "sentinel-token") target (ResetMfaRequest True "INC-transport")
+    case result of
+      Left _ -> pure ()
+      Right _ -> assertFailure "ambiguous reset should surface a transport/redirect failure"
+    seen <- readIORef observed
+    case seen of
+      [(True, primePeer, _), (False, resetPeer, configured)] -> do
+        primePeer @?= resetPeer
+        configured @?= Just "preserved"
+      other -> assertFailure ("destructive request was replayed: " <> show other)

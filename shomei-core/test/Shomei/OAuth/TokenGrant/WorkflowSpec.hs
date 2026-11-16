@@ -30,6 +30,7 @@ import Shomei.OAuth.TokenGrant.Workflow
     pkceChallengeFor,
   )
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Token.Bearer (parseBearer)
@@ -109,6 +110,7 @@ exchangeForVerifier exchangeCfg shape verifier = do
             createdAt = fixedTime
           }
     putAuthorizationCode
+      (AuthenticationGuard 0 Nothing Nothing)
       NewAuthorizationCode
         { codeHash = sha256Hex rawCode,
           clientId = client.clientId,

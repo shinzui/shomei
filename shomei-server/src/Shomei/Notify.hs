@@ -284,7 +284,7 @@ deliverNotification ::
   Eff es ()
 deliverNotification mgr secrets cfg notification = do
   currentTime <- now
-  if notificationExpiresAt notification <= currentTime
+  if maybe False (<= currentTime) (notificationExpiresAt notification)
     then publishDeliveryFailed (transportChannel nc.notifierTransport) notification ExpiredInQueue
     else do
       when tee (logNotification nc notification)
@@ -305,10 +305,11 @@ transportChannel = \case
   SmtpNotifier -> "smtp"
   WebhookNotifier -> "webhook"
 
-notificationExpiresAt :: Notification -> UTCTime
+notificationExpiresAt :: Notification -> Maybe UTCTime
 notificationExpiresAt = \case
-  EmailVerificationRequested _ _ expires -> expires
-  PasswordResetRequested _ _ expires -> expires
+  EmailVerificationRequested _ _ expires -> Just expires
+  PasswordResetRequested _ _ expires -> Just expires
+  SecondFactorsReset {} -> Nothing
 
 -- | Fallback used only if a transport is selected with no sub-config (boot validation prevents
 -- this): warn once and log the notification rather than silently dropping it.
@@ -344,6 +345,8 @@ renderNotification cfg = \case
     line "email_verification" "/v1/auth/verify-email/confirm" email token expires
   PasswordResetRequested email token expires ->
     line "password_reset" "/v1/auth/password-reset/confirm" email token expires
+  SecondFactorsReset email occurred instructions ->
+    "[shomei:second_factors_reset] to=" <> Text.unpack (emailText email) <> " occurred_at=" <> iso8601Show occurred <> " " <> Text.unpack instructions
   where
     line kind path email token expires =
       "[shomei:log] "
@@ -441,12 +444,14 @@ notificationTypeText :: Notification -> Text
 notificationTypeText = \case
   EmailVerificationRequested {} -> "email_verification_requested"
   PasswordResetRequested {} -> "password_reset_requested"
+  SecondFactorsReset {} -> "second_factors_reset"
 
 -- | The recipient address of a notification.
 notificationRecipient :: Notification -> Text
 notificationRecipient = \case
   EmailVerificationRequested e _ _ -> emailText e
   PasswordResetRequested e _ _ -> emailText e
+  SecondFactorsReset e _ _ -> emailText e
 
 -- | The fixed English subject and plain-text body for a notification. These are the only two
 -- bodies Shōmei ever emails; there is no templating, i18n, or HTML part (operators who want
@@ -485,6 +490,8 @@ renderEmail nc = \case
             ]
         )
     )
+  SecondFactorsReset _ occurred instructions ->
+    ("Your second factors were reset", TL.fromStrict (body ["Your second factors were reset at " <> isoUtc occurred <> " (UTC).", "", instructions]))
   where
     body = Text.intercalate "\n"
     link path token = nc.publicBaseUrl <> path <> "?token=" <> oneTimeTokenText token
@@ -539,12 +546,13 @@ redactDeliveryText :: Notification -> Text -> Text
 redactDeliveryText notification =
   truncateText
     . redactTokenParameters
-    . Text.replace (oneTimeTokenText (notificationToken notification)) "<redacted>"
+    . maybe id (\token -> Text.replace (oneTimeTokenText token) "<redacted>") (notificationToken notification)
 
-notificationToken :: Notification -> OneTimeToken
+notificationToken :: Notification -> Maybe OneTimeToken
 notificationToken = \case
-  EmailVerificationRequested _ token _ -> token
-  PasswordResetRequested _ token _ -> token
+  EmailVerificationRequested _ token _ -> Just token
+  PasswordResetRequested _ token _ -> Just token
+  SecondFactorsReset {} -> Nothing
 
 redactTokenParameters :: Text -> Text
 redactTokenParameters input =

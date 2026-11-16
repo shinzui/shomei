@@ -28,7 +28,7 @@ import Shomei.Time.Store (Clock, now)
 
 type InsertUserRow = (UUID, Text, Maybe Text, Maybe Text, Text, UTCTime, UTCTime)
 
-type UserRow = (UUID, Text, Maybe Text, Maybe Text, Text, Maybe UTCTime, UTCTime, UTCTime)
+type UserRow = (UUID, Text, Maybe Text, Maybe Text, Text, Maybe UTCTime, UTCTime, UTCTime, Int64)
 
 runUserStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es, Clock :> es) =>
@@ -98,11 +98,12 @@ mkUser uid nu ts =
       status = UserActive,
       emailVerifiedAt = Nothing,
       createdAt = ts,
-      updatedAt = ts
+      updatedAt = ts,
+      authenticationGeneration = 0
     }
 
 rebuildUser :: UserRow -> Either Text User
-rebuildUser (uid, lid, e, dn, st, verified, c, u) = do
+rebuildUser (uid, lid, e, dn, st, verified, c, u, generation) = do
   loginId <- loginIdFromDb lid
   email <- maybeEmailFromDb e
   status <- userStatusFromText st
@@ -115,12 +116,13 @@ rebuildUser (uid, lid, e, dn, st, verified, c, u) = do
         status = status,
         emailVerifiedAt = verified,
         createdAt = c,
-        updatedAt = u
+        updatedAt = u,
+        authenticationGeneration = generation
       }
 
 userRowDecoder :: D.Row UserRow
 userRowDecoder =
-  (,,,,,,,)
+  (,,,,,,,,)
     <$> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.text)
     <*> D.column (D.nullable D.text)
@@ -129,6 +131,7 @@ userRowDecoder =
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nonNullable D.timestamptz)
+    <*> D.column (D.nonNullable D.int8)
 
 insertUserStmt :: Statement InsertUserRow ()
 insertUserStmt =
@@ -153,7 +156,7 @@ findUserByIdStmt :: Statement UUID (Maybe UserRow)
 findUserByIdStmt =
   preparable
     """
-    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at
+    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at, authentication_generation
     FROM shomei.shomei_users
     WHERE user_id = $1
     """
@@ -164,7 +167,7 @@ findUserByLoginIdStmt :: Statement Text (Maybe UserRow)
 findUserByLoginIdStmt =
   preparable
     """
-    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at
+    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at, authentication_generation
     FROM shomei.shomei_users
     WHERE login_id = $1
     """
@@ -175,7 +178,7 @@ findUserByEmailStmt :: Statement Text (Maybe UserRow)
 findUserByEmailStmt =
   preparable
     """
-    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at
+    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at, authentication_generation
     FROM shomei.shomei_users
     WHERE email = $1
     """
@@ -233,7 +236,7 @@ listUsersStmt :: Statement ListParams [UserRow]
 listUsersStmt =
   preparable
     """
-    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at
+    SELECT user_id, login_id, email, display_name, status, email_verified_at, created_at, updated_at, authentication_generation
     FROM shomei.shomei_users
     WHERE ($1::text        IS NULL OR status = $1)
       AND ($2::timestamptz IS NULL OR (created_at, user_id) < ($2, $3))

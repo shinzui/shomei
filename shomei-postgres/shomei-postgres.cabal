@@ -81,6 +81,7 @@ library
     Shomei.Persistence.Pool.Postgres
     Shomei.Persistence.Transaction.Postgres
     Shomei.ServiceAccount.Postgres
+    Shomei.Session.Authentication.Guard.Postgres
     Shomei.Session.LoginAttempt.Postgres
     Shomei.Session.Postgres
     Shomei.Session.RefreshToken.Postgres
@@ -118,6 +119,7 @@ test-suite shomei-postgres-test
     -with-rtsopts=-N
 
   build-depends:
+    aeson >=2.1 && <2.3,
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,

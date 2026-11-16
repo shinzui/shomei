@@ -74,7 +74,7 @@ seed :: IO (IORef World, User, ResponsePolicy)
 seed = do
   ref <- newIORef (emptyWorld fixedTime)
   (user, _) <- right =<< runHybrid ref (signup cfg (SignupCommand fixtureLoginId Nothing fixturePassword Nothing))
-  (cid, options) <- right =<< runHybrid ref (beginPasskeyRegistration cfg user.userId)
+  (cid, options) <- right =<< runHybrid ref (beginPasskeyRegistration cfg user.userId Nothing)
   parseEither (withObject "options" (\o -> o .: "authenticatorSelection" >>= withObject "selection" (\s -> (,) <$> s .: "residentKey" <*> s .: "requireResidentKey"))) options
     @?= Right ("required" :: Text, True)
   handle <- case parseMaybe (withObject "options" (\o -> o .: "user" >>= withObject "user" (.: "id"))) options of
@@ -142,7 +142,7 @@ tests =
         (cid, options) <- runHybrid ref do
           BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony UVRequired []
           cid <- genCeremonyId
-          putPendingCeremony (PendingCeremony cid (Just bob.userId) AuthenticationCeremony optionsBlob fixedTime (addUTCTime 300 fixedTime))
+          putPendingCeremony (PendingCeremony (Just 0) Nothing cid (Just bob.userId) AuthenticationCeremony optionsBlob fixedTime (addUTCTime 300 fixedTime))
           pure (cid, optionsJson)
         wrongOwner <- runHybrid ref (completeMfa cfg proof cid (MfaPasskey (assertionResponse options policy {responseCounter = 1})))
         wrongOwner @?= Left MfaAssertionInvalid

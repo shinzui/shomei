@@ -19,5 +19,10 @@ data Notification
         token :: !OneTimeToken,
         expiresAt :: !UTCTime
       }
+  | SecondFactorsReset
+      { email :: !Email,
+        occurredAt :: !UTCTime,
+        supportInstructions :: !Text
+      }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)

@@ -4,6 +4,7 @@ module Shomei.Account.Handler
     adminAccountServer,
     loadUser,
     requireExistingUser,
+    requireLiveAuthentication,
   )
 where
 
@@ -12,6 +13,7 @@ import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
 import Shomei.Account.Admin.Api (AdminAccountApi (..))
+import Shomei.Account.Admin.Recovery qualified as Recovery
 import Shomei.Account.Admin.Workflow qualified as Admin
 import Shomei.Account.Api (AccountApi (..))
 import Shomei.Account.Dto
@@ -33,7 +35,7 @@ import Shomei.Account.User.Store
 import Shomei.Account.User.Store qualified as UserStore
 import Shomei.Authorization.Role.Workflow qualified as Roles
 import Shomei.Delegation.Handler (denyUnderDelegation)
-import Shomei.Error (AuthError (UserHasNoEmail, UserNotFound))
+import Shomei.Error (AuthError (ImpersonationActionBlocked, InvalidCredentials, UserHasNoEmail, UserNotFound))
 import Shomei.Id (UserId)
 import Shomei.Prelude
 import Shomei.Servant.Application (ApplicationHandler, port, rejectAuth, rejectProblem, runApplicationHandler, workflow)
@@ -45,8 +47,11 @@ import Shomei.Servant.Result (cookieResponse)
 import Shomei.Servant.Seam (Env (..))
 import Shomei.Session.Authentication.Workflow qualified as Authentication
 import Shomei.Session.Command (ProofContext (..), SignupCommand (..))
+import Shomei.Session.Domain (Session (..), SessionKind (..))
 import Shomei.Session.Dto (tokenPairToResponse)
 import Shomei.Session.LoginAttempt.Domain (ClientIp (..))
+import Shomei.Session.Workflow (requireLiveSession)
+import Shomei.Time.Store (now)
 
 accountServer :: Env -> AccountApi (AsServerT Handler)
 accountServer env =
@@ -68,7 +73,8 @@ adminAccountServer env =
       suspendUser = adminSuspendUserH env,
       reinstateUser = adminReinstateUserH env,
       deleteUser = adminDeleteUserH env,
-      passwordReset = adminPasswordResetH env
+      passwordReset = adminPasswordResetH env,
+      resetMfa = adminResetMfaH env
     }
 
 signupH :: Env -> SignupRequest -> Handler SignupResult
@@ -192,3 +198,24 @@ nonEmpty :: Text -> Maybe Text
 nonEmpty value
   | Text.null value = Nothing
   | otherwise = Just value
+
+adminResetMfaH :: Env -> AuthUser -> UserId -> ResetMfaRequest -> Handler ResetMfaResult
+adminResetMfaH env actor target request = runApplicationHandler do
+  denyUnderDelegation env "admin_reset_mfa" actor
+  denySelfTarget actor target
+  ts <- port env now
+  session <- workflow env (requireLiveSession ts actor.authSessionId)
+  unless (session.userId == actor.authUserId) (rejectAuth InvalidCredentials)
+  attribution <- case session.kind of
+    InteractiveSession -> pure (Recovery.AuthenticatedAdministrator actor.authUserId)
+    MachineSession -> pure (Recovery.AdministratorService actor.authUserId)
+    DelegatedSession -> rejectAuth ImpersonationActionBlocked
+  result <- workflow env (Recovery.resetUserSecondFactors attribution target (Recovery.RecoveryCommand request.identityVerified request.caseReference))
+  pure ResetMfaResponse {resetAt = result.resetAt, counts = result.counts, verifiedNotificationDestination = result.verifiedNotificationDestination}
+
+-- | Credential management never relies on offline JWT validity alone.
+requireLiveAuthentication :: Env -> AuthUser -> ApplicationHandler ()
+requireLiveAuthentication env actor = do
+  ts <- port env now
+  session <- workflow env (requireLiveSession ts actor.authSessionId)
+  unless (session.userId == actor.authUserId) (rejectAuth InvalidCredentials)

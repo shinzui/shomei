@@ -28,6 +28,7 @@ main =
         [ testCase
             "composition preserves a host component's namespace state"
             testCompositionPreservesHostNamespace,
+          testCase "generation upgrade preserves credentials/sessions and marks old pending flows as legacy" testGenerationUpgrade,
           testCase "provenance upgrade repairs legacy machine and actor rows and defaults unknown writers safely" testProvenanceUpgrade
         ]
     )
@@ -198,3 +199,46 @@ provenanceSnapshot =
 
 embeddedHistory :: NonEmpty (FilePath, Data.ByteString.ByteString)
 embeddedHistory = $(embedMigrationManifest "migrations/shomei/manifest")
+
+testGenerationUpgrade :: Assertion
+testGenerationUpgrade = do
+  let history = NE.toList embeddedHistory
+      (before, upgrade) = span ((/= "0044-add-authentication-generation.sql") . fst) history
+      fixture = ("0043-generation-fixture.sql", generationFixture)
+      component = expectRight (migrationComponentFromEmbeddedSql "generation-upgrade" Set.empty (NE.fromList (before <> [fixture] <> upgrade)))
+      plan = expectRight (migrationPlan (component :| []))
+  result <- withMigratedDatabase plan \connection -> do
+    snapshot <- Connection.use connection (Session.statement () generationSnapshot)
+    snapshot @?= Right True
+    invalid <- Connection.use connection (Session.script "UPDATE shomei.shomei_users SET authentication_generation = -1")
+    case invalid of
+      Left _ -> pure ()
+      Right () -> assertFailure "negative generation admitted"
+  case result of
+    Left err -> assertFailure (show err)
+    Right () -> pure ()
+
+generationFixture :: Data.ByteString.ByteString
+generationFixture =
+  """
+  INSERT INTO shomei.shomei_users(user_id,login_id,status,created_at,updated_at)
+    VALUES ('11111111-1111-1111-1111-111111111111','generation-user','active',now(),now());
+  INSERT INTO shomei.shomei_sessions(session_id,user_id,status,created_at,expires_at,kind)
+    VALUES ('aaaaaaaa-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','active',now(),now()+interval '1 day','interactive');
+  INSERT INTO shomei.shomei_webauthn_pending_ceremonies(ceremony_id,user_id,kind,options_blob,created_at,expires_at)
+    VALUES ('bbbbbbbb-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','authentication','public-fixture',now(),now()+interval '5 minutes');
+  INSERT INTO shomei.shomei_totp_credentials(totp_credential_id,user_id,secret_enc,created_at,confirmed_at,envelope_version)
+    VALUES ('cccccccc-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','public-fixture',now(),now(),1);
+  """
+
+generationSnapshot :: Statement () Bool
+generationSnapshot =
+  Statement.preparable
+    """
+    SELECT (SELECT count(*) = 1 AND bool_and(authentication_generation = 0) FROM shomei.shomei_users)
+      AND (SELECT count(*) = 1 AND bool_and(status = 'active') FROM shomei.shomei_sessions)
+      AND (SELECT count(*) = 1 AND bool_and(confirmed_at IS NOT NULL) FROM shomei.shomei_totp_credentials)
+      AND (SELECT count(*) = 1 AND bool_and(authentication_generation IS NULL) FROM shomei.shomei_webauthn_pending_ceremonies)
+    """
+    Encoders.noParams
+    (Decoders.singleRow (Decoders.column (Decoders.nonNullable Decoders.bool)))

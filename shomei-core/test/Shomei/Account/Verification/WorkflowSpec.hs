@@ -34,6 +34,7 @@ import Shomei.Passkey.Domain
     WebAuthnCredentialId (..),
   )
 import Shomei.Passkey.Store (createPasskey)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Authentication.Workflow (login, refresh, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
@@ -119,6 +120,7 @@ seedUserWithPasskey ref = do
     runInMemory
       ref
       ( createPasskey
+          (AuthenticationGuard 0 Nothing Nothing)
           20
           NewPasskeyCredential
             { userId = uid,

@@ -62,6 +62,7 @@ module Shomei.Client
     adminRevokeSessions,
     adminRevokeSession,
     adminPasswordReset,
+    adminResetMfa,
     adminGrantRole,
     adminRevokeRole,
   )
@@ -72,6 +73,7 @@ import Data.ByteString.Base64 qualified as B64
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Network.HTTP.Client qualified as HTTP
+import Network.HTTP.Client.Internal qualified as HTTPInternal
 import Network.HTTP.Client.TLS qualified as TLS
 
 -- Explicitly, as a /type/: 'Shomei.Prelude' re-exports lens, whose @(:>)@ snoc pattern synonym
@@ -80,7 +82,7 @@ import Servant.API (type (:>))
 import Servant.API.Experimental.Auth (AuthProtect)
 import Servant.Client
   ( BaseUrl (..),
-    ClientEnv,
+    ClientEnv (..),
     ClientError,
     ClientM,
     Scheme (..),
@@ -98,7 +100,7 @@ import Servant.Client.Core.HasClient (AsClientT, HasClient (..))
 import Servant.Client.Generic (genericClient)
 import Shomei.Account.Admin.Api qualified as AdminAccount
 import Shomei.Account.Api qualified as Account
-import Shomei.Account.Dto (SignupRequest)
+import Shomei.Account.Dto (ResetMfaRequest, SignupRequest)
 import Shomei.Account.Result
 import Shomei.Account.User.Dto (AdminStatusFilter, UserPageCursor)
 import Shomei.Authorization.Api qualified as Authorization
@@ -426,3 +428,20 @@ adminGrantRole env tok uid role =
 adminRevokeRole :: ClientEnv -> Token -> UserId -> Text -> IO (Either ClientError RevokeRoleResult)
 adminRevokeRole env tok uid role =
   runClient env (Authorization.revokeRole authorizationClient (bearer tok) uid role)
+
+-- | Destructive recovery. Do not retry automatically after an ambiguous transport failure.
+adminResetMfa :: ClientEnv -> Token -> UserId -> ResetMfaRequest -> IO (Either ClientError ResetMfaResult)
+adminResetMfa env tok uid request = runClient noReplayEnv (AdminAccount.resetMfa adminAccountClient (bearer tok) uid request)
+  where
+    -- http-client 0.7 retries reused-connection failures for every HTTP method and exposes
+    -- no per-request switch. Copy the chosen manager, preserving its pool/TLS/proxy/hooks;
+    -- never mutate the caller's manager. Redirects must not replay this operation either.
+    -- mori://snoyberg/http-client/packages/http-client
+    noReplayEnv =
+      env
+        { makeClientRequest = \base outgoing -> do
+            built <- makeClientRequest env base outgoing
+            let transportManager = fromMaybe (manager env) (HTTPInternal.requestManagerOverride built)
+                oneAttempt = transportManager {HTTPInternal.mRetryableException = const False}
+            pure built {HTTPInternal.requestManagerOverride = Just oneAttempt, HTTP.redirectCount = 0}
+        }

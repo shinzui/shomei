@@ -8,14 +8,17 @@ module Shomei.Account.Admin.WorkflowSpec (tests) where
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (replicateM)
 import Data.IORef (IORef, newIORef, readIORef)
+import Data.Map.Strict qualified as Map
 import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff)
+import Shomei.Account.Admin.Recovery
 import Shomei.Account.Admin.Workflow (deleteUser, reinstateUser, revokeOneSession, revokeUserSessions, suspendUser)
 import Shomei.Account.Email.Domain (mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
+import Shomei.Account.Notification.Domain qualified as Notification
 import Shomei.Account.Password.Domain (PlainPassword (..))
 import Shomei.Account.User.Domain (User (..), UserStatus (..))
-import Shomei.Account.User.Store (findUserById)
+import Shomei.Account.User.Store (findUserById, markUserEmailVerified)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), Issuer (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
@@ -28,6 +31,7 @@ import Shomei.Session.Domain qualified as Session
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), ClientIp (..))
 import Shomei.Session.Store (listSessionsForUser)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
+import Shomei.Time.Store (now)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -35,7 +39,10 @@ tests :: TestTree
 tests =
   testGroup
     "Shomei.Account.Admin.Workflow"
-    [ testSuspendFlipsStatusRevokesSessionsAndRecordsActor,
+    [ testRecoveryValidation,
+      testRecoveryStateAndNotification,
+      testRecoveryTargetStatus,
+      testSuspendFlipsStatusRevokesSessionsAndRecordsActor,
       testConcurrentSuspendsAuditOnce,
       testStrictTransitions,
       testDeleteIsTerminal,
@@ -234,3 +241,65 @@ testConcurrentBulkRevocation = testCase "eight bulk revokers audit each active s
   sum <$> traverse (either (assertFailure . show) pure) results >>= (@?= 1)
   events <- (.publishedEvents) <$> readIORef ref
   length [() | Event.SessionRevoked _ <- events] @?= 1
+
+testRecoveryValidation :: TestTree
+testRecoveryValidation = testCase "recovery rejects missing identity assertion and unbounded or unsafe labels before writes" $ withWorld \ref -> do
+  (user, _) <- runInMemory ref (signup cfg signupCmd) >>= either (assertFailure . show) pure
+  before <- readIORef ref
+  let invalid =
+        [ (LocalOperator "ops", RecoveryCommand False "INC-1"),
+          (LocalOperator "ops", RecoveryCommand True ""),
+          (LocalOperator "ops", RecoveryCommand True (mconcat (replicate 129 "x"))),
+          (LocalOperator "operator with spaces", RecoveryCommand True "INC-1"),
+          (LocalOperator "ops", RecoveryCommand True "secret\nidentity-evidence"),
+          (LocalOperator "ops", RecoveryCommand True "非ASCII")
+        ]
+  results <- mapM (\(actor, command) -> runInMemory ref (resetUserSecondFactors actor user.userId command)) invalid
+  results @?= replicate (length invalid) (Left InvalidInput)
+  after <- readIORef ref
+  after.users @?= before.users
+  after.sessions @?= before.sessions
+  after.publishedEvents @?= before.publishedEvents
+  after.sentNotifications @?= []
+
+testRecoveryStateAndNotification :: TestTree
+testRecoveryStateAndNotification = testCase "recovery preserves password/policy, invalidates sessions every time, and notifies only verified contacts" $ withWorld \ref -> do
+  (user, _) <- runInMemory ref (signup cfg signupCmd) >>= either (assertFailure . show) pure
+  before <- readIORef ref
+  first <- runInMemory ref (resetUserSecondFactors (LocalOperator "ops.console") user.userId (RecoveryCommand True "INC-1")) >>= either (assertFailure . show) pure
+  first.counts.sessionsRevoked @?= 1
+  first.verifiedNotificationDestination @?= False
+  after <- readIORef ref
+  after.credsByLoginId @?= before.credsByLoginId
+  after.sentNotifications @?= []
+  fmap (.authenticationGeneration) (Map.lookup user.userId after.users) @?= Just 1
+  runInMemory ref (now >>= markUserEmailVerified user.userId)
+  second <- runInMemory ref (resetUserSecondFactors (AuthenticatedAdministrator user.userId) user.userId (RecoveryCommand True "INC-2")) >>= either (assertFailure . show) pure
+  second.counts.sessionsRevoked @?= 0
+  second.verifiedNotificationDestination @?= True
+  final <- readIORef ref
+  case final.sentNotifications of
+    [Notification.SecondFactorsReset {email}] -> Just email @?= user.email
+    other -> assertFailure ("expected established contact notice, got " <> show other)
+  let resetEvents = [d | Event.UserSecondFactorsReset d <- final.publishedEvents]
+  length resetEvents @?= 2
+  map (.recoveryActor) resetEvents @?= [AuthenticatedAdministrator user.userId, LocalOperator "ops.console"]
+  loginResult <- runInMemory ref (login cfg ctx loginCmd)
+  case loginResult of
+    Right (LoginComplete _ _) -> pure ()
+    other -> assertFailure ("preserved password should work: " <> show other)
+
+testRecoveryTargetStatus :: TestTree
+testRecoveryTargetStatus = testCase "recovery refuses missing, suspended and deleted targets" $ withWorld \ref -> do
+  missing <- genUserId
+  absent <- runInMemory ref (resetUserSecondFactors (LocalOperator "ops") missing (RecoveryCommand True "INC-1"))
+  absent @?= Left UserNotFound
+  (user, _) <- runInMemory ref (signup cfg signupCmd) >>= either (assertFailure . show) pure
+  _ <- runInMemory ref (suspendUser missing user.userId)
+  suspended <- runInMemory ref (resetUserSecondFactors (LocalOperator "ops") user.userId (RecoveryCommand True "INC-1"))
+  suspended @?= Left InvalidUserStatus
+  _ <- runInMemory ref (deleteUser missing user.userId)
+  deleted <- runInMemory ref (resetUserSecondFactors (LocalOperator "ops") user.userId (RecoveryCommand True "INC-1"))
+  deleted @?= Left InvalidUserStatus
+  world <- readIORef ref
+  length [() | Event.UserSecondFactorsReset _ <- world.publishedEvents] @?= 0

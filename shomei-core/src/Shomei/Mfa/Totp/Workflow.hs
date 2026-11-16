@@ -34,7 +34,7 @@ import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Authorization.Claims.Domain (Issuer (..))
 import Shomei.Config (ShomeiConfig (..), TotpConfig (..))
 import Shomei.Error (AuthError (..))
-import Shomei.Id (TotpCredentialId, genRecoveryCodeId, genTotpCredentialId)
+import Shomei.Id (SessionId, TotpCredentialId, genRecoveryCodeId, genTotpCredentialId)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore, consumeRecoveryCode, replaceRecoveryCodes)
 import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), secretToBase32, verifyTotp)
 import Shomei.Mfa.Totp.Algorithm qualified as Totp
@@ -42,13 +42,14 @@ import Shomei.Mfa.Totp.Domain (NewRecoveryCode (..), NewTotpCredential (..), Tot
 import Shomei.Mfa.Totp.Store
   ( TotpCredentialStore,
     confirmTotp,
-    deleteTotpByUser,
     findTotpByUser,
+    removeTotpCredential,
     setTotpLastUsedCounter,
     upsertTotpEnrollment,
   )
 import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..), userGuard)
 import Shomei.Session.Command (ProofContext, proofContextFor)
 import Shomei.Session.LoginAttempt.Domain (AttemptFactor (..))
 import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
@@ -90,8 +91,9 @@ enrollTotp ::
   (TotpCredentialStore :> es, TokenGen :> es, Clock :> es, IOE :> es) =>
   ShomeiConfig ->
   User ->
+  Maybe SessionId ->
   Eff es (Either AuthError TotpEnrollment)
-enrollTotp cfg user = runErrorNoCallStack do
+enrollTotp cfg user sourceSession = runErrorNoCallStack do
   unless (totpEnabled (totpConfig cfg)) (throwError TotpDisabled)
   ts <- now
   let User {userId = uid} = user
@@ -100,7 +102,7 @@ enrollTotp cfg user = runErrorNoCallStack do
   secretBytes <- generateRandomBytes 20
   let secret = TotpSecret secretBytes
   tcid <- genTotpCredentialId
-  _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = uid, secret, createdAt = ts}
+  _ <- either throwError pure =<< upsertTotpEnrollment ((userGuard user) {initiatingSession = sourceSession}) NewTotpCredential {totpCredentialId = tcid, userId = uid, secret, createdAt = ts}
   pure
     TotpEnrollment
       { secretBase32 = secretToBase32 secret,
@@ -115,9 +117,10 @@ verifyTotpEnrollment ::
   (TotpCredentialStore :> es, AuthEventPublisher :> es, Clock :> es) =>
   ShomeiConfig ->
   User ->
+  Maybe SessionId ->
   Text ->
   Eff es (Either AuthError ())
-verifyTotpEnrollment cfg user code = runErrorNoCallStack do
+verifyTotpEnrollment cfg user sourceSession code = runErrorNoCallStack do
   unless (totpEnabled (totpConfig cfg)) (throwError TotpDisabled)
   ts <- now
   let User {userId = uid} = user
@@ -125,9 +128,11 @@ verifyTotpEnrollment cfg user code = runErrorNoCallStack do
   cred <- case existing of
     Just c | not (confirmed c), not (enrollmentExpired cfg ts c) -> pure c
     _ -> throwError TotpEnrollmentNotFound
+  let TotpCredential {authenticationGeneration} = cred
+  when (authenticationGeneration /= Just user.authenticationGeneration) (throwError StaleAuthentication)
   case verifyTotp (secretOf cred) Nothing ts code of
     Just accepted -> do
-      confirmTotp (tcId cred) ts
+      either throwError pure =<< confirmTotp uid ((userGuard user) {initiatingSession = sourceSession}) (tcId cred) ts
       won <- setTotpLastUsedCounter (tcId cred) accepted
       unless won do
         publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "totp_replayed" ts))
@@ -150,9 +155,10 @@ removeTotp ::
   ShomeiConfig ->
   ProofContext ->
   User ->
+  Maybe SessionId ->
   TotpRemovalProof ->
   Eff es (Either AuthError ())
-removeTotp cfg pctx user proof = runErrorNoCallStack do
+removeTotp cfg pctx user sourceSession proof = runErrorNoCallStack do
   ts <- now
   let User {userId = uid} = user
       ctx = proofContextFor pctx (loginIdText user.loginId)
@@ -189,7 +195,7 @@ removeTotp cfg pctx user proof = runErrorNoCallStack do
           publishAuthEvent (Event.MfaFailed (Event.MfaFailedData (Just uid) "recovery_invalid" ts))
           throwError RecoveryCodeInvalid
   recordProofSuccess ctx factor gate.standingLockout ts
-  deleteTotpByUser uid
+  either throwError pure =<< removeTotpCredential uid ((userGuard user) {initiatingSession = sourceSession}) (tcId cred) ts
   publishAuthEvent (Event.TotpRemoved (Event.TotpRemovedData uid ts))
 
 -- | Generate a fresh set of 'recoveryCodeSetSize' single-use codes, replacing any previous set,
@@ -199,8 +205,9 @@ regenerateRecoveryCodes ::
   (RecoveryCodeStore :> es, TokenGen :> es, AuthEventPublisher :> es, Clock :> es, IOE :> es) =>
   ShomeiConfig ->
   User ->
+  Maybe SessionId ->
   Eff es (Either AuthError [Text])
-regenerateRecoveryCodes _cfg user = runErrorNoCallStack do
+regenerateRecoveryCodes _cfg user sourceSession = runErrorNoCallStack do
   ts <- now
   let User {userId = uid} = user
   codes <- forM [1 .. recoveryCodeSetSize] \_ -> formatRecoveryCode <$> generateRandomBytes 10
@@ -210,7 +217,7 @@ regenerateRecoveryCodes _cfg user = runErrorNoCallStack do
           (\rid code -> NewRecoveryCode {recoveryCodeId = rid, codeHash = recoveryCodeHash code, createdAt = ts})
           ids
           codes
-  replaceRecoveryCodes uid rows
+  either throwError pure =<< replaceRecoveryCodes uid ((userGuard user) {initiatingSession = sourceSession}) ts rows
   publishAuthEvent (Event.RecoveryCodesGenerated (Event.RecoveryCodesGeneratedData uid recoveryCodeSetSize ts))
   pure codes
 

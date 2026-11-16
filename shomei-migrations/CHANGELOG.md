@@ -4,6 +4,10 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- Add migration 0044 for authentication generations and initiating enrollment sessions. Preserve factors/sessions and require legacy pending flows to restart; drain old writers before enabling administrative recovery.
+
 ## 0.2.0.1 — 2026-11-05
 
 - Keep the exported Haskell API unchanged; require the released [`pg-migrate`](mori://shinzui/pg-migrate/packages/pg-migrate) 1.2 family and [`ephemeral-pg`](mori://shinzui/ephemeral-pg/packages/ephemeral-pg) 0.3.1, with stable per-user test database cleanup roots.

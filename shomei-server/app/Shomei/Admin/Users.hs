@@ -3,22 +3,34 @@
 -- (with a trivial 'TokenSigner' fake — the CLI does not need a real access token).
 module Shomei.Admin.Users
   ( createUserAction,
+    ResetMfaOptions (..),
+    resetMfaParser,
+    validateResetMfaOptions,
+    resetMfaAction,
+    runRecovery,
   )
 where
 
-import Control.Monad (when)
+import Control.Monad (forM_, when)
+import Data.Aeson (encode, object, (.=))
+import Data.ByteString.Lazy.Char8 qualified as LBS
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Effectful (Eff, IOE, runEff)
+import Effectful (Eff, IOE, liftIO, runEff)
 import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Error.Static (Error, runErrorNoCallStack)
 import Network.HTTP.Client (Manager)
 import Network.HTTP.Client.TLS (newTlsManager)
+import Options.Applicative
+import Shomei.Account.Admin.Recovery
 import Shomei.Account.Credential.Postgres (runCredentialStorePostgres)
 import Shomei.Account.Credential.Store (CredentialStore)
 import Shomei.Account.Email.Domain (mkEmail)
 import Shomei.Account.LoginId.Domain (loginIdText, mkLoginId)
+import Shomei.Account.Notification.Domain (Notification)
+import Shomei.Account.Notification.Store (Notifier (..))
 import Shomei.Account.Password.Breach.Store (PasswordBreachChecker)
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params, HashingLimiter, newHashingLimiter, runPasswordHasherCrypto, runTokenGenCrypto)
@@ -36,11 +48,13 @@ import Shomei.Authorization.Role.Store (RoleStore)
 import Shomei.Authorization.Role.Workflow (undefinedDefaultRoles)
 import Shomei.Config (ShomeiConfig (..))
 import Shomei.Error (AuthError)
-import Shomei.Id (UserId)
+import Shomei.Id (UserId, idText, parseId)
+import Shomei.Notify (deliverNotification)
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
 import Shomei.Persistence.Database.Postgres (Database, runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (Pool)
 import Shomei.Server.BreachChecker (runPasswordBreachCheckerHibp)
+import Shomei.Server.Config (loadNotifierSecretsFromEnv)
 import Shomei.Session.Authentication.Workflow (signup)
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Token.Domain (AccessToken (..))
@@ -52,6 +66,7 @@ import Shomei.Time.Postgres (runClockIO)
 import Shomei.Time.Store (Clock, now)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
+import System.Timeout (timeout)
 
 createUserAction :: AdminEnv -> Text -> PlainPassword -> Maybe Text -> Bool -> IO ()
 createUserAction env emailArg password mDisplay verified = do
@@ -182,3 +197,72 @@ runMarkEmailVerified pool uid =
 
 die :: String -> IO a
 die msg = hPutStrLn stderr ("shomei-admin: " <> msg) >> exitFailure
+
+data ResetMfaOptions = ResetMfaOptions
+  { targetUser :: !UserId,
+    operatorLabel :: !Text,
+    caseReference :: !Text,
+    identityVerified :: !Bool,
+    confirmUser :: !UserId
+  }
+  deriving stock (Eq, Show)
+
+resetMfaParser :: Parser ResetMfaOptions
+resetMfaParser =
+  ResetMfaOptions
+    <$> userOption "user" "Target user ID"
+    <*> (Text.pack <$> strOption (long "operator" <> metavar "OPERATOR" <> help "Asserted local operator label (not authenticated human identity)"))
+    <*> (Text.pack <$> strOption (long "case-reference" <> metavar "CASE" <> help "Non-sensitive case reference, 1-128 ASCII letters/digits or ._:/-"))
+    <*> flag' True (long "identity-verified" <> help "Assert independent verification of the account owner")
+    <*> userOption "confirm-user" "Repeat the exact target user ID"
+  where
+    userOption name description = option (eitherReader (either (const (Left "invalid user ID")) Right . parseId . Text.pack)) (long name <> metavar "USER_ID" <> help description)
+
+validateResetMfaOptions :: ResetMfaOptions -> Either Text ()
+validateResetMfaOptions opts
+  | opts.targetUser /= opts.confirmUser = Left "--confirm-user must exactly match --user"
+  | otherwise =
+      either
+        (const (Left "identity assertion, operator label or case reference is invalid"))
+        Right
+        (validateRecovery (LocalOperator opts.operatorLabel) (RecoveryCommand opts.identityVerified opts.caseReference))
+
+-- | Run only the committed security workflow. The caller owns configured delivery/drain.
+runRecovery :: Pool -> (Notification -> IO ()) -> UserId -> Text -> RecoveryCommand -> IO (Either AuthError (Either AuthError RecoveryResult))
+runRecovery pool enqueue uid operator cmd =
+  runEff
+    . runErrorNoCallStack
+    . runDatabasePool pool
+    . runClockIO
+    . interpret_ (\case SendNotification notification -> liftIO (enqueue notification))
+    . runAuthUnitOfWorkPostgres
+    $ resetUserSecondFactors (LocalOperator operator) uid cmd
+
+resetMfaAction :: AdminEnv -> ResetMfaOptions -> IO ()
+resetMfaAction env opts = do
+  either (die . Text.unpack) pure (validateResetMfaOptions opts)
+  -- Validate transport secrets before the destructive operation.
+  secrets <- loadNotifierSecretsFromEnv env.config
+  manager <- newTlsManager
+  notices <- newIORef []
+  result <- runRecovery env.pool (\n -> modifyIORef' notices (n :)) opts.targetUser opts.operatorLabel (RecoveryCommand opts.identityVerified opts.caseReference)
+  committed <- case result of
+    Left _ -> die "recovery failed: database unavailable; inspect the audit trail before retrying"
+    Right (Left err) -> die ("recovery rejected: " <> show err)
+    Right (Right value) -> pure value
+  -- This one-command process waits for its queued notice before exit. The drain is bounded;
+  -- delivery uses exactly the configured server transport and its redacted failure contract.
+  queued <- readIORef notices
+  forM_ queued \notice -> do
+    delivered <-
+      timeout
+        30000000
+        ( runEff . runErrorNoCallStack @AuthError . runDatabasePool env.pool . runClockIO . runAuthEventPublisherPostgres $
+            deliverNotification manager secrets env.config notice
+        )
+    case delivered of
+      Just (Right ()) -> pure ()
+      _ -> hPutStrLn stderr "shomei-admin: recovery committed; notification drain failed or timed out; notify the owner through an established channel"
+  when (not committed.verifiedNotificationDestination) $
+    hPutStrLn stderr "shomei-admin: recovery committed without a verified email destination; notify the owner through an independently established channel"
+  LBS.putStrLn (encode (object ["userId" .= idText opts.targetUser, "resetAt" .= committed.resetAt, "counts" .= committed.counts]))

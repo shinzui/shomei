@@ -34,7 +34,8 @@ data NewTotpCredential = NewTotpCredential
 -- been activated with a first valid code; @lastUsedCounter@ is the replay-defense high-water
 -- mark (RFC 6238 §5.2), 'Nothing' until the first acceptance.
 data TotpCredential = TotpCredential
-  { totpCredentialId :: !TotpCredentialId,
+  { authenticationGeneration :: !(Maybe Int64),
+    totpCredentialId :: !TotpCredentialId,
     userId :: !UserId,
     secret :: !TotpSecret,
     lastUsedCounter :: !(Maybe Int64),

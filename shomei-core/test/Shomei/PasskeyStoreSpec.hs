@@ -17,7 +17,12 @@ import Data.IORef (IORef, newIORef)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Effectful (Eff, IOE, (:>))
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Store (UserStore, createUser)
 import Shomei.Id (CeremonyId, PasskeyId, UserId, genCeremonyId, genUserId)
+import Shomei.Id qualified as Id
 import Shomei.Passkey.Ceremony.Store (putPendingCeremony, takePendingCeremony)
 import Shomei.Passkey.Domain
   ( CeremonyKind (..),
@@ -38,6 +43,7 @@ import Shomei.Passkey.Store
     findPasskeysByUserHandle,
     updatePasskeySignCounter,
   )
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -123,9 +129,9 @@ sampleNewWithCred uid cidBytes =
 createAndFind :: IO ()
 createAndFind = do
   ref <- newWorld
-  uid <- genUserId
+  uid <- runInMemory ref newUserId
   (created, byUser, byCred, byHandle) <- runInMemory ref do
-    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNew uid)
     byUser <- findPasskeysByUser uid
     byCred <- findPasskeyByCredentialId (WebAuthnCredentialId cid1)
     byHandle <- findPasskeysByUserHandle (UserHandle uh1)
@@ -144,9 +150,9 @@ createAndFind = do
 updateSignCounter :: IO ()
 updateSignCounter = do
   ref <- newWorld
-  uid <- genUserId
+  uid <- runInMemory ref newUserId
   (advanced, replayed, older, found) <- runInMemory ref do
-    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNew uid)
     advanced <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
     replayed <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 7) t1
     older <- updatePasskeySignCounter (pkPasskeyId created) (SignatureCounter 6) t1
@@ -159,24 +165,24 @@ updateSignCounter = do
 countByUser :: IO ()
 countByUser = do
   ref <- newWorld
-  uid <- genUserId
-  otherUid <- genUserId
+  uid <- runInMemory ref newUserId
+  otherUid <- runInMemory ref newUserId
   n <- runInMemory ref do
-    _ <- createPasskey 20 (sampleNew uid)
+    _ <- createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNew uid)
     -- a second passkey for the same user (distinct credential id)
-    _ <- createPasskey 20 (sampleNewWithCred uid "cred-2")
+    _ <- createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNewWithCred uid "cred-2")
     -- a third for a different user
-    _ <- createPasskey 20 (sampleNewWithCred otherUid "cred-3")
+    _ <- createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNewWithCred otherUid "cred-3")
     countPasskeysByUser uid
   n @?= 2
 
 userScopedDelete :: IO ()
 userScopedDelete = do
   ref <- newWorld
-  uid <- genUserId
-  otherUid <- genUserId
+  uid <- runInMemory ref newUserId
+  otherUid <- runInMemory ref newUserId
   (afterWrongUser, afterOwner) <- runInMemory ref do
-    created <- either (error . show) pure =<< createPasskey 20 (sampleNew uid)
+    created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (sampleNew uid)
     let pid = pkPasskeyId created
     deletePasskey otherUid pid -- wrong user: no-op
     afterWrongUser <- findPasskeyByCredentialId (WebAuthnCredentialId cid1)
@@ -189,7 +195,9 @@ userScopedDelete = do
 samplePending :: CeremonyId -> UTCTime -> PendingCeremony
 samplePending cid expiry =
   PendingCeremony
-    { ceremonyId = cid,
+    { authenticationGeneration = Just 0,
+      initiatingSession = Nothing,
+      ceremonyId = cid,
       userId = Nothing,
       kind = RegistrationCeremony,
       optionsBlob = "{\"challenge\":\"abc\"}",
@@ -221,3 +229,11 @@ expiredTake = do
     pure (firstTake, afterTake)
   assertBool "expired take returns Nothing" (isNothing firstTake)
   assertBool "subsequent take also Nothing" (isNothing afterTake)
+
+-- Store fixtures use real users so user-row serialization has the same preconditions as SQL.
+newUserId :: (UserStore :> es, IOE :> es) => Eff es Id.UserId
+newUserId = do
+  unique <- genUserId
+  let lid = either (error . show) id (mkLoginId (Id.idText unique))
+  user <- createUser (NewUser lid Nothing Nothing)
+  pure user.userId

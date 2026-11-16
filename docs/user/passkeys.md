@@ -192,7 +192,7 @@ See [security.md](security.md) for how these fit the wider threat model.
 Password reset changes the password; it does not bypass MFA or grant an authenticated session
 for removing or enrolling passkeys. Use another enrolled passkey, TOTP, or a recovery code to
 complete login before managing credentials. If no usable factor remains, contact the operator
-for the deployment's account-recovery process.
+for [audited administrative recovery](deployment.md#recovering-an-owner-who-lost-every-second-factor). Password reset alone cannot remove the lost factors.
 
 As of MasterPlan 7, two in-MFA fallbacks also exist (see [mfa.md](mfa.md)): **recovery codes**
 (single-use codes generated at `POST /v1/auth/recovery-codes`, which complete an MFA challenge

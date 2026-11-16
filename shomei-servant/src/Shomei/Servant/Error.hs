@@ -573,6 +573,7 @@ authErrorProblem = \case
   TooManyRequests -> (pcTooManyRequests, retryAfterOccurrence 60)
   SessionNotFound -> plain pcSessionNotFound
   SessionExpired -> plain pcSessionExpired
+  StaleAuthentication -> plain pcSessionRevoked
   SessionRevoked -> plain pcSessionRevoked
   RefreshTokenInvalid -> plain pcRefreshTokenInvalid
   RefreshTokenExpired -> plain pcRefreshTokenExpired

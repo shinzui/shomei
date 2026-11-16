@@ -62,7 +62,15 @@ tests :: TestTree
 tests =
   testGroup
     "Notify"
-    [ testCase "HIBP cancellation propagates instead of becoming an unavailable lookup" do
+    [ recoveryNoticeTransports,
+      testCase "second-factor reset rendering is secret-free and has no fictitious token or expiry" do
+        address <- testEmail
+        let notification = SecondFactorsReset address expires "Contact your established support channel if unexpected."
+            output = render False notification
+        assertBool "reset notice kind" ("second_factors_reset" `isInfixOf` output)
+        assertBool "no fabricated one-time credential" (not ("token" `isInfixOf` output))
+        assertBool "no fabricated expiry" (not ("expires" `isInfixOf` output)),
+      testCase "HIBP cancellation propagates instead of becoming an unavailable lookup" do
         reports <- newIORef []
         let query _ = throwIO ThreadKilled
             report line = modifyIORef' reports (line :)
@@ -485,3 +493,54 @@ webhookTransportFailureRedactsRequestTest = testCase "webhook: a transport failu
         ("the request URL must not appear in the audit reason: " <> Text.unpack d.errorText)
         (not ("hunter2" `Text.isInfixOf` d.errorText))
     _ -> assertFailure ("expected exactly one delivery-failure event, got: " <> show events)
+
+recoveryNoticeTransports :: TestTree
+recoveryNoticeTransports =
+  testGroup
+    "secret-free recovery notice"
+    [ testCase "SMTP renders support instructions without token or expiry" do
+        email <- testEmail
+        let notice = SecondFactorsReset email fixtureExpiry "Contact established support if unexpected."
+        bracket openSink (close . sinkSocket) \sink -> bracket (forkIO (acceptLoop sink)) killThread \_ -> do
+          events <- deliverViaSmtp (plainSmtpConfig (sinkPort sink)) notice
+          events @?= []
+          transcript <- readMVar sink.sinkTranscript
+          assertBool "reset subject rendered" (any ("Your second factors were reset" `isInfixOf`) transcript)
+          assertBool "no one-time credential or expiry" (all (\line -> not ("?token=" `isInfixOf` line || "This link expires" `isInfixOf` line)) transcript),
+      testCase "configured delivery failure is redacted and does not throw" do
+        email <- testEmail
+        port <- closedPort
+        events <- deliverViaSmtp (plainSmtpConfig port) (SecondFactorsReset email fixtureExpiry "Contact support.")
+        case events of
+          [NotificationDeliveryFailed d] -> d.notificationType @?= "second_factors_reset"
+          _ -> assertFailure "expected one bounded delivery failure",
+      testCase "webhook carries a signed secret-free recovery payload" do
+        email <- testEmail
+        mgr <- newManager defaultManagerSettings
+        captured <- newMVar []
+        counter <- newIORef 0
+        let notice = SecondFactorsReset email fixtureExpiry "Contact support."
+        testWithApplication (pure (webhookStub counter (const 200) captured)) \port -> do
+          events <- deliverViaWebhook mgr (webhookConfigFor port 1) notice
+          events @?= []
+          requests <- readMVar captured
+          case requests of
+            [(headers, bytes)] -> do
+              decode (LBS.fromStrict bytes) @?= Just notice
+              lookup "X-Shomei-Notification-Type" headers @?= Just "second_factors_reset"
+              assertBool "no token in payload" (not ("token" `BS.isInfixOf` bytes))
+            _ -> assertFailure "expected one webhook notice",
+      testCase "queue overflow audits the recovery notice without blocking" do
+        email <- testEmail
+        queue <- Queue.newNotifierQueue 1
+        let notice = SecondFactorsReset email fixtureExpiry "Contact support."
+        Queue.enqueueNotification queue notice >>= (@?= Queue.Enqueued)
+        events <- newIORef []
+        runEff . runClockIO . runAuthEventCapture events . runNotifierEnqueue queue "smtp" $ sendNotification notice
+        captured <- readIORef events
+        case captured of
+          [NotificationDeliveryFailed d] -> do
+            d.notificationType @?= "second_factors_reset"
+            d.errorText @?= "queue_full"
+          _ -> assertFailure "expected queue overflow event"
+    ]

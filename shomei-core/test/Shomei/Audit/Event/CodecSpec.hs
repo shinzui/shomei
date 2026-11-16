@@ -15,6 +15,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), fromGregorian, secondsToDiffTime)
 import Data.UUID qualified as UUID
+import Shomei.Account.Admin.Recovery.Domain
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (LoginId, mkLoginId)
 import Shomei.Audit.Event.Codec (knownAuthEventTypes, projectAuthEvent, reconstructAuthEvent)
@@ -114,6 +115,7 @@ roundTrips =
     let d = PasswordChangeFailedData uid t0 in check "password_change_failed" d (PasswordChangeFailed d),
     let d = UserSuspendedData uid (Just uid2) t0 in check "user_suspended" d (UserSuspended d),
     let d = UserDeletedData uid (Just uid2) t0 in check "user_deleted" d (UserDeleted d),
+    let d = UserSecondFactorsResetData uid (LocalOperator "ops") "INC-1" (RecoveryCounts 1 1 10 1 1 1 0 0) t0 in check "user_second_factors_reset" d (UserSecondFactorsReset d),
     let d = UserReinstatedData uid (Just uid2) t0 in check "user_reinstated" d (UserReinstated d),
     let d = AccountLockedData (AccountKey "k-abc") (ClientIp "1.2.3.4") 5 t1 t0 in check "account_locked" d (AccountLocked d),
     let d = LoginThrottledData (ClientIp "1.2.3.4") 5 t0 in check "login_throttled" d (LoginThrottled d),

@@ -37,6 +37,7 @@ import Shomei.Passkey.Store (PasskeyStore (..))
 import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard.Postgres (checkAuthentication)
 
 -- | The stored-credential row, column order matching @shomei_webauthn_credentials@:
 -- @(passkey_id, user_id, credential_id, user_handle, public_key, sign_counter, transports,
@@ -49,7 +50,7 @@ runPasskeyStorePostgres ::
   Eff (PasskeyStore : es) a ->
   Eff es a
 runPasskeyStorePostgres = interpret_ \case
-  CreatePasskey limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
+  CreatePasskey proofState limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
     pid <- genPasskeyId
     let pc =
           PasskeyCredential
@@ -65,11 +66,14 @@ runPasskeyStorePostgres = interpret_ \case
               lastUsedAt = Nothing
             }
     res <- runTransaction do
-      Tx.statement (userIdToUUID userId) enrollmentLockStmt
-      count <- Tx.statement (userIdToUUID userId) countByUserStmt
-      if limit < 1 || limit > 100 || count >= fromIntegral limit
-        then pure (Left PasskeyLimitReached)
-        else Tx.statement (toRow pc) insertStmt >> pure (Right pc)
+      checked <- checkAuthentication userId proofState createdAt
+      case checked of
+        Left err -> pure (Left err)
+        Right () -> do
+          count <- Tx.statement (userIdToUUID userId) countByUserStmt
+          if limit < 1 || limit > 100 || count >= fromIntegral limit
+            then pure (Left PasskeyLimitReached)
+            else Tx.statement (toRow pc) insertStmt >> pure (Right pc)
     either dbFail pure res
   FindPasskeysByUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) findByUserStmt)

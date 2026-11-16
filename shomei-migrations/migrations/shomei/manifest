@@ -41,3 +41,4 @@
 0041-add-active-session-principal-indexes.sql
 0042-add-admin-keyset-indexes.sql
 0043-enforce-session-provenance-upgrades.sql
+0044-add-authentication-generation.sql

@@ -38,10 +38,11 @@ import Shomei.Passkey.Domain
     WebAuthnCredentialId,
   )
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard)
 
 data PasskeyStore :: Effect where
   -- | Atomically count and insert within the requested 1–100 credential ceiling.
-  CreatePasskey :: Int -> NewPasskeyCredential -> PasskeyStore m (Either AuthError PasskeyCredential)
+  CreatePasskey :: AuthenticationGuard -> Int -> NewPasskeyCredential -> PasskeyStore m (Either AuthError PasskeyCredential)
   FindPasskeysByUser :: UserId -> PasskeyStore m [PasskeyCredential]
   FindPasskeyByCredentialId :: WebAuthnCredentialId -> PasskeyStore m (Maybe PasskeyCredential)
   FindPasskeysByUserHandle :: UserHandle -> PasskeyStore m [PasskeyCredential]
@@ -54,10 +55,10 @@ data PasskeyStore :: Effect where
 
 type instance DispatchOf PasskeyStore = Dynamic
 
-createPasskey :: (PasskeyStore :> es) => Int -> NewPasskeyCredential -> Eff es (Either AuthError PasskeyCredential)
-createPasskey limit credential
+createPasskey :: (PasskeyStore :> es) => AuthenticationGuard -> Int -> NewPasskeyCredential -> Eff es (Either AuthError PasskeyCredential)
+createPasskey proofState limit credential
   | maybe False ((> 128) . Text.length) credential.label = pure (Left InvalidInput)
-  | otherwise = send (CreatePasskey limit credential)
+  | otherwise = send (CreatePasskey proofState limit credential)
 
 findPasskeysByUser :: (PasskeyStore :> es) => UserId -> Eff es [PasskeyCredential]
 findPasskeysByUser = send . FindPasskeysByUser

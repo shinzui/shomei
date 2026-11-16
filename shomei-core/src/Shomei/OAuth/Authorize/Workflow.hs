@@ -32,7 +32,9 @@ import Data.Text qualified as Text
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Error.Static (runErrorNoCallStack, throwError)
+import Shomei.Account.User.Store (UserStore, findUserById)
 import Shomei.Audit.Event.Domain qualified as Event
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..), userGuard)
 
 -- Imported WITHOUT (..): 'OAuthClient' shares @clientId@ / @status@ / @createdAt@ with several
 -- other domain records, which would defeat @OverloadedRecordDot@. Every field is read through a
@@ -147,7 +149,8 @@ authorize ::
     TokenGen :> es,
     AuthEventPublisher :> es,
     Clock :> es,
-    SessionStore :> es
+    SessionStore :> es,
+    UserStore :> es
   ) =>
   ShomeiConfig ->
   OAuthClient ->
@@ -170,19 +173,22 @@ authorize cfg client claims params = runErrorNoCallStack do
   -- The refresh-token generator is the codebase's single CSPRNG opaque-token source (32 bytes,
   -- base64url). A code is the same kind of secret with a shorter life.
   RefreshToken code <- generateOpaqueToken
-  putAuthorizationCode
-    NewAuthorizationCode
-      { codeHash = sha256Hex code,
-        clientId = client ^. #clientId,
-        redirectUri = params.redirectUri,
-        userId = claims.subject,
-        scopes = granted,
-        nonce = params.nonce,
-        codeChallenge = challenge,
-        authTime = claims.authTime,
-        createdAt = ts,
-        expiresAt = addUTCTime (cfg ^. #oauthConfig . #authorizationCodeTTL) ts
-      }
+  user <- maybe (throwError (AuthorizeLoginRequired SessionNotLive)) pure =<< findUserById claims.subject
+  either (const (throwError (AuthorizeLoginRequired SessionNotLive))) pure
+    =<< putAuthorizationCode
+      ((userGuard user) {initiatingSession = Just claims.sessionId})
+      NewAuthorizationCode
+        { codeHash = sha256Hex code,
+          clientId = client ^. #clientId,
+          redirectUri = params.redirectUri,
+          userId = claims.subject,
+          scopes = granted,
+          nonce = params.nonce,
+          codeChallenge = challenge,
+          authTime = claims.authTime,
+          createdAt = ts,
+          expiresAt = addUTCTime (cfg ^. #oauthConfig . #authorizationCodeTTL) ts
+        }
   publishAuthEvent
     ( Event.OAuthCodeIssued
         Event.OAuthCodeIssuedData

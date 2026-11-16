@@ -82,6 +82,7 @@ import Servant.Health (ProbeVerdict (Healthy))
 import Servant.Server.Experimental.Auth (AuthHandler, unAuthHandler)
 import Servant.Server.Generic (genericServe)
 import Servant.Server.Internal (runHandler)
+import Shomei.Account.Admin.Recovery.Domain (RecoveryActor (..))
 import Shomei.Account.Credential.Store (createPasswordCredential)
 import Shomei.Account.Email.Domain (emailText, mkEmail)
 import Shomei.Account.LoginId.Domain (mkLoginId, parseLoginIdForAuthentication)
@@ -1405,7 +1406,14 @@ tests :: IORef World -> Env -> IO Env -> IO (IORef World, Env) -> IO (IORef Worl
 tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv freshCookieEnv freshInsecureCookieEnv freshBothEnv freshOAuthEnv freshOidcEnv freshAuthorizeEnv freshSessionAuthorizeEnv freshAdminEnv freshExchangeEnv freshRevokeEnv freshProvenanceEnv freshTotpEnv t0 jwk cfg adminToken =
   testGroup
     "typed results and HTTP end-to-end (in-memory interpreters + in-test ES256 key)"
-    [ testCase "OAuth boundary uses safe errors and complete configured path segments" (scenarioOAuthBoundary env),
+    [ testCase "administrator recovery authorizes before writes and rejects revoked sessions even in token-only mode" $ do
+        (r, e) <- freshTotpEnv
+        let c = e.config {tokenTransport = BearerAndCookie}
+        testWithApplication (pure (app e {config = c})) (scenarioAdminRecovery r jwk c),
+      testCase "administrator service scope recovers with service attribution" $ do
+        (r, _, _, adminId, e) <- freshExchangeEnv
+        testWithApplication (pure (app e)) (scenarioServiceRecovery r adminId),
+      testCase "OAuth boundary uses safe errors and complete configured path segments" (scenarioOAuthBoundary env),
       testCase "generic OAuth 401 does not select an authentication scheme" do
         lookup "WWW-Authenticate" (OAuth.oauthError status401 "login_required" "login required").errHeaders @?= Nothing
         lookup "WWW-Authenticate" OAuth.invalidClient.errHeaders @?= Just "Basic realm=\"shomei\"",
@@ -3984,3 +3992,88 @@ scenarioOAuthBoundary env = do
     malformed <- httpLbs initial {method = "POST", requestHeaders = [("Content-Type", "application/json")], requestBody = RequestBodyLBS "\"secret-sentinel\""} mgr
     statusCode (responseStatus malformed) @?= 400
     (Aeson.decode (responseBody malformed) :: Maybe OAuth.OAuthErrorResponse) @?= Just (OAuth.OAuthErrorResponse "invalid_request" "request could not be parsed")
+
+scenarioAdminRecovery :: IORef World -> JWK -> ShomeiConfig -> Int -> IO ()
+scenarioAdminRecovery ref jwk cfg port = do
+  mgr <- newManager defaultManagerSettings
+  (adminId, _) <- signupOver mgr port "recovery-admin@example.com"
+  grantAdminTo ref adminId
+  adminToken <- loginOver mgr port "recovery-admin@example.com"
+  (targetId, targetToken) <- signupOver mgr port "recovery-target@example.com"
+  (ordinaryId, ordinaryToken) <- signupOver mgr port "recovery-ordinary@example.com"
+  let path uid = "/v1/admin/users/" <> T.unpack uid <> "/mfa/reset"
+      valid = object ["identityVerified" .= True, "caseReference" .= ("INC-1234" :: Text)]
+      post headers body = postRaw' mgr port (path targetId) headers body
+  (enrolled, _) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer targetToken)
+  enrolled @?= 200
+  (generated, _) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer targetToken)
+  generated @?= 200
+  (begun, _) <- postAuthNoBody mgr port "/v1/auth/passkeys/register/begin" (bearer targetToken)
+  begun @?= 200
+  before <- readIORef ref
+  post [] valid >>= assertProblem "anonymous recovery" 401 "missing_token"
+  post (bearer ordinaryToken) valid >>= assertProblem "ordinary recovery" 403 "missing_role"
+  self <- postRaw' mgr port (path adminId) (bearer adminToken) valid
+  assertProblem "self recovery" 403 "self_target_forbidden" self
+  parsedAdmin <- parseUserId adminId
+  parsedOrdinary <- parseUserId ordinaryId
+  delegated <- mkTokenFor jwk cfg parsedAdmin (Set.singleton (Role "admin")) Set.empty (Just parsedOrdinary)
+  delegatedResult <- post (bearer delegated) valid
+  statusOf delegatedResult @?= 403
+  forM_
+    [ object ["identityVerified" .= False, "caseReference" .= ("INC-1" :: Text)],
+      object ["identityVerified" .= True, "caseReference" .= ("sentinel\nidentity evidence" :: Text)],
+      object ["caseReference" .= ("INC-1" :: Text)]
+    ]
+    $ \invalid -> do
+      rejected <- post (bearer adminToken) invalid
+      statusOf rejected @?= 400
+  csrf <- post [sessionCookieHeader adminToken, foreignOrigin] valid
+  assertProblem "recovery cookie CSRF" 403 "csrf_rejected" csrf
+  unknown <- genUserId
+  missing <- postRaw' mgr port (path (idText unknown)) (bearer adminToken) valid
+  statusOf missing @?= 404
+  (suspendedId, _) <- signupOver mgr port "recovery-suspended@example.com"
+  _ <- postAuthNoBody mgr port ("/v1/admin/users/" <> T.unpack suspendedId <> "/suspend") (bearer adminToken)
+  inactive <- postRaw' mgr port (path suspendedId) (bearer adminToken) valid
+  statusOf inactive @?= 409
+  rejectedWorld <- readIORef ref
+  rejectedWorld.totpCredentials @?= before.totpCredentials
+  rejectedWorld.recoveryCodes @?= before.recoveryCodes
+  rejectedWorld.pendingCeremonies @?= before.pendingCeremonies
+  length [() | Event.UserSecondFactorsReset _ <- rejectedWorld.publishedEvents] @?= 0
+  success <- post (bearer adminToken) valid
+  statusOf success @?= 200
+  (bodyOf success >>= dig ["counts", "totpCredentialsRemoved"]) @?= Just (toJSON (1 :: Int))
+  (bodyOf success >>= dig ["counts", "recoveryCodesRemoved"]) @?= Just (toJSON (10 :: Int))
+  assertBool "recovery response issues no tokens" (maybe True (\body -> not (isJust (dig ["accessToken"] body)) && not (isJust (dig ["token"] body))) (bodyOf success))
+  (staleEnroll, _) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer targetToken)
+  staleEnroll @?= 401
+  (staleBegin, _) <- postAuthNoBody mgr port "/v1/auth/passkeys/register/begin" (bearer targetToken)
+  staleBegin @?= 401
+  (staleCodes, _) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer targetToken)
+  staleCodes @?= 401
+  (passwordStatus, _) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ("recovery-target@example.com" :: Text), "password" .= adminPassword])
+  passwordStatus @?= 200
+  world <- readIORef ref
+  case [d | Event.UserSecondFactorsReset d <- world.publishedEvents] of
+    [d] -> d.recoveryActor @?= AuthenticatedAdministrator parsedAdmin
+    _ -> assertFailure "expected one attributed recovery event"
+  -- A revoked administrator JWT still verifies offline; this route requires its backing session.
+  revokeAllSessionsOf ref adminId
+  revoked <- post (bearer adminToken) valid
+  statusOf revoked @?= 401
+
+scenarioServiceRecovery :: IORef World -> Text -> Int -> IO ()
+scenarioServiceRecovery ref adminClient port = do
+  mgr <- newManager defaultManagerSettings
+  (target, _) <- signupOver mgr port "service-recovery-target@example.com"
+  minted <- postForm mgr port "/oauth/token" (Just (adminClient, oauthClientSecret)) [("grant_type", "client_credentials")]
+  statusOf minted @?= 200
+  token <- must "administrator service token" (bodyOf minted >>= dig ["access_token"] >>= asText)
+  result <- postRaw' mgr port ("/v1/admin/users/" <> T.unpack target <> "/mfa/reset") (bearer token) (object ["identityVerified" .= True, "caseReference" .= ("INC-service" :: Text)])
+  statusOf result @?= 200
+  world <- readIORef ref
+  case [d.recoveryActor | Event.UserSecondFactorsReset d <- world.publishedEvents] of
+    [AdministratorService _] -> pure ()
+    other -> assertFailure ("expected service attribution: " <> show other)

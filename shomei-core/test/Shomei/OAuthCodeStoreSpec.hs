@@ -21,10 +21,15 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Effectful (Eff, IOE, (:>))
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Store (UserStore, createUser)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genSessionId, genUserId, idText)
+import Shomei.Id qualified as Id
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Store
   ( bindAuthorizationCodeSession,
@@ -42,6 +47,7 @@ import Shomei.OAuth.Authorize.Workflow
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..), OAuthClient (..))
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.ServiceAccount.Secret (sha256Hex)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
 import Shomei.Session.Store (createSession)
 import Shomei.Test.InMemory (World (..), emptyWorld, runInMemory)
@@ -159,8 +165,8 @@ consumeOnce :: IO ()
 consumeOnce = do
   ref <- newWorld
   (first', second') <- runInMemory ref do
-    uid <- genUserId
-    putAuthorizationCode (newCode uid (addUTCTime 60 t0) "hash-1")
+    uid <- newUserId
+    putAuthorizationCode (AuthenticationGuard 0 Nothing Nothing) (newCode uid (addUTCTime 60 t0) "hash-1")
     a <- consumeAuthorizationCode "hash-1" t0
     b <- consumeAuthorizationCode "hash-1" t0
     pure (a, b)
@@ -172,9 +178,9 @@ bindAndFindConsumed :: IO ()
 bindAndFindConsumed = do
   ref <- newWorld
   (sid, found, expired) <- runInMemory ref do
-    uid <- genUserId
+    uid <- newUserId
     sid <- genSessionId
-    putAuthorizationCode (newCode uid (addUTCTime 60 t0) "hash-bound")
+    putAuthorizationCode (AuthenticationGuard 0 Nothing Nothing) (newCode uid (addUTCTime 60 t0) "hash-bound")
     _ <- consumeAuthorizationCode "hash-bound" t0
     bindAuthorizationCodeSession "hash-bound" sid
     found <- findConsumedAuthorizationCode "hash-bound" t0
@@ -187,8 +193,8 @@ expiredNeverConsumes :: IO ()
 expiredNeverConsumes = do
   ref <- newWorld
   result <- runInMemory ref do
-    uid <- genUserId
-    putAuthorizationCode (newCode uid (addUTCTime 60 t0) "hash-1")
+    uid <- newUserId
+    putAuthorizationCode (AuthenticationGuard 0 Nothing Nothing) (newCode uid (addUTCTime 60 t0) "hash-1")
     -- One second past the expiry.
     consumeAuthorizationCode "hash-1" (addUTCTime 61 t0)
   assertBool "an expired code must not consume" (isNothing result)
@@ -209,7 +215,7 @@ runAuthorizeWithAllowed :: Set Scope -> ClientType -> AuthorizeParams -> IO (Eit
 runAuthorizeWithAllowed registeredScopes clientType params = do
   ref <- newWorld
   result <- runInMemory ref do
-    uid <- genUserId
+    uid <- newUserId
     session <-
       createSession
         NewSession
@@ -378,3 +384,11 @@ challengeShape = do
   assertBool "'/' is not base64url" (not (isValidS256Challenge (Text.replicate 42 "a" <> "/")))
   assertBool "'=' padding is not accepted" (not (isValidS256Challenge (Text.replicate 42 "a" <> "=")))
   assertBool "'-' and '_' are base64url" (isValidS256Challenge (Text.replicate 41 "a" <> "-_"))
+
+-- Store fixtures use real users so user-row serialization has the same preconditions as SQL.
+newUserId :: (UserStore :> es, IOE :> es) => Eff es Id.UserId
+newUserId = do
+  unique <- genUserId
+  let lid = either (error . show) id (mkLoginId (Id.idText unique))
+  user <- createUser (NewUser lid Nothing Nothing)
+  pure user.userId

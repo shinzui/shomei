@@ -57,6 +57,7 @@ import Shomei.OAuth.Client.Store (OAuthClientStore, findOAuthClientByClientId)
 import Shomei.OAuth.IdToken.Domain (IdToken, IdTokenClaims (..))
 import Shomei.Prelude
 import Shomei.ServiceAccount.Secret (sha256Hex, verifyServiceSecret)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (RefreshCommand (..), RefreshOrigin (OAuthClientRefresh))
 import Shomei.Session.RefreshToken.Domain (RefreshToken)
@@ -190,13 +191,15 @@ exchangeAuthorizationCode cfg cmd = runErrorNoCallStack do
     unless ((u ^. #status) == UserActive) (throwError (GrantInvalidGrant "the code's user is not active"))
     either (const (throwError (GrantInvalidGrant "the code's user has not verified their email"))) pure (ensureEmailVerified cfg u)
     pure u
+  generation <- maybe (throwError (GrantInvalidGrant "legacy authentication state")) pure (row ^. #authenticationGeneration)
   let granted = row ^. #scopes
   (sid, pair, claims) <-
-    issueSessionWith
-      cfg
-      SessionOptions {oauthClientId = Just (cmd ^. #clientId), extraScopes = granted, remember = False}
-      user
-      ts
+    either (const (throwError (GrantInvalidGrant "authentication state changed"))) pure
+      =<< issueSessionWith
+        cfg
+        SessionOptions {oauthClientId = Just (cmd ^. #clientId), extraScopes = granted, remember = False, authenticationGuard = Just (AuthenticationGuard generation Nothing Nothing)}
+        user
+        ts
   bindAuthorizationCodeSession (row ^. #codeHash) sid
   idToken <-
     if Scope "openid" `Set.member` granted

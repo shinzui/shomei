@@ -5,6 +5,8 @@ import Data.Text (Text)
 import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
+import Shomei.Account.Handler (requireLiveAuthentication)
+import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Delegation.Handler (denyUnderDelegation)
 import Shomei.Id (CeremonyId, PasskeyId, idText, parseId)
 import Shomei.Mfa.Workflow qualified as Mfa
@@ -37,12 +39,14 @@ passkeyServer env =
 registerBeginH :: Env -> AuthUser -> Handler RegisterBeginResult
 registerBeginH env user = runApplicationHandler do
   denyUnderDelegation env "passkey_register" user
-  (ceremonyId, options) <- workflow env (Passkey.beginPasskeyRegistration env.config user.authUserId)
+  requireLiveAuthentication env user
+  (ceremonyId, options) <- workflow env (Passkey.beginPasskeyRegistration env.config user.authUserId (Just user.authClaims.sessionId))
   pure PasskeyRegisterBeginResponse {ceremonyId = idText ceremonyId, options}
 
 registerCompleteH :: Env -> AuthUser -> PasskeyRegisterCompleteRequest -> Handler RegisterCompleteResult
 registerCompleteH env user request = runApplicationHandler do
   denyUnderDelegation env "passkey_register" user
+  requireLiveAuthentication env user
   ceremonyId <- parseCeremonyId request.ceremonyId
   passkey <- workflow env (Passkey.completePasskeyRegistration env.config user.authUserId ceremonyId request.credential request.label)
   pure (passkeyToResponse passkey)
@@ -53,6 +57,7 @@ listH env user = runApplicationHandler (map passkeyToResponse <$> port env (Pass
 removeH :: Env -> AuthUser -> PasskeyId -> Handler RemovePasskeyResult
 removeH env user passkeyId = runApplicationHandler do
   denyUnderDelegation env "passkey_remove" user
+  requireLiveAuthentication env user
   workflow env (Passkey.removePasskey user.authUserId passkeyId)
 
 loginBeginH :: Env -> Handler PasskeyLoginBeginResult

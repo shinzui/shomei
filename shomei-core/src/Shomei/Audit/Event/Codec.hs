@@ -46,6 +46,7 @@ knownAuthEventTypes =
     "user_suspended",
     "user_deleted",
     "user_reinstated",
+    "user_second_factors_reset",
     "account_locked",
     "login_throttled",
     "passkey_registered",
@@ -95,6 +96,7 @@ reconstructAuthEvent etype payload = case etype of
   "password_change_failed" -> PasswordChangeFailed <$> parse payload
   "user_suspended" -> UserSuspended <$> parse payload
   "user_deleted" -> UserDeleted <$> parse payload
+  "user_second_factors_reset" -> UserSecondFactorsReset <$> parse payload
   "user_reinstated" -> UserReinstated <$> parse payload
   "account_locked" -> AccountLocked <$> parse payload
   "login_throttled" -> LoginThrottled <$> parse payload
@@ -172,6 +174,8 @@ projectAuthEvent = \case
     (Just (userIdToUUID d.userId), Nothing, "user_suspended", toJSON d, d.occurredAt)
   UserDeleted d ->
     (Just (userIdToUUID d.userId), Nothing, "user_deleted", toJSON d, d.occurredAt)
+  UserSecondFactorsReset d ->
+    (Just (userIdToUUID d.userId), Nothing, "user_second_factors_reset", toJSON d, d.occurredAt)
   UserReinstated d ->
     (Just (userIdToUUID d.userId), Nothing, "user_reinstated", toJSON d, d.occurredAt)
   AccountLocked d@(AccountLockedData _ _ _ _ occ) ->

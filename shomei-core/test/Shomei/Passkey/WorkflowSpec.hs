@@ -114,7 +114,7 @@ enrollListRemove :: IO ()
 enrollListRemove = do
   ref <- newWorld
   uid <- seedUser ref
-  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid Nothing)
   pk <- mustRight =<< runInMemory ref (completePasskeyRegistration cfg uid cid (credentialJson (challengeOf opts)) (Just "YubiKey"))
   pkLabel pk @?= Just "YubiKey"
   -- list returns exactly the enrolled passkey
@@ -130,7 +130,7 @@ wrongUserComplete = do
   ref <- newWorld
   uid <- seedUser ref
   otherUid <- genUserId
-  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid Nothing)
   result <- runInMemory ref (completePasskeyRegistration cfg otherUid cid (credentialJson (challengeOf opts)) Nothing)
   result @?= Left PendingCeremonyNotFound
 
@@ -146,7 +146,7 @@ consumedCeremony :: IO ()
 consumedCeremony = do
   ref <- newWorld
   uid <- seedUser ref
-  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid Nothing)
   _ <- mustRight =<< runInMemory ref (completePasskeyRegistration cfg uid cid (credentialJson (challengeOf opts)) Nothing)
   -- the ceremony was consumed by the first complete; a second is rejected
   again <- runInMemory ref (completePasskeyRegistration cfg uid cid (credentialJson (challengeOf opts)) Nothing)
@@ -156,7 +156,7 @@ rejectedCredential :: IO ()
 rejectedCredential = do
   ref <- newWorld
   uid <- seedUser ref
-  (cid, _opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  (cid, _opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid Nothing)
   -- a credential whose challenge does not match the ceremony fails verification
   result <- runInMemory ref (completePasskeyRegistration cfg uid cid (credentialJson "not-the-challenge") Nothing)
   result @?= Left (WebAuthnCeremonyError WebAuthnChallengeMismatch)
@@ -166,7 +166,7 @@ quotaRace = do
   ref <- newWorld
   uid <- seedUser ref
   let limited = cfg {maxPasskeysPerUser = 1}
-  ceremonies <- forM [1 .. 2 :: Int] \_ -> mustRight =<< runInMemory ref (beginPasskeyRegistration limited uid)
+  ceremonies <- forM [1 .. 2 :: Int] \_ -> mustRight =<< runInMemory ref (beginPasskeyRegistration limited uid Nothing)
   gate <- newEmptyMVar
   results <- forM ceremonies \(cid, opts) -> do
     done <- newEmptyMVar
@@ -191,7 +191,7 @@ labelBoundary :: IO ()
 labelBoundary = do
   ref <- newWorld
   uid <- seedUser ref
-  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid)
+  (cid, opts) <- mustRight =<< runInMemory ref (beginPasskeyRegistration cfg uid Nothing)
   let credential = credentialJson (challengeOf opts)
   bad <- runInMemory ref (completePasskeyRegistration cfg uid cid credential (Just (Text.replicate 129 "🔑")))
   bad @?= Left InvalidInput

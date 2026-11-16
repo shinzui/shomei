@@ -214,18 +214,20 @@ testBespokeRefreshRejectsOAuthSession = testCase "bespoke refresh refuses a clie
   (user, _) <- expectRight =<< runInMemory ref (signup cfg (signupEmail aliceEmail strongPw Nothing))
   let granted = Set.fromList [Scope "openid", Scope "kawa:read"]
   (_, oauthPair, _) <-
-    runInMemory
-      ref
-      ( issueSessionWith
-          cfg
-          SessionOptions
-            { oauthClientId = Just "oauthclient_test",
-              extraScopes = granted,
-              remember = False
-            }
-          user
-          fixedTime
-      )
+    expectRight
+      =<< runInMemory
+        ref
+        ( issueSessionWith
+            cfg
+            SessionOptions
+              { oauthClientId = Just "oauthclient_test",
+                extraScopes = granted,
+                remember = False,
+                authenticationGuard = Nothing
+              }
+            user
+            fixedTime
+        )
   result <- runInMemory ref (refresh cfg (RefreshCommand oauthPair.refreshToken))
   result @?= Left Err.RefreshTokenInvalid
   wrongClient <- runInMemory ref (refreshFrom (OAuthClientRefresh "oauthclient_other") cfg (RefreshCommand oauthPair.refreshToken))

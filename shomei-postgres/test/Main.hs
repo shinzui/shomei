@@ -7,10 +7,11 @@ module Main (main) where
 
 import Control.Concurrent (MVar, forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, bracket, bracket_, evaluate, try)
-import Control.Monad (forM, forM_, replicateM, void, when, (<=<))
+import Control.Monad (forM, forM_, replicateM, void, when, (<=<), (>=>))
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AEAD, AEADMode (AEAD_GCM), AuthTag (..), aeadInit, aeadSimpleEncrypt, cipherInit)
 import Crypto.Error (CryptoFailable (..))
+import Data.Aeson (object, (.=))
 import Data.ByteArray qualified as BA
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -34,6 +35,7 @@ import Hasql.Encoders qualified as E
 import Hasql.Errors qualified as Hasql
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
+import Shomei.Account.Admin.Recovery
 import Shomei.Account.Credential.Domain (Credential (..))
 import Shomei.Account.Credential.Postgres (runCredentialStorePostgres)
 import Shomei.Account.Credential.Store (CredentialStore, createPasswordCredential, findPasswordCredentialByEmail, findPasswordCredentialByLoginId, updatePasswordHash)
@@ -131,10 +133,10 @@ import Shomei.Authorization.Role.Store
     revokeRole,
   )
 import Shomei.Authorization.Role.Workflow (grantRoleTo)
-import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
+import Shomei.Config (RateLimitConfig (..), ShomeiConfig (..), TotpConfig (..), defaultRateLimitConfig, defaultShomeiConfig)
 import Shomei.Error (AuthDependency (PostgreSQL), AuthError (DependencyUnavailable, EmailAlreadyRegistered, InvalidCredentials, LoginIdAlreadyRegistered, PasswordResetTokenInvalid, RefreshTokenReuseDetected, RoleNotDefined, UserNotFound))
 import Shomei.Error qualified as Err
-import Shomei.Id (OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, totpCredentialIdToUUID, userIdToUUID)
+import Shomei.Id (CeremonyId, OAuthClientId, PasskeyId, ServiceAccountDbId, genCeremonyId, genOAuthClientId, genRecoveryCodeId, genServiceAccountDbId, genSessionId, genTotpCredentialId, genUserId, idText, totpCredentialIdToUUID, userIdToUUID)
 import Shomei.Mfa.RecoveryCode.Postgres (runRecoveryCodeStorePostgres)
 import Shomei.Mfa.RecoveryCode.Store
   ( RecoveryCodeStore,
@@ -142,6 +144,7 @@ import Shomei.Mfa.RecoveryCode.Store
     countUnusedRecoveryCodes,
     replaceRecoveryCodes,
   )
+import Shomei.Mfa.RecoveryCode.Store qualified as RecoveryStore
 import Shomei.Mfa.Totp.Algorithm (TotpSecret (..), totpCode, totpCounter)
 import Shomei.Mfa.Totp.Domain (NewRecoveryCode (..), NewTotpCredential (..), TotpCredential (..))
 import Shomei.Mfa.Totp.Postgres
@@ -159,7 +162,10 @@ import Shomei.Mfa.Totp.Store
     setTotpLastUsedCounter,
     upsertTotpEnrollment,
   )
+import Shomei.Mfa.Totp.Store qualified as TotpStore
+import Shomei.Mfa.Totp.Workflow qualified as TotpWorkflow
 import Shomei.Mfa.Workflow (MfaCompletion (..), completeMfa, prepareMfaChallenge)
+import Shomei.Mfa.Workflow qualified as MfaWorkflow
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode (..), NewAuthorizationCode (..))
 import Shomei.OAuth.AuthorizationCode.Postgres (runOAuthCodeStorePostgres)
@@ -185,6 +191,7 @@ import Shomei.OAuth.Client.Store
     revokeOAuthClient,
   )
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
+import Shomei.OAuth.TokenGrant.Workflow qualified as TokenGrant
 import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
 import Shomei.Passkey.Ceremony.Postgres (runPendingCeremonyStorePostgres)
 import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore, putPendingCeremony, takePendingCeremony)
@@ -209,6 +216,8 @@ import Shomei.Passkey.Store
     findPasskeysByUserHandle,
     updatePasskeySignCounter,
   )
+import Shomei.Passkey.Store qualified as PasskeyStore
+import Shomei.Passkey.Workflow qualified as PasskeyWorkflow
 import Shomei.Persistence.Database.Postgres (Database (..), TransactionRetryPolicy (..), retryableTransactionError, runDatabasePool, runDatabasePoolWith, runTransaction)
 import Shomei.Persistence.Maintenance.Postgres
   ( SweepConfig (..),
@@ -222,6 +231,7 @@ import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..), ServiceAccountStatus (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
+import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store
   ( ServiceAccountStore,
     createServiceAccount,
@@ -230,6 +240,7 @@ import Shomei.ServiceAccount.Store
     revokeServiceAccount,
     rotateServiceAccountSecret,
   )
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..), userGuard)
 import Shomei.Session.Authentication.Workflow (login, logout, refresh, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), ProofContext (..), RefreshCommand (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
@@ -253,6 +264,7 @@ import Shomei.Session.Token.Domain (AccessToken (..), TokenPair (..))
 import Shomei.Session.Token.Generator (TokenGen, hashRefreshToken)
 import Shomei.Session.UnitOfWork.Postgres (runAuthUnitOfWorkPostgres)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork, completePasswordChange, completePasswordReset, revokeSessionWithTokens, revokeUserSessionsWithAudit)
+import Shomei.Session.UnitOfWork.Store qualified as Uow
 import Shomei.Session.Workflow (buildEnrichedClaims)
 import Shomei.SigningKey.Domain (SigningKeyStatus (..), StoredSigningKey (..))
 import Shomei.SigningKey.Postgres (runSigningKeyStorePostgres)
@@ -521,7 +533,11 @@ main = defaultMain (testGroup "shomei-postgres" tests)
 
 tests :: [TestTree]
 tests =
-  [ testManagedPoolOwnership,
+  [ testRecoveryWriteBarriers,
+    testAdministrativeRecovery,
+    testRecoveryAuditRollback,
+    testRecoveryMfaCommitBarrier,
+    testManagedPoolOwnership,
     testPersistenceClock,
     testAdminQueryPlans,
     testRefreshRotationRace,
@@ -817,10 +833,12 @@ testTotpCredentialRoundTrip =
       tcid <- genTotpCredentialId
       t <- now
       created <-
-        upsertTotpEnrollment
-          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        either (error . show) pure
+          =<< upsertTotpEnrollment
+            (AuthenticationGuard 0 Nothing Nothing)
+            NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
       found0 <- findTotpByUser u.userId
-      confirmTotp tcid t
+      confirmTotp u.userId (AuthenticationGuard 0 Nothing Nothing) tcid t
       counterAdvanced <- setTotpLastUsedCounter tcid 42
       found1 <- findTotpByUser u.userId
       deleteTotpByUser u.userId
@@ -843,8 +861,10 @@ testTotpCounterIsCompareAndSwap =
       tcid <- genTotpCredentialId
       t <- now
       _ <-
-        upsertTotpEnrollment
-          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        either (error . show) pure
+          =<< upsertTotpEnrollment
+            (AuthenticationGuard 0 Nothing Nothing)
+            NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
       first <- setTotpLastUsedCounter tcid 42
       same <- setTotpLastUsedCounter tcid 42
       older <- setTotpLastUsedCounter tcid 41
@@ -863,8 +883,10 @@ testTotpCounterCasUnderRace =
       tcid <- genTotpCredentialId
       t <- now
       _ <-
-        upsertTotpEnrollment
-          NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        either (error . show) pure
+          =<< upsertTotpEnrollment
+            (AuthenticationGuard 0 Nothing Nothing)
+            NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
       pure tcid
     tcid <- expectApp seeded
     gate <- newEmptyMVar
@@ -888,7 +910,7 @@ testTotpEncryptionAtRest =
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       tcid <- genTotpCredentialId
       t <- now
-      _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+      _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
       pure ()
     _ <- expectApp result
     stored <- scalarBytea pool "SELECT secret_enc FROM shomei.shomei_totp_credentials LIMIT 1"
@@ -906,7 +928,7 @@ testTotpEnvelopeBinding =
         forM_ [a, b] \u -> do
           tcid <- genTotpCredentialId
           t <- now
-          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
           pure ()
         pure (a, b)
     let aliceId = "'" <> Text.pack (show (userIdToUUID alice.userId)) <> "'"
@@ -939,7 +961,7 @@ testTotpEnvelopeBinding =
       expectApp =<< runApp pool do
         tcid <- genTotpCredentialId
         t <- now
-        c <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = alice.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        c <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = alice.userId, secret = TotpSecret totpRawSecret, createdAt = t}
         found <- findTotpByUser alice.userId
         pure (c, found)
     fmap (\TotpCredential {totpCredentialId} -> totpCredentialId) (snd replacement)
@@ -961,7 +983,7 @@ testTotpEnvelopeConversion =
         a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         tcid <- genTotpCredentialId
         t <- now
-        _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+        _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
         pure a.userId
     let seed =
           preparable
@@ -997,8 +1019,8 @@ testTotpConversionBatches =
           u <- createUser (NewUser {loginId = lid, email = Nothing, displayName = Nothing})
           tcid <- genTotpCredentialId
           t <- now
-          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
-          when (even i) (confirmTotp tcid t)
+          _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          when (even i) (void (confirmTotp u.userId (AuthenticationGuard 0 Nothing Nothing) tcid t))
     let seed =
           preparable
             "UPDATE shomei.shomei_totp_credentials SET secret_enc = $1, envelope_version = 0"
@@ -1020,12 +1042,12 @@ testTotpConvertedFactor =
       expectApp =<< runAppAtTime t0 pool do
         a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
         tcid <- genTotpCredentialId
-        _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t0}
-        confirmTotp tcid t0
+        _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t0}
+        confirmTotp a.userId (AuthenticationGuard 0 Nothing Nothing) tcid t0
         pure a
     let completeAt ts = do
           result <- runAppAtTime ts pool do
-            (cid, _, methods) <- prepareMfaChallenge cfg u ts
+            (cid, _, methods) <- either (error . show) pure =<< prepareMfaChallenge cfg u ts
             liftIO (assertBool "TOTP offered" ("totp" `elem` methods))
             completeMfa
               cfg
@@ -1055,7 +1077,7 @@ testTotpConversionConflict =
           a <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
           tcid <- genTotpCredentialId
           t <- now
-          _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
+          _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = a.userId, secret = TotpSecret totpRawSecret, createdAt = t}
           pure a
       let seed =
             preparable
@@ -1085,7 +1107,7 @@ testTotpConversionConflict =
         expectApp =<< runApp pool do
           tcid <- genTotpCredentialId
           t <- now
-          upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret "new enrollment secret", createdAt = t}
+          either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = u.userId, secret = TotpSecret "new enrollment secret", createdAt = t}
       execSql gatePool "SELECT pg_advisory_unlock(1936224116, 2)"
       _ <- expectRight =<< takeMVar blocker
       takeMVar converted >>= (@?= Right 0)
@@ -1105,13 +1127,13 @@ testRecoveryCodeCasAndReplace =
       ids <- replicateM 3 genRecoveryCodeId
       let mk i h = NewRecoveryCode {recoveryCodeId = i, codeHash = h, createdAt = t}
           codes = zipWith mk ids ["h1", "h2", "h3"]
-      replaceRecoveryCodes u.userId codes
+      replaceRecoveryCodes u.userId (AuthenticationGuard 0 Nothing Nothing) t0 codes
       countBefore <- countUnusedRecoveryCodes u.userId
       firstConsume <- consumeRecoveryCode u.userId "h1" t
       secondConsume <- consumeRecoveryCode u.userId "h1" t
       countAfter <- countUnusedRecoveryCodes u.userId
       ids2 <- replicateM 2 genRecoveryCodeId
-      replaceRecoveryCodes u.userId (zipWith mk ids2 ["n1", "n2"])
+      replaceRecoveryCodes u.userId (AuthenticationGuard 0 Nothing Nothing) t0 (zipWith mk ids2 ["n1", "n2"])
       countAfterReplace <- countUnusedRecoveryCodes u.userId
       oldConsume <- consumeRecoveryCode u.userId "h2" t
       pure (countBefore, firstConsume, secondConsume, countAfter, countAfterReplace, oldConsume)
@@ -1885,18 +1907,18 @@ testLoginRoundTripBudget = testCase "a successful login costs exactly 10 databas
   _ <- expectApp loginRes >>= expectRight
   readIORef counter >>= (@?= 10)
 
--- | A wrong password costs four database operations: per-IP count, atomic record-and-count transaction,
--- credential lookup, and the @LoginFailed@ audit insert. The user row is only needed after the
--- password succeeds, and hashing itself is CPU-only.
+-- | A wrong password costs five database operations: per-IP count, atomic proof reservation,
+-- credential lookup, the user generation snapshot taken before hashing, and the failure audit.
+-- Capturing generation after a valid password would attach new state to a stale proof.
 testFailedLoginRoundTripBudget :: TestTree
-testFailedLoginRoundTripBudget = testCase "a wrong password costs exactly 4 database operations" $ withDb \pool -> do
+testFailedLoginRoundTripBudget = testCase "a wrong password captures the generation and costs exactly 5 database operations" $ withDb \pool -> do
   signupRes <- runApp pool (signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing))
   _ <- expectApp signupRes >>= expectRight
   counter <- newIORef 0
   let ctx = ClientContext (ClientIp "10.0.0.1") (AccountKey (loginIdText aliceLogin))
   loginRes <- runApp pool (countingDatabase counter (login cfg ctx (LoginCommand aliceLogin (PlainPassword "wrong") False)))
   expectApp loginRes >>= (@?= Left InvalidCredentials)
-  readIORef counter >>= (@?= 4)
+  readIORef counter >>= (@?= 5)
 
 -- | A token refresh costs exactly five database operations:
 --
@@ -2352,8 +2374,8 @@ testAuthorizationCodeRoundTrip =
                 createdAt = t,
                 expiresAt
               }
-      putAuthorizationCode (mk "hash-live" (addUTCTime 60 t))
-      putAuthorizationCode (mk "hash-expired" (addUTCTime 60 t))
+      putAuthorizationCode (AuthenticationGuard 0 Nothing Nothing) (mk "hash-live" (addUTCTime 60 t))
+      putAuthorizationCode (AuthenticationGuard 0 Nothing Nothing) (mk "hash-expired" (addUTCTime 60 t))
       first' <- consumeAuthorizationCode "hash-live" t
       sid <- genSessionId
       bindAuthorizationCodeSession "hash-live" sid
@@ -2397,6 +2419,7 @@ testAuthorizationCodeConsumeIsAtomicUnderRace =
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       t <- now
       putAuthorizationCode
+        (AuthenticationGuard 0 Nothing Nothing)
         NewAuthorizationCode
           { codeHash = "hash-raced",
             clientId = "oauthclient_x",
@@ -2440,7 +2463,7 @@ testPasskeyQuotaRace = testCase "passkey quota: eight database racers spend one 
       readMVar gate
       result <- runApp pool do
         t <- now
-        createPasskey 1 ((newPasskey u t) {credentialId = WebAuthnCredentialId (BS.pack [fromIntegral i])})
+        createPasskey (AuthenticationGuard 0 Nothing Nothing) 1 ((newPasskey u t) {credentialId = WebAuthnCredentialId (BS.pack [fromIntegral i])})
       putMVar done result
     pure done
   putMVar gate ()
@@ -2454,7 +2477,7 @@ testPasskeyCreateAndFind = testCase "passkey store: create + find by user/creden
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
+    created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (newPasskey u t)
     byUser <- findPasskeysByUser u.userId
     byCred <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
     byHandle <- findPasskeysByUserHandle (UserHandle "uh-1")
@@ -2476,7 +2499,7 @@ testPasskeyUpdateCountDelete = testCase "passkey store: update sign counter + co
   result <- runApp pool do
     u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
     t <- now
-    created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
+    created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (newPasskey u t)
     let pid = pkPasskeyId created
     counterAdvanced <- updatePasskeySignCounter pid (SignatureCounter 42) t
     afterUpdate <- findPasskeyByCredentialId (WebAuthnCredentialId "cred-1")
@@ -2501,7 +2524,7 @@ testPasskeyCounterIsCompareAndSwap =
     result <- runApp pool do
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       t <- now
-      created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
+      created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (newPasskey u t)
       let pid = pkPasskeyId created
       zeroToZero <- updatePasskeySignCounter pid (SignatureCounter 0) t
       first <- updatePasskeySignCounter pid (SignatureCounter 42) t
@@ -2522,7 +2545,7 @@ testPasskeyCounterCasUnderRace =
     seeded <- runApp pool do
       u <- createUser (NewUser {loginId = aliceLogin, email = Just aliceEmail, displayName = Nothing})
       t <- now
-      created <- either (error . show) pure =<< createPasskey 20 (newPasskey u t)
+      created <- either (error . show) pure =<< createPasskey (AuthenticationGuard 0 Nothing Nothing) 20 (newPasskey u t)
       pure (pkPasskeyId created, t)
     (pid, t) <- expectApp seeded
     gate <- newEmptyMVar
@@ -2543,7 +2566,9 @@ testPendingCeremonyConsumeOnce = testCase "pending ceremony store: put then take
     t <- now
     putPendingCeremony
       PendingCeremony
-        { ceremonyId = cid,
+        { authenticationGeneration = Just 0,
+          initiatingSession = Nothing,
+          ceremonyId = cid,
           userId = Nothing,
           kind = RegistrationCeremony,
           optionsBlob = "{\"challenge\":\"abc\"}",
@@ -2566,7 +2591,9 @@ testPendingCeremonyExpired = testCase "pending ceremony store: expired ceremony 
     t <- now
     putPendingCeremony
       PendingCeremony
-        { ceremonyId = cid,
+        { authenticationGeneration = Just 0,
+          initiatingSession = Nothing,
+          ceremonyId = cid,
           userId = Nothing,
           kind = AuthenticationCeremony,
           optionsBlob = "{\"challenge\":\"xyz\"}",
@@ -3429,9 +3456,9 @@ testRecoveryAndCeremonyRaces = testCase "real recovery-code and pending-ceremony
       user <- createUser (NewUser aliceLogin Nothing Nothing)
       ts <- now
       rid <- genRecoveryCodeId
-      replaceRecoveryCodes user.userId [NewRecoveryCode rid "recovery-race" ts]
+      replaceRecoveryCodes user.userId (AuthenticationGuard 0 Nothing Nothing) t0 [NewRecoveryCode rid "recovery-race" ts]
       cid <- genCeremonyId
-      putPendingCeremony (PendingCeremony cid (Just user.userId) AuthenticationCeremony "signed-options-fixture" ts (addUTCTime 60 ts))
+      putPendingCeremony (PendingCeremony (Just 0) Nothing cid (Just user.userId) AuthenticationCeremony "signed-options-fixture" ts (addUTCTime 60 ts))
       pure (user.userId, cid, ts)
   recovery <- raceDatabase 8 (runApp pool (consumeRecoveryCode uid "recovery-race" ts)) >>= traverse expectApp
   length (filter id recovery) @?= 1
@@ -3495,3 +3522,214 @@ testAdminQueryPlans = testCase "admin user and per-user audit pages use measured
     assertBool "bounded page uses the ordered index" (any (Text.isInfixOf indexName) plan)
     assertBool "bounded page needs no sort" (not (any (Text.isInfixOf "Sort") plan))
   writeFile "/tmp/shomei-admin-query-plans.txt" (Text.unpack (Text.unlines (concat (zipWith3 (\name b a -> [name <> " before:"] <> b <> [name <> " after:"] <> a) ["Users", "Suspended users", "Per-user audit", "40-client catalog (no new index)"] before after))))
+
+-- Administrator recovery is tested on real independent pool connections. The barrier sits
+-- after proof verification and immediately before the shared session transaction.
+recoveryFixture :: Pool -> IO (User, CeremonyId, UTCTime)
+recoveryFixture pool =
+  expectApp =<< runApp pool do
+    (user, _) <- either (error . show) pure =<< signup cfg (SignupCommand aliceLogin (Just aliceEmail) strongPw Nothing)
+    ts <- now
+    _ <- either (error . show) pure =<< createPasskey (userGuard user) 20 ((newPasskey user ts) {credentialId = WebAuthnCredentialId "recovery-lost-fixture"})
+    _ <- putAuthorizationCode (userGuard user) (NewAuthorizationCode "recovery-old-code-hash" "fixture-client" "https://fixture.example/callback" user.userId Set.empty Nothing Nothing ts ts (addUTCTime 60 ts))
+    _ <- createPasswordResetToken (NewPasswordResetToken user.userId (OneTimeTokenHash "recovery-old-reset-hash") ts (addUTCTime 60 ts))
+    tcid <- genTotpCredentialId
+    _ <-
+      either (error . show) pure
+        =<< upsertTotpEnrollment
+          (userGuard user)
+          (NewTotpCredential tcid user.userId (TotpSecret totpRawSecret) ts)
+    _ <- confirmTotp user.userId (userGuard user) tcid ts
+    rid <- genRecoveryCodeId
+    _ <- replaceRecoveryCodes user.userId (userGuard user) ts [NewRecoveryCode rid "sentinel-old-code-hash" ts]
+    (cid, _, _) <- either (error . show) pure =<< prepareMfaChallenge cfg user ts
+    pure (user, cid, ts)
+
+recoveryCommand :: RecoveryCommand
+recoveryCommand = RecoveryCommand True "INC-1234"
+
+testAdministrativeRecovery :: TestTree
+testAdministrativeRecovery = testCase "administrator recovery clears state, isolates targets, and audits serial effects" $ withDb \pool -> do
+  (user, _, _) <- recoveryFixture pool
+  _ <- runApp pool (signup cfg (SignupCommand bobLogin (Just bobEmail) strongPw Nothing)) >>= expectApp >>= expectRight
+  actors <- newIORef (0 :: Int)
+  let operation = do
+        index <- liftIO (atomicModifyIORef' actors (\n -> (n + 1, n)))
+        resetUserSecondFactors (LocalOperator (if index == 0 then "ops.one" else "ops.two")) user.userId recoveryCommand
+  outcomes <- raceDatabase 2 (runApp pool operation) >>= traverse (expectApp >=> expectRight)
+  sum [r.counts.passkeysRemoved | r <- outcomes] @?= 1
+  sum [r.counts.authorizationCodesInvalidated | r <- outcomes] @?= 1
+  sum [r.counts.passwordResetTokensRevoked | r <- outcomes] @?= 1
+  sum [r.counts.totpCredentialsRemoved | r <- outcomes] @?= 1
+  sum [r.counts.recoveryCodesRemoved | r <- outcomes] @?= 1
+  sum [r.counts.sessionsRevoked | r <- outcomes] @?= 1
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='user_second_factors_reset'" >>= (@?= 2)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='session_revoked'" >>= (@?= 1)
+  scalarInt pool "SELECT max(authentication_generation) FROM shomei.shomei_users" >>= (@?= 2)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_recovery_codes" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies" >>= (@?= 0)
+  events <- runApp pool (queryAuthEvents emptyAuditQuery) >>= expectApp
+  let resets = [d | e <- events, Right (Event.UserSecondFactorsReset d) <- [reconstructAuthEvent e.storedEventType e.storedPayload]]
+  length resets @?= 2
+  assertBool "both concurrent local actors survive auditing" (all (`elem` map (.recoveryActor) resets) [LocalOperator "ops.one", LocalOperator "ops.two"])
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE payload::text LIKE '%sentinel-old-code-hash%'" >>= (@?= 0)
+
+testRecoveryAuditRollback :: TestTree
+testRecoveryAuditRollback = testCase "recovery audit insert failure restores generation, factors, challenges and sessions" $ withDb \pool -> do
+  (user, _, _) <- recoveryFixture pool
+  execSql pool "CREATE FUNCTION shomei.fail_recovery_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = 'user_second_factors_reset' THEN RAISE EXCEPTION 'test audit unavailable'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_recovery_audit BEFORE INSERT ON shomei.shomei_auth_events FOR EACH ROW EXECUTE FUNCTION shomei.fail_recovery_audit()"
+  result <- runApp pool (resetUserSecondFactors (LocalOperator "ops") user.userId recoveryCommand)
+  result @?= Left (DependencyUnavailable PostgreSQL)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_password_reset_tokens WHERE status='active'" >>= (@?= 1)
+  scalarInt pool "SELECT max(authentication_generation) FROM shomei.shomei_users" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_recovery_codes" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_pending_ceremonies" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 1)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type IN ('user_second_factors_reset','session_revoked')" >>= (@?= 0)
+
+testRecoveryMfaCommitBarrier :: TestTree
+testRecoveryMfaCommitBarrier =
+  testGroup
+    "recovery versus verified MFA"
+    [ testCase "completion waiting to commit after reset is rejected" $ withDb \pool -> do
+        (user, cid, ts) <- recoveryFixture pool
+        ready <- newEmptyMVar
+        release <- newEmptyMVar
+        done <- newEmptyMVar
+        let barrier =
+              interpose
+                ( \env -> \case
+                    op@(Uow.PersistNewSession _ _ _ _) -> do
+                      liftIO (putMVar ready () >> takeMVar release)
+                      passthrough env op
+                    op -> passthrough env op
+                )
+        _ <- forkIO (runApp pool (barrier (completeMfa cfg (ProofContext (ClientIp "test-ip") AccountKey) cid (MfaTotp (totpCode 6 (TotpSecret totpRawSecret) (totpCounter ts))))) >>= putMVar done)
+        reached <- timeout 10000000 (takeMVar ready)
+        reached @?= Just ()
+        _ <- runApp pool (resetUserSecondFactors (LocalOperator "ops") user.userId recoveryCommand) >>= expectApp >>= expectRight
+        putMVar release ()
+        result <- timeout 10000000 (takeMVar done)
+        case result of
+          Just (Right (Left Err.StaleAuthentication)) -> pure ()
+          other -> assertFailure ("expected stale verified proof, got " <> show other)
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 0)
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 0),
+      testCase "completion committed before reset is revoked" $ withDb \pool -> do
+        (user, cid, ts) <- recoveryFixture pool
+        _ <- runApp pool (completeMfa cfg (ProofContext (ClientIp "test-ip") AccountKey) cid (MfaTotp (totpCode 6 (TotpSecret totpRawSecret) (totpCounter ts)))) >>= expectApp >>= expectRight
+        result <- runApp pool (resetUserSecondFactors (LocalOperator "ops") user.userId recoveryCommand) >>= expectApp >>= expectRight
+        result.counts.sessionsRevoked @?= 2
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 0)
+    ]
+
+-- Every barrier is a port boundary after expensive proof/generation work, before the
+-- database-only commit. The reset uses another connection, with no timing sleeps.
+pauseSessionPersistence :: MVar () -> MVar () -> Eff AppEffects a -> Eff AppEffects a
+pauseSessionPersistence ready release = interpose \env -> \case
+  op@(Uow.PersistNewSession _ _ _ _) -> do
+    liftIO (putMVar ready () >> takeMVar release)
+    passthrough env op
+  op -> passthrough env op
+
+expectStale :: Either AuthError (Either AuthError a) -> Bool
+expectStale (Right (Left Err.StaleAuthentication)) = True
+expectStale _ = False
+
+resetWhilePaused :: (Show a) => Pool -> User -> (MVar () -> MVar () -> Eff AppEffects a) -> (Either AuthError a -> Bool) -> IO ()
+resetWhilePaused pool user action expected = do
+  ready <- newEmptyMVar
+  release <- newEmptyMVar
+  done <- newEmptyMVar
+  bracket (forkIO (runApp pool (action ready release) >>= putMVar done)) killThread $ \_ -> do
+    timeout 10000000 (takeMVar ready) >>= (@?= Just ())
+    _ <- runApp pool (resetUserSecondFactors (LocalOperator "ops.barrier") user.userId recoveryCommand) >>= expectApp >>= expectRight
+    putMVar release ()
+    result <- timeout 10000000 (takeMVar done)
+    case result of
+      Just outcome | expected outcome -> pure ()
+      other -> assertFailure ("unexpected post-recovery completion: " <> show other)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 0)
+
+testRecoveryWriteBarriers :: TestTree
+testRecoveryWriteBarriers =
+  testGroup
+    "recovery commit barriers"
+    [ testCase "verified password cannot mint a session after recovery" $ withDb \pool -> do
+        (user, _) <- runApp pool (signup cfg (SignupCommand aliceLogin Nothing strongPw Nothing)) >>= expectApp >>= expectRight
+        resetWhilePaused pool user (\ready release -> pauseSessionPersistence ready release (login cfg (ClientContext (ClientIp "test-ip") (AccountKey "password-barrier")) (LoginCommand aliceLogin strongPw False))) expectStale,
+      testCase "verified passkey enrollment cannot resurrect a credential" $ withDb \pool -> do
+        (user, _, _) <- recoveryFixture pool
+        (cid, _) <- runApp pool (PasskeyWorkflow.beginPasskeyRegistration cfg user.userId Nothing) >>= expectApp >>= expectRight
+        let cred = object ["challenge" .= ("ceremony-challenge-0" :: Text), "credentialId" .= WebAuthnCredentialId "barrier-cred", "userHandle" .= UserHandle "barrier-handle", "publicKey" .= PublicKeyBytes "barrier-key"]
+            pause :: MVar () -> MVar () -> Eff AppEffects a -> Eff AppEffects a
+            pause ready release =
+              interpose
+                ( \env -> \case
+                    op@(PasskeyStore.CreatePasskey _ _ _) -> liftIO (putMVar ready () >> takeMVar release) >> passthrough env op
+                    op -> passthrough env op
+                )
+        resetWhilePaused pool user (\ready release -> pause ready release (PasskeyWorkflow.completePasskeyRegistration cfg user.userId cid cred Nothing)) expectStale
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials" >>= (@?= 0),
+      testCase "generated TOTP enrollment cannot persist after recovery" $ withDb \pool -> do
+        (user, _) <- runApp pool (signup cfg (SignupCommand aliceLogin Nothing strongPw Nothing)) >>= expectApp >>= expectRight
+        let pause :: MVar () -> MVar () -> Eff AppEffects a -> Eff AppEffects a
+            pause ready release =
+              interpose
+                ( \env -> \case
+                    op@(TotpStore.UpsertTotpEnrollment _ _) -> liftIO (putMVar ready () >> takeMVar release) >> passthrough env op
+                    op -> passthrough env op
+                )
+        resetWhilePaused pool user (\ready release -> pause ready release (TotpWorkflow.enrollTotp (cfg {totpConfig = cfg.totpConfig {totpEnabled = True}}) user Nothing)) expectStale
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials" >>= (@?= 0),
+      testCase "generated recovery codes cannot replace the set after recovery" $ withDb \pool -> do
+        (user, _, _) <- recoveryFixture pool
+        let pause :: MVar () -> MVar () -> Eff AppEffects a -> Eff AppEffects a
+            pause ready release =
+              interpose
+                ( \env -> \case
+                    op@(RecoveryStore.ReplaceRecoveryCodes _ _ _ _) -> liftIO (putMVar ready () >> takeMVar release) >> passthrough env op
+                    op -> passthrough env op
+                )
+        resetWhilePaused pool user (\ready release -> pause ready release (TotpWorkflow.regenerateRecoveryCodes cfg user Nothing)) expectStale
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_recovery_codes" >>= (@?= 0),
+      testCase "verified passwordless proof cannot mint after recovery" $ withDb \pool -> do
+        (user, _, ts) <- recoveryFixture pool
+        credential <- runApp pool (createPasskey (userGuard user) 20 (newPasskey user ts)) >>= expectApp >>= expectRight
+        (cid, _) <- runApp pool (MfaWorkflow.beginPasswordlessLogin cfg) >>= expectApp >>= expectRight
+        let PasskeyCredential {credentialId, userHandle, publicKey} = credential
+            assertion = object ["challenge" .= ("ceremony-challenge-0" :: Text), "credentialId" .= credentialId, "userHandle" .= userHandle, "publicKey" .= publicKey]
+        resetWhilePaused pool user (\ready release -> pauseSessionPersistence ready release (MfaWorkflow.completePasswordlessLogin cfg (ProofContext (ClientIp "test-ip") AccountKey) cid assertion)) expectStale,
+      testCase "refresh already read by the workflow cannot rotate after recovery" $ withDb \pool -> do
+        (user, pair) <- runApp pool (signup cfg (SignupCommand aliceLogin Nothing strongPw Nothing)) >>= expectApp >>= expectRight
+        let pause :: MVar () -> MVar () -> Eff AppEffects a -> Eff AppEffects a
+            pause ready release =
+              interpose
+                ( \env -> \case
+                    op@(Uow.RotateRefreshToken _ _ _ _) -> liftIO (putMVar ready () >> takeMVar release) >> passthrough env op
+                    op -> passthrough env op
+                )
+            rejected (Right (Left Err.SessionRevoked)) = True
+            rejected _ = False
+        resetWhilePaused pool user (\ready release -> pause ready release (refresh cfg (RefreshCommand pair.refreshToken))) rejected
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 0),
+      testCase "consumed authorization code retains its pre-recovery generation at mint" $ withDb \pool -> do
+        (user, _, ts) <- recoveryFixture pool
+        client <-
+          expectApp =<< runApp pool do
+            ocid <- genOAuthClientId
+            client <- createOAuthClient (NewOAuthClient ocid "barrier-client" (Just (sha256Hex "barrier-secret")) ConfidentialClient "barrier" ["https://client.example/callback"] Set.empty ts)
+            _ <- putAuthorizationCode (userGuard user) (NewAuthorizationCode (sha256Hex "barrier-code") "barrier-client" "https://client.example/callback" user.userId Set.empty Nothing Nothing ts ts (addUTCTime 60 ts))
+            pure client
+        let command = TokenGrant.ExchangeAuthorizationCode "barrier-client" (Just "barrier-secret") "barrier-code" "https://client.example/callback" Nothing
+            rejected (Right (Left (TokenGrant.GrantInvalidGrant _))) = True
+            rejected _ = False
+        resetWhilePaused pool user (\ready release -> pauseSessionPersistence ready release (TokenGrant.exchangeAuthorizationCode cfg command)) rejected
+        scalarInt pool "SELECT count(*) FROM shomei.shomei_oauth_authorization_codes" >>= (@?= 0)
+    ]

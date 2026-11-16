@@ -35,10 +35,11 @@ where
 import Data.Base64.Types (extractBase64)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64.URL qualified as B64U
+import Data.Int (Int64)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word32)
-import Shomei.Id (CeremonyId, PasskeyId, UserId)
+import Shomei.Id (CeremonyId, PasskeyId, SessionId, UserId)
 import Shomei.Prelude
 
 -- | Per-ceremony WebAuthn user-verification policy. Kept in the pure passkey domain so the
@@ -127,7 +128,9 @@ data CeremonyKind = RegistrationCeremony | AuthenticationCeremony
 
 -- | The short-lived challenge/options state (EP-1 defines; EP-2 persists).
 data PendingCeremony = PendingCeremony
-  { ceremonyId :: !CeremonyId,
+  { authenticationGeneration :: !(Maybe Int64),
+    initiatingSession :: !(Maybe SessionId),
+    ceremonyId :: !CeremonyId,
     userId :: !(Maybe UserId),
     kind :: !CeremonyKind,
     optionsBlob :: !ByteString,

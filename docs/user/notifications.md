@@ -324,3 +324,17 @@ configured system trust. Do not put receiver credentials into URLs; use the dedi
 secret. The manager's behavior is defined by
 [http-client](mori://snoyberg/http-client/packages/http-client) and
 [http-client-tls](mori://snoyberg/http-client/packages/http-client-tls).
+
+## Second-factor recovery notices
+
+A committed administrative recovery queues `SecondFactorsReset` / `second_factors_reset` only to
+the account's established, already verified email address. It contains the occurrence time and
+support instructions, with no token or expiration. SMTP, webhook and log transports support it;
+custom null/capturing interpreters can handle it like other notifications. Queue expiry filtering
+applies only to notifications that actually carry an expiry.
+
+Transport failure, queue overflow and shutdown loss follow the existing bounded best-effort
+contract and cannot undo the reset. A queued notice is not proof of delivery. If the recovery
+result reports `verifiedNotificationDestination: false`, notify the owner through an independently
+established channel. The CLI waits up to 30 seconds for its configured delivery attempt before exit
+and reports an unfinished drain separately from its committed security result.

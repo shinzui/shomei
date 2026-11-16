@@ -399,6 +399,7 @@ shomei-admin keys revoke <kid>                    # → revoked (removed from JW
 shomei-admin keys list                            # kid / status / timestamps
 shomei-admin keys rewrap                          # re-encrypt under a new SHOMEI_KEY_ENCRYPTION_KEY
 shomei-admin users create --email … [--password-file PATH] [--display-name …] [--email-verified]
+shomei-admin users reset-mfa --user USER_ID --operator OPERATOR --case-reference CASE --identity-verified --confirm-user USER_ID
 shomei-admin audit events|user|session|count …     # user/session TypeIDs or legacy UUIDs; canonical TypeID output
 shomei-admin sweep [flags]                        # delete expired/dead rows once, then exit
 ```
@@ -771,3 +772,64 @@ The query-budget tests count logical Database port operations: login 10, wrong p
 refresh 5, logout 2, reset confirmation 3. They do not count physical network round trips;
 transactions include multiple statements and the shrinking budget query per statement. Retained
 historical MasterPlan 6 checkout/PHC measurements are explicitly marked as historical.
+
+## Recovering an owner who lost every second factor
+
+Another enrolled passkey, TOTP authenticator, or unused recovery code can complete MFA. A password
+reset changes the password and preserves MFA. When every alternative is lost, an administrator
+can remove the factors through the supported recovery operation. Shōmei trusts the operator's
+identity-verification assertion; it does not perform identity proofing. A machine administrator
+holding `shomei:admin` has the same authority and is audited as a service principal.
+
+1. Independently verify the owner using the deployment's established support procedure. Record a
+   non-sensitive case reference. Do not put identity documents, passwords, codes, or other secrets
+   into the reference or operator label.
+2. Resolve and check the exact target user ID and its status. The target must be active; recovery
+   does not reinstate suspended/deleted users or clear rate-limit/lockout budgets. If compromise
+   is suspected, rotate the password through the separate password-reset/change procedure.
+3. Run the command below, or call `POST /v1/admin/users/{userId}/mfa/reset` as a different
+   administrator with `{"identityVerified":true,"caseReference":"INC-1234"}`. HTTP refuses
+   self-targeting and delegated tokens and requires a live backing session even with token-only
+   verification. A locked-out administrator uses a second administrator or the local CLI.
+4. Notify the owner through an independently established contact channel. The software queues a
+   secret-free notice only to an already verified email address. This is best-effort enqueue,
+   not confirmed delivery. If `verifiedNotificationDestination` is false, operator notification
+   is required. The CLI uses the configured transport and waits up to 30 seconds for its notice
+   before exit, reporting an incomplete drain to stderr without undoing committed recovery.
+5. Supervise password login and immediate replacement factor enrollment and generation of fresh
+   recovery codes. Until re-enrollment the account is password-only under the existing deployment
+   policy. Avoid leaving this interval unattended.
+
+```bash
+DATABASE_URL='your existing deployment connection'   shomei-admin users reset-mfa     --user user_TARGET     --operator support.alice     --case-reference INC-1234     --identity-verified     --confirm-user user_TARGET
+```
+
+Replace `user_TARGET` with the real canonical user ID in both positions. The operator label and
+case reference must contain 1–128 ASCII letters/digits or `._:/-`. CLI database access grants the
+authority; the operator label is asserted attribution, not an authenticated human account. The
+command does not require an administrator account or manufacture one. Stdout contains only the
+target ID, reset timestamp, and removal/revocation counts; notification caveats go to stderr.
+
+One transaction advances the user's authentication generation (the state observed before a
+credential proof), removes all passkeys, pending/confirmed TOTP and recovery-code hashes, deletes
+user-bound pending ceremonies, revokes sessions and refresh tokens, invalidates authorization
+codes and outstanding password-reset tokens, and records the attributed `user_second_factors_reset`
+event plus each winning session revocation. An audit insert failure rolls back all of it. Password,
+email verification, roles/scopes, account status, and lockout state stay intact. No token is issued.
+
+Refresh tokens and session-aware routes stop working immediately. Already issued access tokens
+can still verify through offline/token-only verifiers until expiry. Enrollment and recovery
+operations always require a live backing session, regardless of verification mode. Work that
+verified a proof before recovery cannot commit a session, factor, or new recovery-code set after
+recovery; the persistence layer rechecks the generation under the same user lock.
+
+Every invocation invalidates state again, including a repeated case reference. After an ambiguous
+timeout, inspect the audit trail by target and case reference before repeating the command. The
+reference is correlation, not an idempotency key. Do not automatically retry, disable MFA globally,
+edit credential tables directly, or restore deleted factors/codes from backup to undo recovery.
+
+For rollout, use a maintenance window: apply additive migration 0044, drain every old writer, then
+deploy generation-aware readers/writers before using recovery. Legacy short-lived pending flows
+must restart; migration itself preserves enrolled credentials and sessions. Mixed old writers can
+bypass the generation barrier. Rollback retains the schema and disables recovery surfaces; an
+older binary cannot enforce the post-reset barrier.

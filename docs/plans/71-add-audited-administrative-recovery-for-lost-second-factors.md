@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6-astra"
     harness: "codex-cli"
     at: 2026-11-16T05:06:41Z
+  revisions:
+    - model: "gpt-6.1-sol"
+      harness: "codex-cli"
+      at: 2026-11-16T16:05:37Z
+      mode: "implement"
+      note: "Implement atomic administrator recovery and generation barriers across authentication flows"
 ---
 
 # Add audited administrative recovery for lost second factors
@@ -26,14 +32,18 @@ MFA means requiring a second proof after the password. TOTP is a time-based code
 ## Progress
 
 
-- [ ] Milestone 1: An atomic, audited reset clears factors and sessions, and real PostgreSQL tests prove rollback and exclusion of stale authentication/enrollment work.
-- [ ] Milestone 2: Authorized HTTP and CLI callers recover a fixture account through the shared workflow; unauthorized and malformed requests make no changes.
-- [ ] Milestone 3: Notification, documentation, client/schema coverage, and an end-to-end recovery/re-enrollment test establish the supported operator procedure.
+- [x] Milestone 1 (2026-11-16): Atomic audited recovery and generation barriers pass 297 core tests and 111 real PostgreSQL tests. The final rollback fixture restores passkeys, TOTP, recovery codes, pending ceremonies, sessions/refresh tokens, authorization codes, password-reset tokens and generation after an injected audit failure. Independent-connection barriers cover password/MFA/passwordless completion, enrollment, regeneration, refresh and code exchange.
+- [x] Milestone 2 (2026-11-16): Human and service administrators recover through the shared HTTP workflow; CLI records local attribution without manufacturing an administrator. All 52 HTTP tests and 38 CLI tests pass, including authorization/CSRF/self/delegation/validation rejection and stale-session behavior. The help command exposes all required flags.
+- [x] Milestone 3 (2026-11-16): All 71 server tests, 6 client tests and 68 OpenAPI examples pass. PostgreSQL E2E recovery/re-enrollment covers passkey-only, TOTP-only, both-factor and no-email accounts, including password-reset preservation of MFA, old proofs/tokens, replacement enrollment and both token verification modes. Notification transport/overflow tests, runbook/changelogs, additive migration 0044 and ADR-29 complete the procedure.
 
-Planning only: implementation has not begun. The linked intention was created with `mina ci --json 'Recover accounts after loss of all second factors'`.
+Final validation (2026-11-16): `nix fmt`, `cabal build all`, all 14 suites from `cabal test all --test-show-details=direct --test-options='-j2'`, `just migration-check`, `just adr-validate`, `nix flake check` on aarch64-darwin, and `git diff --check` pass. The strengthened final PostgreSQL fixture was rerun separately: all 111 tests pass. No database cases were skipped. Strict friction-log validation passes; FRIC-7 is triaged as accepted.
 
 ## Surprises & Discoveries
 
+
+2026-11-16: The default HTTP transport can replay a destructive POST after a reused connection closes ambiguously. The reset helper now makes an operation-local manager copy with retries disabled and refuses redirects, preserving caller TLS/proxy/hooks and pool configuration. Real connection-reuse and redirect regression tests prove one request. See FRIC-7 in `docs/friction-log/`, accepted as a scoped internal-API dependency; Hackage and upstream tags both identify [http-client 0.7.19](mori://snoyberg/http-client/packages/http-client) as current.
+
+2026-11-16: The passkey guide already states that password reset preserves MFA in the current working tree. The missing supported administrative procedure is now documented. Recovery-code replacement used several statements in a Hasql session without an explicit transaction; the guarded writer now uses the bounded transaction wrapper so deletion and replacement commit together.
 
 ## Decision Log
 
@@ -46,8 +56,18 @@ Planning only: implementation has not begun. The linked intention was created wi
 
 2026-11-15: Preserve existing access-token verification modes. Refresh tokens are revoked immediately; already issued access tokens can survive their expiry window under `VerifyTokenOnly`. Recovery-sensitive routes must check a live backing session even in that mode. Do not claim immediate rejection by offline token verifiers.
 
+2026-11-16: Capture the verified notification destination in the recovery transaction's internal receipt. Delivery needs no fallible post-commit lookup, while public responses contain only the destination-availability flag. The short-lived CLI drains its captured notice synchronously through the configured transport with a 30-second ceiling.
+
+2026-11-16: Extend the same generation barrier to exact-credential TOTP removal. A proof verified before recovery must not delete a subsequently enrolled replacement. HTTP factor mutations also reject a dead initiating session before proof work.
+
 ## Outcomes & Retrospective
 
+
+2026-11-16: Owners who lose every factor now have supported, independently verified administrative recovery through HTTP and CLI. One audited transaction removes factors and invalidates prior authentication state; generation-aware persistence rejects already verified stale work. The API issues no credentials, password reset preserves MFA, and the operator runbook makes notification and supervised replacement enrollment explicit. All three milestones and the required local validation gates pass. No release was published.
+
+Durable decisions are captured in [ADR-29](../adr/0029-administrative-factor-recovery-serializes-authentication-generations.md). Rollout requires migration 0044 and draining all old writers; rollback retains the schema and disables recovery surfaces. Already issued access tokens retain the documented offline expiry window. The built-in notice remains best effort, and the owner must replace factors promptly during the password-only interval.
+
+[FRIC-7](../friction-log/7-http-manager-retries-can-replay-destructive-recovery-requests.md) is accepted: the existing HTTP client's internal request-local manager override prevents destructive replay while retaining caller settings, with real reused-connection/redirect regression coverage. No friction entries remain logged for this plan.
 
 ## Context and Orientation
 
@@ -160,9 +180,9 @@ Deploy the additive schema first, drain all old application/worker instances, an
 ## Interfaces and Dependencies
 
 
-This is an independent plan. Existing `docs/plans/69-recover-undelivered-refresh-token-rotations-without-weakening-theft-detection.md` concerns refresh delivery, not lost factors; preserve its eventual rotation contract if that work lands first. No Kafka outbox or new dependency is required.
+This is an independent plan. Existing `docs/plans/69-recover-undelivered-refresh-token-rotations-without-weakening-theft-detection.md` concerns refresh delivery, not lost factors; preserve its eventual rotation contract if that work lands first. No Kafka outbox or new dependency is required. The reset client uses the existing HTTP client dependency’s internal per-request manager override to prevent destructive retries while preserving configured transport behavior; FRIC-7 records the accepted limitation.
 
-The proposed shared interface is `resetUserSecondFactors :: RecoveryActor -> UserId -> RecoveryCommand -> Eff es (Either AuthError RecoveryResult)` in `shomei-core/src/Shomei/Account/Admin/Recovery.hs`. The command contains the validated identity assertion and case reference. The result contains occurrence time, removal/revocation counts, and whether a verified notification destination exists. Authority remains enforced at the calling surface; validation, user status, atomic mutation, and audit are shared. A caller must not treat a local-operator label as authenticated identity. The unit-of-work returns committed counts and does not deliver notifications itself.
+The proposed shared interface is `resetUserSecondFactors :: RecoveryActor -> UserId -> RecoveryCommand -> Eff es (Either AuthError RecoveryResult)` in `shomei-core/src/Shomei/Account/Admin/Recovery.hs`. The command contains the validated identity assertion and case reference. The result contains occurrence time, removal/revocation counts, and whether a verified notification destination exists. Authority remains enforced at the calling surface; validation, user status, atomic mutation, and audit are shared. A caller must not treat a local-operator label as authenticated identity. The unit-of-work returns committed counts and captures the verified destination in an internal receipt; it does not deliver notifications itself or expose the address in public responses. Network adapters bind the initiating session on factor workflows; omission is reserved for trusted local calls, never user requests.
 
 Mori discovery verified existing dependencies [Effectful](mori://effectful/effectful/packages/effectful-core) and [Hasql transactions](mori://hasql/hasql/packages/hasql-transaction). Source inspection confirmed dynamic effect dispatch and `transactionNoRetry`; implementation should extend the project's existing effect interpreters and bounded transaction wrapper. No dependency bounds or pins are selected here. Before any later dependency change, consult Mori sources and verify releases against Hackage and upstream tags. For this environment, use the user-provided connection configuration:
 

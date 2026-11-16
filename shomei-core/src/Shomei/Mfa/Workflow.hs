@@ -70,6 +70,7 @@ import Shomei.Passkey.Store
     updatePasskeySignCounter,
   )
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..), userGuard)
 import Shomei.Session.Command (ProofContext, proofContextFor)
 import Shomei.Session.LoginAttempt.Domain (AttemptFactor (..))
 import Shomei.Session.LoginAttempt.Store (LoginAttemptStore)
@@ -77,7 +78,7 @@ import Shomei.Session.LoginAttempt.Workflow (AbuseGate (..), guardAbuse, recordP
 import Shomei.Session.Token.Domain (TokenPair)
 import Shomei.Session.Token.Generator (TokenGen)
 import Shomei.Session.UnitOfWork.Store (AuthUnitOfWork)
-import Shomei.Session.Workflow (ensureEmailVerified, issueSession)
+import Shomei.Session.Workflow (SessionOptions (..), defaultSessionOptions, ensureEmailVerified, issueSessionWith)
 import Shomei.SigningKey.Signer (TokenSigner)
 import Shomei.Time.Store (Clock, now)
 
@@ -111,8 +112,8 @@ prepareMfaChallenge ::
   ShomeiConfig ->
   User ->
   UTCTime ->
-  Eff es (CeremonyId, Value, [Text])
-prepareMfaChallenge cfg user ts = do
+  Eff es (Either AuthError (CeremonyId, Value, [Text]))
+prepareMfaChallenge cfg user ts = runErrorNoCallStack do
   let User {userId = uid} = user
   creds <- findPasskeysByUser uid
   mTotp <- findTotpByUser uid
@@ -135,15 +136,18 @@ prepareMfaChallenge cfg user ts = do
         pure (optionsJson, optionsBlob)
       else pure (object [], BS.empty)
   cid <- genCeremonyId
-  putPendingCeremony
-    PendingCeremony
-      { ceremonyId = cid,
-        userId = Just uid,
-        kind = AuthenticationCeremony,
-        optionsBlob = optionsBlob,
-        createdAt = ts,
-        expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
-      }
+  either throwError pure
+    =<< putPendingCeremony
+      PendingCeremony
+        { authenticationGeneration = Just user.authenticationGeneration,
+          initiatingSession = Nothing,
+          ceremonyId = cid,
+          userId = Just uid,
+          kind = AuthenticationCeremony,
+          optionsBlob = optionsBlob,
+          createdAt = ts,
+          expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
+        }
   publishAuthEvent (Event.MfaChallenged (Event.MfaChallengedData uid cid ts))
   pure (cid, optionsJson, methods)
 
@@ -205,11 +209,13 @@ completeMfaWith ::
   Eff es (Either AuthError (User, TokenPair))
 completeMfaWith cfg pctx remember ceremonyId completion = runErrorNoCallStack do
   ts <- now
-  PendingCeremony {kind, userId = mUid, optionsBlob} <-
+  PendingCeremony {kind, userId = mUid, optionsBlob, authenticationGeneration} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
   when (kind /= AuthenticationCeremony) (throwError PendingCeremonyNotFound)
   uid <- maybe (throwError PendingCeremonyNotFound) pure mUid
+  generation <- maybe (throwError StaleAuthentication) pure authenticationGeneration
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById uid
+  when (user.authenticationGeneration /= generation) (throwError StaleAuthentication)
   let User {status = userStatus} = user
   when (userStatus /= UserActive) (throwError UserNotActive)
   -- 'login' already gates before handing out a ceremony id, so this rarely fires; it keeps
@@ -237,8 +243,8 @@ completeMfaWith cfg pctx remember ceremonyId completion = runErrorNoCallStack do
       unless won (failMfa failure (Just uid) "signature counter replayed")
     MfaTotp code -> completeTotp failure uid ts code
     MfaRecoveryCode code -> completeRecovery failure uid ts code
+  (sid, pair, _) <- either throwError pure =<< issueSessionWith cfg defaultSessionOptions {remember, authenticationGuard = Just (userGuard user)} user ts
   recordProofSuccess ctx factor gate.standingLockout ts
-  (sid, pair) <- issueSession cfg remember user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData uid sid ts))
   pure (user, pair)
 
@@ -311,15 +317,18 @@ beginPasswordlessLogin cfg = runErrorNoCallStack do
   ts <- now
   BeginCeremony {optionsJson, optionsBlob} <- beginAuthenticationCeremony UVRequired []
   cid <- genCeremonyId
-  putPendingCeremony
-    PendingCeremony
-      { ceremonyId = cid,
-        userId = Nothing,
-        kind = AuthenticationCeremony,
-        optionsBlob = optionsBlob,
-        createdAt = ts,
-        expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
-      }
+  either throwError pure
+    =<< putPendingCeremony
+      PendingCeremony
+        { authenticationGeneration = Nothing,
+          initiatingSession = Nothing,
+          ceremonyId = cid,
+          userId = Nothing,
+          kind = AuthenticationCeremony,
+          optionsBlob = optionsBlob,
+          createdAt = ts,
+          expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
+        }
   pure (cid, optionsJson)
 
 -- | Finish a passwordless login: consume the pending ceremony, resolve the user from the
@@ -379,10 +388,16 @@ completePasswordlessLoginWith cfg pctx remember ceremonyId assertion = runErrorN
   when failureGate.locked do
     publishAuthEvent (Event.MfaFailed (Event.MfaFailedData Nothing "account_locked" ts))
     throwError MfaAssertionInvalid
+  -- Resolve and capture the user's generation BEFORE the expensive proof check.
+  assertedId <- maybe (throwError MfaAssertionInvalid) pure (assertionCredentialId assertion)
+  resolved <- maybe (throwError MfaAssertionInvalid) pure =<< findPasskeyByCredentialId assertedId
+  let PasskeyCredential {userId = resolvedUid} = resolved
+  observedUser <- maybe (throwError InvalidCredentials) pure =<< findUserById resolvedUid
   (passkey, verified) <- verifyAssertion failure Nothing optionsBlob assertion
   let PasskeyCredential {userId = pkUid, passkeyId} = passkey
       VerifiedAuthentication {newSignCounter} = verified
-  user <- maybe (throwError InvalidCredentials) pure =<< findUserById pkUid
+  let user = observedUser
+  when (pkUid /= resolvedUid) (throwError MfaAssertionInvalid)
   let User {status = userStatus} = user
   when (userStatus /= UserActive) (throwError UserNotActive)
   -- The assertion is already verified above, so the account's existence is not in question.
@@ -394,8 +409,8 @@ completePasswordlessLoginWith cfg pctx remember ceremonyId assertion = runErrorN
     throwError MfaAssertionInvalid
   won <- updatePasskeySignCounter passkeyId newSignCounter ts
   unless won (failMfa failure (Just pkUid) "signature counter replayed")
+  (sid, pair, _) <- either throwError pure =<< issueSessionWith cfg defaultSessionOptions {remember, authenticationGuard = Just ((userGuard user) {assertedPasskey = Just passkeyId})} user ts
   recordProofSuccess ctx FactorPasskey gate.standingLockout ts
-  (sid, pair) <- issueSession cfg remember user ts
   publishAuthEvent (Event.MfaSucceeded (Event.MfaSucceededData pkUid sid ts))
   pure (user, pair)
 

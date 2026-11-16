@@ -48,11 +48,14 @@ import Servant.API
 import Servant.API.MultiVerb (DescHeader, OptHeader)
 import Servant.OpenApi (HasOpenApi (..))
 import Servant.OpenApi.Internal (IsSwaggerResponseList (..), ToResponseHeader (..))
+import Shomei.Account.Admin.Recovery.Domain (RecoveryCounts)
 import Shomei.Account.Dto
   ( ChangePasswordRequest,
     ConfirmEmailVerificationRequest,
     ConfirmPasswordResetRequest,
     PasswordResetRequest,
+    ResetMfaRequest,
+    ResetMfaResponse,
     SignupRequest,
     SignupResponse,
     VerifyEmailRequest,
@@ -129,6 +132,12 @@ instance ToSchema SignupRequest where
         & O.schema . O.properties . ix "loginId" . O._Inline . O.maxLength ?~ 256
         & O.schema . O.properties . ix "password" . O._Inline . O.maxLength ?~ 256
         & O.schema . O.properties . ix "displayName" . O._Inline . O.maxLength ?~ 256
+
+instance ToSchema ResetMfaRequest
+
+instance ToSchema ResetMfaResponse
+
+instance ToSchema RecoveryCounts
 
 instance ToSchema SignupResponse
 

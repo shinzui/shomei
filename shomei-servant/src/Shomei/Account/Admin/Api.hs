@@ -7,11 +7,13 @@ module Shomei.Account.Admin.Api
     ReinstateUserRoute,
     DeleteUserRoute,
     AdminPasswordResetRoute,
+    ResetMfaRoute,
   )
 where
 
 import Servant.API
 import Servant.API.MultiVerb (MultiVerb)
+import Shomei.Account.Dto (ResetMfaRequest)
 import Shomei.Account.Result
 import Shomei.Account.User.Dto (AdminStatusFilter, UserPageCursor)
 import Shomei.Id (UserId)
@@ -32,12 +34,15 @@ type DeleteUserRoute = "users" :> RequireAdmin :> CsrfProtected :> PreHandlerRes
 
 type AdminPasswordResetRoute = "users" :> RequireAdmin :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "userId" UserId :> "password-reset" :> MultiVerb 'POST ApplicationContentTypes AdminPasswordResetResponses AdminPasswordResetResult
 
+type ResetMfaRoute = "users" :> RequireAdmin :> CsrfProtected :> PreHandlerResponses BadRequestPreHandlerResponses :> Capture "userId" UserId :> "mfa" :> "reset" :> ReqBody '[JSON] ResetMfaRequest :> MultiVerb 'POST ApplicationContentTypes ResetMfaResponses ResetMfaResult
+
 data AdminAccountApi mode = AdminAccountApi
   { listUsers :: mode :- ListUsersRoute,
     getUser :: mode :- GetUserRoute,
     suspendUser :: mode :- SuspendUserRoute,
     reinstateUser :: mode :- ReinstateUserRoute,
     deleteUser :: mode :- DeleteUserRoute,
-    passwordReset :: mode :- AdminPasswordResetRoute
+    passwordReset :: mode :- AdminPasswordResetRoute,
+    resetMfa :: mode :- ResetMfaRoute
   }
   deriving stock (Generic)

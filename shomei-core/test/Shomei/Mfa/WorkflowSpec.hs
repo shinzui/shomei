@@ -38,6 +38,7 @@ import Shomei.Passkey.Domain
     WebAuthnCredentialId (..),
   )
 import Shomei.Passkey.Store (createPasskey)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Authentication.Workflow (LoginResult (..), MfaChallenge (..), login, signup)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), ProofContext (..), SignupCommand (..))
 import Shomei.Session.LoginAttempt.Domain (AccountKey (..), AccountLockout (..), ClientIp (..))
@@ -93,6 +94,7 @@ seedUserWithPasskey ref = do
     runInMemory
       ref
       ( createPasskey
+          (AuthenticationGuard 0 Nothing Nothing)
           20
           NewPasskeyCredential
             { userId = uid,
@@ -243,12 +245,12 @@ testTotpRemovalFailuresLock = testCase "wrong TOTP removal codes count and a loc
       correct = totpCode 6 secret (totpCounter fixedTime)
       wrong = if correct == "000000" then "999999" else "000000"
   runInMemory ref do
-    _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = user.userId, secret, createdAt = fixedTime}
-    confirmTotp tcid fixedTime
+    _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = user.userId, secret, createdAt = fixedTime}
+    confirmTotp user.userId (AuthenticationGuard 0 Nothing Nothing) tcid fixedTime
   replicateM_ 5 do
-    result <- runInMemory ref (removeTotp cfg proofContext user (RemoveWithCode wrong))
+    result <- runInMemory ref (removeTotp cfg proofContext user Nothing (RemoveWithCode wrong))
     result @?= Left TotpCodeInvalid
-  lockedResult <- runInMemory ref (removeTotp cfg proofContext user (RemoveWithCode correct))
+  lockedResult <- runInMemory ref (removeTotp cfg proofContext user Nothing (RemoveWithCode correct))
   lockedResult @?= Left TotpCodeInvalid
   remaining <- runInMemory ref (findTotpByUser user.userId)
   assertBool "the locked removal leaves the TOTP credential intact" (isJust remaining)

@@ -21,12 +21,14 @@ where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError)
 import Shomei.Id (SessionId)
 import Shomei.OAuth.AuthorizationCode.Domain (AuthorizationCode, NewAuthorizationCode)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard)
 
 data OAuthCodeStore :: Effect where
-  PutAuthorizationCode :: NewAuthorizationCode -> OAuthCodeStore m ()
+  PutAuthorizationCode :: AuthenticationGuard -> NewAuthorizationCode -> OAuthCodeStore m (Either AuthError ())
   -- | Redeem a code by its SHA-256 hex digest, atomically and at most once.
   --
   -- Returns the row only if it was unconsumed /and/ unexpired at the given time, and stamps
@@ -42,8 +44,8 @@ data OAuthCodeStore :: Effect where
 
 type instance DispatchOf OAuthCodeStore = Dynamic
 
-putAuthorizationCode :: (OAuthCodeStore :> es) => NewAuthorizationCode -> Eff es ()
-putAuthorizationCode = send . PutAuthorizationCode
+putAuthorizationCode :: (OAuthCodeStore :> es) => AuthenticationGuard -> NewAuthorizationCode -> Eff es (Either AuthError ())
+putAuthorizationCode proofState = send . PutAuthorizationCode proofState
 
 consumeAuthorizationCode :: (OAuthCodeStore :> es) => Text -> UTCTime -> Eff es (Maybe AuthorizationCode)
 consumeAuthorizationCode h t = send (ConsumeAuthorizationCode h t)

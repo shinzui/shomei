@@ -19,21 +19,23 @@ where
 
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError)
 import Shomei.Id (UserId)
 import Shomei.Mfa.Totp.Domain (NewRecoveryCode)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard)
 
 data RecoveryCodeStore :: Effect where
   -- | Atomically replace the user's whole recovery-code set (delete existing, insert new).
-  ReplaceRecoveryCodes :: UserId -> [NewRecoveryCode] -> RecoveryCodeStore m ()
+  ReplaceRecoveryCodes :: UserId -> AuthenticationGuard -> UTCTime -> [NewRecoveryCode] -> RecoveryCodeStore m (Either AuthError ())
   -- | Compare-and-set: spend an unused code whose hash matches. 'True' iff a row was consumed.
   ConsumeRecoveryCode :: UserId -> Text -> UTCTime -> RecoveryCodeStore m Bool
   CountUnusedRecoveryCodes :: UserId -> RecoveryCodeStore m Int
 
 type instance DispatchOf RecoveryCodeStore = Dynamic
 
-replaceRecoveryCodes :: (RecoveryCodeStore :> es) => UserId -> [NewRecoveryCode] -> Eff es ()
-replaceRecoveryCodes u cs = send (ReplaceRecoveryCodes u cs)
+replaceRecoveryCodes :: (RecoveryCodeStore :> es) => UserId -> AuthenticationGuard -> UTCTime -> [NewRecoveryCode] -> Eff es (Either AuthError ())
+replaceRecoveryCodes u proofState ts cs = send (ReplaceRecoveryCodes u proofState ts cs)
 
 consumeRecoveryCode :: (RecoveryCodeStore :> es) => UserId -> Text -> UTCTime -> Eff es Bool
 consumeRecoveryCode u h t = send (ConsumeRecoveryCode u h t)

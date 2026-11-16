@@ -14,13 +14,15 @@ module Shomei.OAuth.AuthorizationCode.Domain
   )
 where
 
+import Data.Int (Int64)
 import Data.Set (Set)
 import Shomei.Authorization.Claims.Domain (Scope)
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
 
 data AuthorizationCode = AuthorizationCode
-  { -- | SHA-256 hex of the opaque code; the primary key
+  { authenticationGeneration :: !(Maybe Int64),
+    -- | SHA-256 hex of the opaque code; the primary key
     codeHash :: !Text,
     -- | the only client that may exchange this code
     clientId :: !Text,

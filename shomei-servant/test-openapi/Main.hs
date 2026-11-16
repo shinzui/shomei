@@ -51,6 +51,7 @@ import Servant.Health (ProbeResponses, ProbeStatus (..))
 import Servant.OpenApi.Test (validateEveryToJSON)
 import Servant.Server (ServerError (..))
 import Shomei.Account.Admin.Api
+import Shomei.Account.Admin.Recovery.Domain (RecoveryCounts (..))
 import Shomei.Account.Api
 import Shomei.Account.Dto
 import Shomei.Account.User.Dto
@@ -254,8 +255,8 @@ spec = do
     it "declares OpenAPI version 3.1.0" $
       lookupTop "openapi" `shouldBe` Just (String "3.1.0")
 
-    it "covers exactly 41 paths" $
-      pathCount `shouldBe` 41
+    it "covers exactly 42 paths" $
+      pathCount `shouldBe` 42
 
     it "covers the exact served method and path inventory" $
       sort (map fst operations) `shouldBe` expectedOperations
@@ -477,6 +478,7 @@ spec = do
           "post /oauth/introspect",
           "post /oauth/revoke",
           "post /oauth/token",
+          "post /v1/admin/users/{userId}/mfa/reset",
           "post /v1/admin/users/{userId}/password-reset",
           "post /v1/admin/users/{userId}/reinstate",
           "post /v1/admin/users/{userId}/suspend",
@@ -544,6 +546,10 @@ spec = do
 -- ---------------------------------------------------------------------------
 -- Show instances (needed by validateEveryToJSON for counterexamples)
 -- ---------------------------------------------------------------------------
+
+deriving stock instance Show ResetMfaRequest
+
+deriving stock instance Show ResetMfaResponse
 
 deriving stock instance Show SignupRequest
 
@@ -726,3 +732,12 @@ allocated action = do
 
 instance Arbitrary CachedJson where
   arbitrary = cacheJson <$> arbitrary
+
+instance Arbitrary ResetMfaRequest where
+  arbitrary = ResetMfaRequest <$> arbitrary <*> arbitrary
+
+instance Arbitrary RecoveryCounts where
+  arbitrary = RecoveryCounts <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary ResetMfaResponse where
+  arbitrary = ResetMfaResponse <$> arbitrary <*> arbitrary <*> arbitrary

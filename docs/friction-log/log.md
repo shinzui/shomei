@@ -2,6 +2,12 @@
 
 ## 2026-11-16
 
+* **Update**: FRIC-7 accepted: Accept a narrowly scoped http-client internal manager override until a per-request retry API exists.
+
+
+* **Addition**: FRIC-7 records detour interface friction with mori://snoyberg/http-client/packages/http-client: HTTP manager retries can replay destructive recovery requests
+
+
 * **Update**: FRIC-6 resolved: Resolve the extra-wrapper mismatch encountered during browser acceptance.
 
 

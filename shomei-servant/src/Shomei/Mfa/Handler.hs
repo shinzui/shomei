@@ -5,7 +5,7 @@ import Data.Time (addUTCTime)
 import Network.Socket (SockAddr)
 import Servant (Handler)
 import Servant.Server.Generic (AsServerT)
-import Shomei.Account.Handler (loadUser)
+import Shomei.Account.Handler (loadUser, requireLiveAuthentication)
 import Shomei.Authorization.Claims.Domain (AuthClaims (..))
 import Shomei.Config (ImpersonationConfig (..), ShomeiConfig (..))
 import Shomei.Delegation.Handler (denyUnderDelegation)
@@ -53,28 +53,33 @@ completeH env peer request = runApplicationHandler do
 totpEnrollH :: Env -> AuthUser -> Handler TotpEnrollResult
 totpEnrollH env authUser = runApplicationHandler do
   denyUnderDelegation env "totp_enroll" authUser
+  requireLiveAuthentication env authUser
   user <- loadUser env authUser
-  Totp.TotpEnrollment {secretBase32, otpauthUri} <- workflow env (Totp.enrollTotp env.config user)
+  Totp.TotpEnrollment {secretBase32, otpauthUri} <- workflow env (Totp.enrollTotp env.config user (Just authUser.authClaims.sessionId))
   pure TotpEnrollResponse {secret = secretBase32, otpauthUri}
 
 totpVerifyH :: Env -> AuthUser -> TotpVerifyRequest -> Handler TotpVerifyResult
 totpVerifyH env authUser request = runApplicationHandler do
+  denyUnderDelegation env "totp_verify" authUser
+  requireLiveAuthentication env authUser
   user <- loadUser env authUser
-  workflow env (Totp.verifyTotpEnrollment env.config user request.code)
+  workflow env (Totp.verifyTotpEnrollment env.config user (Just authUser.authClaims.sessionId) request.code)
 
 totpDeleteH :: Env -> AuthUser -> SockAddr -> TotpRemoveRequest -> Handler TotpDeleteResult
 totpDeleteH env authUser peer request = runApplicationHandler do
   denyUnderDelegation env "totp_remove" authUser
   requireFreshAuth env authUser
+  requireLiveAuthentication env authUser
   user <- loadUser env authUser
-  workflow env (Totp.removeTotp env.config (proofContext env peer) user (totpRemovalProofOf request))
+  workflow env (Totp.removeTotp env.config (proofContext env peer) user (Just authUser.authClaims.sessionId) (totpRemovalProofOf request))
 
 recoveryCodesGenerateH :: Env -> AuthUser -> Handler RecoveryCodesGenerateResult
 recoveryCodesGenerateH env authUser = runApplicationHandler do
   denyUnderDelegation env "recovery_codes_generate" authUser
   requireFreshAuth env authUser
+  requireLiveAuthentication env authUser
   user <- loadUser env authUser
-  codes <- workflow env (Totp.regenerateRecoveryCodes env.config user)
+  codes <- workflow env (Totp.regenerateRecoveryCodes env.config user (Just authUser.authClaims.sessionId))
   pure RecoveryCodesResponse {codes}
 
 recoveryCodesCountH :: Env -> AuthUser -> Handler RecoveryCodesCountResult

@@ -7,9 +7,12 @@ module Shomei.Account.Dto
     PasswordResetRequest (..),
     ConfirmPasswordResetRequest (..),
     ChangePasswordRequest (..),
+    ResetMfaRequest (..),
+    ResetMfaResponse (..),
   )
 where
 
+import Shomei.Account.Admin.Recovery.Domain (RecoveryCounts)
 import Shomei.Account.User.Dto (UserResponse)
 import Shomei.Prelude
 import Shomei.Session.Dto (TokenPairResponse)
@@ -52,6 +55,21 @@ data ConfirmPasswordResetRequest = ConfirmPasswordResetRequest
 data ChangePasswordRequest = ChangePasswordRequest
   { currentPassword :: !Text,
     newPassword :: !Text
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ResetMfaRequest = ResetMfaRequest
+  { identityVerified :: !Bool,
+    caseReference :: !Text
+  }
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ResetMfaResponse = ResetMfaResponse
+  { resetAt :: !UTCTime,
+    counts :: !RecoveryCounts,
+    verifiedNotificationDestination :: !Bool
   }
   deriving stock (Generic)
   deriving anyclass (FromJSON, ToJSON)

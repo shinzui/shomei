@@ -23,6 +23,7 @@ import Data.Time (UTCTime (..), fromGregorian)
 import Effectful (Eff, IOE, liftIO, (:>))
 import Effectful.Dispatch.Dynamic (interpose, passthrough)
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail)
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 
 -- Qualified: several 'AuthError' constructors share names with 'SessionStatus' constructors.
 
@@ -247,14 +248,16 @@ testConcurrentTotpCompletionsHaveOneWinner =
       tcid <- genTotpCredentialId
       runInMemory ref do
         _ <-
-          upsertTotpEnrollment
-            NewTotpCredential
-              { totpCredentialId = tcid,
-                userId = user.userId,
-                secret,
-                createdAt = fixedTime
-              }
-        confirmTotp tcid fixedTime
+          either (error . show) pure
+            =<< upsertTotpEnrollment
+              (AuthenticationGuard 0 Nothing Nothing)
+              NewTotpCredential
+                { totpCredentialId = tcid,
+                  userId = user.userId,
+                  secret,
+                  createdAt = fixedTime
+                }
+        confirmTotp user.userId (AuthenticationGuard 0 Nothing Nothing) tcid fixedTime
 
       ceremonies <- replicateM racers (loginExpectingTotpChallenge ref)
       let code = totpCode 6 secret (totpCounter fixedTime)

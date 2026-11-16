@@ -60,6 +60,7 @@ import Shomei.Passkey.Ceremony.Port (WebAuthnCeremony)
 import Shomei.Passkey.Ceremony.Store (PendingCeremonyStore)
 import Shomei.Passkey.Store (PasskeyStore, countPasskeysByUser)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (userGuard)
 import Shomei.Session.Command (ClientContext (..), LoginCommand (..), LogoutCommand (..), RefreshCommand (..), RefreshOrigin (..), SignupCommand (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.LoginAttempt.Domain (AccountLockout (..), AttemptFactor (FactorPassword), FailureOutcome (..))
@@ -156,7 +157,8 @@ signup cfg cmd = runErrorNoCallStack do
   -- Session row, refresh-token row, and both audit events in one transaction: a crash here
   -- leaves the new user with no session rather than a session with no token.
   (session, _token) <-
-    persistNewSession
+    either throwError pure =<< persistNewSession
+      (userGuard user)
       NewSession
         { userId = user.userId,
           createdAt = ts,
@@ -239,12 +241,13 @@ login cfg ctx cmd = runErrorNoCallStack do
   -- time.
   mCred <- findPasswordCredentialByLoginId cmd.loginId
   cred <- maybe (failLoginTimed rl outcome ctx cmd ts) pure mCred
+  -- Capture the generation before checking the password, including the non-MFA path.
+  mUser <- findUserById cred.userId
   ok <- verifyPassword cmd.password cred.passwordHash
   unless ok (failLogin rl outcome ctx (Just cred.userId) ts)
   -- The password hash was already evaluated, so the missing-user and inactive-user branches do
-  -- not need a dummy hash. Keeping the user lookup after verification also leaves the common
-  -- wrong-password path at four database checkouts, including its audit event.
-  mUser <- findUserById cred.userId
+  -- not need a dummy hash. The user snapshot above retains the generation observed before
+  -- verification, so recovery cannot attach a newer generation to this proof.
   user <- maybe (failLogin rl outcome ctx (Just cred.userId) ts) pure mUser
   when (user.status /= UserActive) do
     publishNewLock rl outcome ctx ts
@@ -261,16 +264,16 @@ login cfg ctx cmd = runErrorNoCallStack do
   let hasSecondFactor = passkeyCount > 0 || totpEnrolled
   if requireSecondFactor (mfaConfig cfg) && hasSecondFactor
     then do
-      (cid, optionsJson, methods) <- prepareMfaChallenge cfg user ts
+      (cid, optionsJson, methods) <- either throwError pure =<< prepareMfaChallenge cfg user ts
       -- A correct password that advances to MFA is neither a failed proof nor a fully
       -- authenticated success. Remove its provisional row without resetting earlier failures.
       discardLoginAttempt outcome.attemptId
       when outcome.lockedNow (clearAccountLockout ctx.accountKey)
       pure (MfaRequired MfaChallenge {ceremonyId = cid, options = optionsJson, methods = methods})
     else do
+      (_sid, pair) <- either throwError pure =<< issueSession cfg cmd.remember user ts
       convertLoginAttemptToSuccess outcome.attemptId
       when (outcome.lockedNow || isJust outcome.priorLockout) (clearAccountLockout ctx.accountKey)
-      (_sid, pair) <- issueSession cfg cmd.remember user ts
       pure (LoginComplete user pair)
 
 -- | 'failLogin' preceded by a dummy Argon2id verification, for the login paths that fail
@@ -422,6 +425,7 @@ refreshFrom origin cfg cmd = do
                           }
                         (Event.RefreshTokenRotated (Event.RefreshTokenRotatedData tok.sessionId tok.refreshTokenId ts))
                     case outcome of
+                      RotationInvalid -> pure (Left SessionRevoked)
                       RotationConflict -> reuseDetected tok ts
                       Rotated _ -> do
                         -- Re-running the enrichment here is what makes a role change take

@@ -21,6 +21,7 @@ module Shomei.Session.UnitOfWork.Store
     NewSessionToken (..),
     RotationOutcome (..),
     persistNewSession,
+    resetSecondFactors,
     rotateRefreshToken,
     completePasswordReset,
     completePasswordChange,
@@ -31,10 +32,14 @@ where
 
 import Effectful (Dispatch (..), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Account.Admin.Recovery.Domain (RecoveryActor, RecoveryCommand, RecoveryResult)
+import Shomei.Account.Email.Domain (Email)
 import Shomei.Account.Password.Domain (PasswordHash)
 import Shomei.Audit.Event.Domain (AuthEvent)
+import Shomei.Error (AuthError)
 import Shomei.Id (PasswordResetTokenId, RefreshTokenId, SessionId, UserId)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard)
 import Shomei.Session.Domain (NewSession, Session)
 import Shomei.Session.RefreshToken.Domain (NewRefreshToken, PersistedRefreshToken, RefreshTokenHash)
 
@@ -60,6 +65,7 @@ data NewSessionToken = NewSessionToken
 -- confirmation.
 data RotationOutcome
   = Rotated !PersistedRefreshToken
+  | RotationInvalid
   | RotationConflict
   deriving stock (Generic, Eq, Show)
 
@@ -72,11 +78,13 @@ data AuthUnitOfWork :: Effect where
   -- @UserRegistered@ + @SessionStarted@, login and MFA completion publish @LoginSucceeded@ +
   -- @SessionStarted@. The builder lets each caller author its own events in the workflow layer
   -- while the interpreter supplies the id.
+  ResetUserSecondFactors :: RecoveryActor -> UserId -> RecoveryCommand -> UTCTime -> AuthUnitOfWork m (Either AuthError (RecoveryResult, Maybe Email))
   PersistNewSession ::
+    AuthenticationGuard ->
     NewSession ->
     NewSessionToken ->
     (SessionId -> [AuthEvent]) ->
-    AuthUnitOfWork m (Session, PersistedRefreshToken)
+    AuthUnitOfWork m (Either AuthError (Session, PersistedRefreshToken))
   -- | Mark the presented refresh token used, insert its replacement, and record the rotation
   -- event — atomically. The 'UTCTime' is the @used_at@ stamp for the token being retired.
   --
@@ -119,11 +127,12 @@ type instance DispatchOf AuthUnitOfWork = Dynamic
 -- | Atomically persist a new session, its first refresh token, and the events naming it.
 persistNewSession ::
   (AuthUnitOfWork :> es) =>
+  AuthenticationGuard ->
   NewSession ->
   NewSessionToken ->
   (SessionId -> [AuthEvent]) ->
-  Eff es (Session, PersistedRefreshToken)
-persistNewSession ns nst mkEvents = send (PersistNewSession ns nst mkEvents)
+  Eff es (Either AuthError (Session, PersistedRefreshToken))
+persistNewSession proofState ns nst mkEvents = send (PersistNewSession proofState ns nst mkEvents)
 
 -- | Atomically retire a refresh token and issue its replacement, or report a conflict.
 rotateRefreshToken ::
@@ -171,3 +180,6 @@ revokeSessionWithTokens sid ts events = send (RevokeSessionWithTokens sid ts eve
 -- Arguments are actor, target and the application clock timestamp. Returns the winner count.
 revokeUserSessionsWithAudit :: (AuthUnitOfWork :> es) => UserId -> UserId -> UTCTime -> Eff es Int
 revokeUserSessionsWithAudit actor target ts = send (RevokeUserSessionsWithAudit actor target ts)
+
+resetSecondFactors :: (AuthUnitOfWork :> es) => RecoveryActor -> UserId -> RecoveryCommand -> UTCTime -> Eff es (Either AuthError (RecoveryResult, Maybe Email))
+resetSecondFactors actor uid cmd ts = send (ResetUserSecondFactors actor uid cmd ts)

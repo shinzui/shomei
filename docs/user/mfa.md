@@ -187,3 +187,12 @@ containing only version 1 rows; even a malformed key is ignored. Conversion stil
 `--offline` and rejects unknown envelope versions. Real legacy conversion requires stopped writers,
 matching database/key backups, and the correct deployment key. `--check` remains read-only and
 keyless, including with `--offline`.
+
+## Losing every second factor
+
+Use another enrolled factor or an unused recovery code to complete the challenge. Password reset
+preserves MFA. If none remains, use the [administrator recovery runbook](deployment.md#recovering-an-owner-who-lost-every-second-factor).
+The operator must independently verify the owner, check the target, record a non-sensitive case
+reference, notify the owner, and supervise immediate replacement enrollment and new recovery codes.
+Recovery preserves the password and account policy. The account has a password-only interval until
+replacement enrollment; recovery does not unlock a suspended or rate-locked account.

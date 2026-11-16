@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add POST /v1/admin/users/{userId}/mfa/reset with typed DTOs/results/OpenAPI, administrative authorization, delegation/self-target refusal and mandatory live-session checks. Bind enrollment and code regeneration to the initiating session even in token-only mode.
+
 - OAuth namespaces now retain OAuth JSON through parsing, routing and middleware errors. Authentication boundaries own challenges; authorize login_required has none. **Source compatibility:** OAuthResult adds 405/406/413/415/429 constructors and OAuthErrorWithHeaders adds optional oauthAllow; update exhaustive matches and record construction. Additive mount-aware formatter and response middleware APIs preserve default entry points.
 
 ## 0.3.0.0 — 2026-11-05

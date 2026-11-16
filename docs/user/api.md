@@ -580,3 +580,31 @@ virtual host; restrict it to the monitoring network at the reverse proxy.
 Every non-probe response carries an `X-Request-Id` header (echoed from the request if supplied,
 else generated). The same id appears in the server's structured JSON log line. Health probes
 bypass request logging and request-id decoration to avoid per-probe noise.
+
+### `POST /v1/admin/users/{userId}/mfa/reset`
+
+Audited removal of all second factors after independent identity verification. Requires `admin`
+role or administrator service scope `shomei:admin`, a live backing session, and cookie CSRF checks.
+Delegation and HTTP self-targeting are forbidden. Actor identity comes from the verified principal.
+
+```json
+{"identityVerified":true,"caseReference":"INC-1234"}
+```
+
+`caseReference` is 1–128 ASCII letters/digits or `._:/-`; `identityVerified` must be true. Do not
+include identity evidence or secrets. A 200 response contains `resetAt`, `counts`, and
+`verifiedNotificationDestination`, with no credentials. Counts are `passkeysRemoved`,
+`totpCredentialsRemoved`, `recoveryCodesRemoved`, `ceremoniesRemoved`, `sessionsRevoked`,
+`refreshTokensRevoked`, `authorizationCodesInvalidated`, and `passwordResetTokensRevoked`.
+A false destination flag requires operator notification through an independently established
+channel. A true flag does not confirm delivery.
+
+Failures are problem documents: 400 invalid body/assertion/reference, 401 missing/invalid token
+or dead session, 403 insufficient authority/delegation/self-target/CSRF, 404 unknown user,
+409 inactive target, and the existing sanitized dependency failure response for database errors.
+A successful zero-count reset still advances state and audits. Do not automatically retry an
+ambiguous timeout; inspect the audit trail first. See the [operator procedure](deployment.md#recovering-an-owner-who-lost-every-second-factor).
+
+The Haskell `adminResetMfa` helper disables HTTP connection-reuse retries and redirects for this
+one request while preserving the caller's transport settings. Configure other generated/raw
+clients the same way; an incident case reference does not make a repeated reset harmless.

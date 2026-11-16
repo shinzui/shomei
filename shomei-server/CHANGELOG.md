@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add users reset-mfa with explicit operator, case, owner-verification and target-confirmation flags; share the audited workflow and configured bounded notification delivery. Support secret-free second-factor reset notices in every built-in transport.
+
 - Body/rate rejections in OAuth namespaces return 413 invalid_request / 429 temporarily_unavailable as non-cacheable OAuth JSON; application routes retain problem documents. Add hostMiddlewareWithOAuthMounts and authContextWithOAuthMounts for embedding parity. Packaged-executable Hurl acceptance runs through just test-oauth-contract and CI.
 
 ## Unreleased

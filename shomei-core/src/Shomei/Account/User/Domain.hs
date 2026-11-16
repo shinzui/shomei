@@ -7,7 +7,8 @@ module Shomei.Account.User.Domain
   )
 where
 
-import Data.Aeson (withObject, (.:), (.:?))
+import Data.Aeson (withObject, (.!=), (.:), (.:?))
+import Data.Int (Int64)
 import Data.Text qualified as Text
 import Shomei.Account.Email.Domain (Email, emailText, mkEmail, parseStoredEmail)
 import Shomei.Account.LoginId.Domain (LoginId, loginIdText, mkLoginId, parseLoginIdForAuthentication)
@@ -27,7 +28,8 @@ data User = User
     status :: !UserStatus,
     emailVerifiedAt :: !(Maybe UTCTime),
     createdAt :: !UTCTime,
-    updatedAt :: !UTCTime
+    updatedAt :: !UTCTime,
+    authenticationGeneration :: !Int64
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (ToJSON)
@@ -46,6 +48,7 @@ instance FromJSON User where
       <*> o .:? "emailVerifiedAt"
       <*> o .: "createdAt"
       <*> o .: "updatedAt"
+      <*> (o .:? "authenticationGeneration" .!= 0)
 
 data NewUser = NewUser
   { loginId :: !LoginId,

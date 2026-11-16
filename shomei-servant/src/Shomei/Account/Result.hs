@@ -26,10 +26,12 @@ module Shomei.Account.Result
     DeleteUserResult,
     AdminPasswordResetResponses,
     AdminPasswordResetResult,
+    ResetMfaResponses,
+    ResetMfaResult,
   )
 where
 
-import Shomei.Account.Dto (SignupResponse)
+import Shomei.Account.Dto (ResetMfaResponse, SignupResponse)
 import Shomei.Account.User.Dto (AdminUserResponse, AdminUsersPage, UserResponse)
 import Shomei.Servant.Result
 
@@ -84,3 +86,7 @@ type DeleteUserResult = ApplicationResult ()
 type AdminPasswordResetResponses = ApplicationEmptyResponses 202 "Password reset requested"
 
 type AdminPasswordResetResult = ApplicationResult ()
+
+type ResetMfaResponses = ApplicationResponses 200 "Second factors reset" ResetMfaResponse
+
+type ResetMfaResult = ApplicationResult ResetMfaResponse

@@ -7,7 +7,7 @@
 -- PostgreSQL and real ES256 signing.
 module Shomei.Server.E2ESpec (tests, seedPublicOAuthClient) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
 import Control.Monad (forM_)
 import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
@@ -56,23 +56,31 @@ import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
 import Servant.Health (ProbeCheck, ProbeVerdict (Healthy))
 import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.Notification.Domain (Notification (..))
+import Shomei.Account.OneTimeToken.Domain (oneTimeTokenText)
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), newHashingLimiter)
 import Shomei.Account.User.Domain (NewUser (..), User (..))
 import Shomei.Account.User.Postgres (runUserStorePostgres)
-import Shomei.Account.User.Store (createUser)
-import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
-import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
+import Shomei.Account.User.Store (createUser, findUserById)
+import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
+import Shomei.Authorization.Role.Postgres (runRoleStorePostgres)
+import Shomei.Authorization.Role.Store (grantRole)
+import Shomei.Config (NotifierConfig (..), NotifierTransport (..), OAuthConfig (..), SessionCheckMode (..), ShomeiConfig (..), SigningKeyConfig (..), TotpConfig (..), WebhookConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError)
-import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, idText)
+import Shomei.Id (SessionId, UserId, genOAuthClientId, genServiceAccountDbId, idText, parseId)
 import Shomei.Mfa.Totp.Algorithm (base32ToSecret, totpCode, totpCounter)
 import Shomei.Mfa.Totp.Postgres (TotpEncryptionKey, totpEncryptionKeyFromBytes)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.Notify (NotifierSecrets (..), WebhookSecret (..), noNotifierSecrets, webhookSignature)
 import Shomei.Notify.Queue (newNotifierQueue)
+import Shomei.Notify.Queue qualified as Queue
 import Shomei.OAuth.Client.Domain (ClientType (..), NewOAuthClient (..))
 import Shomei.OAuth.Client.Postgres (runOAuthClientStorePostgres)
 import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
+import Shomei.Passkey.Domain (NewPasskeyCredential (..), PublicKeyBytes (..), SignatureCounter (..), UserHandle (..), WebAuthnCredentialId (..))
+import Shomei.Passkey.Postgres (runPasskeyStorePostgres)
+import Shomei.Passkey.Store (createPasskey)
 import Shomei.Persistence.Database.Postgres (defaultTransactionRetryPolicy, runDatabasePool)
 import Shomei.Persistence.Pool.Postgres (Pool, acquirePool)
 import Shomei.Persistence.Pool.Postgres qualified as Pool
@@ -84,6 +92,7 @@ import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
 import Shomei.ServiceAccount.Secret (sha256Hex)
 import Shomei.ServiceAccount.Store (createServiceAccount)
+import Shomei.Session.Authentication.Guard (userGuard)
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
 import Shomei.Session.Postgres (runSessionStorePostgres)
 import Shomei.Session.Store (createSession)
@@ -94,6 +103,7 @@ import Shomei.SigningKey.Sign.Jwt (signAccessToken)
 import Shomei.SigningKey.Verify.Jwt (verifyToken)
 import Shomei.Time.Postgres (runClockIO)
 import Shomei.Time.Store (now)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -106,7 +116,14 @@ tests :: TestTree
 tests =
   testGroup
     "auth lifecycle over HTTP against PostgreSQL"
-    [ testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
+    [ testGroup
+        "audited lost-factor recovery"
+        [ recoveryE2E "passkey-only" True False True,
+          recoveryE2E "TOTP-only" False True True,
+          recoveryE2E "both factors" True True True,
+          recoveryE2E "no email (session-aware verification)" False True False
+        ],
+      testCase "signup → login → me(±token) → refresh → reuse-detect → logout → jwks → health" $
         withShomeiMigratedDatabase \connStr -> do
           pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
           keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
@@ -1001,3 +1018,147 @@ hasKeyDeep k = go
 -- here; only that hashing round-trips.
 testArgon2Params :: Argon2Params
 testArgon2Params = Argon2Params {memoryKiB = 8192, iterations = 1, parallelism = 1}
+
+recoveryE2E :: String -> Bool -> Bool -> Bool -> TestTree
+recoveryE2E name hasPasskey hasTotp hasEmail = testCase name $
+  withShomeiMigratedDatabase \connStr -> do
+    pool <- acquirePool 4 10 defaultDbStatementTimeoutMs connStr
+    keysRef <- newIORef =<< bootstrapKeys e2eKek ES256 pool
+    envMgr <- newManager defaultManagerSettings
+    limiter <- newHashingLimiter 2
+    queue <- newNotifierQueue 64
+    let base = defaultShomeiConfig (Issuer "shomei") (Audience "shomei-clients")
+        cfg = base {totpConfig = base.totpConfig {totpEnabled = True}, sessionCheckMode = if hasEmail then VerifyTokenOnly else VerifyTokenAndSession}
+        env = Env {envPool = pool, envDbRetryPolicy = defaultTransactionRetryPolicy, envConfig = cfg, envKeys = keysRef, envKek = e2eKek, envHttpManager = envMgr, envNotifierSecrets = noNotifierSecrets, envNotifierQueue = queue, envArgon2Params = testArgon2Params, envHashingLimiter = limiter, envTotpKey = e2eTotpKey}
+    testWithApplication (pure (application env healthyProbe healthyProbe)) (recoveryScenario pool queue hasPasskey hasTotp hasEmail)
+
+queuedNotice :: Queue.NotifierQueue -> IO Notification
+queuedNotice queue = do
+  result <- newEmptyMVar
+  completed <- timeout 5000000 (Queue.withDequeued queue (putMVar result))
+  case completed of
+    Just () -> takeMVar result
+    Nothing -> assertFailure "committed lifecycle notification was not queued"
+
+recoveryScenario :: Pool -> Queue.NotifierQueue -> Bool -> Bool -> Bool -> Int -> IO ()
+recoveryScenario pool queue hasPasskey hasTotp hasEmail port = do
+  mgr <- newManager defaultManagerSettings
+  let password = "correct horse battery staple recovery" :: Text
+      replacementPassword = "correct horse battery staple recovered" :: Text
+      signupBody lid email = object (["loginId" .= (lid :: Text), "password" .= password, "displayName" .= ("" :: Text)] <> ["email" .= (lid <> "@example.com") | email])
+      loginBody pw = object ["loginId" .= ("lost-factor-user" :: Text), "password" .= pw]
+  (adminStatus, adminBody) <- postJSON mgr port "/v1/auth/signup" (signupBody "recovery-operator" False)
+  adminStatus @?= 201
+  adminIdText <- must "operator user" (adminBody >>= dig ["user", "userId"] >>= asText)
+  adminId <- either (assertFailure . show) pure (parseId adminIdText)
+  ts <- getCurrentTime
+  _ <- runEff . runErrorNoCallStack @AuthError . runDatabasePool pool . runRoleStorePostgres $ grantRole adminId (Role "admin") Nothing Nothing ts
+  (_, adminLogin) <- postJSON mgr port "/v1/auth/login" (object ["loginId" .= ("recovery-operator" :: Text), "password" .= password])
+  adminAccess <- must "admin access" (adminLogin >>= dig ["token", "accessToken"] >>= asText)
+  (created, body) <- postJSON mgr port "/v1/auth/signup" (signupBody "lost-factor-user" hasEmail)
+  created @?= 201
+  uidText <- must "target user" (body >>= dig ["user", "userId"] >>= asText)
+  uid <- either (assertFailure . show) pure (parseId uidText)
+  oldAccess <- must "initial access" (body >>= dig ["token", "accessToken"] >>= asText)
+  oldRefresh <- must "initial refresh" (body >>= dig ["token", "refreshToken"] >>= asText)
+  if hasEmail
+    then do
+      (requested, _) <- postJSON mgr port "/v1/auth/verify-email/request" (object ["email" .= ("lost-factor-user@example.com" :: Text)])
+      requested @?= 202
+      verification <- queuedNotice queue
+      raw <- case verification of
+        EmailVerificationRequested {token} -> pure (oneTimeTokenText token)
+        _ -> assertFailure "expected verification notice"
+      (verified, _) <- postJSON mgr port "/v1/auth/verify-email/confirm" (object ["token" .= raw])
+      verified @?= 200
+    else pure ()
+  if hasPasskey
+    then do
+      -- Lost authenticators cannot answer a fresh WebAuthn proof. Seed their previously enrolled
+      -- public credential through the real store; all recovery and replacement actions use HTTP.
+      seeded <- runEff . runErrorNoCallStack @AuthError . runDatabasePool pool . runClockIO . runPasskeyStorePostgres . runUserStorePostgres $ do
+        user <- maybe (error "missing recovery user") pure =<< findUserById uid
+        createPasskey (userGuard user) 20 (NewPasskeyCredential uid (WebAuthnCredentialId "lost-passkey") (UserHandle "lost-handle") (PublicKeyBytes "lost-public-key") (SignatureCounter 0) [] Nothing ts)
+      case seeded of
+        Right (Right _) -> pure ()
+        other -> assertFailure ("cannot seed enrolled lost passkey: " <> show other)
+    else pure ()
+  if hasTotp
+    then do
+      (enrolled, enrollment) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer oldAccess)
+      enrolled @?= 200
+      base32 <- must "TOTP secret" (enrollment >>= dig ["secret"] >>= asText)
+      secret <- either (assertFailure . show) pure (base32ToSecret base32)
+      current <- getCurrentTime
+      (confirmed, _) <- postJSONAuth mgr port "/v1/auth/totp/verify" (bearer oldAccess) (object ["code" .= totpCode 6 secret (totpCounter current)])
+      confirmed @?= 200
+    else pure ()
+  (generated, codesBody) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer oldAccess)
+  generated @?= 200
+  codes <- must "old codes" (codesBody >>= dig ["codes"] >>= asTextArray)
+  -- Password reset preserves all enrolled factors, including passkey-only accounts.
+  effectivePassword <-
+    if hasEmail
+      then do
+        (requested, _) <- postJSON mgr port "/v1/auth/password-reset/request" (object ["email" .= ("lost-factor-user@example.com" :: Text)])
+        requested @?= 202
+        notice <- queuedNotice queue
+        raw <- case notice of
+          PasswordResetRequested {token} -> pure (oneTimeTokenText token)
+          _ -> assertFailure "expected password-reset notice"
+        (changed, _) <- postJSON mgr port "/v1/auth/password-reset/confirm" (object ["token" .= raw, "newPassword" .= replacementPassword])
+        changed @?= 200
+        pure replacementPassword
+      else pure password
+  (challenged, challenge) <- postJSON mgr port "/v1/auth/login" (loginBody effectivePassword)
+  challenged @?= 200
+  (challenge >>= dig ["status"] >>= asText) @?= Just "mfa_required"
+  oldChallenge <- must "old MFA challenge" (challenge >>= dig ["ceremonyId"] >>= asText)
+  let path = "/v1/admin/users/" <> Text.unpack uidText <> "/mfa/reset"
+  (reset, result) <- postJSONAuth mgr port path (bearer adminAccess) (object ["identityVerified" .= True, "caseReference" .= ("INC-e2e" :: Text)])
+  reset @?= 200
+  (result >>= dig ["verifiedNotificationDestination"]) @?= Just (Bool hasEmail)
+  (result >>= dig ["counts", "passkeysRemoved"]) @?= Just (Aeson.toJSON (if hasPasskey then 1 :: Int else 0))
+  assertBool "no tokens issued by recovery" (not (isJust (result >>= dig ["token"])))
+  if hasEmail
+    then do
+      notice <- queuedNotice queue
+      case notice of
+        SecondFactorsReset {} -> pure ()
+        _ -> assertFailure "expected secret-free recovery notice"
+    else pure ()
+  (oldMfa, _) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= oldChallenge, "proof" .= object ["type" .= ("recovery_code" :: Text), "code" .= head codes]])
+  oldMfa @?= 404
+  (refreshRejected, _) <- postJSON mgr port "/v1/auth/refresh" (object ["refreshToken" .= oldRefresh])
+  refreshRejected @?= 401
+  (staleEnrollment, _) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer oldAccess)
+  staleEnrollment @?= 401
+  (oldMe, _) <- getJSON mgr port "/v1/auth/me" (bearer oldAccess)
+  oldMe @?= (if hasEmail then 200 else 401)
+  if hasPasskey
+    then do
+      (begun, options) <- postAuthNoBody mgr port "/v1/auth/login/passkey/begin" []
+      begun @?= 200
+      cid <- must "new passwordless challenge" (options >>= dig ["ceremonyId"] >>= asText)
+      (oldPasskey, _) <- postJSON mgr port "/v1/auth/login/passkey/complete" (object ["ceremonyId" .= cid, "assertion" .= object ["credentialId" .= WebAuthnCredentialId "lost-passkey"]])
+      oldPasskey @?= 401
+    else pure ()
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_totp_credentials" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_webauthn_credentials" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_recovery_codes" >>= (@?= 0)
+  (_, passwordLogin) <- postJSON mgr port "/v1/auth/login" (loginBody effectivePassword)
+  (passwordLogin >>= dig ["status"] >>= asText) @?= Just "complete"
+  access <- must "recovered password access" (passwordLogin >>= dig ["token", "accessToken"] >>= asText)
+  (_, enrollment) <- postAuthNoBody mgr port "/v1/auth/totp/enroll" (bearer access)
+  base32 <- must "replacement TOTP secret" (enrollment >>= dig ["secret"] >>= asText)
+  secret <- either (assertFailure . show) pure (base32ToSecret base32)
+  current <- getCurrentTime
+  (confirmed, _) <- postJSONAuth mgr port "/v1/auth/totp/verify" (bearer access) (object ["code" .= totpCode 6 secret (totpCounter current)])
+  confirmed @?= 200
+  (newCodes, _) <- postAuthNoBody mgr port "/v1/auth/recovery-codes" (bearer access)
+  newCodes @?= 200
+  (_, challengedAgain) <- postJSON mgr port "/v1/auth/login" (loginBody effectivePassword)
+  (challengedAgain >>= dig ["status"] >>= asText) @?= Just "mfa_required"
+  newChallenge <- must "new MFA challenge" (challengedAgain >>= dig ["ceremonyId"] >>= asText)
+  (oldCodeRejected, _) <- postJSON mgr port "/v1/auth/mfa/complete" (object ["ceremonyId" .= newChallenge, "proof" .= object ["type" .= ("recovery_code" :: Text), "code" .= head codes]])
+  oldCodeRejected @?= 401

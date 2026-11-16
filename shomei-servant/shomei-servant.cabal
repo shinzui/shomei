@@ -189,6 +189,7 @@ test-suite shomei-servant-openapi-test
     servant-health >=0.1 && <0.2,
     servant-openapi-hs >=5.0 && <6,
     servant-server >=0.20.3 && <0.21,
+    shomei-core ^>=0.3.0.0,
     shomei-servant ^>=0.3.0.0,
     text >=2.0 && <2.2,
 

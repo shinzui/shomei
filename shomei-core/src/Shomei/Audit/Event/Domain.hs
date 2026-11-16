@@ -26,6 +26,7 @@ module Shomei.Audit.Event.Domain
     UserSuspendedData (..),
     UserDeletedData (..),
     UserReinstatedData (..),
+    UserSecondFactorsResetData (..),
     AccountLockedData (..),
     LoginThrottledData (..),
     PasskeyRegisteredData (..),
@@ -58,6 +59,7 @@ where
 import Data.Aeson (withObject, (.:), (.:?))
 import Data.Set (Set)
 import Data.UUID qualified as UUID
+import Shomei.Account.Admin.Recovery.Domain (RecoveryActor, RecoveryCounts)
 import Shomei.Account.Email.Domain (Email, parseStoredEmail)
 import Shomei.Account.LoginId.Domain (LoginId, parseLoginIdForAuthentication)
 import Shomei.Authorization.Claims.Domain (Role, Scope)
@@ -507,6 +509,16 @@ data NotificationDeliveryFailedData = NotificationDeliveryFailedData
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
 
+data UserSecondFactorsResetData = UserSecondFactorsResetData
+  { userId :: !UserId,
+    recoveryActor :: !RecoveryActor,
+    caseReference :: !Text,
+    counts :: !RecoveryCounts,
+    occurredAt :: !UTCTime
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (FromJSON, ToJSON)
+
 data AuthEvent
   = UserRegistered UserRegisteredData
   | LoginSucceeded LoginSucceededData
@@ -524,6 +536,7 @@ data AuthEvent
   | UserSuspended UserSuspendedData
   | UserDeleted UserDeletedData
   | UserReinstated UserReinstatedData
+  | UserSecondFactorsReset UserSecondFactorsResetData
   | AccountLocked AccountLockedData
   | LoginThrottled LoginThrottledData
   | PasskeyRegistered PasskeyRegisteredData

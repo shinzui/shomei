@@ -62,9 +62,12 @@ import Shomei.Mfa.Totp.Algorithm (TotpSecret (..))
 import Shomei.Mfa.Totp.Domain (NewTotpCredential (..), TotpCredential (..))
 import Shomei.Mfa.Totp.Store (TotpCredentialStore (..))
 import Shomei.Persistence.Codec.Postgres (tshow)
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
 import Shomei.Persistence.Pool.Postgres qualified as Pool
+import Shomei.Persistence.Transaction.Postgres qualified as Bounded
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
+import Shomei.Session.Authentication.Guard.Postgres (checkAuthentication)
 
 -- | The AES-256-GCM key that encrypts stored TOTP secrets. Abstract: no 'Show', no JSON, so a
 -- leak is a type error rather than a review question. 32 bytes, held as 'BA.ScrubbedBytes'.
@@ -139,7 +142,7 @@ decryptPayload (TotpEncryptionKey key) aad blob
 
 -- | The stored row, column order matching @shomei_totp_credentials@:
 -- @(totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at)@.
-type TotpRow = (UUID, UUID, ByteString, Maybe Int64, Maybe UTCTime, UTCTime, Int16)
+type TotpRow = (UUID, UUID, ByteString, Maybe Int64, Maybe UTCTime, UTCTime, Int16, Maybe Int64)
 
 runTotpCredentialStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
@@ -147,31 +150,49 @@ runTotpCredentialStorePostgres ::
   Eff (TotpCredentialStore : es) a ->
   Eff es a
 runTotpCredentialStorePostgres key = interpret_ \case
-  UpsertTotpEnrollment NewTotpCredential {totpCredentialId, userId, secret = TotpSecret raw, createdAt} -> do
+  UpsertTotpEnrollment proofState NewTotpCredential {totpCredentialId, userId, secret = TotpSecret raw, createdAt} -> do
     enc <- liftIO (encryptSecret key (totpCredentialIdToUUID totpCredentialId) (userIdToUUID userId) raw)
-    let params = (totpCredentialIdToUUID totpCredentialId, userIdToUUID userId, enc, createdAt)
-    res <- runSession (Session.statement params upsertStmt)
-    either dbFail (const (pure ())) res
+    let params = (totpCredentialIdToUUID totpCredentialId, userIdToUUID userId, enc, createdAt, proofState.generation)
+    res <- runTransaction do
+      checked <- checkAuthentication userId proofState createdAt
+      case checked of
+        Left err -> pure (Left err)
+        Right () -> Right <$> Bounded.statement params upsertStmt
+    outcome <- either dbFail pure res
     pure
-      TotpCredential
-        { totpCredentialId,
-          userId,
-          secret = TotpSecret raw,
-          lastUsedCounter = Nothing,
-          confirmedAt = Nothing,
-          createdAt
-        }
+      ( TotpCredential
+          { authenticationGeneration = Just proofState.generation,
+            totpCredentialId,
+            userId,
+            secret = TotpSecret raw,
+            lastUsedCounter = Nothing,
+            confirmedAt = Nothing,
+            createdAt
+          }
+          <$ outcome
+      )
   FindTotpByUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) findByUserStmt)
     row <- either dbFail pure res
     traverse rebuild row
-  ConfirmTotp tcid t -> do
-    res <- runSession (Session.statement (totpCredentialIdToUUID tcid, t) confirmStmt)
-    either dbFail (const (pure ())) res
+  ConfirmTotp uid proofState tcid t -> do
+    res <- runTransaction do
+      checked <- checkAuthentication uid proofState t
+      case checked of
+        Left err -> pure (Left err)
+        Right () -> Right <$> Bounded.statement (totpCredentialIdToUUID tcid, t) confirmStmt
+    either dbFail pure res
   SetTotpLastUsedCounter tcid c -> do
     res <- runSession (Session.statement (totpCredentialIdToUUID tcid, c) setCounterStmt)
     accepted <- either dbFail pure res
     pure (isJust accepted)
+  RemoveTotpCredential uid proofState tcid ts -> do
+    res <- runTransaction do
+      checked <- checkAuthentication uid proofState ts
+      case checked of
+        Left err -> pure (Left err)
+        Right () -> Right <$> Bounded.statement (totpCredentialIdToUUID tcid, userIdToUUID uid) deleteCredentialStmt
+    either dbFail pure res
   DeleteTotpByUser uid -> do
     res <- runSession (Session.statement (userIdToUUID uid) deleteByUserStmt)
     either dbFail (const (pure ())) res
@@ -180,11 +201,12 @@ runTotpCredentialStorePostgres key = interpret_ \case
     rebuild row = either (throwError . InternalAuthError) pure (rebuildCredential key row)
 
 rebuildCredential :: TotpEncryptionKey -> TotpRow -> Either Text TotpCredential
-rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created, version) = do
+rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created, version, generation) = do
   raw <- decryptSecret key tcid uid version enc
   pure
     TotpCredential
-      { totpCredentialId = totpCredentialIdFromUUID tcid,
+      { authenticationGeneration = generation,
+        totpCredentialId = totpCredentialIdFromUUID tcid,
         userId = userIdFromUUID uid,
         secret = TotpSecret raw,
         lastUsedCounter = lastUsed,
@@ -194,7 +216,7 @@ rebuildCredential key (tcid, uid, enc, lastUsed, confirmed, created, version) = 
 
 totpRowDecoder :: D.Row TotpRow
 totpRowDecoder =
-  (,,,,,,)
+  (,,,,,,,)
     <$> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.uuid)
     <*> D.column (D.nonNullable D.bytea)
@@ -202,33 +224,36 @@ totpRowDecoder =
     <*> D.column (D.nullable D.timestamptz)
     <*> D.column (D.nonNullable D.timestamptz)
     <*> D.column (D.nonNullable D.int2)
+    <*> D.column (D.nullable D.int8)
 
 selectCols :: Text
-selectCols = "totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version"
+selectCols = "totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version, authentication_generation"
 
 -- | Insert, or replace an existing (unconfirmed) enrollment for the user: on a @user_id@
 -- conflict the id and secret are swapped in and the counter/confirmation are reset to NULL. The
 -- workflow refuses to reach here when a /confirmed/ credential exists.
-upsertStmt :: Statement (UUID, UUID, ByteString, UTCTime) ()
+upsertStmt :: Statement (UUID, UUID, ByteString, UTCTime, Int64) ()
 upsertStmt =
   preparable
     """
     INSERT INTO shomei.shomei_totp_credentials
-      (totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version)
-    VALUES ($1, $2, $3, NULL, NULL, $4, 1)
+      (totp_credential_id, user_id, secret_enc, last_used_counter, confirmed_at, created_at, envelope_version, authentication_generation)
+    VALUES ($1, $2, $3, NULL, NULL, $4, 1, $5)
     ON CONFLICT (user_id) DO UPDATE
     SET totp_credential_id = EXCLUDED.totp_credential_id,
         secret_enc = EXCLUDED.secret_enc,
         envelope_version = 1,
+        authentication_generation = EXCLUDED.authentication_generation,
         last_used_counter = NULL,
         confirmed_at = NULL,
         created_at = EXCLUDED.created_at
     """
-    ( contrazip4
+    ( contrazip5
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.uuid))
         (E.param (E.nonNullable E.bytea))
         (E.param (E.nonNullable E.timestamptz))
+        (E.param (E.nonNullable E.int8))
     )
     D.noResult
 
@@ -328,3 +353,10 @@ convertRowStmt =
     "UPDATE shomei.shomei_totp_credentials SET secret_enc = $4, envelope_version = 1 WHERE totp_credential_id = $1 AND user_id = $2 AND secret_enc = $3 AND envelope_version = $5 RETURNING totp_credential_id"
     (contrazip5 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.bytea)) (E.param (E.nonNullable E.bytea)) (E.param (E.nonNullable E.int2)))
     (D.rowMaybe (D.column (D.nonNullable D.uuid)))
+
+deleteCredentialStmt :: Statement (UUID, UUID) ()
+deleteCredentialStmt =
+  preparable
+    "DELETE FROM shomei.shomei_totp_credentials WHERE totp_credential_id = $1 AND user_id = $2"
+    (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.uuid)))
+    D.noResult

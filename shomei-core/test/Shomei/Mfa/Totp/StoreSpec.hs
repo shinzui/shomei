@@ -11,7 +11,12 @@ import Data.IORef (IORef, newIORef)
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Time (UTCTime (..), fromGregorian)
+import Effectful (Eff, IOE, (:>))
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Store (UserStore, createUser)
 import Shomei.Id (genRecoveryCodeId, genTotpCredentialId, genUserId)
+import Shomei.Id qualified as Id
 import Shomei.Mfa.RecoveryCode.Store
   ( consumeRecoveryCode,
     countUnusedRecoveryCodes,
@@ -26,6 +31,7 @@ import Shomei.Mfa.Totp.Store
     setTotpLastUsedCounter,
     upsertTotpEnrollment,
   )
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Test.InMemory (World, emptyWorld, runInMemory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
@@ -61,11 +67,11 @@ totpRoundTrip :: IO ()
 totpRoundTrip = do
   ref <- newWorld
   (created, found0, advanced, replayed, older, found1, found2) <- runInMemory ref do
-    u <- genUserId
+    u <- newUserId
     tcid <- genTotpCredentialId
-    created <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid, userId = u, secret = rawSecret, createdAt = t0}
+    created <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid, userId = u, secret = rawSecret, createdAt = t0}
     found0 <- findTotpByUser u
-    confirmTotp tcid t0
+    confirmTotp u (AuthenticationGuard 0 Nothing Nothing) tcid t0
     advanced <- setTotpLastUsedCounter tcid 42
     replayed <- setTotpLastUsedCounter tcid 42
     older <- setTotpLastUsedCounter tcid 41
@@ -84,11 +90,11 @@ totpReenrollReplaces :: IO ()
 totpReenrollReplaces = do
   ref <- newWorld
   (found, secondId) <- runInMemory ref do
-    u <- genUserId
+    u <- newUserId
     tcid1 <- genTotpCredentialId
-    _ <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid1, userId = u, secret = rawSecret, createdAt = t0}
+    _ <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid1, userId = u, secret = rawSecret, createdAt = t0}
     tcid2 <- genTotpCredentialId
-    second <- upsertTotpEnrollment NewTotpCredential {totpCredentialId = tcid2, userId = u, secret = TotpSecret "09876543210987654321", createdAt = t0}
+    second <- either (error . show) pure =<< upsertTotpEnrollment (AuthenticationGuard 0 Nothing Nothing) NewTotpCredential {totpCredentialId = tcid2, userId = u, secret = TotpSecret "09876543210987654321", createdAt = t0}
     found <- findTotpByUser u
     pure (found, second.totpCredentialId)
   -- Only one credential per user: the re-enrollment's id is what a lookup now returns.
@@ -98,16 +104,16 @@ recoveryCas :: IO ()
 recoveryCas = do
   ref <- newWorld
   (countBefore, firstConsume, secondConsume, countAfter, countAfterReplace, oldConsume) <- runInMemory ref do
-    u <- genUserId
+    u <- newUserId
     ids <- mapM (const genRecoveryCodeId) [1 :: Int, 2, 3]
     let mk i h = NewRecoveryCode {recoveryCodeId = i, codeHash = h, createdAt = t0}
-    replaceRecoveryCodes u (zipWith mk ids ["h1", "h2", "h3"])
+    replaceRecoveryCodes u (AuthenticationGuard 0 Nothing Nothing) t0 (zipWith mk ids ["h1", "h2", "h3"])
     countBefore <- countUnusedRecoveryCodes u
     firstConsume <- consumeRecoveryCode u "h1" t0
     secondConsume <- consumeRecoveryCode u "h1" t0
     countAfter <- countUnusedRecoveryCodes u
     ids2 <- mapM (const genRecoveryCodeId) [1 :: Int, 2]
-    replaceRecoveryCodes u (zipWith mk ids2 ["n1", "n2"])
+    replaceRecoveryCodes u (AuthenticationGuard 0 Nothing Nothing) t0 (zipWith mk ids2 ["n1", "n2"])
     countAfterReplace <- countUnusedRecoveryCodes u
     oldConsume <- consumeRecoveryCode u "h2" t0
     pure (countBefore, firstConsume, secondConsume, countAfter, countAfterReplace, oldConsume)
@@ -117,3 +123,11 @@ recoveryCas = do
   countAfter @?= 2
   countAfterReplace @?= 2
   oldConsume @?= False
+
+-- Store fixtures use real users so user-row serialization has the same preconditions as SQL.
+newUserId :: (UserStore :> es, IOE :> es) => Eff es Id.UserId
+newUserId = do
+  unique <- genUserId
+  let lid = either (error . show) id (mkLoginId (Id.idText unique))
+  user <- createUser (NewUser lid Nothing Nothing)
+  pure user.userId

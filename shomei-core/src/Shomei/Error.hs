@@ -64,6 +64,7 @@ data AuthError
     LoginIdAlreadyRegistered
   | InvalidCredentials
   | UserNotActive
+  | StaleAuthentication
   | SessionNotFound
   | SessionExpired
   | SessionRevoked

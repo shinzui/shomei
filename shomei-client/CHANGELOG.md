@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Add adminResetMfa for the typed administrative recovery route. It performs one destructive request without automatic retry or redirect replay, preserving caller transport settings.
+
 - Generated OAuth clients decode routing and operational 405/406/413/415/429 errors as typed results, preserving optional challenges, Retry-After and Allow. **Source compatibility:** downstream exhaustive OAuthResult matches and OAuthErrorWithHeaders construction must account for the added constructors/field.
 
 ## 0.3.0.0 — 2026-11-05

@@ -19,7 +19,7 @@ import Shomei.Admin.OAuthClients (OAuthClientsCommand, oauthClientsParser, runOA
 import Shomei.Admin.Roles (RolesCommand, rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (ServiceAccountsCommand, runServiceAccounts, serviceAccountsParser)
 import Shomei.Admin.Sweep (SweepOptions, runSweep, sweepParser)
-import Shomei.Admin.Users (createUserAction)
+import Shomei.Admin.Users (ResetMfaOptions, createUserAction, resetMfaAction, resetMfaParser, validateResetMfaOptions)
 import Shomei.Mfa.Totp.Postgres (checkTotpEnvelopeVersions, migrateTotpEnvelopeBatch, totpEncryptionKeyFromBase64)
 import Shomei.Migrations (applyShomeiMigrations)
 import Shomei.Server.ConfigurationError (reportConfigurationError)
@@ -50,12 +50,14 @@ data KeysCommand
   | KeysList
   | KeysRewrap
 
-data UsersCommand = UsersCreate
-  { email :: Text,
-    passwordFile :: Maybe FilePath,
-    displayName :: Maybe Text,
-    emailVerified :: Bool
-  }
+data UsersCommand
+  = UsersCreate
+      { email :: Text,
+        passwordFile :: Maybe FilePath,
+        displayName :: Maybe Text,
+        emailVerified :: Bool
+      }
+  | UsersResetMfa ResetMfaOptions
 
 commandParser :: Parser Command
 commandParser =
@@ -107,7 +109,9 @@ keysParser =
 usersParser :: Parser UsersCommand
 usersParser =
   hsubparser
-    (command "create" (info createOpts (progDesc "Create a user account")))
+    ( command "create" (info createOpts (progDesc "Create a user account"))
+        <> command "reset-mfa" (info (UsersResetMfa <$> resetMfaParser) (progDesc "Recover independently verified owners after loss of every second factor"))
+    )
   where
     createOpts =
       UsersCreate
@@ -162,6 +166,12 @@ run = \case
     password <- readPasswordSecret passwordFile
     env <- reportConfigurationError "shomei-admin" loadAdminEnv
     createUserAction env email password displayName emailVerified
+  Users (UsersResetMfa recoveryOptions) -> do
+    case validateResetMfaOptions recoveryOptions of
+      Left message -> hPutStrLn stderr (Text.unpack message) >> exitFailure
+      Right () -> pure ()
+    env <- reportConfigurationError "shomei-admin" loadAdminEnv
+    resetMfaAction env recoveryOptions
   Roles rc -> do
     env <- reportConfigurationError "shomei-admin" loadAdminEnv
     runRoles env rc

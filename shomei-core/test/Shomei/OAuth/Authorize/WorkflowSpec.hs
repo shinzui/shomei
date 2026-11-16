@@ -7,6 +7,9 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian)
+import Shomei.Account.LoginId.Domain (mkLoginId)
+import Shomei.Account.User.Domain (NewUser (..), User (..))
+import Shomei.Account.User.Store (createUser)
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Scope (..))
 import Shomei.Config (ShomeiConfig, defaultShomeiConfig)
 import Shomei.Id (SessionId, UserId, genOAuthClientId, genSessionId, genUserId, idText)
@@ -88,7 +91,8 @@ runAuthorizeWithActor :: SessionKind -> SessionState -> Bool -> Bool -> IO (Eith
 runAuthorizeWithActor kind state storedActor claimActor = do
   ref <- newIORef (emptyWorld fixedTime)
   result <- runInMemory ref do
-    uid <- genUserId
+    user <- createUser (NewUser (either (error . show) id (mkLoginId "authorize-fixture")) Nothing Nothing)
+    let uid = user.userId
     actor <- if storedActor then Just <$> genUserId else pure Nothing
     session <-
       createSession

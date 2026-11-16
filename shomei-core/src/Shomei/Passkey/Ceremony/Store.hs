@@ -26,19 +26,20 @@ where
 
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError)
 import Shomei.Id (CeremonyId)
 import Shomei.Passkey.Domain (PendingCeremony)
 import Shomei.Prelude
 
 data PendingCeremonyStore :: Effect where
-  PutPendingCeremony :: PendingCeremony -> PendingCeremonyStore m ()
+  PutPendingCeremony :: PendingCeremony -> PendingCeremonyStore m (Either AuthError ())
   -- | Consume-once: remove the row and return it iff present AND @expiresAt > now@;
   -- otherwise return 'Nothing' (removing an expired row too). @now@ is the second arg.
   TakePendingCeremony :: CeremonyId -> UTCTime -> PendingCeremonyStore m (Maybe PendingCeremony)
 
 type instance DispatchOf PendingCeremonyStore = Dynamic
 
-putPendingCeremony :: (PendingCeremonyStore :> es) => PendingCeremony -> Eff es ()
+putPendingCeremony :: (PendingCeremonyStore :> es) => PendingCeremony -> Eff es (Either AuthError ())
 putPendingCeremony = send . PutPendingCeremony
 
 takePendingCeremony :: (PendingCeremonyStore :> es) => CeremonyId -> UTCTime -> Eff es (Maybe PendingCeremony)

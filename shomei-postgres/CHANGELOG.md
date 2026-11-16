@@ -4,6 +4,10 @@ All notable changes to `shomei-postgres` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## Unreleased
+
+- **Breaking:** recovery and generation-aware writers serialize on the user row in bounded transactions; refresh and code exchange coordinate with reset. Factor/session deletion and winner-only audit roll back together. Recovery-code replacement is now an explicit transaction.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series; migration dependencies require `shomei-migrations ^>=0.2.0.1`.

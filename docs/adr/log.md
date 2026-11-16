@@ -2,6 +2,12 @@
 
 ## 2026-11-16
 
+* **Update**: ADR-29 prevents automatic replay of destructive reset requests while preserving configured HTTP transport
+
+
+* **Update**: Record atomic lost-factor recovery and authentication generation barriers
+
+
 * **Addition**: ADR-28 requires discoverable credentials for shared passkey enrollment, preserving UV policy and legacy step-up compatibility.
 
 

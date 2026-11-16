@@ -24,24 +24,30 @@ import Shomei.Error (AuthError (..))
 import Shomei.Id (recoveryCodeIdToUUID, userIdToUUID)
 import Shomei.Mfa.RecoveryCode.Store (RecoveryCodeStore (..))
 import Shomei.Mfa.Totp.Domain (NewRecoveryCode (..))
-import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession)
+import Shomei.Persistence.Database.Postgres (Database, postgresUnavailable, runSession, runTransaction)
+import Shomei.Persistence.Transaction.Postgres qualified as Tx
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard.Postgres (checkAuthentication)
 
 runRecoveryCodeStorePostgres ::
   (Database :> es, IOE :> es, Error AuthError :> es) =>
   Eff (RecoveryCodeStore : es) a ->
   Eff es a
 runRecoveryCodeStorePostgres = interpret_ \case
-  ReplaceRecoveryCodes uid newCodes -> do
+  ReplaceRecoveryCodes uid guard ts newCodes -> do
     let uidU = userIdToUUID uid
         rows =
           [ (recoveryCodeIdToUUID nc.recoveryCodeId, uidU, nc.codeHash, nc.createdAt)
           | nc <- newCodes
           ]
-    res <- runSession do
-      Session.statement uidU deleteForUserStmt
-      mapM_ (`Session.statement` insertStmt) rows
-    either dbFail (const (pure ())) res
+    res <- runTransaction do
+      checked <- checkAuthentication uid guard ts
+      case checked of
+        Left err -> pure (Left err)
+        Right () -> do
+          Tx.statement uidU deleteForUserStmt
+          Right <$> mapM_ (`Tx.statement` insertStmt) rows
+    either dbFail pure res
   ConsumeRecoveryCode uid h t -> do
     res <- runSession (Session.statement (userIdToUUID uid, h, t) consumeStmt)
     either dbFail (pure . isJust) res

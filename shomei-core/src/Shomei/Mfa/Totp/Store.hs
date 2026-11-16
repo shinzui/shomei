@@ -16,40 +16,47 @@ module Shomei.Mfa.Totp.Store
     confirmTotp,
     setTotpLastUsedCounter,
     deleteTotpByUser,
+    removeTotpCredential,
   )
 where
 
 import Data.Int (Int64)
 import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, (:>))
 import Effectful.Dispatch.Dynamic (send)
+import Shomei.Error (AuthError)
 import Shomei.Id (TotpCredentialId, UserId)
 import Shomei.Mfa.Totp.Domain (NewTotpCredential, TotpCredential)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard)
 
 data TotpCredentialStore :: Effect where
   -- | Insert the enrollment, replacing any existing (unconfirmed) row for the user.
-  UpsertTotpEnrollment :: NewTotpCredential -> TotpCredentialStore m TotpCredential
+  UpsertTotpEnrollment :: AuthenticationGuard -> NewTotpCredential -> TotpCredentialStore m (Either AuthError TotpCredential)
   FindTotpByUser :: UserId -> TotpCredentialStore m (Maybe TotpCredential)
   -- | Mark the credential confirmed (activated) at the given time.
-  ConfirmTotp :: TotpCredentialId -> UTCTime -> TotpCredentialStore m ()
+  ConfirmTotp :: UserId -> AuthenticationGuard -> TotpCredentialId -> UTCTime -> TotpCredentialStore m (Either AuthError ())
   -- | Advance the replay-defense high-water counter only when the supplied value is newer.
   -- 'False' means another request already accepted this counter (or a later one).
   SetTotpLastUsedCounter :: TotpCredentialId -> Int64 -> TotpCredentialStore m Bool
+  RemoveTotpCredential :: UserId -> AuthenticationGuard -> TotpCredentialId -> UTCTime -> TotpCredentialStore m (Either AuthError ())
   DeleteTotpByUser :: UserId -> TotpCredentialStore m ()
 
 type instance DispatchOf TotpCredentialStore = Dynamic
 
-upsertTotpEnrollment :: (TotpCredentialStore :> es) => NewTotpCredential -> Eff es TotpCredential
-upsertTotpEnrollment = send . UpsertTotpEnrollment
+upsertTotpEnrollment :: (TotpCredentialStore :> es) => AuthenticationGuard -> NewTotpCredential -> Eff es (Either AuthError TotpCredential)
+upsertTotpEnrollment proofState = send . UpsertTotpEnrollment proofState
 
 findTotpByUser :: (TotpCredentialStore :> es) => UserId -> Eff es (Maybe TotpCredential)
 findTotpByUser = send . FindTotpByUser
 
-confirmTotp :: (TotpCredentialStore :> es) => TotpCredentialId -> UTCTime -> Eff es ()
-confirmTotp i t = send (ConfirmTotp i t)
+confirmTotp :: (TotpCredentialStore :> es) => UserId -> AuthenticationGuard -> TotpCredentialId -> UTCTime -> Eff es (Either AuthError ())
+confirmTotp uid proofState i t = send (ConfirmTotp uid proofState i t)
 
 setTotpLastUsedCounter :: (TotpCredentialStore :> es) => TotpCredentialId -> Int64 -> Eff es Bool
 setTotpLastUsedCounter i c = send (SetTotpLastUsedCounter i c)
 
 deleteTotpByUser :: (TotpCredentialStore :> es) => UserId -> Eff es ()
 deleteTotpByUser = send . DeleteTotpByUser
+
+removeTotpCredential :: (TotpCredentialStore :> es) => UserId -> AuthenticationGuard -> TotpCredentialId -> UTCTime -> Eff es (Either AuthError ())
+removeTotpCredential uid proofState tcid ts = send (RemoveTotpCredential uid proofState tcid ts)

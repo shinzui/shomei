@@ -16,7 +16,7 @@ import Data.ByteArray qualified as BA
 import Data.ByteArray.Encoding (Base (Base64), convertToBase)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
-import Data.IORef (newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, isPrefixOf)
 import Data.Maybe (isJust)
@@ -36,6 +36,7 @@ import Hasql.Errors qualified as Hasql
 import Hasql.Session qualified as Session
 import Hasql.Statement (preparable)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
+import Shomei.Account.Admin.Recovery (RecoveryCommand (..), RecoveryCounts (..), RecoveryResult (..))
 import Shomei.Account.Password.Domain (PasswordPolicy (..), PlainPassword (..))
 import Shomei.Account.Password.Hash.Postgres (Argon2Params (..), sha256Hex)
 import Shomei.Account.User.Postgres (runUserStorePostgres)
@@ -55,7 +56,7 @@ import Shomei.Admin.OAuthClients qualified as OAuthClients
 import Shomei.Admin.Roles (GrantExpiry (..), RolesCommand (..), rolesParser, runRoles)
 import Shomei.Admin.ServiceAccounts (createAction, listAction, revokeAction, rotateSecretAction)
 import Shomei.Admin.Sweep (SweepOptions (..), defaultSweepOptions, runSweepReport)
-import Shomei.Admin.Users (createUserAction)
+import Shomei.Admin.Users (ResetMfaOptions (..), createUserAction, resetMfaAction, resetMfaParser, runRecovery, validateResetMfaOptions)
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Postgres (runAuthEventPublisherPostgres)
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
@@ -69,7 +70,7 @@ import Shomei.Audit.Reader.Store
 import Shomei.Authorization.Claims.Domain (Audience (..), AuthClaims (..), Issuer (..), Role (..), Scope (..))
 import Shomei.Config (ShomeiConfig (..), defaultShomeiConfig)
 import Shomei.Error (AuthError (OAuthClientInvalid))
-import Shomei.Id (genSessionId, genUserId, idText, sessionIdToUUID, userIdToUUID)
+import Shomei.Id (genSessionId, genUserId, idText, sessionIdToUUID, userIdFromUUID, userIdToUUID)
 import Shomei.Migrations.TestSupport (withShomeiMigratedDatabase)
 import Shomei.OAuth.Client.Domain (ClientType (..), OAuthClient (..), OAuthClientStatus (..))
 import Shomei.OAuth.IdToken.Domain (IdToken (..))
@@ -189,6 +190,8 @@ main =
           testKeyWriteRollback,
           testMultipleActiveFailClosed,
           testUsageErrorSummary,
+          testResetMfaParsing,
+          testResetMfaPersisted,
           testUserCreate,
           testUserCreateEmailVerified,
           testUserCreateAppliesPasswordPolicy,
@@ -1210,3 +1213,42 @@ testTotpMaintenance = testCase "offline TOTP no-op is keyless but still checks v
   (countCode, countOut, _) <- runBinary "shomei-admin" ["audit", "count", "--type", "login_failed"] fixture
   countCode @?= ExitSuccess
   countOut @?= "0\n"
+
+testResetMfaParsing :: TestTree
+testResetMfaParsing = testCase "users reset-mfa requires every assertion and confirms the exact target before database work" $ do
+  uid <- genUserId
+  other <- genUserId
+  let args = ["--user", Text.unpack (idText uid), "--operator", "ops.test", "--case-reference", "INC-42", "--identity-verified", "--confirm-user", Text.unpack (idText uid)]
+      parse = execParserPure defaultPrefs (info resetMfaParser mempty)
+  case parse args of
+    Success options -> validateResetMfaOptions options @?= Right ()
+    _ -> assertFailure "complete recovery options did not parse"
+  forM_ [filter (/= "--identity-verified") args, take 7 args] $ \incomplete -> case parse incomplete of
+    Failure _ -> pure ()
+    _ -> assertFailure "missing recovery assertion was accepted"
+  validateResetMfaOptions (ResetMfaOptions uid "ops.test" "INC-42" True other) @?= Left "--confirm-user must exactly match --user"
+  case validateResetMfaOptions (ResetMfaOptions uid "unsafe operator" "INC-42" True uid) of
+    Left _ -> pure ()
+    _ -> assertFailure "invalid operator label accepted"
+
+testResetMfaPersisted :: TestTree
+testResetMfaPersisted = testCase "CLI recovery commits shared reset with local attribution and no manufactured administrator" $ withDb \pool connStr -> do
+  let env = AdminEnv {config = cfg, pool, connStr, argon2 = testArgon2Params}
+  createUserAction env "recovery@example.com" (PlainPassword "correct horse battery staple") Nothing False
+  raw <- scalarText pool "SELECT user_id::text FROM shomei.shomei_users WHERE email='recovery@example.com'"
+  uid <- maybe (assertFailure "invalid persisted UUID") (pure . userIdFromUUID) (UUID.fromText raw)
+  before <- scalarInt pool "SELECT count(*) FROM shomei.shomei_users"
+  expectExitFailure "mismatched target confirmation" (resetMfaAction env (ResetMfaOptions uid "ops.test" "INC-42" False uid))
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='user_second_factors_reset'" >>= (@?= 0)
+  notices <- newIORef []
+  result <- runRecovery pool (\notice -> atomicModifyIORef' notices (\ns -> (notice : ns, ()))) uid "ops.test" (RecoveryCommand True "INC-42")
+  case result of
+    Right (Right recovered) -> do
+      recovered.counts.sessionsRevoked @?= 1
+      recovered.verifiedNotificationDestination @?= False
+    other -> assertFailure ("CLI shared recovery failed: " <> show other)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_users" >>= (@?= before)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_sessions WHERE status='active'" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_refresh_tokens WHERE status='active'" >>= (@?= 0)
+  scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type='user_second_factors_reset' AND payload->'recoveryActor'->>'tag'='LocalOperator' AND payload->'recoveryActor'->>'contents'='ops.test' AND payload->>'caseReference'='INC-42'" >>= (@?= 1)
+  readIORef notices >>= (@?= [])

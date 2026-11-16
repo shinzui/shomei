@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- **Breaking:** add audited administrator second-factor recovery, authentication generations on users/pending state, guarded persistence ports and typed stale-proof rejection. Session issuance returns an explicit Either; enrollment APIs bind an optional trusted source session. Add secret-free recovery notifications and the reset audit event.
+
 - Export `knownAuthEventTypes` from the audit codec for version-specific event vocabulary validation.
 
 ## 0.3.0.0 — 2026-11-05

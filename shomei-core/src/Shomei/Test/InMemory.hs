@@ -78,6 +78,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.UUID qualified as UUID
 import Effectful (Eff, IOE, runEff, (:>))
 import Effectful.Dispatch.Dynamic (interpret_)
+import Shomei.Account.Admin.Recovery.Domain
 import Shomei.Account.Credential.Domain (Credential (..))
 import Shomei.Account.Credential.Store (CredentialStore (..))
 import Shomei.Account.LoginId.Domain (LoginId)
@@ -106,7 +107,7 @@ import Shomei.Audit.Reader.Store
 import Shomei.Authorization.Claims.Domain (AuthClaims, Issuer (..), Permission (..), Role (..))
 import Shomei.Authorization.Claims.Store (ClaimsDelta, ClaimsEnricher, emptyClaimsDelta, runClaimsEnricherNull, runClaimsEnricherPure)
 import Shomei.Authorization.Role.Store (RoleDefinition (..), RoleStore (..))
-import Shomei.Error (AuthError (PasskeyLimitReached, SessionLimitReached), TokenError (..))
+import Shomei.Error (AuthError (InvalidUserStatus, PasskeyLimitReached, SessionLimitReached, StaleAuthentication, UserNotFound), TokenError (..))
 import Shomei.Id
   ( CeremonyId,
     LoginAttemptId,
@@ -178,6 +179,7 @@ import Shomei.ServiceAccount.Domain
     ServiceAccountStatus (..),
   )
 import Shomei.ServiceAccount.Store (ServiceAccountStore (..))
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey,
@@ -356,7 +358,8 @@ runUserStore ref = interpret_ \case
               status = UserActive,
               emailVerifiedAt = Nothing,
               createdAt = w.clock,
-              updatedAt = w.clock
+              updatedAt = w.clock,
+              authenticationGeneration = 0
             }
     liftIO (modifyWorld ref (#users %~ Map.insert uid u))
     pure u
@@ -634,7 +637,7 @@ runRoleStore ref = interpret_ \case
 -- a workflow authors ends up at the head.
 runAuthUnitOfWork :: (IOE :> es) => IORef World -> Eff (AuthUnitOfWork : es) a -> Eff es a
 runAuthUnitOfWork ref = interpret_ \case
-  PersistNewSession ns nst mkEvents -> do
+  PersistNewSession proofState ns nst mkEvents -> do
     sid <- genSessionId
     rid <- genRefreshTokenId
     let session = mkSession sid ns
@@ -649,21 +652,29 @@ runAuthUnitOfWork ref = interpret_ \case
         persisted = mkPersisted rid newToken
         events = mkEvents sid
     liftIO
-      ( modifyWorld
-          ref
-          ( (#sessions %~ Map.insert sid session)
-              . (#refreshTokens %~ Map.insert rid persisted)
-              . (#refreshByHash %~ Map.insert nst.tokenHash rid)
-              . (#publishedEvents %~ (reverse events <>))
-          )
+      ( atomicModifyIORef' ref \w ->
+          if authenticationValid w ns.userId proofState ns.createdAt
+            then
+              ( w
+                  & #sessions
+                  %~ Map.insert sid session
+                  & #refreshTokens
+                  %~ Map.insert rid persisted
+                  & #refreshByHash
+                  %~ Map.insert nst.tokenHash rid
+                  & #publishedEvents
+                  %~ (reverse events <>),
+                Right (session, persisted)
+              )
+            else (w, Left StaleAuthentication)
       )
-    pure (session, persisted)
   RotateRefreshToken presentedId usedAt newToken ev -> do
     rid <- genRefreshTokenId
     let persisted = mkPersisted rid newToken
     liftIO
       ( atomicModifyIORef' ref \w -> case Map.lookup presentedId w.refreshTokens of
           Just tok
+            | not (maybe False (\s -> s.status == SessionActive && s.expiresAt > usedAt) (Map.lookup tok.sessionId w.sessions)) -> (w, RotationInvalid)
             | tok.status == RefreshTokenActive ->
                 ( w
                     & #refreshTokens
@@ -712,6 +723,57 @@ runAuthUnitOfWork ref = interpret_ \case
                 %~ Map.map (revokeUserRefreshToken userSessions uid ts)
                 & #publishedEvents
                 %~ (reverse events <>)
+      )
+  ResetUserSecondFactors actor uid cmd ts ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          case Map.lookup uid w.users of
+            Nothing -> (w, Left UserNotFound)
+            Just user | user.status /= UserActive -> (w, Left InvalidUserStatus)
+            Just user ->
+              let mine s = s.userId == uid
+                  winners = [s | s <- Map.elems w.sessions, mine s, s.status == SessionActive]
+                  userTokens = [t | t <- Map.elems w.refreshTokens, maybe False mine (Map.lookup t.sessionId w.sessions), t.status /= RefreshTokenRevoked]
+                  myCeremony PendingCeremony {userId} = userId == Just uid
+                  myTotp TotpCredential {userId} = userId == uid
+                  myCode RecoveryCode {userId} = userId == uid
+                  myAuthCode AuthorizationCode {userId} = userId == uid
+                  counts =
+                    RecoveryCounts
+                      (length (filter ((== uid) . pkUserId) (Map.elems w.passkeys)))
+                      (length (filter myTotp (Map.elems w.totpCredentials)))
+                      (length (filter myCode (Map.elems w.recoveryCodes)))
+                      (length (filter myCeremony (Map.elems w.pendingCeremonies)))
+                      (length winners)
+                      (length userTokens)
+                      (length (filter myAuthCode (Map.elems w.oauthCodes)))
+                      (length [t | t <- Map.elems w.passwordResetTokens, t.userId == uid, t.status == OneTimeTokenActive])
+                  events =
+                    Event.UserSecondFactorsReset (Event.UserSecondFactorsResetData uid actor cmd.caseReference counts ts)
+                      : [Event.SessionRevoked (Event.SessionRevokedData s.sessionId (recoveryActorUser actor) ts) | s <- winners]
+                  w' =
+                    w
+                      & #users
+                      %~ Map.insert uid (user & #authenticationGeneration %~ (+ 1))
+                      & #passkeys
+                      %~ Map.filter ((/= uid) . pkUserId)
+                      & #totpCredentials
+                      %~ Map.filter (not . myTotp)
+                      & #recoveryCodes
+                      %~ Map.filter (not . myCode)
+                      & #pendingCeremonies
+                      %~ Map.filter (not . myCeremony)
+                      & #oauthCodes
+                      %~ Map.filter (not . myAuthCode)
+                      & #passwordResetTokens
+                      %~ Map.map (\t -> if t.userId == uid && t.status == OneTimeTokenActive then t & #status .~ OneTimeTokenRevoked & #revokedAt .~ Just ts else t)
+                      & #sessions
+                      %~ Map.map (revokeUserSession uid ts)
+                      & #refreshTokens
+                      %~ Map.map (revokeUserRefreshToken w.sessions uid ts)
+                      & #publishedEvents
+                      %~ (reverse events <>)
+               in (w', Right (RecoveryResult ts counts (isJust user.email && isJust user.emailVerifiedAt), if isJust user.emailVerifiedAt then user.email else Nothing))
       )
   RevokeUserSessionsWithAudit actor uid ts ->
     liftIO
@@ -973,7 +1035,7 @@ pcExpiresAt PendingCeremony {expiresAt} = expiresAt
 
 runPasskeyStore :: (IOE :> es) => IORef World -> Eff (PasskeyStore : es) a -> Eff es a
 runPasskeyStore ref = interpret_ \case
-  CreatePasskey limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
+  CreatePasskey proofState limit NewPasskeyCredential {userId, credentialId, userHandle, publicKey, signCounter, transports, label, createdAt} -> do
     pid <- genPasskeyId
     let pc =
           PasskeyCredential
@@ -990,9 +1052,12 @@ runPasskeyStore ref = interpret_ \case
             }
     liftIO
       ( atomicModifyIORef' ref \w ->
-          if limit < 1 || limit > 100 || length [p | p <- Map.elems w.passkeys, pkUserId p == userId] >= limit
-            then (w, Left PasskeyLimitReached)
-            else (w & #passkeys %~ Map.insert pid pc, Right pc)
+          if not (authenticationValid w userId proofState createdAt)
+            then (w, Left StaleAuthentication)
+            else
+              if limit < 1 || limit > 100 || length [p | p <- Map.elems w.passkeys, pkUserId p == userId] >= limit
+                then (w, Left PasskeyLimitReached)
+                else (w & #passkeys %~ Map.insert pid pc, Right pc)
       )
   FindPasskeysByUser uid ->
     liftIO ((\w -> [p | p <- Map.elems w.passkeys, pkUserId p == uid]) <$> readIORef ref)
@@ -1015,8 +1080,17 @@ runPasskeyStore ref = interpret_ \case
 
 runPendingCeremonyStore :: (IOE :> es) => IORef World -> Eff (PendingCeremonyStore : es) a -> Eff es a
 runPendingCeremonyStore ref = interpret_ \case
-  PutPendingCeremony pc ->
-    liftIO (modifyWorld ref (#pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc))
+  PutPendingCeremony pc@PendingCeremony {userId, authenticationGeneration, initiatingSession, createdAt} ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          let valid = case (userId, authenticationGeneration) of
+                (Nothing, _) -> True
+                (Just uid, Just generation) -> authenticationValid w uid (AuthenticationGuard generation initiatingSession Nothing) createdAt
+                _ -> False
+           in if valid
+                then (w & #pendingCeremonies %~ Map.insert (pcCeremonyId pc) pc, Right ())
+                else (w, Left StaleAuthentication)
+      )
   TakePendingCeremony cid now' -> liftIO do
     atomicModifyIORef' ref \w -> case Map.lookup cid w.pendingCeremonies of
       Nothing -> (w, Nothing)
@@ -1135,10 +1209,11 @@ acConsumedAt AuthorizationCode {consumedAt} = consumedAt
 -- racing consumes of one code, exactly one sees an unconsumed row.
 runOAuthCodeStore :: (IOE :> es) => IORef World -> Eff (OAuthCodeStore : es) a -> Eff es a
 runOAuthCodeStore ref = interpret_ \case
-  PutAuthorizationCode NewAuthorizationCode {codeHash, clientId, redirectUri, userId, scopes, nonce, codeChallenge, authTime, createdAt, expiresAt} -> do
+  PutAuthorizationCode proofState NewAuthorizationCode {codeHash, clientId, redirectUri, userId, scopes, nonce, codeChallenge, authTime, createdAt, expiresAt} -> do
     let code =
           AuthorizationCode
-            { codeHash,
+            { authenticationGeneration = Just proofState.generation,
+              codeHash,
               clientId,
               redirectUri,
               userId,
@@ -1151,7 +1226,12 @@ runOAuthCodeStore ref = interpret_ \case
               consumedAt = Nothing,
               sessionId = Nothing
             }
-    liftIO (modifyWorld ref (#oauthCodes %~ Map.insert codeHash code))
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          if authenticationValid w userId proofState createdAt
+            then (w & #oauthCodes %~ Map.insert codeHash code, Right ())
+            else (w, Left StaleAuthentication)
+      )
   ConsumeAuthorizationCode h t ->
     liftIO
       ( atomicModifyIORef' ref \w ->
@@ -1198,22 +1278,32 @@ tcId TotpCredential {totpCredentialId} = totpCredentialId
 -- encryption boundary is PostgreSQL-only (Decision Log).
 runTotpCredentialStore :: (IOE :> es) => IORef World -> Eff (TotpCredentialStore : es) a -> Eff es a
 runTotpCredentialStore ref = interpret_ \case
-  UpsertTotpEnrollment NewTotpCredential {totpCredentialId, userId, secret, createdAt} -> do
+  UpsertTotpEnrollment proofState NewTotpCredential {totpCredentialId, userId, secret, createdAt} -> do
     let tc =
           TotpCredential
-            { totpCredentialId,
+            { authenticationGeneration = Just proofState.generation,
+              totpCredentialId,
               userId,
               secret,
               lastUsedCounter = Nothing,
               confirmedAt = Nothing,
               createdAt
             }
-    liftIO (modifyWorld ref (#totpCredentials %~ Map.insert userId tc))
-    pure tc
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          if authenticationValid w userId proofState createdAt
+            then (w & #totpCredentials %~ Map.insert userId tc, Right tc)
+            else (w, Left StaleAuthentication)
+      )
   FindTotpByUser uid ->
     liftIO ((Map.lookup uid . (.totpCredentials)) <$> readIORef ref)
-  ConfirmTotp tcid t ->
-    liftIO (modifyWorld ref (#totpCredentials %~ Map.map (\c -> if tcId c == tcid then c & #confirmedAt .~ Just t else c)))
+  ConfirmTotp uid proofState tcid t ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          if authenticationValid w uid proofState t
+            then (w & #totpCredentials %~ Map.map (\c -> if tcId c == tcid then c & #confirmedAt .~ Just t else c), Right ())
+            else (w, Left StaleAuthentication)
+      )
   SetTotpLastUsedCounter tcid c ->
     liftIO
       ( casWorld ref \w ->
@@ -1222,6 +1312,13 @@ runTotpCredentialStore ref = interpret_ \case
               | maybe True (< c) lastUsedCounter ->
                   Just (w & #totpCredentials %~ Map.insert uid (tc & #lastUsedCounter .~ Just c))
             _ -> Nothing
+      )
+  RemoveTotpCredential uid proofState tcid ts ->
+    liftIO
+      ( atomicModifyIORef' ref \w ->
+          if authenticationValid w uid proofState ts
+            then (w & #totpCredentials %~ Map.filter (\tc -> tcId tc /= tcid || tc.userId /= uid), Right ())
+            else (w, Left StaleAuthentication)
       )
   DeleteTotpByUser uid ->
     liftIO (modifyWorld ref (#totpCredentials %~ Map.delete uid))
@@ -1246,7 +1343,7 @@ rcUsedAt RecoveryCode {usedAt} = usedAt
 -- sees it unused. 'ReplaceRecoveryCodes' drops the user's whole set and inserts the new one.
 runRecoveryCodeStore :: (IOE :> es) => IORef World -> Eff (RecoveryCodeStore : es) a -> Eff es a
 runRecoveryCodeStore ref = interpret_ \case
-  ReplaceRecoveryCodes uid newCodes -> liftIO do
+  ReplaceRecoveryCodes uid proofState ts newCodes -> liftIO do
     let fresh =
           [ ( nc.recoveryCodeId,
               RecoveryCode
@@ -1259,9 +1356,10 @@ runRecoveryCodeStore ref = interpret_ \case
             )
           | nc <- newCodes
           ]
-    modifyWorld
-      ref
-      (#recoveryCodes %~ (\m -> Map.union (Map.fromList fresh) (Map.filter (\rc -> rcUserId rc /= uid) m)))
+    atomicModifyIORef' ref \w ->
+      if authenticationValid w uid proofState ts
+        then (w & #recoveryCodes %~ (\m -> Map.union (Map.fromList fresh) (Map.filter (\rc -> rcUserId rc /= uid) m)), Right ())
+        else (w, Left StaleAuthentication)
   ConsumeRecoveryCode uid h t ->
     liftIO
       ( casWorld ref \w ->
@@ -1570,3 +1668,9 @@ runInMemoryWith enrich ref =
     . runCredentialStore ref
     . runRoleStore ref
     . runUserStore ref
+
+authenticationValid :: World -> UserId -> AuthenticationGuard -> UTCTime -> Bool
+authenticationValid w uid proofState ts =
+  maybe False (\u -> u.status == UserActive && u.authenticationGeneration == proofState.generation) (Map.lookup uid w.users)
+    && maybe True (\sid -> maybe False (\s -> s.userId == uid && s.status == SessionActive && s.expiresAt > ts) (Map.lookup sid w.sessions)) proofState.initiatingSession
+    && maybe True (\pid -> maybe False ((== uid) . pkUserId) (Map.lookup pid w.passkeys)) proofState.assertedPasskey

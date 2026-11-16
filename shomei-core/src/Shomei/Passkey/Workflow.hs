@@ -34,7 +34,7 @@ import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Audit.Publisher.Store (AuthEventPublisher, publishAuthEvent)
 import Shomei.Config (ShomeiConfig (..), WebAuthnConfig (..))
 import Shomei.Error (AuthError (..))
-import Shomei.Id (CeremonyId, PasskeyId, UserId, genCeremonyId, userIdToUUID)
+import Shomei.Id (CeremonyId, PasskeyId, SessionId, UserId, genCeremonyId, userIdToUUID)
 import Shomei.Passkey.Ceremony.Port
   ( BeginCeremony (..),
     CredentialUserInfo (..),
@@ -53,6 +53,7 @@ import Shomei.Passkey.Domain
   )
 import Shomei.Passkey.Store (PasskeyStore, createPasskey, deletePasskey, findPasskeysByUser)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard (..), userGuard)
 import Shomei.Time.Store (Clock, now)
 
 -- | Derive a stable WebAuthn user handle from the Shōmei user id: the 16 bytes of the
@@ -78,8 +79,9 @@ beginPasskeyRegistration ::
   ) =>
   ShomeiConfig ->
   UserId ->
+  Maybe SessionId ->
   Eff es (Either AuthError (CeremonyId, Value))
-beginPasskeyRegistration cfg uid = runErrorNoCallStack do
+beginPasskeyRegistration cfg uid sourceSession = runErrorNoCallStack do
   ts <- now
   user <- maybe (throwError InvalidCredentials) pure =<< findUserById uid
   existing <- findPasskeysByUser uid
@@ -97,15 +99,18 @@ beginPasskeyRegistration cfg uid = runErrorNoCallStack do
       excludeIds = map (\PasskeyCredential {credentialId} -> credentialId) existing
   BeginCeremony {optionsJson, optionsBlob} <- beginRegistrationCeremony info excludeIds
   ceremonyId <- genCeremonyId
-  putPendingCeremony
-    PendingCeremony
-      { ceremonyId = ceremonyId,
-        userId = Just uid,
-        kind = RegistrationCeremony,
-        optionsBlob = optionsBlob,
-        createdAt = ts,
-        expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
-      }
+  either throwError pure
+    =<< putPendingCeremony
+      PendingCeremony
+        { authenticationGeneration = Just user.authenticationGeneration,
+          initiatingSession = sourceSession,
+          ceremonyId = ceremonyId,
+          userId = Just uid,
+          kind = RegistrationCeremony,
+          optionsBlob = optionsBlob,
+          createdAt = ts,
+          expiresAt = addUTCTime (pendingCeremonyTTL (webauthnConfig cfg)) ts
+        }
   pure (ceremonyId, optionsJson)
 
 completePasskeyRegistration ::
@@ -124,17 +129,19 @@ completePasskeyRegistration ::
 completePasskeyRegistration cfg uid ceremonyId credentialJson mLabel = runErrorNoCallStack do
   when (maybe False ((> 128) . Text.length) mLabel) (throwError InvalidInput)
   ts <- now
-  PendingCeremony {kind, userId = pendingUid, optionsBlob} <-
+  PendingCeremony {kind, userId = pendingUid, optionsBlob, authenticationGeneration, initiatingSession} <-
     maybe (throwError PendingCeremonyNotFound) pure =<< takePendingCeremony ceremonyId ts
   -- Reject a ceremony that is not a registration, or that was begun for a different user.
   when (kind /= RegistrationCeremony) (throwError PendingCeremonyNotFound)
   when (pendingUid /= Just uid) (throwError PendingCeremonyNotFound)
+  generation <- maybe (throwError StaleAuthentication) pure authenticationGeneration
   VerifiedRegistration {credentialId, userHandle, publicKey, signCounter, transports} <-
     either (throwError . WebAuthnCeremonyError) pure
       =<< completeRegistrationCeremony optionsBlob credentialJson
   passkey <-
     either throwError pure
       =<< createPasskey
+        (AuthenticationGuard generation initiatingSession Nothing)
         cfg.maxPasskeysPerUser
         NewPasskeyCredential
           { userId = uid,

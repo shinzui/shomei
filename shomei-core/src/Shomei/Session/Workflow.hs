@@ -30,6 +30,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
+import Effectful.Error.Static (runErrorNoCallStack, throwError)
 import Shomei.Account.User.Domain (User (..))
 import Shomei.Audit.Event.Domain qualified as Event
 import Shomei.Authorization.Claims.Domain (AuthClaims (..), Scope, mkExtraClaims, noExtraClaims)
@@ -39,6 +40,7 @@ import Shomei.Config (NotifierConfig (..), ShomeiConfig (..))
 import Shomei.Error (AuthError (..))
 import Shomei.Id (SessionId, UserId)
 import Shomei.Prelude
+import Shomei.Session.Authentication.Guard (AuthenticationGuard, userGuard)
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession), SessionStatus (SessionActive))
 import Shomei.Session.Store (SessionStore, findSessionById)
 import Shomei.Session.Token.Domain (TokenPair (..))
@@ -158,12 +160,13 @@ data SessionOptions = SessionOptions
     extraScopes :: !(Set Scope),
     -- | the person asked to stay signed in: the session lasts 'rememberedSessionTTL' instead of
     --     'sessionTTL' and every token pair it yields reports @remembered@.
-    remember :: !Bool
+    remember :: !Bool,
+    authenticationGuard :: !(Maybe AuthenticationGuard)
   }
   deriving stock (Generic, Eq, Show)
 
 defaultSessionOptions :: SessionOptions
-defaultSessionOptions = SessionOptions {oauthClientId = Nothing, extraScopes = Set.empty, remember = False}
+defaultSessionOptions = SessionOptions {oauthClientId = Nothing, extraScopes = Set.empty, remember = False, authenticationGuard = Nothing}
 
 issueSession ::
   ( AuthUnitOfWork :> es,
@@ -177,10 +180,8 @@ issueSession ::
   Bool ->
   User ->
   UTCTime ->
-  Eff es (SessionId, TokenPair)
-issueSession cfg remember user ts = do
-  (sid, pair, _claims) <- issueSessionWith cfg defaultSessionOptions {remember} user ts
-  pure (sid, pair)
+  Eff es (Either AuthError (SessionId, TokenPair))
+issueSession cfg remember user ts = fmap (fmap (\(sid, pair, _) -> (sid, pair))) (issueSessionWith cfg defaultSessionOptions {remember} user ts)
 
 -- | 'issueSession' with the OAuth-specific knobs, and returning the claims it signed.
 --
@@ -198,13 +199,14 @@ issueSessionWith ::
   SessionOptions ->
   User ->
   UTCTime ->
-  Eff es (SessionId, TokenPair, AuthClaims)
-issueSessionWith cfg opts user ts = do
+  Eff es (Either AuthError (SessionId, TokenPair, AuthClaims))
+issueSessionWith cfg opts user ts = runErrorNoCallStack do
   rawToken <- generateOpaqueToken
   tokHash <- hashRefreshToken rawToken
   let sessionExpiresAt = addUTCTime (if opts.remember then cfg.rememberedSessionTTL else cfg.sessionTTL) ts
   (session, _token) <-
-    persistNewSession
+    either throwError pure =<< persistNewSession
+      (fromMaybe (userGuard user) opts.authenticationGuard)
       NewSession
         { userId = user.userId,
           createdAt = ts,

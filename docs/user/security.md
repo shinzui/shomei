@@ -871,3 +871,21 @@ $ shomei-admin audit events --type login_failed --type account_locked --json | j
 # Break down the underlying proof failures by credential factor:
 $ psql "$DATABASE_URL" -c "SELECT factor, count(*) FROM shomei.shomei_login_attempts WHERE outcome = 'failure' GROUP BY factor ORDER BY factor"
 ```
+
+## Administrative second-factor recovery
+
+Password reset preserves MFA. When all factors and unused recovery codes are lost, the
+[recovery procedure](deployment.md#recovering-an-owner-who-lost-every-second-factor) trusts an
+administrator's explicit assertion of independent owner verification. HTTP derives the human or
+service actor from the verified principal; CLI labels are local assertions. Case references are
+bounded correlation labels, never identity evidence. Recovery issues no tokens, does not verify
+email or clear lockout state, and refuses inactive users. Its atomic factor removal, generation
+advance, session/token revocation, and audit prevent previously verified work from recreating
+credentials or sessions. A verified email destination receives a best-effort notice; absent one,
+the operator must notify through an established channel.
+
+Recovery leaves a password-only interval until replacement factors are enrolled. Operators must
+supervise this step and issue fresh recovery codes. Rotate the password separately if compromise
+is suspected. Session-aware routes reject revoked sessions immediately; offline access-token
+verifiers retain their expiry window. Enrollment, recovery-code regeneration and the administrative
+reset route require live sessions even in token-only verification mode.
