@@ -12,6 +12,10 @@ each package's own `CHANGELOG.md`.
 
 ## Unreleased
 
+- Admit `base64` 2.0 and 2.1 in `shomei-core`, `shomei-client`, `shomei-servant` and
+  `shomei-server` (`>=1.0 && <2.2`); consumers whose `tls` stack resolves base64 2.0 no
+  longer need an `allow-newer`. Resolves IR-5.
+
 - Fix passwordless passkey enrollment: new credentials require discoverability
   (`residentKey: "required"`, `requireResidentKey: true`). Resident-capable authenticators
   are now required for enrollment; existing non-discoverable credentials remain usable for
