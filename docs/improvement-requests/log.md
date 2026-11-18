@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-11-17
+* **Addition**: Add IR-5 to admit base64 2.0 in shomei-core, from Rei ExecPlan 292 where the frozen cohort resolves base64 2.0 through tls.
+
 ## 2026-11-05
 * **Update**: Complete IR-3 with REV-12 and the 240-row closed ledger; record actual implementation review provenance and final candidate acceptance.
 
