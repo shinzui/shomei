@@ -4,6 +4,10 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## 0.3.0.1 — 2026-11-17
+
+- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`), so consumers whose `tls` stack resolves base64 2.0 through `crypton-pem` need no `allow-newer`. No source or API change: the passkey codec uses only `encodeBase64Unpadded`, `decodeBase64UnpaddedUntyped` and `extractBase64`, whose behavior is unchanged in base64 2.x.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** the package and its test suite move to the 0.3 API series.

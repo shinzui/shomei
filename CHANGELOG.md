@@ -10,6 +10,20 @@ and versions published together. Earlier releases used package-prefixed and
 dated tags; those remain historical references. Per-package detail lives in
 each package's own `CHANGELOG.md`.
 
+## v0.3.0.1 — 2026-11-17
+
+A dependency-bound patch on the 0.3 series, released from tag `v0.3.0.0`. It widens
+`base64` to `>=1.0 && <2.2` so consumers whose `tls` stack resolves base64 2.0 (through
+`crypton-x509-validation` and `crypton-pem`) can depend on Shōmei without an `allow-newer`.
+There is no source or API change. Unlisted packages stay at their v0.3.0.0 versions.
+
+| package | version | changes |
+| --- | --- | --- |
+| [`shomei-core`](shomei-core/CHANGELOG.md) | 0.3.0.1 | admit base64 2.0 and 2.1 |
+| [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.3.0.1 | admit base64 2.0 and 2.1 |
+| [`shomei-server`](shomei-server/CHANGELOG.md) | 0.3.0.1 | admit base64 2.0 and 2.1 |
+| [`shomei-client`](shomei-client/CHANGELOG.md) | 0.3.0.1 | admit base64 2.0 and 2.1 |
+
 ## v0.3.0.0 — 2026-11-05
 
 Package versions remain independent. This batch selects all eight packages;

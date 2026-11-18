@@ -4,6 +4,10 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## 0.3.0.1 — 2026-11-17
+
+- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`). No source or API change.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series.
