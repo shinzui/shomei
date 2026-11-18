@@ -7,13 +7,15 @@ generated:
   by: claude-code/claude-opus-5-5
   at: "2026-11-17T20:30:00Z"
 requestId: IR-5
-status: in-progress
+status: completed
+completedAt: "2026-11-17T23:30:00Z"
+resolution: "Released as v0.3.0.1 from release/0.3: shomei-core, shomei-servant, shomei-server and shomei-client 0.3.0.1 on Hackage admit base64 >=1.0 && <2.2. A Hackage-only consumer solve with base64 ==2.0, tls and shomei-jwt 0.3.0.0 needs no allow-newer."
 origin: mori://shinzui/rei/plans/292-verify-shomei-tokens-and-resolve-meibo-principals-on-rei-api-requests
 ---
 
 # Improvement Request: Admit base64 2.0 in shomei-core
 
-- **Status:** in-progress
+- **Status:** completed
 - **Origin:** Rei ExecPlan 292, Milestone 1
   (`mori://shinzui/rei/plans/292-verify-shomei-tokens-and-resolve-meibo-principals-on-rei-api-requests`),
   under `mori://shinzui/rei/masterplans/32-ren-core-member-spaces-and-collaborative-notes`.
@@ -69,5 +71,9 @@ released tag without any `allow-newer` entry, and Shomei's passkey tests pass on
 - The patch release is `v0.3.0.1` on the `release/0.3` branch, cut from `v0.3.0.0`. It
   carries only this bound change, because master holds unreleased breaking `shomei-core`
   changes. `shomei-core`, `shomei-servant`, `shomei-server` and `shomei-client` move to
-  0.3.0.1; the other packages stay at their v0.3.0.0 versions. The request completes
-  once the tag is pushed and a consumer resolves it without `allow-newer`.
+  0.3.0.1; the other packages stay at their v0.3.0.0 versions. All four are published
+  on Hackage with Haddocks, and the GitHub release is
+  `https://github.com/shinzui/shomei/releases/tag/v0.3.0.1`.
+- Acceptance: a fresh Hackage-only consumer that depends on `shomei-core ==0.3.0.1`,
+  `shomei-jwt ==0.3.0.0`, `tls` and `base64 ==2.0` solves without any `allow-newer`. The plan
+  includes `crypton-pem` 0.3.0 and `tls` 2.4.6.

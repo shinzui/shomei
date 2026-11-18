@@ -6,8 +6,6 @@ Shōmei packages.
 
 ## Unreleased
 
-- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`). No source change.
-
 - Add users reset-mfa with explicit operator, case, owner-verification and target-confirmation flags; share the audited workflow and configured bounded notification delivery. Support secret-free second-factor reset notices in every built-in transport.
 
 - Body/rate rejections in OAuth namespaces return 413 invalid_request / 429 temporarily_unavailable as non-cacheable OAuth JSON; application routes retain problem documents. Add hostMiddlewareWithOAuthMounts and authContextWithOAuthMounts for embedding parity. Packaged-executable Hurl acceptance runs through just test-oauth-contract and CI.
@@ -15,6 +13,10 @@ Shōmei packages.
 ## Unreleased
 
 - Fix admin redirect requirements, audit type validation, lifetime-independent revocation guidance, keyless no-op TOTP conversion, and concise redacted configuration errors. Add Prometheus HELP metadata and decimal bucket labels. Exact finite `le` label spellings change and may create new Prometheus series; update dashboards that match their old text.
+
+## 0.3.0.1 — 2026-11-17
+
+- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`). No source or API change.
 
 ## 0.3.0.0 — 2026-11-05
 

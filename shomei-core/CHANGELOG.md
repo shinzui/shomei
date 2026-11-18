@@ -6,11 +6,13 @@ Shōmei packages.
 
 ## Unreleased
 
-- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`), so consumers whose `tls` stack resolves base64 2.0 through `crypton-pem` need no `allow-newer`. No source change: the passkey codec uses only `encodeBase64Unpadded`, `decodeBase64UnpaddedUntyped` and `extractBase64`, whose behavior is unchanged. Resolves IR-5 ([admit-base64-2-in-shomei-core](../docs/improvement-requests/admit-base64-2-in-shomei-core.md)).
-
 - **Breaking:** add audited administrator second-factor recovery, authentication generations on users/pending state, guarded persistence ports and typed stale-proof rejection. Session issuance returns an explicit Either; enrollment APIs bind an optional trusted source session. Add secret-free recovery notifications and the reset audit event.
 
 - Export `knownAuthEventTypes` from the audit codec for version-specific event vocabulary validation.
+
+## 0.3.0.1 — 2026-11-17
+
+- Admit `base64` 2.0 and 2.1 (`>=1.0 && <2.2`), so consumers whose `tls` stack resolves base64 2.0 through `crypton-pem` need no `allow-newer`. No source or API change: the passkey codec uses only `encodeBase64Unpadded`, `decodeBase64UnpaddedUntyped` and `extractBase64`, whose behavior is unchanged in base64 2.x.
 
 ## 0.3.0.0 — 2026-11-05
 

@@ -1,6 +1,7 @@
 # Bundle Update Log
 
 ## 2026-11-17
+* **Update**: Complete IR-5: v0.3.0.1 publishes shomei-core, shomei-servant, shomei-server and shomei-client 0.3.0.1 with the widened base64 bound; a Hackage-only base64 2.0 consumer solve needs no allow-newer.
 * **Update**: Start IR-5: widen base64 to `>=1.0 && <2.2` in the four packages that declare it, verified on base64 2.0 and 2.1; patch release `v0.3.0.1` cut from `v0.3.0.0`.
 * **Addition**: Add IR-5 to admit base64 2.0 in shomei-core, from Rei ExecPlan 292 where the frozen cohort resolves base64 2.0 through tls.
 
