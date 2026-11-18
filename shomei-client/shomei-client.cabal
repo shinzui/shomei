@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: shomei-client
-version: 0.3.0.0
+version: 0.3.0.1
 synopsis: Haskell client for the standalone Shōmei auth service
 description:
   A typed Haskell client derived from the same ShomeiAPI definition that

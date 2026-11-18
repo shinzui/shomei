@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: shomei-servant
-version: 0.3.0.0
+version: 0.3.0.1
 synopsis: Servant API, handlers, and auth combinators for Shōmei
 description:
   The HTTP layer of the Shōmei authentication toolkit. Exposes ShomeiAPI as a
