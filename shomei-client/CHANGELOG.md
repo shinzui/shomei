@@ -4,7 +4,9 @@ All notable changes to `shomei-client` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** require the Shōmei 0.4 API series.
 
 - Add adminResetMfa for the typed administrative recovery route. It performs one destructive request without automatic retry or redirect replay, preserving caller transport settings.
 

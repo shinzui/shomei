@@ -6,7 +6,7 @@ import Control.Exception (bracket, try)
 import Control.Monad (forM_, unless, void)
 import Data.Aeson (encode)
 import Data.ByteString.Lazy qualified as LBS
-import Data.List (dropWhileEnd, isPrefixOf)
+import Data.List (isPrefixOf)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Network.HTTP.Client qualified as HTTP
@@ -18,14 +18,14 @@ import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Persistence.Pool.Postgres qualified as Pool
 import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.E2ESpec (seedPublicOAuthClient)
-import System.Directory (canonicalizePath, createDirectory, doesFileExist, findExecutable, getCurrentDirectory, getTemporaryDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (canonicalizePath, createDirectory, doesFileExist, findExecutable, getTemporaryDirectory, makeAbsolute, removeDirectoryRecursive, removeFile)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (ExitSuccess))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath ((</>))
 import System.IO (IOMode (WriteMode), hClose, openTempFile, withFile)
 import System.Posix.Files (setFileMode)
 import System.Posix.Signals (sigKILL, signalProcess)
-import System.Process (CreateProcess (..), ProcessHandle, StdStream (UseHandle), createProcess, getPid, getProcessExitCode, proc, readProcess, readProcessWithExitCode, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (UseHandle), createProcess, getPid, getProcessExitCode, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
@@ -35,14 +35,12 @@ tests = testGroup "packaged OAuth contract" [testCase "Hurl validates executable
 
 packagedContract :: IO ()
 packagedContract = do
-  root <- repositoryRoot
+  fixtures <- makeAbsolute "test/fixtures"
   hurl <- findExecutable "hurl" >>= maybe (fail "Hurl is required; run in nix develop") pure
   supplied <- lookupEnv "SHOMEI_TEST_SERVER_BIN"
   binary <- case supplied of
     Just path -> canonicalizePath path
-    Nothing -> do
-      path <- readProcess "cabal" ["list-bin", "exe:shomei-server", "--project-dir=" <> root] ""
-      canonicalizePath (dropWhileEnd (`elem` ['\r', '\n']) path)
+    Nothing -> findExecutable "shomei-server" >>= maybe (fail "Cabal must provide the shomei-server executable") canonicalizePath
   exists <- doesFileExist binary
   unless exists (fail "Build exe:shomei-server before running the packaged OAuth test")
   bracket makeTemporaryDirectory removeDirectoryRecursive \tmp ->
@@ -59,8 +57,8 @@ packagedContract = do
         -- Use the production typed Dhall loader. Environment overrides are isolated below.
         writeFile config $
           "let Config = "
-            <> root
-            <> "/config/shomei-types.dhall in Config::{ "
+            <> (fixtures </> "shomei-types.dhall")
+            <> " in Config::{ "
             <> "databaseUrl = Some "
             <> text connStr
             <> ", issuer = Some "
@@ -79,7 +77,7 @@ packagedContract = do
                 <> [("SHOMEI_CONFIG", config), ("SHOMEI_KEY_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")]
         withFile (tmp </> "server.log") WriteMode \logHandle ->
           bracket
-            (createProcess (proc binary ["+RTS", "-N2", "-RTS"]) {env = Just childEnv, cwd = Just root, std_out = UseHandle logHandle, std_err = UseHandle logHandle})
+            (createProcess (proc binary ["+RTS", "-N2", "-RTS"]) {env = Just childEnv, std_out = UseHandle logHandle, std_err = UseHandle logHandle})
             (\(_, _, _, process) -> stopChild process)
             \(_, _, _, process) -> do
               manager <- HTTP.newManager HTTP.defaultManagerSettings
@@ -100,7 +98,7 @@ packagedContract = do
                       "client_id=" <> Text.unpack clientId,
                       "--variable",
                       "challenge=" <> Text.unpack (pkceChallengeFor "contract-verifier-with-at-least-forty-three-characters"),
-                      root </> "integration-tests/oauth" </> suite
+                      fixtures </> suite
                     ]
                     ""
               case outcome of
@@ -141,13 +139,3 @@ makeTemporaryDirectory = do
   createDirectory path
   setFileMode path 0o700
   pure path
-
-repositoryRoot :: IO FilePath
-repositoryRoot = do
-  current <- getCurrentDirectory
-  choose [current, takeDirectory current, takeDirectory (takeDirectory current)]
-  where
-    choose [] = fail "cannot locate config/shomei-types.dhall from test directory"
-    choose (candidate : rest) = do
-      found <- doesFileExist (candidate </> "config/shomei-types.dhall")
-      if found then pure candidate else choose rest

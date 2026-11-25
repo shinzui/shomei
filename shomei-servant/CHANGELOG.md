@@ -4,7 +4,9 @@ All notable changes to `shomei-servant` are documented here. This package adhere
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** require the Shōmei 0.4 API series.
 
 - Active access-token responses from `POST /oauth/introspect` include the stored `session_kind` (`interactive`, `machine`, or `delegated`).
 

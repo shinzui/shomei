@@ -4,7 +4,9 @@ All notable changes to `shomei-postgres` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** require the Shōmei 0.4 API series.
 
 - Revoking all of a user's sessions also revokes the delegated sessions in which that user is the actor. Revoking a service account revokes, in the same statement, its live machine sessions and the delegated sessions its backing user is subject or actor of.
 

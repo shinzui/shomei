@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: shomei-server
-version: 0.3.0.1
+version: 0.4.0.0
 synopsis: Standalone Shōmei authentication service
 description:
   The standalone deployment of Shōmei: a warp executable that serves ShomeiAPI
@@ -21,6 +21,10 @@ copyright: 2026 Nadeem Bitar
 category: Web, Security
 tested-with: ghc ==9.12.4
 extra-doc-files: CHANGELOG.md
+extra-source-files:
+  test/fixtures/errors.hurl
+  test/fixtures/shomei-types.dhall
+  test/fixtures/throttling.hurl
 
 source-repository head
   type: git
@@ -103,12 +107,12 @@ library
     ram >=0.22 && <0.23,
     servant-health >=0.1 && <0.2,
     servant-server >=0.20.3 && <0.21,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-servant ^>=0.3.0.0,
-    shomei-webauthn ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-servant ^>=0.4.0.0,
+    shomei-webauthn ^>=0.4.0.0,
     smtp-mail >=0.5.0.2 && <0.6,
     stm >=2.5 && <2.6,
     text >=2.0 && <2.2,
@@ -130,7 +134,7 @@ executable shomei-server
 
   build-depends:
     base >=4.18 && <5,
-    shomei-server ^>=0.3.0.0,
+    shomei-server ^>=0.4.0.0,
 
 -- EP-4: the operational CLI. A second executable in this package (MasterPlan 2 default;
 -- avoids registering a new mori.dhall package). It reuses the same pool/config/key/interpreter
@@ -167,11 +171,11 @@ executable shomei-admin
     http-client-tls >=0.3 && <0.5,
     optparse-applicative >=0.19 && <0.20,
     pg-migrate >=1.2 && <1.3,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     text >=2.0 && <2.2,
     time >=1.12 && <1.15,
     uuid >=1.3 && <1.4,
@@ -193,9 +197,9 @@ test-suite shomei-server-config-test
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
     process >=1.6 && <1.7,
-    shomei-core ^>=0.3.0.0,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
     text >=2.0 && <2.2,
@@ -244,12 +248,12 @@ test-suite shomei-admin-test
     optparse-applicative >=0.19 && <0.20,
     process >=1.6 && <1.7,
     ram >=0.22 && <0.23,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations ^>=0.2.0.1,
-    shomei-migrations:test-support ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations ^>=0.2.0.2,
+    shomei-migrations:test-support ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
     text >=2.0 && <2.2,
@@ -269,6 +273,7 @@ test-suite shomei-server-test
     Shomei.Server.RuntimeSpec
     Shomei.Server.SupervisorSpec
 
+  build-tool-depends: shomei-server:shomei-server
   ghc-options:
     -threaded
     -rtsopts
@@ -291,12 +296,12 @@ test-suite shomei-server-test
     process >=1.6 && <1.7,
     servant-health >=0.1 && <0.2,
     servant-health:testkit,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations:test-support ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-servant ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations:test-support ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-servant ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
     text >=2.0 && <2.2,
@@ -321,11 +326,11 @@ test-suite shomei-health-test
     http-client >=0.7 && <0.8,
     servant-health >=0.1 && <0.2,
     servant-health:testkit,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations:test-support ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations:test-support ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.11,
 
@@ -353,12 +358,12 @@ executable shomei-review-load
     http-types >=0.12 && <0.13,
     process >=1.6 && <1.7,
     servant-health >=0.1 && <0.2,
-    shomei-core ^>=0.3.0.0,
-    shomei-jwt ^>=0.3.0.0,
-    shomei-migrations:test-support ^>=0.2.0.1,
-    shomei-postgres ^>=0.3.0.0,
-    shomei-servant ^>=0.3.0.0,
-    shomei-server ^>=0.3.0.0,
+    shomei-core ^>=0.4.0.0,
+    shomei-jwt ^>=0.4.0.0,
+    shomei-migrations:test-support ^>=0.2.0.2,
+    shomei-postgres ^>=0.4.0.0,
+    shomei-servant ^>=0.4.0.0,
+    shomei-server ^>=0.4.0.0,
     text >=2.0 && <2.2,
     unix >=2.8 && <2.9,
     uuid >=1.3 && <1.4,

@@ -4,7 +4,9 @@ All notable changes to `shomei-webauthn` are documented here. This package adher
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** require the Shōmei 0.4 API series.
 
 - Fix #13: require discoverable credentials for new enrollment, independently of UV policy.
   The existing encoder emits `residentKey: "required"` and `requireResidentKey: true` in

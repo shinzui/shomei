@@ -4,13 +4,13 @@ All notable changes to `shomei-server` are documented here. This package adheres
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** require the Shōmei 0.4 API series.
 
 - Add users reset-mfa with explicit operator, case, owner-verification and target-confirmation flags; share the audited workflow and configured bounded notification delivery. Support secret-free second-factor reset notices in every built-in transport.
 
 - Body/rate rejections in OAuth namespaces return 413 invalid_request / 429 temporarily_unavailable as non-cacheable OAuth JSON; application routes retain problem documents. Add hostMiddlewareWithOAuthMounts and authContextWithOAuthMounts for embedding parity. Packaged-executable Hurl acceptance runs through just test-oauth-contract and CI.
-
-## Unreleased
 
 - Fix admin redirect requirements, audit type validation, lifetime-independent revocation guidance, keyless no-op TOTP conversion, and concise redacted configuration errors. Add Prometheus HELP metadata and decimal bucket labels. Exact finite `le` label spellings change and may create new Prometheus series; update dashboards that match their old text.
 

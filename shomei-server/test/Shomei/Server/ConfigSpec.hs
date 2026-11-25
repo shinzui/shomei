@@ -1,8 +1,7 @@
 -- | Tests for EP-5's Dhall + environment configuration loader. Writes a small Dhall file to a
 -- temp path, loads it through 'loadConfig' (which renders it via @dhall-to-json@ and decodes the
 -- result), asserts the parsed values win over the built-in defaults, and then proves an
--- environment variable overrides the file value (twelve-factor precedence). Using a temp file
--- avoids any dependency on the test's working directory.
+-- environment variable overrides the file value (twelve-factor precedence).
 module Main (main) where
 
 import Control.Exception (try)
@@ -302,7 +301,7 @@ strictConfigurationSettings = do
 -- shipped default still has exactly the exported 'Type'.
 dhallSchemaMatchesFileConfig :: Assertion
 dhallSchemaMatchesFileConfig = do
-  schema <- makeAbsolute "../config/shomei-types.dhall"
+  schema <- makeAbsolute "test/fixtures/shomei-types.dhall"
   writeFile schemaProbePath ("(" <> schema <> ")::{=}")
   rendered <- readProcess "dhall-to-json" ["--preserve-null", "--file", schemaProbePath] ""
   dhallKeys <-

@@ -10,12 +10,32 @@ and versions published together. Earlier releases used package-prefixed and
 dated tags; those remain historical references. Per-package detail lives in
 each package's own `CHANGELOG.md`.
 
-## Unreleased
+## v0.4.0.0 — 2026-11-25
 
-- Fix passwordless passkey enrollment: new credentials require discoverability
-  (`residentKey: "required"`, `requireResidentKey: true`). Resident-capable authenticators
-  are now required for enrollment; existing non-discoverable credentials remain usable for
+This batch includes all eight Shōmei packages in the following publication order.
+
+| Package | Version | Changes |
+| --- | --- | --- |
+| [`shomei-core`](shomei-core/CHANGELOG.md) | 0.4.0.0 | Audited MFA recovery, authentication generations, breaking session and persistence contracts, and expanded principal revocation |
+| [`shomei-migrations`](shomei-migrations/CHANGELOG.md) | 0.2.0.2 | Migration 0044 adds authentication generations and initiating-session tracking |
+| [`shomei-jwt`](shomei-jwt/CHANGELOG.md) | 0.4.0.0 | Signing and verification require the 0.4 core series |
+| [`shomei-webauthn`](shomei-webauthn/CHANGELOG.md) | 0.4.0.0 | New enrollments require discoverable credentials, and the adapter requires the 0.4 core series |
+| [`shomei-postgres`](shomei-postgres/CHANGELOG.md) | 0.4.0.0 | Generation-aware transactions coordinate recovery with session issuance and code exchange, and principal revocation covers affected delegated sessions |
+| [`shomei-servant`](shomei-servant/CHANGELOG.md) | 0.4.0.0 | Admin MFA reset route, consistent OAuth errors, and typed introspection with `session_kind` and applicable `client_id` |
+| [`shomei-server`](shomei-server/CHANGELOG.md) | 0.4.0.0 | Audited `users reset-mfa`, reset notifications, OAuth middleware errors, redacted configuration diagnostics, and decimal Prometheus bucket labels |
+| [`shomei-client`](shomei-client/CHANGELOG.md) | 0.4.0.0 | Typed MFA reset call with replay disabled, and updated OAuth result types |
+
+- Apply migration 0044 and drain old writers before enabling administrative MFA
+  recovery. Existing factors and sessions are preserved. Restart legacy pending
+  flows after rollout. See the [deployment guide](docs/user/deployment.md#recovering-an-owner-who-lost-every-second-factor).
+- New passkey enrollment requires an authenticator that supports discoverable
+  credentials. Existing non-discoverable credentials continue to work for
   known-account step-up and need new enrollment for passwordless login. Fixes #13.
+- Haskell consumers need to adapt to the changed session issuance and persistence
+  contracts, `IntrospectResult`, and `OAuthResult` constructors and headers.
+  Update dashboards that match the previous text of finite Prometheus `le` labels.
+- GHC 9.12.4 consumers still need the WebAuthn `time` override documented under
+  [v0.3.0.0](#v0300--2026-11-05).
 
 ## v0.3.0.1 — 2026-11-17
 

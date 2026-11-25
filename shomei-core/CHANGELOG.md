@@ -4,7 +4,7 @@ All notable changes to `shomei-core` are documented here. This package adheres t
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.4.0.0 — 2026-11-25
 
 - `Shomei.Session.Domain` exports `sessionKindToText`/`sessionKindFromText` (the one spelling shared by persistence and introspection) and `sessionInvolves`. **Behavior:** `RevokeAllUserSessions` implementations must also revoke sessions in which the user is the delegated actor, and `RevokeServiceAccount` must revoke the account's live machine and delegated sessions; the in-memory interpreters do.
 

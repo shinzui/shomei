@@ -4,7 +4,7 @@ All notable changes to `shomei-migrations` are documented here. This package adh
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
-## Unreleased
+## 0.2.0.2 — 2026-11-25
 
 - Add migration 0044 for authentication generations and initiating enrollment sessions. Preserve factors/sessions and require legacy pending flows to restart; drain old writers before enabling administrative recovery.
 

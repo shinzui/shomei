@@ -4,6 +4,10 @@ All notable changes to `shomei-jwt` are documented here. This package adheres to
 [PVP](https://pvp.haskell.org/) and is versioned independently of the other
 Shōmei packages.
 
+## 0.4.0.0 — 2026-11-25
+
+- **Breaking:** signing and verification now require `shomei-core ^>=0.4.0.0`.
+
 ## 0.3.0.0 — 2026-11-05
 
 - **Breaking:** internal dependency bounds follow the 0.3 API series.

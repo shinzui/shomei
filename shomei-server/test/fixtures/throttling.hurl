@@ -1,0 +1,1 @@
+../../../integration-tests/oauth/throttling.hurl
