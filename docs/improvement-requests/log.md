@@ -1,6 +1,12 @@
 # Bundle Update Log
 
 ## 2026-11-25
+
+* **Update**: Generalized IR-1 and ExecPlan 76 to expose session kind to any authorized introspection caller. Hanmoto remains a consumer acceptance case.
+
+
+* **Update**: Validated IR-1 against v0.3.0.1 and current source. OAuth covers scoped issuance. ExecPlan 76 tracks the remaining Hanmoto session-kind lookup and consumer proof.
+
 * **Amendment**: IR-1 asks for the released Shomei profiles and verifier outputs
   for direct Hanmoto calls. The Kikan adapter uses verified credential
   identifiers for its Meibo directory lookup.
