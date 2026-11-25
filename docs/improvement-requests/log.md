@@ -2,6 +2,8 @@
 
 ## 2026-11-25
 
+* **Update**: IR-2 was superseded by `mori://shinzui/kikan/okf/improvement-requests/concepts/IR-3`, which carries the diagnostic admission and conformance requirements.
+
 * **Update**: Complete IR-1 in the provider with authenticated session-kind introspection, PostgreSQL round trips and consumer route-policy evidence.
 
 

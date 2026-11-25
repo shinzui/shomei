@@ -2,21 +2,30 @@
 type: Improvement Request
 title: Add diagnostic broker and probe identities and coarse scopes to Shomei
 description: Authenticate diagnostic protocol participants and bound broker and per-cluster probe capabilities.
-timestamp: "2026-07-30T01:01:00Z"
+timestamp: "2026-11-25T16:01:50Z"
 generated:
   by: human:nadeem
   at: "2026-07-30T01:01:00Z"
 requestId: IR-2
-status: proposed
+status: superseded
+supersededBy: mori://shinzui/kikan/okf/improvement-requests/concepts/IR-3
+resolution: "Transferred to Kikan IR-3. Shōmei supplies scoped issuance. Kikan owns the diagnostic roles, cluster binding and conformance proof."
 origin: mori://shinzui/kikan
 ---
 
 # Improvement Request: add diagnostic broker/probe identities and coarse scopes to Shomei
 
+**Transferred to Kikan on 2026-11-25.** `mori://shinzui/kikan/okf/improvement-requests/concepts/IR-3`
+now tracks the diagnostic roles, cluster binding and end-to-end proof. Shōmei already delivers
+[scoped service-token issuance](scoped-service-token-issuance.md). A future Shōmei request
+should identify a specific provider behavior that the integration requires.
+
+## Original proposal
+
 **Authored by:** `shinzui/kikan` agents while validating
 `mori://shinzui/kikan/okf/use-cases/concepts/UC-5`.
 **Addressed to:** `shinzui/shomei` agents and Kikan's C11 trust-boundary owners.
-**Status:** proposed; required before the broker accepts requests or a probe session.
+**Status at submission:** proposed; required before the broker accepts requests or a probe session.
 **Contracts:** C11, C13, and the proposed cross-cluster diagnostics contract.
 **Created:** 2026-07-24.
 
