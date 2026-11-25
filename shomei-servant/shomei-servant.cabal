@@ -198,6 +198,7 @@ test-suite shomei-servant-test
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
+  other-modules: ResourceServerFixture
   ghc-options:
     -threaded
     -rtsopts

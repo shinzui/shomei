@@ -43,7 +43,7 @@ For example, a resource server can require a machine session for an ingest opera
 
 
 - [x] 2026-11-25. Authenticated access-token introspection reports the stored kind. The machine assertion first failed with a missing field, then all 53 Servant tests and 71 server tests passed, including PostgreSQL issuance for all three kinds, both delegated actor encodings, and revocation.
-- [ ] A generic resource-server fixture demonstrates different route policies over the same verified evidence. The public guide documents the contract and shows how Hanmoto uses it.
+- [x] 2026-11-25. All 54 Servant tests passed. The resource-server fixture applied three route policies to equally scoped credentials from real grants. The [public guide](../user/oidc.md#session-kind-for-resource-servers) documents those profiles and Hanmoto's identity mappings, and [IR-1](../improvement-requests/scoped-service-token-issuance.md) records provider acceptance.
 
 
 ## Surprises & Discoveries
@@ -63,6 +63,13 @@ The server suite exercises the packaged binary with Hurl and requires an executa
 ## Outcomes & Retrospective
 
 
+The HTTP change uses the session row already loaded during introspection. Both authenticated caller types returned the same evidence for one delegated token. A single parsed response let the machine-only route deny that token and the service route accept it with both identities intact. The same fixture refused older replies missing kind, inactive sessions, wrong-audience and expired credentials, refresh tokens and failed lookups. Final verification passed all 54 Servant tests, 72 OpenAPI examples and 71 server tests, including the packaged Hurl and PostgreSQL scenarios. The [consumer fixture](../../shomei-servant/test/ResourceServerFixture.hs) and HTTP scenarios run entirely in this repository.
+
+[ADR-1](../adr/0001-only-an-interactive-session-may-authorize-a-client.md) records the provider and consumer responsibilities. Support is unreleased after `v0.3.0.1`. Deployment smoke checks and directory provisioning belong to each consumer. [FRIC-9](../friction-log/9-plan-76-omitted-the-packaged-server-test-prerequisite.md) was resolved by documenting the executable build and rerunning the complete server suite.
+
+[FRIC-10](../friction-log/10-the-local-plan-registry-cannot-resolve-the-existing-ir-1-target.md) was accepted after verifying IR-1's target path, ID and slug in the checkout. The local Mori registry still reports unresolved plan references. The improvement-request bundle passed profile and log enforcement. Strict validation reproduced the baseline missing review metadata on IR-2, IR-4 and IR-5.
+
+
 ## Context and Orientation
 
 
@@ -70,7 +77,7 @@ The server suite exercises the packaged binary with Hurl and requires an executa
 
 A token's `sub` identifies the subject represented, `sid` identifies a session, and `act.sub`, when present, identifies a distinct actor acting for the subject. One session can issue several access tokens. A JWT is the signed token. JWKS publishes the keys that let a recipient verify the signature. `shomei-jwt/src/Shomei/SigningKey/Verify/Jwt.hs` enforces the configured issuer, audience, token type, signing policy and lifetime. The verifier returns claims. The authoritative session kind is a property of the stored session. [ADR-1](../adr/0001-only-an-interactive-session-may-authorize-a-client.md) specifies how minting sets it and how migrated sessions get their provenance. [ADR-2](../adr/0002-reserved-privilege-scopes-are-service-account-authority.md) governs reserved privilege scopes. [ADR-3](../adr/0003-jwt-verification-is-an-explicit-strict-trust-boundary.md) governs token verification. [ADR-26](../adr/0026-downstream-actions-persist-verified-identity-before-reporting-success.md) distinguishes verified subject and actor in downstream attribution.
 
-In `shomei-servant/src/Shomei/OAuth/Handler.hs`, `oauthIntrospectH` authenticates a confidential client or service account, verifies the presented token, looks up `claims.sessionId`, checks the row's status and expiry, then calls `activeAccess claims s`. In the release and current source, `activeAccess claims _s` discards that row. The response includes `active`, `token_type`, `iss`, `aud`, `iat`, `exp`, `scope`, `sub`, `sid`, and optional `act`. The current-session DTO in `shomei-servant/src/Shomei/Session/Dto.hs` also omits kind. This is the missing input reported by `mori://shinzui/hanmoto/okf/friction-log/concepts/FRIC-9` for `mori://shinzui/hanmoto/plans/4-authorize-management-commands-and-ship-the-publishing-cli`. Existing plans for OAuth issuance, delegation and session provenance cover their individual parts. The remaining deliverable is the public read and its consumer contract.
+In `shomei-servant/src/Shomei/OAuth/Handler.hs`, `oauthIntrospectH` authenticates a confidential client or service account, verifies the presented token, looks up `claims.sessionId`, checks the row's status and expiry, then calls `activeAccess claims s`. In release `v0.3.0.1`, `activeAccess claims _s` discarded that row. The updated handler serializes its stored kind as `session_kind` alongside `active`, `token_type`, `iss`, `aud`, `iat`, `exp`, `scope`, `sub`, `sid`, and optional `act`. The current-session DTO in `shomei-servant/src/Shomei/Session/Dto.hs` also omits kind. This is the missing input reported by `mori://shinzui/hanmoto/okf/friction-log/concepts/FRIC-9` for `mori://shinzui/hanmoto/plans/4-authorize-management-commands-and-ship-the-publishing-cli`. Existing plans for OAuth issuance, delegation and session provenance cover their individual parts. This plan supplies the public read and its consumer contract.
 
 
 ## Plan of Work

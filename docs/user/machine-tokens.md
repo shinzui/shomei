@@ -142,6 +142,10 @@ and operator in `act`, and cannot be exchanged again or authorize an OAuth clien
 
 ## Security checklist
 
+For routes that accept specific credential classes, authenticated introspection returns the
+live session's kind alongside the verified subject, scope and delegated actor.
+See [Session kind for resource servers](oidc.md#session-kind-for-resource-servers).
+
 - Use a distinct service account for each workload and environment.
 - Grant only the scopes the workload requires.
 - Store the secret outside source code and rotate it periodically.

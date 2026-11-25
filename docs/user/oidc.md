@@ -180,6 +180,81 @@ verifying statelessly (`sessionCheckMode = VerifyTokenOnly`, the default) keeps 
 access token until it expires; only `VerifyTokenAndSession` — and the introspection endpoint —
 reject it immediately. Revocation always returns `200`, even for an unknown token.
 
+### Session kind for resource servers
+
+To learn how a bearer session started, send the presented token to the configured issuer's
+HTTPS introspection endpoint. Authenticate with the resource server's own confidential client
+or service account credential. A redacted request looks like this.
+
+```http
+POST /oauth/introspect HTTP/1.1
+Host: auth.example.com
+Authorization: Basic <redacted>
+Content-Type: application/x-www-form-urlencoded
+
+token=<redacted>
+```
+
+For a verified access token with a live session, the Shōmei extension `session_kind` comes
+from the stored session identified by `sid`. Every authorized caller receives the same fields.
+For a service acting on behalf of a user, the resource server receives a reply like this
+(IDs abbreviated).
+
+```json
+{
+  "active": true, "token_type": "Bearer",
+  "iss": "https://auth.example.com", "aud": "ingest-api",
+  "iat": 1795600000, "exp": 1795600300, "scope": "kawa:ingest",
+  "session_kind": "delegated", "sid": "session_…",
+  "sub": "user_represented…", "act": {"sub": "user_service…"}
+}
+```
+
+| `session_kind` | How the session started | Identity |
+| --- | --- | --- |
+| `interactive` | Signup, password or passkey login, MFA completion, or authorization-code exchange | `sub` is the user. An interactive token can carry scopes. |
+| `machine` | Client credentials | `sub` is the service account's backing user. There is no actor. |
+| `delegated` | Service on-behalf-of exchange or operator impersonation | `sub` is the represented user and `act.sub` identifies the service or operator. Operator impersonation grants no scopes. |
+
+Require HTTP 200 directly from the configured endpoint, `active: true` and `token_type: "Bearer"`.
+Check that `iss` and `aud` exactly match the configured issuer and resource audience, that `exp` is an integer Unix
+timestamp in the future, and that `sub` and `sid` are valid Shōmei user and session IDs.
+Require a recognized kind and a valid user ID in `act.sub` for delegation. Interactive and
+machine profiles expect `act` to be absent. Match every required scope as a whole,
+case-sensitive word in the space-delimited `scope` string. Apply the route's allowed kinds.
+For the example above, a machine-only ingest route denies the request. An ingest route
+allowing machine and delegated sessions can accept the same evidence. The service still
+checks permission for the specific resource.
+
+A missing, revoked or expired session, or an invalid access token, yields
+`{"active":false}`. A live opaque refresh token yields `{"active":true,"token_type":"refresh_token"}`.
+Both deny access. A timeout, TLS failure, non-200 response (including caller-authentication
+failure), or malformed reply also denies access. Report a failed lookup as a dependency or
+configuration error so an operator can distinguish it from an inactive token.
+
+Release `v0.3.0.1` omits `session_kind`. Support is in the unreleased provider.
+Upgrade the issuer before enabling routes that require the field. Existing live access
+tokens work immediately. During a mixed-version rollout or rollback, deny the operation
+when the reply omits the required evidence.
+
+### Hanmoto member and agent credentials
+
+For Hanmoto's person path, require an interactive session and resolve the verified `sub`
+to a member. For its direct agent path, require a machine or service on-behalf-of credential with the configured scope and a
+binding to a provisioned agent. Keep `sid` for session correlation and retain both subject
+and actor on delegated operations. Hanmoto checks membership, publication permissions and
+standalone ownership through its configured En provisioning and authorization policy.
+See the Hanmoto contract in `mori://shinzui/hanmoto/plans/4-authorize-management-commands-and-ship-the-publishing-cli`.
+
+In a Kikan deployment, validate the issuer before passing a Shōmei user ID to Meibo's
+`GET /v1/principals/by-credential/{sub}`. For a machine session send `sub`. For scoped
+service delegation send `act.sub`, the service account's backing user ID. Require one linked, active agent and
+usable directory ownership evidence. Refuse an absent, ambiguous or unusable mapping.
+A shared runtime credential identifies only the runtime, so per-agent attribution requires
+a distinct verified binding. Accountable ownership comes from the directory.
+See `mori://shinzui/kikan/okf/use-cases/concepts/UC-42` and
+`mori://shinzui/meibo/okf/improvement-requests/concepts/IR-3`.
+
 ## Userinfo
 
 `GET /oauth/userinfo` always returns `sub` and the Shōmei `scopes` extension describing the

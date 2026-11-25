@@ -2,12 +2,14 @@
 type: Improvement Request
 title: Add scoped service-token issuance
 description: Issue service tokens with bounded coarse scopes for authenticated Kikan service hops.
-timestamp: "2026-11-25T14:24:38Z"
+timestamp: "2026-11-25T14:36:24Z"
 generated:
   by: human:nadeem
   at: "2026-07-30T01:00:00Z"
 requestId: IR-1
-status: accepted
+status: completed
+completedAt: "2026-11-25T14:36:24Z"
+resolution: "Scoped issuance is released. ExecPlan 76 adds session kind to authenticated introspection and verifies route-specific decisions in the unreleased provider."
 targetPlan: docs/plans/76-expose-session-kind-through-oauth-token-introspection.md
 origin: mori://shinzui/kikan
 reviews:
@@ -25,11 +27,13 @@ reviews:
 
 # Improvement Request: Scoped Service-Token Issuance
 
-## Validation against release v0.3.0.1 and the current source
+## Provider acceptance
 
 The original issuance requirement is delivered. [ExecPlan 26](../plans/26-add-scoped-service-token-issuance.md) introduced scoped tokens. To use the [released machine-token interface](../user/machine-tokens.md), provision the account with `shomei-admin service-accounts create`, request allowed scopes through `POST /oauth/token` with `client_credentials`, and use authenticated token exchange for delegation. The issuer enforces each account's configured scope ceiling. Kikan owns the coarse vocabulary. The [Servant HTTP suite](../../shomei-servant/test/Main.hs) sends a machine token with `kawa:ingest` to the ingest gate (200) and an ordinary unscoped login to the same gate (403). Host enrichment and OAuth grants can add interactive scopes, so scope possession alone cannot identify a machine.
 
-Resource servers still need a trusted way to distinguish session kinds. Release `v0.3.0.1` and the current [introspection handler](../../shomei-servant/src/Shomei/OAuth/Handler.hs) verify the access token and load its live session, but omit its stored kind. [ExecPlan 76](../plans/76-expose-session-kind-through-oauth-token-introspection.md) exposes that field to any authorized introspection caller. Each consuming service chooses the session kinds and scopes it accepts. Hanmoto's member and agent paths are the motivating acceptance case. The following original design records the proposed interface and source layout at the time of the request.
+Release `v0.3.0.1` omits session kind. The unreleased provider returns the stored `session_kind` for verified access tokens with live sessions. PostgreSQL-backed tests exercised interactive, machine, on-behalf-of and impersonation issuance. Revoking a live session produced exactly `{"active":false}`. See the [server tests](../../shomei-server/test/Shomei/Server/E2ESpec.hs) and [ExecPlan 76](../plans/76-expose-session-kind-through-oauth-token-introspection.md).
+
+The Servant HTTP suite obtained interactive, machine and delegated tokens with the same `kawa:ingest` scope. The member route accepted only the interactive token. The machine-only route accepted the machine token. The service route also accepted the same delegated reply that the machine-only route refused, preserving the represented user, service actor and delegated session ID. Operator impersonation failed both scoped routes. The tests rejected wrong-audience and expired signed tokens and distinguished inactive credentials from failed lookups. See the [consumer fixture](../../shomei-servant/test/ResourceServerFixture.hs) and [Hanmoto integration guidance](../user/oidc.md#hanmoto-member-and-agent-credentials). Each consumer owns its deployment tests.
 
 ## Original Kikan proposal
 

@@ -1,6 +1,15 @@
 # Bundle Update Log
 
 ## 2026-11-25
+
+* **Update**: FRIC-10 accepted: Verified the repository target and retained its canonical reference.
+
+
+* **Addition**: FRIC-10 records detour tooling friction with mori://shinzui/shomei: The local plan registry cannot resolve the existing IR-1 target
+
+
+* **Update**: FRIC-9 resolved: Documented and verified the missing executable build prerequisite.
+
 * **Addition**: FRIC-9 records detour documentation friction with mori://shinzui/shomei/plans/76-expose-session-kind-through-oauth-token-introspection: Plan 76 omitted the packaged server test prerequisite
 
 ## 2026-11-16

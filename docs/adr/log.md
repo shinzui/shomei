@@ -1,5 +1,8 @@
 # Bundle Update Log
 
+## 2026-11-25
+* **Update**: ADR-1 records the introspection contract for live session provenance and resource-server policy.
+
 ## 2026-11-16
 
 * **Update**: ADR-29 prevents automatic replay of destructive reset requests while preserving configured HTTP transport

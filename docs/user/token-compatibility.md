@@ -1,5 +1,9 @@
 # Access-token policy and actor-format upgrades
 
+Routes that require session provenance can read `session_kind` through authenticated
+introspection. See [Session kind for resource servers](oidc.md#session-kind-for-resource-servers)
+for supported responses and the rollout from `v0.3.0.1`.
+
 Access-token verification requires a positive, finite lifetime ceiling. Shōmei derives it from
 the greatest configured human, machine and impersonation access-token TTL. A token must have
 `exp > iat`, and `exp - iat` must fit that ceiling. Clock skew changes timestamp comparisons;

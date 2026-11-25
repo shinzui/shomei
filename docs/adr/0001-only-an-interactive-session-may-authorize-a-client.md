@@ -5,7 +5,7 @@ description: Every session records whether a human established it, and OAuth aut
 docId: ADR-1
 status: Accepted
 date: 2026-08-27
-timestamp: 2026-11-05T18:15:01Z
+timestamp: 2026-11-25T14:30:11Z
 originatingPlan: docs/plans/51-bind-sessions-to-their-provenance-and-refuse-non-interactive-tokens-at-oauth-authorize.md
 generated:
   by: openai-codex/gpt-5
@@ -41,6 +41,12 @@ deployment's stateless-request setting cannot weaken this privilege boundary.
 Operations that mint new privilege from a presented token are likewise session-aware in every
 mode. RFC 8693 exchange verifies the subject or actor token's session. Impersonation additionally
 requires the operator's session to be live and the operator account to remain active.
+
+Authenticated OAuth introspection exposes the stored kind as `session_kind` on active access
+tokens. The endpoint already loads the row to check liveness, so this also works for tokens
+issued before the field was introduced. The issuer reports the same evidence to each
+authorized caller. Resource servers choose accepted kinds, scopes and identity mappings per
+operation. See [the wire contract](../user/oidc.md#session-kind-for-resource-servers).
 
 ## Consequences
 

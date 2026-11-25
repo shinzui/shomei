@@ -10,6 +10,7 @@
 -- rotation, the public JWKS document, and the @RequireRole "admin"@ guard (403/200).
 module Main (main) where
 
+import Control.Exception (throwIO)
 import Control.Monad (replicateM, replicateM_, void)
 import Crypto.JOSE.Compact (decodeCompact)
 import Crypto.JOSE.Error (runJOSE)
@@ -36,10 +37,13 @@ import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Effectful (Eff, runEff)
 import GHC.Generics (Generic)
 import Network.HTTP.Client
-  ( Manager,
+  ( HttpException (HttpExceptionRequest),
+    HttpExceptionContent (ResponseTimeout),
+    Manager,
     RequestBody (RequestBodyLBS),
     applyBasicAuth,
     defaultManagerSettings,
+    defaultRequest,
     httpLbs,
     method,
     newManager,
@@ -57,6 +61,7 @@ import Network.HTTP.Types.URI (parseSimpleQuery, urlEncode)
 import Network.Wai (Application, Request)
 import Network.Wai qualified as Wai
 import Network.Wai.Handler.Warp (testWithApplication)
+import ResourceServerFixture qualified as Resource
 import Servant
   ( Context (EmptyContext, (:.)),
     ErrorFormatters,
@@ -109,7 +114,7 @@ import Shomei.OAuth.Client.Store (createOAuthClient)
 import Shomei.OAuth.TokenExchange.Workflow (tokenExchangeSubjectScope)
 import Shomei.OAuth.TokenGrant.Workflow (pkceChallengeFor)
 import Shomei.Passkey.Domain (PublicKeyBytes (..), UserHandle (..), WebAuthnCredentialId (..))
-import Shomei.Prelude ((^.))
+import Shomei.Prelude (set, (^.))
 import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (AuthUser, authHandler)
 import Shomei.Servant.Authz (RequirePermission, RequireRole, RequireScope)
@@ -122,7 +127,7 @@ import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Secret (sha256Hex)
-import Shomei.ServiceAccount.Store (createServiceAccount)
+import Shomei.ServiceAccount.Store (createServiceAccount, findServiceAccountByClientId)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Domain (Session (..))
@@ -133,7 +138,7 @@ import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.SigningKey.Jwks.Jwt (KeySet (..), jwksDocument, keySetPublicJwks)
 import Shomei.SigningKey.Key.Jwt (generateSigningKey)
 import Shomei.SigningKey.Sign.Jwt (runTokenSignerJwt, signAccessToken)
-import Shomei.SigningKey.Verify.Jwt (runTokenVerifierJwt)
+import Shomei.SigningKey.Verify.Jwt (runTokenVerifierJwt, verifyToken)
 import Shomei.Test.InMemory
   ( World (..),
     emptyWorld,
@@ -1317,7 +1322,7 @@ postRaw' mgr port path hdrs body = postRaw mgr port path hdrs body
 postForm :: Manager -> Int -> String -> Maybe (Text, Text) -> [(ByteString, ByteString)] -> IO RawResponse
 postForm mgr port path mBasic params = do
   req0 <- parseRequest ("http://127.0.0.1:" <> show port <> path)
-  let withBody = urlEncodedBody params req0
+  let withBody = urlEncodedBody params req0 {redirectCount = 0}
       encoded = urlEncode True . Text.encodeUtf8
       req = maybe withBody (\(c, s) -> applyBasicAuth (encoded c) (encoded s) withBody) mBasic
   resp <- httpLbs req mgr
@@ -1543,6 +1548,9 @@ tests ref env freshEnv freshGatedEnv freshPermissionEnv freshSessionCheckEnv fre
       testCase "POST /oauth/token: privilege-minting exchanges require live, active principals in the default auth mode" $ do
         (r, gateId, _, _, e) <- freshExchangeEnv
         testWithApplication (pure (app e)) (scenarioExchangeRequiresLiveSessions r jwk cfg t0 gateId),
+      testCase "resource servers apply route-specific policies to authenticated introspection" $ do
+        (r, confId, _, svcId, e) <- freshProvenanceEnv
+        testWithApplication (pure (app e)) (scenarioResourcePolicies r jwk e.config t0 confId svcId),
       testCase "EP-7 TOTP: enroll → verify → mfa_required(methods) → complete; replay 401; recovery gen/use/count; impersonation 403; remove; freshness 403" $ do
         (r, e) <- freshTotpEnv
         testWithApplication (pure (app e)) (scenarioTotp r jwk cfg),
@@ -1696,7 +1704,7 @@ seedOAuthClients ref jwk jwkset cfg createdAt =
             clientType = ConfidentialClient,
             displayName = "confidential",
             redirectUris = [authorizeRedirectUri],
-            allowedScopes = Set.fromList [Scope "openid", Scope "profile", Scope "email"],
+            allowedScopes = Set.fromList [Scope "openid", Scope "profile", Scope "email", ingestScope],
             createdAt
           }
     _ <-
@@ -2033,12 +2041,16 @@ scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId adminClientId
   -- Introspection (plan 42) reports the delegated token as active, with an `act` member naming the
   -- operator — the observability surface agrees with the token's contents. Introspection
   -- client-authenticates as the service account.
-  introActive <-
-    postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
+  introActive <- postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
   introActiveDoc <- must "introspect (active) body" (bodyOf introActive)
   dig ["active"] introActiveDoc @?= Just (Bool True)
   (dig ["session_kind"] introActiveDoc >>= asText) @?= Just "delegated"
   (dig ["act", "sub"] introActiveDoc >>= asText) @?= Just (idText operatorUid)
+  impEvidence <- Resource.inspect cfg.issuer cfg.audience issuedAt (pure introActive) >>= either (assertFailure . show) pure
+  idText impEvidence.subject @?= targetId
+  Just (String (idText impEvidence.sessionId)) @?= KM.lookup "sid" impClaims
+  impEvidence.scopes @?= Set.empty
+  Resource.acceptingRoutes impEvidence @?= []
   -- RFC 7009 revocation is the single stop mechanism for a delegated token. The gate service did
   -- not mint this impersonation session, so the explicitly privileged admin principal stops it.
   (stopStatus, _, _) <-
@@ -2920,6 +2932,104 @@ introspect mgr port basic tok = do
   r <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 tok)]
   statusOf r @?= 200
   must "introspection body" (bodyOf r)
+
+scenarioResourcePolicies :: IORef World -> JWK -> ShomeiConfig -> UTCTime -> Text -> Text -> Int -> IO ()
+scenarioResourcePolicies ref jwk cfg clock confId svcId port = do
+  mgr <- newManager defaultManagerSettings
+  account <- runInMemory ref (findServiceAccountByClientId svcId) >>= must "provisioned service"
+  let client = Just (confId, confidentialClientSecret)
+      service = Just (svcId, oauthClientSecret)
+      request auth token = postForm mgr port "/oauth/introspect" auth [("token", Text.encodeUtf8 token)]
+      inspect = Resource.inspect cfg.issuer cfg.audience clock
+      inspectToken token = inspect (request client token)
+      grant params = do
+        r <- postForm mgr port "/oauth/token" service params
+        statusOf r @?= 200
+        must "granted access token" (bodyOf r >>= dig ["access_token"] >>= asText)
+      keys = keySetPublicJwks (KeySet jwk [])
+      checkAccess token subject kind actor routes = do
+        signed <- verifyToken keys cfg token >>= either (assertFailure . show) pure
+        reply <- request client token
+        evidence <- inspect (pure reply) >>= either (assertFailure . show) pure
+        evidence @?= Resource.Evidence subject signed.sessionId kind (Set.singleton ingestScope) actor
+        Resource.acceptingRoutes evidence @?= routes
+        pure reply
+
+  (login, memberId, loginSid) <- signupPrincipal mgr port jwk "resource-member"
+  (interactive, refresh) <- issueOAuthSession mgr port confId login "kawa:ingest"
+  machine <- grant [("grant_type", "client_credentials"), ("scope", "kawa:ingest")]
+  delegated <-
+    grant
+      [ ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        ("subject_token", Text.encodeUtf8 login),
+        ("subject_token_type", "urn:ietf:params:oauth:token-type:access_token"),
+        ("scope", "kawa:ingest")
+      ]
+  let backingUser = account ^. #userId
+  _ <- checkAccess interactive memberId SessionDomain.InteractiveSession Nothing ["member"]
+  _ <- checkAccess machine backingUser SessionDomain.MachineSession Nothing ["machine-ingest", "service-ingest"]
+  delegatedReply <- checkAccess delegated memberId SessionDomain.DelegatedSession (Just backingUser) ["service-ingest"]
+  -- Client identity does not select the response profile.
+  serviceReply <- request service delegated
+  bodyOf serviceReply @?= bodyOf delegatedReply
+  statusOf serviceReply @?= 200
+  checkIntrospectionFailures cfg clock delegatedReply
+
+  -- The token for the other audience verifies with that audience's configuration.
+  let signed config at = mkTokenForSession jwk config memberId loginSid Set.empty Set.empty Nothing at
+      otherAudience = set #audience (Audience "another-resource") cfg
+  other <- signed otherAudience clock
+  otherClaims <- verifyToken keys otherAudience other >>= either (assertFailure . show) pure
+  otherClaims.audience @?= otherAudience.audience
+  wrongIssuer <- signed (set #issuer (Issuer "https://other.test") cfg) clock
+  -- The helper issues a 900-second token. It expired an hour ago, beyond issuer skew.
+  expired <- signed cfg (addUTCTime (-4500) clock)
+  forM_ [other, wrongIssuer, expired, "invalid-bearer"] $ \token ->
+    inspectToken token >>= (@?= Left Resource.Inactive)
+  inspectToken refresh >>= (@?= Left Resource.UnsuitableCredential)
+  inspect (request Nothing login) >>= (@?= Left Resource.LookupFailed)
+
+  revoked <- postForm mgr port "/oauth/revoke" client [("token", Text.encodeUtf8 refresh)]
+  statusOf revoked @?= 200
+  inspectToken interactive >>= (@?= Left Resource.Inactive)
+  -- Keep the signup JWT valid while expiring, then removing, its own session row.
+  modifyIORef' ref (\w -> w {sessions = Map.adjust (set #expiresAt clock) loginSid w.sessions})
+  inspectToken login >>= (@?= Left Resource.Inactive)
+  modifyIORef' ref (\w -> w {sessions = Map.delete loginSid w.sessions})
+  inspectToken login >>= (@?= Left Resource.Inactive)
+
+-- Exercise an older provider, damaged replies, and transport failures at the
+-- consumer's HTTP boundary. Start each variation from the same real delegated reply.
+checkIntrospectionFailures :: ShomeiConfig -> UTCTime -> RawResponse -> IO ()
+checkIntrospectionFailures cfg clock reply = do
+  obj <- case bodyOf reply of
+    Just (Object o) -> pure o
+    _ -> assertFailure "expected an introspection object"
+  let inspect = Resource.inspect cfg.issuer cfg.audience clock
+      changed edit = pure (200, [], Just (Object (edit obj)))
+  forM_
+    [ ("missing kind", KM.delete "session_kind"),
+      ("unknown kind", KM.insert "session_kind" (String "unknown")),
+      ("missing actor", KM.delete "act"),
+      ("invalid actor", KM.insert "act" (object ["sub" .= ("bad" :: Text)])),
+      ("invalid subject", KM.insert "sub" (String "bad")),
+      ("invalid session", KM.insert "sid" (String "bad")),
+      ("invalid expiry", KM.insert "exp" (String "tomorrow")),
+      ("missing scope", KM.delete "scope")
+    ]
+    $ \(label, edit) -> inspect (changed edit) >>= assertEqual label (Left Resource.MalformedReply)
+  forM_ ["", "kawa:ingest-all"] $ \scope -> do
+    evidence <- inspect (changed (KM.insert "scope" (String scope))) >>= either (assertFailure . show) pure
+    Resource.acceptingRoutes evidence @?= []
+  several <- inspect (changed (KM.insert "scope" (String "events:read kawa:ingest jobs:list"))) >>= either (assertFailure . show) pure
+  Resource.acceptingRoutes several @?= ["service-ingest"]
+  Resource.inspect (Issuer "https://other.test") cfg.audience clock (pure reply) >>= (@?= Left Resource.UnsuitableCredential)
+  Resource.inspect cfg.issuer (Audience "another-resource") clock (pure reply) >>= (@?= Left Resource.UnsuitableCredential)
+  inspect (changed (KM.insert "exp" (Number 0))) >>= (@?= Left Resource.UnsuitableCredential)
+  inspect (pure (200, [], Nothing)) >>= (@?= Left Resource.MalformedReply)
+  forM_ [302, 503] $ \status ->
+    inspect (pure (status, [], bodyOf reply)) >>= (@?= Left Resource.LookupFailed)
+  inspect (throwIO (HttpExceptionRequest defaultRequest ResponseTimeout)) >>= (@?= Left Resource.LookupFailed)
 
 -- | The @sub@ claim of an ID token, read through the same signature-verifying path the M3 test
 -- uses (so it doubles as a second check that the token verifies). @jwk@ is the test signing key.

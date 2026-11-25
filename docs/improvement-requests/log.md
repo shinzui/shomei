@@ -2,6 +2,9 @@
 
 ## 2026-11-25
 
+* **Update**: Complete IR-1 in the provider with authenticated session-kind introspection, PostgreSQL round trips and consumer route-policy evidence.
+
+
 * **Update**: Generalized IR-1 and ExecPlan 76 to expose session kind to any authorized introspection caller. Hanmoto remains a consumer acceptance case.
 
 
