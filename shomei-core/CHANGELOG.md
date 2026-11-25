@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- `Shomei.Session.Domain` exports `sessionKindToText`/`sessionKindFromText` (the one spelling shared by persistence and introspection) and `sessionInvolves`. **Behavior:** `RevokeAllUserSessions` implementations must also revoke sessions in which the user is the delegated actor, and `RevokeServiceAccount` must revoke the account's live machine and delegated sessions; the in-memory interpreters do.
+
 - **Breaking:** add audited administrator second-factor recovery, authentication generations on users/pending state, guarded persistence ports and typed stale-proof rejection. Session issuance returns an explicit Either; enrollment APIs bind an optional trusted source session. Add secret-free recovery notifications and the reset audit event.
 
 - Export `knownAuthEventTypes` from the audit codec for version-specific event vocabulary validation.

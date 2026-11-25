@@ -211,13 +211,15 @@ revokeAllUserSessionsStmt =
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
     (D.rowList (D.column (D.nonNullable D.uuid)))
 
--- | Shared winner-producing update, also embedded in the bulk audited CTE. No application
+-- | Shared winner-producing update, also embedded in the bulk audited CTE. It covers sessions
+-- in which the principal is the delegated actor as well as the subject, so suspending an
+-- operator also stops the impersonation sessions that operator opened. No application
 -- materialization of winners is needed by that operation.
 revokeAllUserSessionsSql :: Text
 revokeAllUserSessionsSql =
   """
   UPDATE shomei.shomei_sessions SET status = 'revoked', revoked_at = $2
-  WHERE user_id = $1 AND status = 'active'
+  WHERE status = 'active' AND (user_id = $1 OR actor_user_id = $1)
   RETURNING session_id
   """
 

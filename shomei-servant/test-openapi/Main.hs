@@ -67,16 +67,17 @@ import Shomei.Passkey.Dto
 import Shomei.Servant.Api (OpenApiRoute, ShomeiRoutes)
 import Shomei.Servant.CachedJson (CachedJson, cacheJson, cachedJsonBytes, cachedJsonValue)
 import Shomei.Servant.Error (ProblemDetails (..), ProblemOccurrence (..), ProblemSpec (..), authErrorToServerError, detailOccurrence, noProblemOccurrence, pcSessionLimitReached, problemBody, problemCatalog, problemDetails, problemTypeFor, toProblemError)
-import Shomei.Servant.OAuth (OAuthErrorResponse (..), TokenResponse (..))
+import Shomei.Servant.OAuth (ActiveAccessToken (..), IntrospectionResponse (..), OAuthErrorResponse (..), TokenResponse (..))
 import Shomei.Servant.OpenApi (openApiDocument, openApiValue, shomeiOpenApi)
 import Shomei.Session.Admin.Api
 import Shomei.Session.Api
+import Shomei.Session.Domain (SessionKind (..))
 import Shomei.Session.Dto
 import Shomei.SigningKey.Api
 import System.Directory (doesFileExist)
 import System.Mem (performGC)
 import Test.Hspec
-import Test.QuickCheck (Arbitrary (..), chooseInt, oneof)
+import Test.QuickCheck (Arbitrary (..), chooseInt, elements, oneof)
 import Test.QuickCheck.Instances ()
 
 -- | @logout@ answers @204@ with @Set-Cookie@ headers. Servant models a header-carrying empty
@@ -741,6 +742,25 @@ instance Arbitrary PasskeyLoginCompleteRequest where
 
 instance Arbitrary TokenResponse where
   arbitrary = TokenResponse <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+
+instance Arbitrary IntrospectionResponse where
+  arbitrary =
+    oneof
+      [ pure IntrospectionInactive,
+        pure IntrospectionRefreshToken,
+        fmap IntrospectionAccessToken $
+          ActiveAccessToken
+            <$> elements [InteractiveSession, MachineSession, DelegatedSession]
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+            <*> arbitrary
+      ]
 
 instance Arbitrary SessionsPage where
   arbitrary = SessionsPage <$> arbitrary <*> arbitrary

@@ -200,13 +200,25 @@ rotateSecretStmt =
     )
     D.noResult
 
+-- | Revoke the account and, in the same statement, every live machine session it holds and
+-- every delegated session in which its backing user is subject or actor. Without the second
+-- half a revoked account's outstanding tokens would keep introspecting as active until expiry.
 revokeStmt :: Statement (UUID, UTCTime) ()
 revokeStmt =
   preparable
     """
-    UPDATE shomei.shomei_service_accounts
+    WITH revoked AS (
+      UPDATE shomei.shomei_service_accounts
+      SET status = 'revoked', revoked_at = $2
+      WHERE service_account_id = $1
+      RETURNING user_id
+    )
+    UPDATE shomei.shomei_sessions AS s
     SET status = 'revoked', revoked_at = $2
-    WHERE service_account_id = $1
+    FROM revoked
+    WHERE s.status = 'active'
+      AND s.kind IN ('machine', 'delegated')
+      AND (s.user_id = revoked.user_id OR s.actor_user_id = revoked.user_id)
     """
     (contrazip2 (E.param (E.nonNullable E.uuid)) (E.param (E.nonNullable E.timestamptz)))
     D.noResult

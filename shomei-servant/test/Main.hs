@@ -127,7 +127,7 @@ import Shomei.Servant.Seam (AppEffects, Env (..))
 import Shomei.Servant.Server (shomeiRoutes)
 import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
 import Shomei.ServiceAccount.Secret (sha256Hex)
-import Shomei.ServiceAccount.Store (createServiceAccount, findServiceAccountByClientId)
+import Shomei.ServiceAccount.Store (createServiceAccount, findServiceAccountByClientId, revokeServiceAccount)
 import Shomei.Session.Authentication.Workflow qualified as Wf
 import Shomei.Session.Command (SignupCommand (..))
 import Shomei.Session.Domain (Session (..))
@@ -2947,11 +2947,13 @@ scenarioResourcePolicies ref jwk cfg clock confId svcId port = do
         statusOf r @?= 200
         must "granted access token" (bodyOf r >>= dig ["access_token"] >>= asText)
       keys = keySetPublicJwks (KeySet jwk [])
-      checkAccess token subject kind actor routes = do
+      checkAccess token subject kind actor holder routes = do
         signed <- verifyToken keys cfg token >>= either (assertFailure . show) pure
         reply <- request client token
+        -- An introspection answer names a subject and its session: it must not be cached.
+        lookup "Cache-Control" (headersOf reply) @?= Just "no-store"
         evidence <- inspect (pure reply) >>= either (assertFailure . show) pure
-        evidence @?= Resource.Evidence subject signed.sessionId kind (Set.singleton ingestScope) actor
+        evidence @?= Resource.Evidence subject signed.sessionId kind (Set.singleton ingestScope) actor holder
         Resource.acceptingRoutes evidence @?= routes
         pure reply
 
@@ -2966,9 +2968,20 @@ scenarioResourcePolicies ref jwk cfg clock confId svcId port = do
         ("scope", "kawa:ingest")
       ]
   let backingUser = account ^. #userId
-  _ <- checkAccess interactive memberId SessionDomain.InteractiveSession Nothing ["member"]
-  _ <- checkAccess machine backingUser SessionDomain.MachineSession Nothing ["machine-ingest", "service-ingest"]
-  delegatedReply <- checkAccess delegated memberId SessionDomain.DelegatedSession (Just backingUser) ["service-ingest"]
+  -- The token an OAuth client holds for the member is interactive, but names that client, so a
+  -- route can require the member's own first-party login instead.
+  _ <- checkAccess interactive memberId SessionDomain.InteractiveSession Nothing (Just confId) ["member"]
+  machineReply <- checkAccess machine backingUser SessionDomain.MachineSession Nothing Nothing ["machine-ingest", "service-ingest"]
+  delegatedReply <- checkAccess delegated memberId SessionDomain.DelegatedSession (Just backingUser) Nothing ["service-ingest"]
+  firstParty <- inspectToken login >>= either (assertFailure . show) pure
+  firstParty.client @?= Nothing
+  Resource.acceptingRoutes firstParty @?= ["first-party-member", "member"]
+  -- The hint only orders the search: a mis-hinted token is still found as its real type.
+  hintedAccess <- postForm mgr port "/oauth/introspect" client [("token", Text.encodeUtf8 machine), ("token_type_hint", "refresh_token")]
+  bodyOf hintedAccess @?= bodyOf machineReply
+  hintedRefresh <- postForm mgr port "/oauth/introspect" client [("token", Text.encodeUtf8 refresh), ("token_type_hint", "access_token")]
+  bodyOf hintedRefresh @?= Just (object ["active" .= True, "token_type" .= ("refresh_token" :: Text)])
+  lookup "Cache-Control" (headersOf hintedRefresh) @?= Just "no-store"
   -- Client identity does not select the response profile.
   serviceReply <- request service delegated
   bodyOf serviceReply @?= bodyOf delegatedReply
@@ -2984,7 +2997,11 @@ scenarioResourcePolicies ref jwk cfg clock confId svcId port = do
   wrongIssuer <- signed (set #issuer (Issuer "https://other.test") cfg) clock
   -- The helper issues a 900-second token. It expired an hour ago, beyond issuer skew.
   expired <- signed cfg (addUTCTime (-4500) clock)
-  forM_ [other, wrongIssuer, expired, "invalid-bearer"] $ \token ->
+  -- Correctly signed tokens whose claims disagree with the stored session about the subject or
+  -- the actor are not evidence for that session.
+  wrongSubject <- mkTokenForSession jwk cfg backingUser loginSid Set.empty Set.empty Nothing clock
+  wrongActor <- mkTokenForSession jwk cfg memberId loginSid Set.empty Set.empty (Just backingUser) clock
+  forM_ [other, wrongIssuer, expired, "invalid-bearer", wrongSubject, wrongActor] $ \token ->
     inspectToken token >>= (@?= Left Resource.Inactive)
   inspectToken refresh >>= (@?= Left Resource.UnsuitableCredential)
   inspect (request Nothing login) >>= (@?= Left Resource.LookupFailed)
@@ -2997,6 +3014,13 @@ scenarioResourcePolicies ref jwk cfg clock confId svcId port = do
   inspectToken login >>= (@?= Left Resource.Inactive)
   modifyIORef' ref (\w -> w {sessions = Map.delete loginSid w.sessions})
   inspectToken login >>= (@?= Left Resource.Inactive)
+
+  -- Revoking the service account ends its machine session and the delegated session it acts in.
+  forM_ [machine, delegated] $ \token ->
+    inspectToken token >>= either (assertFailure . show) (const (pure ()))
+  runInMemory ref (revokeServiceAccount (account ^. #serviceAccountId) clock)
+  forM_ [machine, delegated] $ \token ->
+    inspectToken token >>= (@?= Left Resource.Inactive)
 
 -- Exercise an older provider, damaged replies, and transport failures at the
 -- consumer's HTTP boundary. Start each variation from the same real delegated reply.

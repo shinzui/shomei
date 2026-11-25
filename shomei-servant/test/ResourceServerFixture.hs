@@ -9,10 +9,10 @@ where
 
 import Control.Exception (try)
 import Control.Monad (guard)
-import Data.Aeson (Object, Value, withObject, (.:))
+import Data.Aeson (Object, Value, withObject, (.:), (.:?))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Parser, parseMaybe)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -30,7 +30,9 @@ data Evidence = Evidence
     sessionId :: SessionId,
     kind :: SessionKind,
     scopes :: Set Scope,
-    actor :: Maybe UserId
+    actor :: Maybe UserId,
+    -- | the OAuth client holding the token, when it came from an authorization-code grant
+    client :: Maybe Text
   }
   deriving stock (Eq, Show)
 
@@ -75,23 +77,27 @@ parseEvidence obj = do
   scope <- obj .: "scope"
   let scopes = Set.fromList [Scope s | s <- T.splitOn " " scope, not (T.null s)]
   guard (all validScopeName scopes)
-  pure Evidence {subject, sessionId, kind, scopes, actor}
+  client <- obj .:? "client_id"
+  pure Evidence {subject, sessionId, kind, scopes, actor, client}
   where
     parseActor a = do
       guard (KM.size a == 1)
       a .: "sub"
 
--- | Each route chooses its own accepted kinds and required scopes.
+-- | Each route chooses its own accepted kinds and required scopes, and whether a token held by
+-- an OAuth client on the user's behalf is as good as the user's own first-party login.
 acceptingRoutes :: Evidence -> [Text]
 acceptingRoutes evidence =
   [ route
-  | (route, kinds, required) <-
-      [ ("member", [InteractiveSession], []),
-        ("machine-ingest", [MachineSession], [ingest]),
-        ("service-ingest", [MachineSession, DelegatedSession], [ingest])
+  | (route, kinds, required, clientAllowed) <-
+      [ ("first-party-member", [InteractiveSession], [], False),
+        ("member", [InteractiveSession], [], True),
+        ("machine-ingest", [MachineSession], [ingest], True),
+        ("service-ingest", [MachineSession, DelegatedSession], [ingest], True)
       ],
     evidence.kind `elem` kinds,
-    all (`Set.member` evidence.scopes) required
+    all (`Set.member` evidence.scopes) required,
+    clientAllowed || isNothing evidence.client
   ]
   where
     ingest = Scope "kawa:ingest"

@@ -9,7 +9,7 @@ module Shomei.Server.E2ESpec (tests, seedPublicOAuthClient) where
 
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Aeson (Value (Array, Bool, Object, String), decode, encode, object, (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as K
@@ -88,14 +88,14 @@ import Shomei.Server.App (Env (..))
 import Shomei.Server.Boot (NotifierWorker (..), application, installNotifierWorker)
 import Shomei.Server.Config (defaultDbStatementTimeoutMs)
 import Shomei.Server.Keys (LoadedKeys (..), bootstrapKeys)
-import Shomei.ServiceAccount.Domain (NewServiceAccount (..))
+import Shomei.ServiceAccount.Domain (NewServiceAccount (..), ServiceAccount (..))
 import Shomei.ServiceAccount.Postgres (runServiceAccountStorePostgres)
 import Shomei.ServiceAccount.Secret (sha256Hex)
-import Shomei.ServiceAccount.Store (createServiceAccount)
+import Shomei.ServiceAccount.Store (createServiceAccount, findServiceAccountByClientId, revokeServiceAccount)
 import Shomei.Session.Authentication.Guard (userGuard)
 import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (InteractiveSession))
 import Shomei.Session.Postgres (runSessionStorePostgres)
-import Shomei.Session.Store (createSession)
+import Shomei.Session.Store (createSession, revokeAllUserSessions)
 import Shomei.Session.Token.Domain (AccessToken (..))
 import Shomei.SigningKey.Domain (SigningAlgorithm (ES256))
 import Shomei.SigningKey.Protection.Jwt (KeyEncryptionKey, keyEncryptionKeyFromBase64)
@@ -722,6 +722,30 @@ exchangeScenario cfg pool clientId opTok port = do
   impStarted <-
     scalarInt pool "SELECT count(*) FROM shomei.shomei_auth_events WHERE event_type = 'impersonation_started' AND payload->>'subjectUserId' IS NOT NULL AND payload->>'actorUserId' IS NOT NULL"
   impStarted @?= 1
+
+  -- ===== Revoking a principal ends the non-interactive sessions it holds or acts in =====
+  let svcUser = "(SELECT user_id FROM shomei.shomei_service_accounts WHERE client_id = '" <> clientId <> "')"
+      activeWhere cond = scalarInt pool ("SELECT count(*) FROM shomei.shomei_sessions s WHERE s.status = 'active' AND " <> cond)
+      serviceSessions = activeWhere ("(s.user_id = " <> svcUser <> " OR s.actor_user_id = " <> svcUser <> ")")
+      operatorSessions = activeWhere ("s.actor_user_id IS NOT NULL AND s.actor_user_id <> " <> svcUser)
+      store action =
+        either (assertFailure . ("store action failed: " <>) . show) pure
+          =<< runEff (runErrorNoCallStack @AuthError (runDatabasePool pool (runClockIO action)))
+  assertBool "the service acts in a live delegated session" . (> 0) =<< serviceSessions
+  impersonations <- operatorSessions
+  assertBool "the operator acts in a live impersonation session" (impersonations > 0)
+  store . runServiceAccountStorePostgres $ do
+    ServiceAccount {serviceAccountId} <- maybe (error "exchange service account missing") pure =<< findServiceAccountByClientId clientId
+    ts <- now
+    revokeServiceAccount serviceAccountId ts
+  serviceSessions >>= (@?= 0)
+  -- Another principal's delegation is untouched.
+  operatorSessions >>= (@?= impersonations)
+  operatorId <- either (assertFailure . show) pure . parseId =<< must "impersonation actor" (dig ["act", "sub"] impIntro >>= asText)
+  store . runSessionStorePostgres $ do
+    ts <- now
+    void (revokeAllUserSessions (operatorId :: UserId) ts)
+  operatorSessions >>= (@?= 0)
 
 -- | The @kid@ from a JWT's header, without verifying anything.
 jwtHeaderKid :: Text -> Maybe Text

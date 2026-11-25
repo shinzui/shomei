@@ -180,7 +180,7 @@ import Shomei.ServiceAccount.Domain
   )
 import Shomei.ServiceAccount.Store (ServiceAccountStore (..))
 import Shomei.Session.Authentication.Guard (AuthenticationGuard (..))
-import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..))
+import Shomei.Session.Domain (NewSession (..), Session (..), SessionKind (..), SessionStatus (..), sessionInvolves)
 import Shomei.Session.LoginAttempt.Domain
   ( AccountKey,
     AccountLockout (..),
@@ -456,8 +456,8 @@ runSessionStore ref = interpret_ \case
   RevokeAllUserSessions uid t ->
     liftIO
       ( atomicModifyIORef' ref \w ->
-          let winners = [s.sessionId | s <- Map.elems w.sessions, s.userId == uid, s.status == SessionActive]
-           in (w & #sessions %~ Map.map (\s -> if s.userId == uid then revoke t s else s), winners)
+          let winners = [s.sessionId | s <- Map.elems w.sessions, sessionInvolves uid s, s.status == SessionActive]
+           in (w & #sessions %~ Map.map (\s -> if sessionInvolves uid s then revoke t s else s), winners)
       )
   ListSessionPage uid query -> liftIO do
     w <- readIORef ref
@@ -778,7 +778,7 @@ runAuthUnitOfWork ref = interpret_ \case
   RevokeUserSessionsWithAudit actor uid ts ->
     liftIO
       ( atomicModifyIORef' ref \w ->
-          let winners = [s | s <- Map.elems w.sessions, s.userId == uid, s.status == SessionActive]
+          let winners = [s | s <- Map.elems w.sessions, sessionInvolves uid s, s.status == SessionActive]
               ids = Set.fromList (map (.sessionId) winners)
               events = [Event.SessionRevoked (Event.SessionRevokedData s.sessionId (Just actor) ts) | s <- winners]
            in ( w
@@ -820,7 +820,7 @@ runAuthUnitOfWork ref = interpret_ \case
       | credential.userId == uid = credential & #passwordHash .~ h & #updatedAt .~ ts
       | otherwise = credential
     revokeUserSession uid t session
-      | session.userId == uid,
+      | sessionInvolves uid session,
         session.status == SessionActive =
           revokeSessionAt t session
       | otherwise = session
@@ -1146,7 +1146,15 @@ runServiceAccountStore ref = interpret_ \case
     liftIO
       ( modifyWorld
           ref
-          (#serviceAccounts %~ Map.adjust (\sa -> sa & #status .~ ServiceAccountRevoked & #revokedAt .~ Just t) sid)
+          ( \w ->
+              let backing = (\ServiceAccount {userId} -> userId) <$> Map.lookup sid w.serviceAccounts
+                  held s = s.status == SessionActive && s.kind /= InteractiveSession && maybe False (`sessionInvolves` s) backing
+               in w
+                    & #serviceAccounts
+                    %~ Map.adjust (\sa -> sa & #status .~ ServiceAccountRevoked & #revokedAt .~ Just t) sid
+                    & #sessions
+                    %~ Map.map (\s -> if held s then s & #status .~ SessionRevoked & #revokedAt .~ Just t else s)
+          )
       )
 
 -- | Field accessors for the EP-5 OAuth-client records, for the same 'DuplicateRecordFields'

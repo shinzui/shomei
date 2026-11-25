@@ -22,6 +22,7 @@ module Shomei.OAuth.Result
     TokenResult,
     UserinfoResponses,
     UserinfoResult,
+    IntrospectSuccess (..),
     IntrospectResponses,
     IntrospectResult,
     RevokeResponses,
@@ -44,7 +45,7 @@ import Numeric.Natural (Natural)
 import Servant (JSON, ServerError (..))
 import Servant.API.MultiVerb
 import Shomei.Prelude
-import Shomei.Servant.OAuth (OAuthErrorResponse (..), TokenResponse)
+import Shomei.Servant.OAuth (IntrospectionResponse, OAuthErrorResponse (..), TokenResponse)
 import Text.Read (readMaybe)
 import Web.HttpApiData (FromHttpApiData (parseHeader), ToHttpApiData (toHeader))
 
@@ -229,9 +230,23 @@ type UserinfoResponses = OAuthResponses 200 "OIDC user information" Value
 
 type UserinfoResult = OAuthResult Value
 
-type IntrospectResponses = OAuthResponses 200 "Token status" Value
+-- | An introspection answer names a subject, its scopes and its session, so it carries the same
+-- no-store headers as a token response.
+data IntrospectSuccess = IntrospectSuccess
+  { introspectBody :: !IntrospectionResponse,
+    introspectCacheControl :: !Text,
+    introspectPragma :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
 
-type IntrospectResult = OAuthResult Value
+instance AsHeaders '[Text, Text] IntrospectionResponse IntrospectSuccess where
+  toHeaders response = (I response.introspectCacheControl :* I response.introspectPragma :* Nil, response.introspectBody)
+  fromHeaders (I introspectCacheControl :* I introspectPragma :* Nil, introspectBody) =
+    IntrospectSuccess {introspectBody, introspectCacheControl, introspectPragma}
+
+type IntrospectResponses = WithHeaders TokenHeaders IntrospectSuccess (Respond 200 "Token status" IntrospectionResponse) ': OAuthErrorResponses
+
+type IntrospectResult = OAuthResult IntrospectSuccess
 
 type RevokeResponses = OAuthEmptyResponses 200 "Token revoked"
 

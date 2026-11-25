@@ -3,6 +3,9 @@
 module Shomei.Session.Domain
   ( SessionStatus (..),
     SessionKind (..),
+    sessionKindToText,
+    sessionKindFromText,
+    sessionInvolves,
     Session (..),
     NewSession (..),
   )
@@ -29,6 +32,21 @@ data SessionKind
     DelegatedSession
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
+
+-- | The one spelling of a session kind, shared by persistence and the introspection
+-- @session_kind@ member so the stored value and the wire value cannot drift.
+sessionKindToText :: SessionKind -> Text
+sessionKindToText = \case
+  InteractiveSession -> "interactive"
+  MachineSession -> "machine"
+  DelegatedSession -> "delegated"
+
+sessionKindFromText :: Text -> Either Text SessionKind
+sessionKindFromText = \case
+  "interactive" -> Right InteractiveSession
+  "machine" -> Right MachineSession
+  "delegated" -> Right DelegatedSession
+  t -> Left ("unknown session kind: " <> t)
 
 data Session = Session
   { sessionId :: !SessionId,
@@ -81,3 +99,9 @@ data NewSession = NewSession
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (FromJSON, ToJSON)
+
+-- | Is this principal the session's subject or its delegated actor? Revoking a principal's
+-- sessions uses this, so a suspended operator or revoked service account also loses the
+-- delegated sessions in which it acts for somebody else.
+sessionInvolves :: UserId -> Session -> Bool
+sessionInvolves uid session = session.userId == uid || session.actor == Just uid

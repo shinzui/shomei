@@ -210,9 +210,14 @@ For a service acting on behalf of a user, the resource server receives a reply l
 }
 ```
 
+An interactive session created through the authorization-code grant also carries the RFC 7662
+`client_id` member naming the OAuth client that holds the token. A first-party login, a machine
+session and a delegated session omit it. The response schema is `IntrospectionResponse` in the
+[OpenAPI document](../api/openapi.json), and every reply is sent with `Cache-Control: no-store`.
+
 | `session_kind` | How the session started | Identity |
 | --- | --- | --- |
-| `interactive` | Signup, password or passkey login, MFA completion, or authorization-code exchange | `sub` is the user. An interactive token can carry scopes. |
+| `interactive` | Signup, password or passkey login, MFA completion, or authorization-code exchange | `sub` is the user. An interactive token can carry scopes. `client_id` is present when an OAuth client holds the token for the user. |
 | `machine` | Client credentials | `sub` is the service account's backing user. There is no actor. |
 | `delegated` | Service on-behalf-of exchange or operator impersonation | `sub` is the represented user and `act.sub` identifies the service or operator. Operator impersonation grants no scopes. |
 
@@ -222,12 +227,16 @@ timestamp in the future, and that `sub` and `sid` are valid Shōmei user and ses
 Require a recognized kind and a valid user ID in `act.sub` for delegation. Interactive and
 machine profiles expect `act` to be absent. Match every required scope as a whole,
 case-sensitive word in the space-delimited `scope` string. Apply the route's allowed kinds.
+A route meant for the user's own first-party login also requires `client_id` to be absent;
+otherwise any OAuth client the user authorized satisfies an `interactive` requirement.
 For the example above, a machine-only ingest route denies the request. An ingest route
 allowing machine and delegated sessions can accept the same evidence. The service still
 checks permission for the specific resource.
 
 A missing, revoked or expired session, or an invalid access token, yields
-`{"active":false}`. A live opaque refresh token yields `{"active":true,"token_type":"refresh_token"}`.
+`{"active":false}`. So does a correctly signed token whose subject or actor disagrees with its
+stored session. Suspending or deleting a user, or revoking a service account, revokes the
+sessions in which that principal is the subject or the delegated actor. A live opaque refresh token yields `{"active":true,"token_type":"refresh_token"}`.
 Both deny access. A timeout, TLS failure, non-200 response (including caller-authentication
 failure), or malformed reply also denies access. Report a failed lookup as a dependency or
 configuration error so an operator can distinguish it from an inactive token.

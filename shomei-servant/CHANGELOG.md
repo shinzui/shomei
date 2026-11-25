@@ -8,6 +8,8 @@ Shōmei packages.
 
 - Active access-token responses from `POST /oauth/introspect` include the stored `session_kind` (`interactive`, `machine`, or `delegated`).
 
+- `POST /oauth/introspect` adds `client_id` for sessions issued to an OAuth client, sends `Cache-Control: no-store`, searches the other token type when `token_type_hint` does not match, and reports a token whose subject or actor disagrees with its stored session as inactive. **Source compatibility:** `IntrospectResult` now carries the typed `IntrospectSuccess`/`IntrospectionResponse` in place of an aeson `Value`; the OpenAPI document gains the `IntrospectionResponse` schema.
+
 - Add POST /v1/admin/users/{userId}/mfa/reset with typed DTOs/results/OpenAPI, administrative authorization, delegation/self-target refusal and mandatory live-session checks. Bind enrollment and code regeneration to the initiating session even in token-only mode.
 
 - OAuth namespaces now retain OAuth JSON through parsing, routing and middleware errors. Authentication boundaries own challenges; authorize login_required has none. **Source compatibility:** OAuthResult adds 405/406/413/415/429 constructors and OAuthErrorWithHeaders adds optional oauthAllow; update exhaustive matches and record construction. Additive mount-aware formatter and response middleware APIs preserve default entry points.

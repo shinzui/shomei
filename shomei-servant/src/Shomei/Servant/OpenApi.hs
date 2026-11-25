@@ -90,7 +90,7 @@ import Shomei.Servant.Api (ShomeiRoutes)
 import Shomei.Servant.Auth (Authenticated, OAuthAuthenticated)
 import Shomei.Servant.Authz (RequireAdmin, RequirePermission, RequireRole, RequireScope)
 import Shomei.Servant.CachedJson (CachedJson, cacheJson)
-import Shomei.Servant.OAuth (TokenResponse)
+import Shomei.Servant.OAuth (IntrospectionResponse, TokenResponse)
 import Shomei.Servant.PreHandler (CsrfProtected, PreHandlerResponses, RateLimited)
 import Shomei.Servant.Result
   ( AuthenticationPreHandlerResponses,
@@ -270,6 +270,60 @@ instance ToSchema TokenResponse where
           -- The three optional members are omitted rather than null when they do not apply, so they
           -- are documented as not required.
           & O.required .~ ["access_token", "token_type", "expires_in", "scope"]
+
+-- | @POST \/oauth\/introspect@ (RFC 7662 §2.2). Only @active@ is always present: an inactive
+-- token is exactly @{"active":false}@, a live refresh token adds only @token_type@, and a live
+-- access token carries every other member except the two optional ones noted below.
+instance ToSchema IntrospectionResponse where
+  declareNamedSchema _ =
+    pure $
+      O.NamedSchema (Just "IntrospectionResponse") $
+        mempty
+          & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+          & O.description
+            ?~ "An RFC 7662 token-introspection response. `{\"active\":false}` for any invalid, \
+               \expired, revoked or unknown token; `active` and `token_type` only for a live \
+               \refresh token; the full member set for a live access token."
+          & O.properties
+            .~ IOHM.fromList
+              [ ("active", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiBoolean)),
+                ("token_type", O.Inline (stringSchema & O.enum_ ?~ [String "Bearer", String "refresh_token"])),
+                ( "session_kind",
+                  O.Inline
+                    ( stringSchema
+                        & O.enum_ ?~ [String "interactive", String "machine", String "delegated"]
+                        & O.description
+                          ?~ "Shōmei extension: how the stored session was established. Present on \
+                             \every active access-token response."
+                    )
+                ),
+                ("scope", O.Inline (stringSchema & O.description ?~ "The space-delimited scopes the token carries.")),
+                ("sub", O.Inline (stringSchema & O.description ?~ "The user the token represents.")),
+                ("sid", O.Inline (stringSchema & O.description ?~ "Shōmei extension: the backing session.")),
+                ("iss", O.Inline stringSchema),
+                ("aud", O.Inline stringSchema),
+                ("exp", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger & O.description ?~ "Expiry in Unix seconds.")),
+                ("iat", O.Inline (mempty & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiInteger & O.description ?~ "Issue time in Unix seconds.")),
+                ( "client_id",
+                  O.Inline
+                    ( stringSchema
+                        & O.description
+                          ?~ "The OAuth client the session was issued to through the \
+                             \authorization-code grant. Omitted for a first-party login and for \
+                             \machine and delegated sessions."
+                    )
+                ),
+                ( "act",
+                  O.Inline
+                    ( mempty
+                        & O.type_ ?~ O.OpenApiTypeSingle O.OpenApiObject
+                        & O.description ?~ "The delegated actor (RFC 8693). Present exactly when `session_kind` is `delegated`."
+                        & O.properties .~ IOHM.fromList [("sub", O.Inline stringSchema)]
+                        & O.required .~ ["sub"]
+                    )
+                )
+              ]
+          & O.required .~ ["active"]
 
 -- | The @application\/x-www-form-urlencoded@ request body of @POST \/oauth\/token@.
 --

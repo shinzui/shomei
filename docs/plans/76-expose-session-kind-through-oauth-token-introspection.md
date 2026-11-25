@@ -21,6 +21,11 @@ provenance:
       at: 2026-11-25T14:30:11Z
       mode: "implement"
       note: "Implement stored session kind, exercise resource-server policies, and document provider acceptance."
+    - model: "claude-fable-5-2"
+      harness: "claude-code"
+      at: 2026-11-25T15:05:07Z
+      mode: "implement"
+      note: "Apply review fixes: client_id, session/claims agreement, principal revocation, typed response, no-store and hint fallback."
 ---
 
 # Expose session kind through OAuth token introspection
@@ -46,6 +51,9 @@ For example, a resource server can require a machine session for an ingest opera
 - [x] 2026-11-25. All 54 Servant tests passed. The resource-server fixture applied three route policies to equally scoped credentials from real grants. The [public guide](../user/oidc.md#session-kind-for-resource-servers) documents those profiles and Hanmoto's identity mappings, and [IR-1](../improvement-requests/scoped-service-token-issuance.md) records provider acceptance.
 
 
+- [x] 2026-11-25. Review fixes. Introspection reports `client_id`, refuses a token that disagrees with its stored session, sends `no-store`, and searches the other token type on a mismatched hint. The response is typed and appears in the OpenAPI document. Revoking a service account or a user's sessions also ends the delegated sessions that principal acts in. The Servant, OpenAPI, core, PostgreSQL, client and server suites passed.
+
+
 ## Surprises & Discoveries
 
 
@@ -58,6 +66,13 @@ The server suite exercises the packaged binary with Hurl and requires an executa
 2026-11-25. Add the `session_kind` member to active access-token introspection. The issuer already reads the authoritative row to check revocation. This gives existing tokens the new capability with one request and one session read. A JWT-only change would omit tokens already in circulation and lose that liveness check.
 
 2026-11-25 (scope revision). Publish session kind for every authorized introspection caller through the existing OAuth endpoint. The issuer reports how the session was established. Each resource server defines accepted kinds, required scopes, identity mappings and authorization for its operations. The original consumer request supplies one acceptance case. Demonstrate reuse with a second route policy implemented entirely in the test fixture.
+
+
+2026-11-25 (review). `session_kind: interactive` alone cannot separate a first-party login from a token an OAuth client holds, because authorization-code sessions are interactive and carry the user's enriched claims. Report the stored client as the RFC 7662 `client_id` member and let each route decide. Keep the session kind unchanged so ADR-1's meaning of interactive holds.
+
+2026-11-25 (review). Make revocation of a principal end the sessions it acts in, at the transition, in place of extra principal reads on every introspection. Introspection stays one session read, and `VerifyTokenAndSession` gets the same guarantee.
+
+2026-11-25 (review). Leave introspection open to every authenticated confidential client and service account, as decided above, and leave the endpoint outside the per-IP limiter. That limiter guards unauthenticated routes and would throttle a resource server that introspects on every request. A dedicated introspection permission and a per-client limit remain open.
 
 
 ## Outcomes & Retrospective

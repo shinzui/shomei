@@ -6,6 +6,8 @@ Shōmei packages.
 
 ## Unreleased
 
+- Revoking all of a user's sessions also revokes the delegated sessions in which that user is the actor. Revoking a service account revokes, in the same statement, its live machine sessions and the delegated sessions its backing user is subject or actor of.
+
 - **Breaking:** recovery and generation-aware writers serialize on the user row in bounded transactions; refresh and code exchange coordinate with reset. Factor/session deletion and winner-only audit roll back together. Recovery-code replacement is now an explicit transaction.
 
 ## 0.3.0.0 — 2026-11-05

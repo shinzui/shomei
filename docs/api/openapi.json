@@ -131,6 +131,76 @@
                 ],
                 "type": "object"
             },
+            "IntrospectionResponse": {
+                "description": "An RFC 7662 token-introspection response. `{\"active\":false}` for any invalid, expired, revoked or unknown token; `active` and `token_type` only for a live refresh token; the full member set for a live access token.",
+                "properties": {
+                    "act": {
+                        "description": "The delegated actor (RFC 8693). Present exactly when `session_kind` is `delegated`.",
+                        "properties": {
+                            "sub": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "sub"
+                        ],
+                        "type": "object"
+                    },
+                    "active": {
+                        "type": "boolean"
+                    },
+                    "aud": {
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "The OAuth client the session was issued to through the authorization-code grant. Omitted for a first-party login and for machine and delegated sessions.",
+                        "type": "string"
+                    },
+                    "exp": {
+                        "description": "Expiry in Unix seconds.",
+                        "type": "integer"
+                    },
+                    "iat": {
+                        "description": "Issue time in Unix seconds.",
+                        "type": "integer"
+                    },
+                    "iss": {
+                        "type": "string"
+                    },
+                    "scope": {
+                        "description": "The space-delimited scopes the token carries.",
+                        "type": "string"
+                    },
+                    "session_kind": {
+                        "description": "Shōmei extension: how the stored session was established. Present on every active access-token response.",
+                        "enum": [
+                            "interactive",
+                            "machine",
+                            "delegated"
+                        ],
+                        "type": "string"
+                    },
+                    "sid": {
+                        "description": "Shōmei extension: the backing session.",
+                        "type": "string"
+                    },
+                    "sub": {
+                        "description": "The user the token represents.",
+                        "type": "string"
+                    },
+                    "token_type": {
+                        "enum": [
+                            "Bearer",
+                            "refresh_token"
+                        ],
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "active"
+                ],
+                "type": "object"
+            },
             "LoginRequest": {
                 "description": "Legacy login identifiers may exceed the new-write limit. Oversized passwords are rejected before credential lookup or proof accounting.",
                 "properties": {
@@ -485,12 +555,101 @@
                 ],
                 "type": "object"
             },
+            "RecoveryCounts": {
+                "properties": {
+                    "authorizationCodesInvalidated": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "ceremoniesRemoved": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "passkeysRemoved": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "passwordResetTokensRevoked": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "recoveryCodesRemoved": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "refreshTokensRevoked": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "sessionsRevoked": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    },
+                    "totpCredentialsRemoved": {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "passkeysRemoved",
+                    "totpCredentialsRemoved",
+                    "recoveryCodesRemoved",
+                    "ceremoniesRemoved",
+                    "sessionsRevoked",
+                    "refreshTokensRevoked",
+                    "authorizationCodesInvalidated",
+                    "passwordResetTokensRevoked"
+                ],
+                "type": "object"
+            },
             "RefreshRequest": {
                 "properties": {
                     "refreshToken": {
                         "type": "string"
                     }
                 },
+                "type": "object"
+            },
+            "ResetMfaRequest": {
+                "properties": {
+                    "caseReference": {
+                        "type": "string"
+                    },
+                    "identityVerified": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "identityVerified",
+                    "caseReference"
+                ],
+                "type": "object"
+            },
+            "ResetMfaResponse": {
+                "properties": {
+                    "counts": {
+                        "$ref": "#/components/schemas/RecoveryCounts"
+                    },
+                    "resetAt": {
+                        "$ref": "#/components/schemas/UTCTime"
+                    },
+                    "verifiedNotificationDestination": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "resetAt",
+                    "counts",
+                    "verifiedNotificationDestination"
+                ],
                 "type": "object"
             },
             "SessionResponse": {
@@ -1996,16 +2155,30 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/AnyValue"
+                                    "$ref": "#/components/schemas/IntrospectionResponse"
                                 }
                             },
                             "application/json;charset=utf-8": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/AnyValue"
+                                    "$ref": "#/components/schemas/IntrospectionResponse"
                                 }
                             }
                         },
-                        "description": "Token status"
+                        "description": "Token status",
+                        "headers": {
+                            "Cache-Control": {
+                                "description": "Token responses are not cacheable",
+                                "schema": {
+                                    "type": "string"
+                                }
+                            },
+                            "Pragma": {
+                                "description": "Token responses are not cacheable",
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "content": {
@@ -4761,6 +4934,169 @@
                             }
                         },
                         "description": "Bad request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Authentication failed",
+                        "headers": {
+                            "WWW-Authenticate": {
+                                "description": "Bearer authentication challenge",
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Forbidden"
+                    },
+                    "404": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "`userId` or Not found"
+                    },
+                    "409": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Conflict"
+                    },
+                    "422": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable content"
+                    },
+                    "429": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Too many requests",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "Seconds until the request may be retried",
+                                "schema": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Required dependency unavailable",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "Seconds until the request may be retried",
+                                "schema": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/v1/admin/users/{userId}/mfa/reset": {
+            "post": {
+                "operationId": "createAdminUsersUserIdMfaReset",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "userId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json;charset=utf-8": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ResetMfaRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResetMfaResponse"
+                                }
+                            },
+                            "application/json;charset=utf-8": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ResetMfaResponse"
+                                }
+                            }
+                        },
+                        "description": "Second factors reset"
+                    },
+                    "400": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProblemDetails"
+                                }
+                            }
+                        },
+                        "description": "Bad request or `body`"
                     },
                     "401": {
                         "content": {

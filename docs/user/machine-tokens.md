@@ -96,8 +96,10 @@ shomei-admin service-accounts list
 
 Rotation has no overlap: the previous secret stops working as soon as the new digest is stored.
 For a zero-downtime handover, create a second account, move consumers, then revoke the first.
-Revocation prevents future issuance but cannot retract an already-issued stateless JWT; the short
-machine-token TTL bounds that window.
+Revocation prevents future issuance and, in the same statement, revokes the account's live
+machine sessions and every delegated session in which it is subject or actor. Introspection and
+`VerifyTokenAndSession` refuse those tokens immediately. A resource server that verifies the JWT
+statelessly keeps accepting it until expiry; the short machine-token TTL bounds that window.
 
 ## Act on behalf of a user with RFC 8693
 

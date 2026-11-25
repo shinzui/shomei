@@ -39,6 +39,10 @@ module Shomei.Servant.OAuth
 
     -- * The success response (RFC 6749 §5.1)
     TokenResponse (..),
+
+    -- * The introspection response (RFC 7662 §2.2)
+    IntrospectionResponse (..),
+    ActiveAccessToken (..),
   )
 where
 
@@ -55,6 +59,7 @@ import Network.HTTP.Types.URI (urlDecode)
 import Servant (ServerError (..))
 import Shomei.Authorization.Claims.Domain (Scope (..))
 import Shomei.Prelude
+import Shomei.Session.Domain (SessionKind, sessionKindFromText, sessionKindToText)
 import Web.FormUrlEncoded (Form, lookupUnique)
 
 -- ---------------------------------------------------------------------------
@@ -296,3 +301,87 @@ instance Aeson.FromJSON TokenResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "id_token"
       <*> o Aeson..:? "issued_token_type"
+
+-- ---------------------------------------------------------------------------
+-- The introspection response
+-- ---------------------------------------------------------------------------
+
+-- | RFC 7662 §2.2's response from @POST \/oauth\/introspect@, in the three shapes Shōmei
+-- answers with. The JSON keys are the RFC's snake_case names plus the Shōmei extensions @sid@
+-- and @session_kind@, so the instances are hand-written and must stay in step with the
+-- @ToSchema@ in "Shomei.Servant.OpenApi".
+data IntrospectionResponse
+  = -- | @{"active":false}@: the one answer to every invalid, expired, revoked or unknown token.
+    IntrospectionInactive
+  | -- | @{"active":true,"token_type":"refresh_token"}@: a live opaque refresh token. It is not
+    -- a bearer credential, so it carries no identity members.
+    IntrospectionRefreshToken
+  | -- | A verified access token whose session is live.
+    IntrospectionAccessToken !ActiveAccessToken
+  deriving stock (Generic, Eq, Show)
+
+data ActiveAccessToken = ActiveAccessToken
+  { -- | how the stored session was established (Shōmei extension)
+    sessionKind :: !SessionKind,
+    -- | space-delimited scopes carried by the token
+    scope :: !Text,
+    subject :: !Text,
+    sessionId :: !Text,
+    issuer :: !Text,
+    audience :: !Text,
+    -- | Unix seconds
+    expiresAt :: !Integer,
+    -- | Unix seconds
+    issuedAt :: !Integer,
+    -- | the OAuth client the session was issued to through the authorization-code grant;
+    --     absent for a first-party login and for machine and delegated sessions.
+    clientId :: !(Maybe Text),
+    -- | the delegated actor, present exactly on delegated sessions
+    actor :: !(Maybe Text)
+  }
+  deriving stock (Generic, Eq, Show)
+
+instance Aeson.ToJSON IntrospectionResponse where
+  toJSON = \case
+    IntrospectionInactive -> Aeson.object ["active" Aeson..= False]
+    IntrospectionRefreshToken -> Aeson.object ["active" Aeson..= True, "token_type" Aeson..= ("refresh_token" :: Text)]
+    IntrospectionAccessToken t ->
+      Aeson.object
+        ( [ "active" Aeson..= True,
+            "token_type" Aeson..= ("Bearer" :: Text),
+            "session_kind" Aeson..= sessionKindToText t.sessionKind,
+            "scope" Aeson..= t.scope,
+            "sub" Aeson..= t.subject,
+            "sid" Aeson..= t.sessionId,
+            "iss" Aeson..= t.issuer,
+            "aud" Aeson..= t.audience,
+            "exp" Aeson..= t.expiresAt,
+            "iat" Aeson..= t.issuedAt
+          ]
+            <> foldMap (\c -> ["client_id" Aeson..= c]) t.clientId
+            -- `act` per the RFC 8693 convention when the token was delegated.
+            <> foldMap (\a -> ["act" Aeson..= Aeson.object ["sub" Aeson..= a]]) t.actor
+        )
+
+instance Aeson.FromJSON IntrospectionResponse where
+  parseJSON = Aeson.withObject "IntrospectionResponse" \o -> do
+    active <- o Aeson..: "active"
+    tokenType <- o Aeson..:? "token_type"
+    case (active, tokenType :: Maybe Text) of
+      (False, _) -> pure IntrospectionInactive
+      (True, Just "refresh_token") -> pure IntrospectionRefreshToken
+      (True, Just "Bearer") -> do
+        kind <- either (fail . Text.unpack) pure . sessionKindFromText =<< o Aeson..: "session_kind"
+        actor <- traverse (Aeson.withObject "act" (Aeson..: "sub")) =<< o Aeson..:? "act"
+        fmap IntrospectionAccessToken $
+          ActiveAccessToken kind
+            <$> o Aeson..: "scope"
+            <*> o Aeson..: "sub"
+            <*> o Aeson..: "sid"
+            <*> o Aeson..: "iss"
+            <*> o Aeson..: "aud"
+            <*> o Aeson..: "exp"
+            <*> o Aeson..: "iat"
+            <*> o Aeson..:? "client_id"
+            <*> pure actor
+      _ -> fail "unrecognized introspection token_type"

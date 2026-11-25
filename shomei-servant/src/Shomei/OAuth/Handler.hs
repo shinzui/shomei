@@ -527,44 +527,53 @@ oauthUserinfoH env user = do
 -- token is @active@ only if it verifies /and/ its @sid@ resolves to a live session. That is the
 -- whole point of RFC 7662 — a resource server can see a revocation that stateless JWT verification
 -- cannot — and it is what makes the revoke→introspect flip observable.
-oauthIntrospectH :: Env -> Maybe Text -> Form -> Handler Value
+oauthIntrospectH :: Env -> Maybe Text -> Form -> Handler IntrospectSuccess
 oauthIntrospectH env mAuthHeader form = do
   _ <- authenticateOAuthCaller env mAuthHeader form
-  case OAuth.lookupParam "token" form of
-    Nothing -> pure inactive
+  answer <- case OAuth.lookupParam "token" form of
+    Nothing -> pure Nothing
+    -- The hint only orders the search (RFC 7662 §2.1): a token that is not of the hinted type
+    -- is still looked up as the other one.
     Just presented -> case OAuth.lookupParam "token_type_hint" form of
-      -- The hint is advisory. Try an opaque refresh token directly when named; otherwise try the
-      -- JWT path first and fall back to refresh lookup when signature verification fails.
-      Just "refresh_token" -> introspectRefresh env presented
-      _ -> do
-        verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
-        case verified of
-          Left _ -> introspectRefresh env presented
-          Right claims -> do
-            mSession <- runOAuthPort env (findSessionById claims.sessionId)
-            now' <- runOAuthPort env now
-            case mSession of
-              Just s | sessionIsLive now' s -> pure (activeAccess claims s)
-              -- The signature is fine but the session is gone or dead: to a resource server the
-              -- token is not active, which is exactly what revocation must make observable.
-              _ -> pure inactive
+      Just "refresh_token" -> introspectRefresh env presented `orElse` introspectAccess env presented
+      _ -> introspectAccess env presented `orElse` introspectRefresh env presented
+  pure (IntrospectSuccess (fromMaybe OAuth.IntrospectionInactive answer) "no-store" "no-cache")
+  where
+    orElse first second = first >>= maybe second (pure . Just)
+
+-- | Introspect a presented access JWT. 'Nothing' means it is not a token this issuer signed, so
+-- the caller may try another token type. A token that verifies is answered here even when
+-- inactive.
+introspectAccess :: Env -> Text -> Handler (Maybe OAuth.IntrospectionResponse)
+introspectAccess env presented = do
+  verified <- runOAuthPort env (verifyAccessToken (AccessToken presented))
+  case verified of
+    Left _ -> pure Nothing
+    Right claims -> do
+      mSession <- runOAuthPort env (findSessionById claims.sessionId)
+      now' <- runOAuthPort env now
+      pure . Just $ case mSession of
+        Just s | sessionIsLive now' s, sessionBacksClaims claims s -> activeAccess claims s
+        -- The signature is fine but the session is gone or dead: to a resource server the
+        -- token is not active, which is exactly what revocation must make observable.
+        _ -> OAuth.IntrospectionInactive
 
 -- | Introspect a presented refresh token: hash it, look it up, and report from its status and its
--- session's liveness.
-introspectRefresh :: Env -> Text -> Handler Value
+-- session's liveness. 'Nothing' means no such refresh token exists.
+introspectRefresh :: Env -> Text -> Handler (Maybe OAuth.IntrospectionResponse)
 introspectRefresh env presented = do
   tokHash <- runOAuthPort env (hashRefreshToken (RefreshToken presented))
   mTok <- runOAuthPort env (findRefreshTokenByHash tokHash)
   case mTok of
-    Nothing -> pure inactive
+    Nothing -> pure Nothing
     Just tok
-      | (tok ^. #status) /= RefreshTokenActive -> pure inactive
+      | (tok ^. #status) /= RefreshTokenActive -> pure (Just OAuth.IntrospectionInactive)
       | otherwise -> do
           mSession <- runOAuthPort env (findSessionById (tok ^. #sessionId))
           now' <- runOAuthPort env now
-          case mSession of
-            Just s | sessionIsLive now' s -> pure (Aeson.object ["active" Aeson..= True, "token_type" Aeson..= ("refresh_token" :: Text)])
-            _ -> pure inactive
+          pure . Just $ case mSession of
+            Just s | sessionIsLive now' s -> OAuth.IntrospectionRefreshToken
+            _ -> OAuth.IntrospectionInactive
 
 -- | @POST \/oauth\/revoke@ (RFC 7009): revoke what we recognize, and always answer @200@.
 --
@@ -646,38 +655,39 @@ serviceAccountAuthenticates secret account =
 oauthClientSecretHash :: OAuthClient.OAuthClient -> Maybe Text
 oauthClientSecretHash OAuthClient.OAuthClient {secretHash} = secretHash
 
--- | @{"active": false}@, the one answer to every introspection failure.
-inactive :: Value
-inactive = Aeson.object ["active" Aeson..= False]
-
 -- | Is this session usable right now — active and unexpired?
 sessionIsLive :: UTCTime -> Session.Session -> Bool
 sessionIsLive now' s = s.status == Session.SessionActive && s.expiresAt > now'
 
+-- | Does the stored session agree with the token about who it is for? The response reports the
+-- kind from the row and the identities from the claims, so a row that names a different subject
+-- or actor, or whose kind contradicts its actor, must not be presented as evidence for this
+-- token. Every token Shōmei mints satisfies this; a mismatch fails closed as inactive.
+sessionBacksClaims :: AuthClaims -> Session.Session -> Bool
+sessionBacksClaims claims s =
+  s.userId == claims.subject
+    && s.actor == claims.actor
+    && (s.kind == Session.DelegatedSession) == isJust s.actor
+
 -- | The RFC 7662 active-response object for a verified access token whose session is live.
-activeAccess :: AuthClaims -> Session.Session -> Value
+activeAccess :: AuthClaims -> Session.Session -> OAuth.IntrospectionResponse
 activeAccess claims session =
-  Aeson.object
-    ( [ "active" Aeson..= True,
-        "token_type" Aeson..= ("Bearer" :: Text),
-        "session_kind" Aeson..= sessionKindText (session ^. #kind),
-        "scope" Aeson..= Text.unwords [s | Scope s <- Set.toList claims.scopes],
-        "sub" Aeson..= idText claims.subject,
-        "sid" Aeson..= idText claims.sessionId,
-        "iss" Aeson..= issuerClaimText claims.issuer,
-        "aud" Aeson..= audienceClaimText claims.audience,
-        "exp" Aeson..= (floor (utcTimeToPOSIXSeconds claims.expiresAt) :: Integer),
-        "iat" Aeson..= (floor (utcTimeToPOSIXSeconds claims.issuedAt) :: Integer)
-      ]
-        -- `act` per the RFC 8693 convention when the token was delegated (impersonation).
-        <> foldMap (\a -> ["act" Aeson..= Aeson.object ["sub" Aeson..= idText a]]) claims.actor
-    )
+  OAuth.IntrospectionAccessToken
+    OAuth.ActiveAccessToken
+      { sessionKind = session ^. #kind,
+        scope = Text.unwords [s | Scope s <- Set.toList claims.scopes],
+        subject = idText claims.subject,
+        sessionId = idText claims.sessionId,
+        issuer = issuerClaimText claims.issuer,
+        audience = audienceClaimText claims.audience,
+        expiresAt = floor (utcTimeToPOSIXSeconds claims.expiresAt),
+        issuedAt = floor (utcTimeToPOSIXSeconds claims.issuedAt),
+        -- RFC 7662 `client_id`: lets a resource server tell a token an OAuth client holds for
+        -- the user from one issued to the user's own first-party login.
+        clientId = session ^. #oauthClientId,
+        actor = idText <$> claims.actor
+      }
   where
-    sessionKindText :: Session.SessionKind -> Text
-    sessionKindText = \case
-      Session.InteractiveSession -> "interactive"
-      Session.MachineSession -> "machine"
-      Session.DelegatedSession -> "delegated"
     issuerClaimText (Issuer t) = t
     audienceClaimText (Audience t) = t
 
