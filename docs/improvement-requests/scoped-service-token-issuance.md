@@ -176,3 +176,25 @@ When this path ships upstream, EP-10's proof swaps `mint-token.py` for a live
   `shomei-servant/src/Shomei/Servant/Authz.hs` (`requireScope`/`requireRole`),
   `shomei-jwt/src/Shomei/Jwt/Verify.hs` (`verifyToken`),
   `shomei-core/src/Shomei/Workflow/Session.hs` (the empty-scopes-by-design gap).
+
+## Hanmoto consumer contract
+
+Document the released Shomei member-session, scoped machine, and delegation
+token profiles for direct standalone Hanmoto calls. Specify how Hanmoto verifies
+the configured issuer, audience, expiry, and any required scope, and how it
+obtains the trusted subject, session identity and kind, and delegated actor when
+present. Use the existing issuer and verifier where they meet the contract. If
+any of these inputs requires a trusted Shomei lookup, specify the supported
+lookup and its failure semantics. Prove that Hanmoto can accept a member session
+on the person path, accept scoped machine and delegation credentials on the
+direct agent path, and reject a member session on the agent path and credentials
+with the wrong audience or an expired lifetime. Hanmoto uses its configured En
+deployment for publication authorization and standalone ownership policy after
+identity verification.
+
+The direct contract supports
+`mori://shinzui/hanmoto/plans/4-authorize-management-commands-and-ship-the-publishing-cli`.
+For the Kikan integration in `mori://shinzui/kikan/okf/use-cases/concepts/UC-42`,
+document which verified credential identifiers the Kikan adapter can pass to
+Meibo to resolve the active agent. Meibo supplies accountable-owner evidence
+for Kikan provisioning under `mori://shinzui/meibo/okf/improvement-requests/concepts/IR-3`.
