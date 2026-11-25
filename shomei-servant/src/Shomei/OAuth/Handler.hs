@@ -656,10 +656,11 @@ sessionIsLive now' s = s.status == Session.SessionActive && s.expiresAt > now'
 
 -- | The RFC 7662 active-response object for a verified access token whose session is live.
 activeAccess :: AuthClaims -> Session.Session -> Value
-activeAccess claims _s =
+activeAccess claims session =
   Aeson.object
     ( [ "active" Aeson..= True,
         "token_type" Aeson..= ("Bearer" :: Text),
+        "session_kind" Aeson..= sessionKindText (session ^. #kind),
         "scope" Aeson..= Text.unwords [s | Scope s <- Set.toList claims.scopes],
         "sub" Aeson..= idText claims.subject,
         "sid" Aeson..= idText claims.sessionId,
@@ -672,6 +673,11 @@ activeAccess claims _s =
         <> foldMap (\a -> ["act" Aeson..= Aeson.object ["sub" Aeson..= idText a]]) claims.actor
     )
   where
+    sessionKindText :: Session.SessionKind -> Text
+    sessionKindText = \case
+      Session.InteractiveSession -> "interactive"
+      Session.MachineSession -> "machine"
+      Session.DelegatedSession -> "delegated"
     issuerClaimText (Issuer t) = t
     audienceClaimText (Audience t) = t
 

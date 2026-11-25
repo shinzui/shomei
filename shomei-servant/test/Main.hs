@@ -679,6 +679,8 @@ scenarioOAuthToken clientId port = do
     Just (Number n) -> (round n :: Int) @?= 300
     other -> assertFailure ("basic: expires_in not a number: " <> show other)
   token <- must "basic: access_token" (dig ["access_token"] doc >>= asText)
+  machine <- introspect mgr port (Just (clientId, oauthClientSecret)) token
+  (dig ["session_kind"] machine >>= asText) @?= Just "machine"
 
   -- (2) The minted token is a real Shōmei token: it satisfies the RequireScope combinator on a
   -- host route that contains no authorization code of its own.
@@ -2035,7 +2037,8 @@ scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId adminClientId
     postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
   introActiveDoc <- must "introspect (active) body" (bodyOf introActive)
   dig ["active"] introActiveDoc @?= Just (Bool True)
-  assertBool "introspection reports the act member" (isJust (dig ["act", "sub"] introActiveDoc >>= asText))
+  (dig ["session_kind"] introActiveDoc >>= asText) @?= Just "delegated"
+  (dig ["act", "sub"] introActiveDoc >>= asText) @?= Just (idText operatorUid)
   -- RFC 7009 revocation is the single stop mechanism for a delegated token. The gate service did
   -- not mint this impersonation session, so the explicitly privileged admin principal stops it.
   (stopStatus, _, _) <-
@@ -2049,7 +2052,7 @@ scenarioTokenExchange jwk cfg issuedAt gateClientId noGateClientId adminClientId
   introInactive <-
     postForm mgr port "/oauth/introspect" (Just (gateClientId, oauthClientSecret)) [("token", enc impAccess)]
   introInactiveDoc <- must "introspect (inactive) body" (bodyOf introInactive)
-  dig ["active"] introInactiveDoc @?= Just (Bool False)
+  introInactiveDoc @?= object ["active" .= False]
 
   -- Valid signed, live actors reach the workflow guards: missing authority and self-target.
   ordinaryActor <- mkTokenForSession jwk cfg operatorUid operatorSid Set.empty Set.empty Nothing issuedAt
@@ -2751,6 +2754,7 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   active <- introspect mgr port basic accessToken
   (dig ["active"] active) @?= Just (Aeson.Bool True)
   (dig ["token_type"] active >>= asText) @?= Just "Bearer"
+  (dig ["session_kind"] active >>= asText) @?= Just "interactive"
   (dig ["scope"] active >>= asText) @?= Just "openid profile"
   (dig ["sub"] active >>= asText) @?= Just uiSub
   assertBool "introspection reports sid" (isJust (dig ["sid"] active))
@@ -2762,15 +2766,14 @@ scenarioOAuthUserinfoIntrospectRevoke jwk confId pubId port = do
   -- A token-type hint is an optimization, never a requirement. The JWT attempt falls through to
   -- opaque refresh-token lookup and reports the live refresh token at 200.
   activeRefresh <- introspect mgr port basic refreshToken
-  dig ["active"] activeRefresh @?= Just (Aeson.Bool True)
-  (dig ["token_type"] activeRefresh >>= asText) @?= Just "refresh_token"
+  activeRefresh @?= object ["active" .= True, "token_type" .= ("refresh_token" :: Text)]
 
   -- The flip: revoke the refresh token, and the access token's session dies with it, so
   -- introspection -- which is session-aware regardless of sessionCheckMode -- now reports inactive.
   (revStatus, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", Text.encodeUtf8 refreshToken), ("token_type_hint", "refresh_token")]
   revStatus @?= 200
   afterRevoke <- introspect mgr port basic accessToken
-  (dig ["active"] afterRevoke) @?= Just (Aeson.Bool False)
+  afterRevoke @?= object ["active" .= False]
   -- The refresh token no longer rotates.
   reuse <- postForm mgr port "/oauth/token" basic [("grant_type", "refresh_token"), ("refresh_token", Text.encodeUtf8 refreshToken)]
   assertOAuthError "a revoked refresh token" 400 "invalid_grant" reuse
@@ -2915,6 +2918,7 @@ scenarioUserinfoScopeGating confId port = do
 introspect :: Manager -> Int -> Maybe (Text, Text) -> Text -> IO Value
 introspect mgr port basic tok = do
   r <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 tok)]
+  statusOf r @?= 200
   must "introspection body" (bodyOf r)
 
 -- | The @sub@ claim of an ID token, read through the same signature-verifying path the M3 test

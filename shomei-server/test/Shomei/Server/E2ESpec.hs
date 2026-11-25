@@ -433,6 +433,7 @@ oidcScenario clientId port = do
   iStatus @?= 200
   iresp <- must "introspect body" iBody
   dig ["active"] iresp @?= Just (jsonBool True)
+  dig ["session_kind"] iresp @?= Just (String "interactive")
 
   -- revoke the refresh token → 200.
   (rStatus, _, _) <- postForm mgr port "/oauth/revoke" basic [("token", Text.encodeUtf8 refresh), ("token_type_hint", "refresh_token")]
@@ -442,7 +443,7 @@ oidcScenario clientId port = do
   (i2Status, _, i2Body) <- postForm mgr port "/oauth/introspect" basic [("token", Text.encodeUtf8 access)]
   i2Status @?= 200
   i2resp <- must "introspect body 2" i2Body
-  dig ["active"] i2resp @?= Just (jsonBool False)
+  i2resp @?= object ["active" .= False]
 
 -- | The @Location@ query parameter named @k@, percent-decoded enough for our fixed values.
 paramFrom :: Text -> Text -> Maybe Text
@@ -533,6 +534,13 @@ oauthScenario pool clientId port = do
   meStatus @?= 200
   meresp <- must "me body" meBody
   (dig ["displayName"] meresp >>= asText) @?= Just "e2e connector"
+  (iStatus, _, iBody) <- postForm mgr port "/oauth/introspect" (Just (clientId, oauthSecret)) [("token", Text.encodeUtf8 access)]
+  iStatus @?= 200
+  intro <- must "machine introspection body" iBody
+  dig ["session_kind"] intro @?= Just (String "machine")
+  backingUser <- must "service backing user" (dig ["userId"] meresp)
+  dig ["sub"] intro @?= Just backingUser
+  dig ["act"] intro @?= Nothing
 
   -- (c) Its signing key is the one published at the JWKS endpoint, so any downstream verifier
   -- that fetches /.well-known/jwks.json can check this token offline.
@@ -678,9 +686,11 @@ exchangeScenario cfg pool clientId opTok port = do
   iStatus @?= 200
   intro <- must "on-behalf introspect body" iBody
   dig ["active"] intro @?= Just (Bool True)
+  dig ["session_kind"] intro @?= Just (String "delegated")
+  dig ["sid"] intro @?= Just (String (idText verified.sessionId))
   (dig ["sub"] intro >>= asText) @?= Just subjectId
   (dig ["scope"] intro >>= asText) @?= Just "kawa:ingest"
-  assertBool "on-behalf token carries an act member" (isJust (dig ["act", "sub"] intro >>= asText))
+  (dig ["act", "sub"] intro >>= asText) @?= fmap idText verified.actor
 
   actorId <- must "introspected actor" (dig ["act", "sub"] intro >>= asText)
   payload <- must "delegated JWT payload" (jwtPayload obAccess)
@@ -701,6 +711,7 @@ exchangeScenario cfg pool clientId opTok port = do
   (impIStatus, _, impIBody) <- postForm mgr port "/oauth/introspect" (Just (clientId, exchangeSecret)) [("token", enc impAccess)]
   impIStatus @?= 200
   impIntro <- must "impersonation introspect body" impIBody
+  dig ["session_kind"] impIntro @?= Just (String "delegated")
   (dig ["sub"] impIntro >>= asText) @?= Just targetId
   assertBool "impersonation token carries an act member" (isJust (dig ["act", "sub"] impIntro >>= asText))
 

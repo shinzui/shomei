@@ -16,6 +16,11 @@ provenance:
       at: 2026-11-25T14:24:38Z
       mode: "update"
       note: "Generalize the introspection contract and test different consumer policies over one verified token. Retain Hanmoto as an acceptance case."
+    - model: "gpt-6.2-astra"
+      harness: "codex-cli"
+      at: 2026-11-25T14:30:11Z
+      mode: "implement"
+      note: "Implement stored session kind, exercise resource-server policies, and document provider acceptance."
 ---
 
 # Expose session kind through OAuth token introspection
@@ -37,11 +42,14 @@ For example, a resource server can require a machine session for an ingest opera
 ## Progress
 
 
-- [ ] Authenticated access-token introspection reports the stored session kind for all three issuing flows and preserves the inactive and refresh-token responses.
+- [x] 2026-11-25. Authenticated access-token introspection reports the stored kind. The machine assertion first failed with a missing field, then all 53 Servant tests and 71 server tests passed, including PostgreSQL issuance for all three kinds, both delegated actor encodings, and revocation.
 - [ ] A generic resource-server fixture demonstrates different route policies over the same verified evidence. The public guide documents the contract and shows how Hanmoto uses it.
 
 
 ## Surprises & Discoveries
+
+
+The server suite exercises the packaged binary with Hurl and requires an executable build on a fresh checkout. The corrected commands below passed. See [FRIC-9](../friction-log/9-plan-76-omitted-the-packaged-server-test-prerequisite.md).
 
 
 ## Decision Log
@@ -85,6 +93,7 @@ From the repository root, enter the project shell and run the HTTP suites. The s
 ```bash
 nix develop
 cabal test shomei-servant:test:shomei-servant-test --enable-tests --test-options='-j1' --test-show-details=direct
+cabal build shomei-server:exe:shomei-server --enable-tests
 cabal test shomei-server:test:shomei-server-test --enable-tests --test-options='-j1' --test-show-details=direct
 git diff --check
 ```
